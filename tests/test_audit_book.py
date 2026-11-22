@@ -258,3 +258,188 @@ def test_book1_the_plan_starts_such_a_sniper_only_while_a_coin_is_held():
     assert plan({"k1"}, coin) == [("start", RESTART_REASON)]
     assert [k for k, _ in plan({"k1"}, [])] == ["retire"]
     assert [k for k, _ in plan(set(), coin)] == ["keep"]
+
+
+# -- the manual `oktech guard` (book#2, #3, #4, #5) and `oktech start` (book#4) ----------------------------------------
+
+MINT = "Mint1111111111111111111111111111111111111111"
+T22 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
+
+class _GuardClient:
+    """OKTech as the guard sees it: every start and stop in order, the snipers running unless `finished`."""
+
+    def __init__(self, ids=("a",)):
+        self.calls: list[tuple[str, str]] = []
+        self.ids, self.finished = list(ids), False
+
+    async def start(self, i):
+        self.calls.append(("start", i))
+        return {"task": {"status": "running"}}
+
+    async def stop(self, i):
+        self.calls.append(("stop", i))
+        return {}
+
+    async def tasks(self):
+        return [{"id": i, "status": "finished" if self.finished else "running"} for i in self.ids]
+
+    async def close(self):
+        pass
+
+
+def _guard(monkeypatch, sol, coin=lambda t: None, price=None, says=None, tape=None):
+    """`oktech guard` on a fake clock (each sleep moves it): the wallet holds `sol(t)` plain SOL and, while `coin(t)`
+    gives a number, that many raw units of MINT (token-2022), priced by the tape at `price` lamports a unit (None:
+    never priced). `tape`: (when our sniper bought MINT, when it sold it or None) on the tape, which is what tells a
+    coin of ours from an airdrop; None: no trade of ours in it at all. The owner's wallet-wide guard says `says` (None:
+    clear; "unknown": cannot tell; any other text: tripped with that reason)."""
+    from snipetech.config import Config
+    from snipetech.operator.risk_guard import Guard
+    from snipetech.service import Service
+    from snipetech.store import Store
+
+    clock = {"t": float(NOW)}
+
+    async def sleep(secs):
+        clock["t"] += secs
+
+    class Rpc:
+        async def call(self, method, params):
+            if method == "getBalance":
+                return {"value": int(sol(clock["t"]) * 1e9)}
+            raw = coin(clock["t"])
+            if raw is None or params[1]["programId"] != T22:
+                return {"value": []}
+            info = {"mint": MINT, "tokenAmount": {"uiAmount": raw / 1e6, "amount": str(raw), "decimals": 6}}
+            return {"value": [{"pubkey": "acct", "account": {"data": {"parsed": {"info": info}}}}]}
+
+    store = Store(":memory:")
+    for i in ("a", "b"):
+        store.add_oktech_sniper(
+            {"id": i, "kind": "copy", "source": L1, "payload": {"singleSnipe": True, "totalSnipes": 3}}
+        )
+    if price is not None:
+        monkeypatch.setattr(store, "last_price", lambda mint: price)
+    for k, ts in enumerate(t for t in tape or () if t is not None):  # our buy, then our sale
+        store.add_trades([Trade(sig=f"OURS{k}" + "o" * 80, ev=0, slot=400_600_000 + k, pos=1, ts=int(ts), mint=MINT,
+                                venue="curve", user=W, is_buy=k == 0, quote=10**8, base=10**8, fee=0, fee_bps=125,
+                                q_after=40 * 10**9, b_after=800 * 10**12)])  # fmt: skip
+    svc, client = Service(Config(), store=store), _GuardClient()
+    svc._rpc = Rpc()
+    svc.cfg.operator.wallet = W
+
+    def risk_guard(address, s, held):
+        return Guard(tripped=says not in (None, "unknown"), known=says != "unknown",
+                     reason="the guard cannot tell: the fills could not be read" if says == "unknown" else (says or ""),
+                     kinds=() if says in (None, "unknown") else ("floor",), day=None, equity_sol=s, day_stop_sol=1.0,
+                     floor_sol=10.0, owner_set=False)  # fmt: skip
+
+    monkeypatch.setattr(svc, "_oktech", lambda: client)
+    monkeypatch.setattr(svc, "risk_guard", risk_guard)
+    monkeypatch.setattr(svc, "stop_flag_set", lambda: False)
+    monkeypatch.setattr("snipetech.service.asyncio.sleep", sleep)
+    monkeypatch.setattr("snipetech.service.time.time", lambda: clock["t"])
+    return svc, store, client, clock
+
+
+def test_book2_a_curve_buy_from_a_small_wallet_is_no_emergency_and_its_sniper_keeps_selling(monkeypatch):
+    """0.255 plain SOL, floor 0.1, one 0.2 SOL curve buy: the plain SOL falls to 0.048 (a curve buy is paid in plain
+    SOL) and the coin is worth 0.198. The guard called that an EMERGENCY "below the floor" (its 0.05 SOL reserve on
+    the plain SOL), stopped the sniper holding the fresh coin and said to sell it by hand. Equity is 0.246: nothing is
+    wrong, nothing is stopped, and at its time limit the guard leaves the sniper running while it holds the coin."""
+    bought = NOW + 10
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 0.255 if t < bought else 0.048,
+                                   coin=lambda t: None if t < bought else 198_000_000, price=1.0, tape=(bought, None))  # fmt: skip
+    rep = asyncio.run(svc.oktech_guard(["a"], W, 0.1, 2))
+    assert ("stop", "a") not in client.calls, rep["reason"]
+    assert "EMERGENCY" not in rep["reason"] and rep["reason"].startswith("time limit"), rep["reason"]
+    assert not rep["stopped"] and "keep running" in rep["reason"]
+    store.close()
+
+
+def test_book2_a_wallet_too_poor_for_a_sale_is_said_never_an_emergency(monkeypatch):
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 0.003, coin=lambda t: 900_000_000, price=1.0,
+                                   tape=(NOW - 30, None))  # fmt: skip
+    rep = asyncio.run(svc.oktech_guard(["a"], W, 0.1, 1))
+    assert ("stop", "a") not in client.calls and "EMERGENCY" not in rep["reason"]
+    assert sum("a sale may fail" in e for e in rep["events"]) == 1  # said once, not every reading
+    store.close()
+
+
+def test_book2_a_real_floor_breach_never_stops_a_sniper_holding_a_coin(monkeypatch):
+    """Rule 1 (CLAUDE.md): a stopped sniper strands its coin. Under the floor with a coin held the guard stopped every
+    sniper and said to sell the coin by hand. Now it keeps them running, watches the wallet and stops them once it
+    holds nothing (here when the coin is sold, 200 s in); with nothing held it stops them at once."""
+    sold = NOW + 200
+    svc, store, client, clock = _guard(monkeypatch, sol=lambda t: 1.0 if t < NOW + 10 else 0.3,
+                                       coin=lambda t: 100_000_000 if t < sold else None, price=1.0,
+                                       tape=(NOW - 30, sold))  # fmt: skip
+    stopped_at = []
+    stop = client.stop
+
+    async def timed_stop(i):
+        stopped_at.append(clock["t"])
+        return await stop(i)
+
+    client.stop = timed_stop
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], W, 0.5, 5))  # equity 1.1, then 0.4 (0.3 SOL and a 0.1 coin)
+    assert "EMERGENCY" in rep["reason"] and "holds nothing" in rep["reason"], rep["reason"]
+    assert [c for c in client.calls if c[0] == "stop"] == [("stop", "a"), ("stop", "b")] and rep["stopped"]
+    assert min(stopped_at) >= sold, "a sniper was stopped while the wallet still held its coin"
+    store.close()
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 1.0 if t < NOW + 10 else 0.3)  # nothing held
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], W, 0.5, 5))
+    assert "EMERGENCY" in rep["reason"] and rep["stopped"] and ("stop", "b") in client.calls, rep["reason"]
+    store.close()
+
+
+def test_book5_at_its_time_limit_the_guard_stops_its_snipers_once_the_wallet_holds_nothing(monkeypatch):
+    """`oktech guard --max-minutes`: its help said "stop everything after this long", and at its time limit it stopped
+    nothing: two capped snipers stayed armed with nobody watching. Now its end stops them once the wallet holds nothing
+    they bought; a coin held is watched until it is sold, and one still held then keeps them running, said with its
+    /sell line."""
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 2.0)
+    client.ids = ["a", "b"]
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], W, 0.5, 1))
+    assert rep["reason"].startswith("time limit") and rep["stopped"], rep["reason"]
+    assert ("stop", "a") in client.calls and ("stop", "b") in client.calls
+    store.close()
+    sold = NOW + 60 + 120  # sold by its sniper two minutes after the time limit
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 2.0, coin=lambda t: 100_000_000 if t < sold else None,
+                                   price=1.0, tape=(NOW - 30, sold))  # fmt: skip
+    rep = asyncio.run(svc.oktech_guard(["a"], W, 0.5, 1))
+    assert rep["stopped"] and "holds nothing" in rep["reason"], rep["reason"]
+    store.close()
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 2.0, coin=lambda t: 100_000_000, price=1.0,
+                                   tape=(NOW - 30, None))  # fmt: skip
+    rep = asyncio.run(svc.oktech_guard(["a"], W, 0.5, 1))
+    assert not rep["stopped"] and ("stop", "a") not in client.calls and "keep running" in rep["reason"], rep["reason"]
+    assert any(e.endswith(f"/sell {MINT}") for e in rep["events"]), rep["events"]
+    store.close()
+
+
+def test_book5_a_guard_told_to_stop_stops_its_snipers_on_its_way_out_unless_a_coin_is_held(monkeypatch):
+    """A kill or the job's limit (SIGTERM, then SIGKILL 30 s on) ended the guard silently, its snipers armed and nobody
+    watching. Told to stop, it now stops them on its way out while the wallet holds nothing, and leaves them running
+    beside a coin (a stopped sniper strands its coin)."""
+    import signal
+
+    import pytest
+
+    for held in (False, True):
+        told = {"done": False}
+
+        def sol(t, told=told):
+            if t >= NOW + 30 and not told["done"]:
+                told["done"] = True
+                assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL, "no handler for the job's stop"
+                raise asyncio.CancelledError  # what the handler does: the guard's task is cancelled at its next wait
+            return 2.0
+
+        svc, store, client, _ = _guard(monkeypatch, sol=sol, coin=(lambda t: 100_000_000) if held else (lambda t: None),
+                                       price=1.0, tape=(NOW - 30, None) if held else None)  # fmt: skip
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(svc.oktech_guard(["a"], W, 0.5, 60))
+        assert (("stop", "a") in client.calls) is not held, (held, client.calls)
+        store.close()

@@ -275,13 +275,15 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
         store, "last_price", lambda mint: 0.002
     )  # the held coin is worth 0.002 SOL: above dust, below the floor
     w = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
-    # runaway buying: emergency stop, and the leftovers are named
+    # runaway buying: the emergency, and the leftovers are named
     import itertools
 
     svc._rpc = FakeRpc(itertools.chain([1.0, 0.99, 0.95], itertools.repeat(0.7)))
     rep = asyncio.run(svc.oktech_guard(["a", "b"], w, 0.8, 5))
-    assert rep["stopped"] and "EMERGENCY" in rep["reason"] and rep["held"][0]["mint"].startswith("Mint")
-    assert ("stop", "a") in calls and ("stop", "b") in calls
+    # book#2 (22 Nov audit): a coin is held, so no sniper is stopped (a stopped sniper strands its coin, CLAUDE.md rule
+    # 1); the guard watched the wallet for its sale and left them running, said
+    assert not rep["stopped"] and "EMERGENCY" in rep["reason"] and rep["held"][0]["mint"].startswith("Mint")
+    assert not any(c[0] == "stop" for c in calls) and "keep running" in rep["reason"]
     # normal run past the time limit: nothing is stopped (the snipers keep selling)
     calls.clear()
     svc._rpc = FakeRpc(itertools.chain([1.0], itertools.repeat(0.98)))
@@ -728,7 +730,9 @@ def test_guard_reports_failed_stops_and_survives_oktech_errors(monkeypatch):
     client = Client()
     svc, store = _guard_env(monkeypatch, itertools.chain([1.0, 1.0], itertools.repeat(0.95)), client)
     rep = asyncio.run(svc.oktech_guard(["a", "b"], W6, 0.8, 0.0001))
-    assert client.tasks_calls >= 1 and not rep["stopped"] and rep["stop_failed"] == []
+    # book#5 (22 Nov audit): at its time limit with nothing held the guard stops its snipers; this OKTech refuses every
+    # stop, and each is said as not stopped
+    assert client.tasks_calls >= 1 and not rep["stopped"] and rep["stop_failed"] == ["a", "b"]
     assert any("status check failed" in e for e in rep["events"])
     store.close()
 
