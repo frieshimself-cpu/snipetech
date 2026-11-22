@@ -1659,6 +1659,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--url", default=os.environ.get("SNIPETECH_OPS_URL"), help="ops URL ($SNIPETECH_OPS_URL)")
     sp.add_argument("--key", default=os.environ.get("SNIPETECH_OPS_KEY"), help="private key file ($SNIPETECH_OPS_KEY)")
     sp.add_argument("--wait", action="store_true", help="run/job/update: wait for the job and print its output")
+    sp.add_argument("--timeout", type=float, default=None, metavar="MINUTES",
+                    help="run: the job's time limit (the server's 6 h by default; an `oktech cycle` job's own minutes, "
+                         "wait for SOL and watch after its end set it)")  # fmt: skip
     sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
                                        "logs", "update", "daily"])  # fmt: skip
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path; "
@@ -2495,6 +2498,29 @@ UPDATE_RETRY_SECS = 15
 UPDATE_WAIT_MINUTES = 20.0
 
 
+def _job_limit(rest: list[str], minutes: float | None) -> int | None:
+    """The time limit (seconds) to ask for a remote job: `--timeout` minutes when given; for `oktech cycle`, what its own
+    flags need (its wait for SOL, its minutes, the watch after its end with --sweep-after, and 10 minutes over: killed at
+    its limit a runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); else None, the
+    server's default."""
+    if minutes is not None:
+        return int(float(minutes) * 60)
+    if rest[:2] != ["oktech", "cycle"]:
+        return None
+    from .service import END_WATCH_SECS
+
+    try:
+        a = build_parser().parse_args(rest)
+    except SystemExit:  # not a command this version reads: the server says why
+        return None
+    need = float(a.max_minutes) * 60 + 600
+    if a.wait_for_sol is not None:
+        need += float(a.wait_minutes) * 60
+    if a.sweep_after is not None:
+        need += END_WATCH_SECS
+    return int(need)
+
+
 def _update(go, rest: list[str]) -> dict:
     """`remote update`: the server refuses (409) while a job or a timer unit is mid-run that the new files would leave
     on mixed code. `--force` deploys all the same; `--when-quiet [minutes]` asks again every 15 seconds until the
@@ -2552,7 +2578,9 @@ def _remote(args) -> int:
     try:
         a = args.action
         if a in ("run", "update"):
-            st = go("run", argv=rest) if a == "run" else _update(go, rest)
+            limit = _job_limit(rest, args.timeout) if a == "run" else None
+            st = (go("run", argv=rest, **({"op_args": {"timeout": limit}} if limit else {})) if a == "run"
+                  else _update(go, rest))  # fmt: skip
             if args.wait:
                 st = wait_job(args.url, args.key, st["id"])
                 show_job(st)

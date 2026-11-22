@@ -850,3 +850,23 @@ def test_a_copy_finished_on_the_code_of_before_a_deploy_is_never_read_for_what_i
         assert svc.tape_store is live  # the copy lacks the table: the live file is read
     finally:
         live.close()
+
+
+def test_a_remote_runner_job_gets_the_time_limit_its_own_flags_need(monkeypatch, capsys):
+    """`remote run` gave every job 6 h: a 24 h `oktech cycle` died at hour 6 with its snipers armed (live-path audit
+    finding 6). The job's limit now comes from the run's own minutes, its wait for SOL and the watch after its end, or
+    from --timeout (minutes) for any job."""
+    from snipetech import cli
+    from snipetech import ops as O
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    base = ["remote", "--url", "https://x", "--key", "k"]
+    run = ["oktech", "cycle", "--id", "a", "--address", "W", "--max-loss", "2", "--max-minutes", "600",
+           "--sweep-after", "20", "--wait-for-sol", "5", "--wait-minutes", "60"]  # fmt: skip
+    assert cli.main([*base, "run", *run]) == 0
+    assert seen[-1][1]["op_args"] == {"timeout": (60 + 600 + 15 + 10) * 60}
+    assert cli.main([*base, "--timeout", "90", "run", "lab", "--x"]) == 0
+    assert seen[-1][1]["op_args"] == {"timeout": 90 * 60}
+    assert cli.main([*base, "run", "status"]) == 0
+    assert "op_args" not in seen[-1][1]  # the server's own default

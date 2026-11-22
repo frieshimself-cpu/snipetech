@@ -98,3 +98,44 @@ def test_one_empty_reply_at_the_end_stops_nothing(monkeypatch):
     rep, client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0, coins=coins, stop_at=T0 + 110)
     assert not [t for kind, _i, t in client.timed if kind == "stop" and t >= T0 + 100]
     assert "a coin is held" in rep["reason"] and sorted(rep["left_running"]) == sorted(SNIPER_IDS)
+
+
+def test_a_run_told_to_stop_stops_its_spare_snipers_before_it_goes(monkeypatch):
+    """Live-path audit finding 6: a runner its job's time limit, a kill or a restart ends (SIGTERM, then SIGKILL 30 s
+    later) left every sniper armed with nobody watching. Told to stop while A's copy is held, it stops B, which holds
+    nothing, and leaves A (a stopped sniper strands its coin) before it goes."""
+    import asyncio
+
+    import pytest
+
+    from tests import test_oktech
+
+    clients, told = [], {"done": False}
+    real_init = test_oktech._SpentClient.__init__
+
+    def init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        clients.append(self)
+
+    monkeypatch.setattr(test_oktech._SpentClient, "__init__", init)
+
+    def coins(now):
+        if now >= T0 + 140 and not told["done"]:  # the job's limit: the stop reaches the run at its next wait
+            told["done"] = True
+            raise asyncio.CancelledError
+        return _coin() if now >= T0 + 104 else []
+
+    with pytest.raises(asyncio.CancelledError):
+        _two_leaders(monkeypatch, coins, stop_at=None, spent=lambda i, now, last_start: i == A and now >= T0 + 101,
+                     sweep_after=600, minutes=30)  # fmt: skip
+    (client,) = clients
+    assert _stops(client, B, since=T0 + 140) and not _stops(client, A)
+
+
+def test_a_job_limit_shorter_than_the_run_refuses_it_before_anything_is_armed(monkeypatch):
+    """Killed mid-run at its job's limit, a runner leaves its snipers armed: 6 h by default against a 24 h run."""
+    import pytest
+
+    monkeypatch.setenv("SNIPETECH_JOB_TIMEOUT", str(6 * 3600))
+    with pytest.raises(SystemExit, match="time limit"):
+        _run(monkeypatch, lambda now: 10.0, minutes=1440, sweep_after=20)

@@ -1013,10 +1013,13 @@ def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> Threadin
 # ---------------------------------------------------------------- client
 
 
-def call(url: str, key_path: str | Path, op: str, timeout: float = 120, **args) -> dict[str, Any]:
+def call(url: str, key_path: str | Path, op: str, timeout: float = 120, op_args: dict[str, Any] | None = None,
+         **args) -> dict[str, Any]:  # fmt: skip
+    """One signed request. `timeout` is how long this call waits for the answer; `op_args` are arguments of the op that
+    share a name with this call's own (`run`'s job limit, `timeout`: seconds)."""
     import httpx
 
-    body, headers = sign(key_path, op, args)
+    body, headers = sign(key_path, op, args | (op_args or {}))
     r = httpx.post(url.rstrip("/") + "/", content=body, headers=headers, timeout=timeout)
     try:
         data = r.json()

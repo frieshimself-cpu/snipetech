@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import signal
 import sqlite3
 import threading
 import time
@@ -1220,6 +1221,17 @@ class Service:
                              + ": the run would start with nothing to lose but the floor; nothing cycled")  # fmt: skip
         if self.stop_flag_set():
             raise SystemExit("the owner's /stop flag is set: /resume first; nothing cycled")
+        import os
+
+        job_limit = os.environ.get("SNIPETECH_JOB_TIMEOUT")  # the server's job limit (ops.py), when run as a job
+        need = (float(max_minutes) * 60 + (float(wait_minutes) * 60 if wait_for_sol is not None else 0.0)
+                + (END_WATCH_SECS if sweep_after is not None else 0.0))  # fmt: skip
+        if job_limit and float(job_limit) < need:
+            raise SystemExit(f"this job's time limit ({float(job_limit) / 60:.0f} min) is shorter than the run's "
+                             f"{need / 60:.0f} min (its minutes, its wait for SOL and the watch after its end): killed "
+                             "at its limit, a runner leaves its snipers armed with nobody watching. Start it with a "
+                             "longer limit (`remote --timeout MINUTES run ...`; `remote run oktech cycle` sets one from "
+                             "the run's own flags); nothing cycled")  # fmt: skip
         mine = {r["id"]: r for r in self.store.oktech_snipers()}
         uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
         if uncapped:
@@ -1684,6 +1696,36 @@ class Service:
                     log(f"a read at the start failed ({type(exc).__name__}); trying again")
                     await asyncio.sleep(2.0)
 
+        async def last_stop() -> None:
+            """The job was told to stop (its time limit, a kill, a restart: SIGTERM, and SIGKILL 30 s on): stop what
+            strands nothing, at once. With nothing held on two readings and no buy on its way, every sniper the run
+            armed; with a coin held, those that hold none of it (`stop_spare`); the rest stay (a stopped sniper strands
+            its coin)."""
+            try:
+                held, _, _ = await sort_coins(await open_positions(), time.time())
+                if not held:
+                    await asyncio.sleep(3.0)
+                    held, _, _ = await sort_coins(await open_positions(), time.time())
+            except Exception as exc:  # noqa: BLE001 - unknown holdings stop nothing
+                log(f"the wallet could not be read on the way out ({type(exc).__name__}): every sniper left running")
+                return
+            if held:
+                await stop_spare(held, time.time())
+            elif not unseen_buy(time.time()) and (fresh_at is None or time.time() - fresh_at >= FRESH_HOLD_SECS):
+                for i in [i for i in ids if i in armed]:
+                    with contextlib.suppress(Exception):  # said below by what is left running
+                        await client.stop(i)
+                        armed.discard(i)
+            log("on the way out: " + (f"left running {', '.join(tag(i) for i in sorted(armed))}" if armed
+                                      else "nothing left armed"))  # fmt: skip
+
+        loop, me, caught = asyncio.get_running_loop(), asyncio.current_task(), []
+        for sig in (signal.SIGTERM, signal.SIGINT):  # the job's limit, a kill or a restart: the loop ends at its wait
+            try:
+                loop.add_signal_handler(sig, me.cancel)
+                caught.append(sig)
+            except (NotImplementedError, RuntimeError, ValueError):  # no signals here (not the main thread)
+                pass
         try:
             if wait_for_sol is not None:
                 want, until, said = float(wait_for_sol), time.time() + float(wait_minutes) * 60, ""
@@ -2000,7 +2042,17 @@ class Service:
                     "fills": fills, "restarts": restarts, "held": held or [], "left_running": sorted(armed),
                     "swept": swept, "places": places, "floor_moves": [round(a, 4) for _at, a in moves],
                     "owner_coins": list(owner_coins), "events": events}  # fmt: skip
+        except asyncio.CancelledError:
+            # 22 Nov audit: a runner its job's limit, a kill or a restart ended left every sniper armed, nobody watching
+            log("the job was told to stop (its time limit, a kill or a restart): stopping what strands nothing first")
+            try:
+                await asyncio.wait_for(last_stop(), 20.0)
+            except Exception as exc:  # noqa: BLE001 - said: the owner stops the rest with /stop
+                log(f"the stop on the way out did not finish ({type(exc).__name__})")
+            raise
         finally:
+            for sig in caught:
+                loop.remove_signal_handler(sig)
             await client.close()
 
     def oktech_copy_audit(self, address: str, since_ts: int, leaders: list[str]) -> list[dict]:
