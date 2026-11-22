@@ -80,9 +80,10 @@ list_ideas for more). Use them: check new numbers against what a lesson already 
 already settled. add_lesson only from evidence, with its numbers and n; upsert_idea only with the evidence and a
 concrete test. An idea never changes anything by itself: a live test, a code change or a config change outside the
 strategist's [autotune] bounds needs the owner's yes (owner_needed) and waits for it.
-The message also carries the research record: what the cloud session's research rounds found, the newest round's
-outcome and lessons and one line for each older round (read_file docs/research/<file> reads a whole report,
-docs/research/README.md is the index). It settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze
+The message also carries the research record: what the cloud session's research rounds and reports found, the newest
+round's outcome and lessons (or its line of the index) and one line for each other report, newest first, as many as
+fit (read_file docs/research/<file> reads a whole report, docs/research/README.md is the index, every line). It
+settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze
 into the paper test). When a round refutes an open idea, mark it rejected with upsert_idea, citing the round and its
 numbers (e.g. "round 3: -0.0099 SOL a trade on 19 unseen firings"). A round's builds and its questions for the owner
 belong to the cloud session and the owner, not to the agents: no agent turns a proposed build into a config change or

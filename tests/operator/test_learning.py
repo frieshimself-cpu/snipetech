@@ -701,8 +701,66 @@ def test_a_newest_round_without_its_sections_says_so_instead_of_a_heading_over_n
     (d / "README.md").write_text(INDEX)
     lines = L.research_record(d).splitlines()
     assert not lines[0].endswith(":") and "round 7 (2026-11-08-round-7.md)" in lines[0]
-    assert "read_file docs/research/2026-11-08-round-7.md" in lines[0]
-    assert lines[1] == "Older rounds, newest first (docs/research/README.md):" and lines[2].startswith("- Round 3 (")
+    assert "read_file docs/research/2026-11-08-round-7.md" in lines[0]  # it has no line of the index to show instead
+    # audit of 22 Nov (docs#1): the list holds every other report, the dated ones too, not only the older rounds
+    assert lines[1] == "Every other report, newest first (docs/research/README.md):"
+    assert lines[2].startswith("- Round 3 (")
+
+
+def test_a_round_named_with_its_topic_is_a_round(tmp_path):
+    """Rounds 8 and 9 (8 Nov) were written as <date>-round-8-fees.md and <date>-round-9-early-leaders.md: the record
+    did not see them, named round 7 the newest until the audit of 22 Nov, and listed neither among the older rounds."""
+    d = tmp_path / "research"
+    _report(d, "2026-11-08-round-7.md", "OUTCOME: seven.", ["seven's lesson"])
+    _report(d, "2026-11-08-round-8-fees.md", "OUTCOME: eight, on fees.", ["eight's lesson"])
+    text = L.research_record(d)
+    assert "round 8 (2026-11-08-round-8-fees.md)" in text.splitlines()[0]
+    assert "OUTCOME: eight, on fees." in text and "- eight's lesson" in text.splitlines()
+    assert "OUTCOME: seven." not in text
+
+
+DATED_LINES = """- [Round 8](2026-11-08-round-8-fees.md), 8 Nov 20:57: a higher fee to land first does not pay at 0.2 SOL.
+- [Round 9](2026-11-08-round-9-early-leaders.md), 8 Nov 23:06: the early-leaders job; its 7 new wallets fail qualify.
+- [Night grid](2026-11-09-night-grid.md), 9 Nov 02:46: every strategy at 2-40 SOL with paid fees.
+- [Stopped wallets](2026-11-11-stopped-wallets.md), 11 Nov 17:35: the crowding rule costs nothing.
+"""
+DATED_INDEX = INDEX.replace("**Lab numbers", DATED_LINES + "\n**Lab numbers")  # rounds 1-3, then 8, 9 and two dated
+
+
+def test_a_newest_round_without_sections_gives_its_index_line_and_the_reports_after_it_come_first(tmp_path):
+    """Audit of 22 Nov: rounds stopped at 9 (8 Nov) and the reports of 9-12 Nov are dated, not numbered. A newest round
+    without "## Report" and "## Lessons" shows its line of the index instead of "read it whole", and every other
+    report's line follows, newest first: the dated reports written after it before the older rounds."""
+    d = tmp_path / "research"
+    _report(d, "2026-11-07-round-3.md", "OUTCOME: three.", ["three's lesson"])
+    (d / "2026-11-08-round-9-early-leaders.md").write_text("# Round 9\n\n## Answer\n\nAG89 first; none qualifies.\n")
+    (d / "2026-11-11-stopped-wallets.md").write_text("# Stopped wallets\n\n## Report\n\nOUTCOME: nothing lost.\n")
+    (d / "README.md").write_text(DATED_INDEX)
+    lines = L.research_record(d).splitlines()
+    assert "round 9 (2026-11-08-round-9-early-leaders.md)" in lines[0] and "reads it whole" not in lines[0]
+    assert lines[1].startswith("- Round 9 (2026-11-08-round-9-early-leaders.md), 8 Nov 23:06: the early-leaders job")
+    assert lines[2] == "Every other report, newest first (docs/research/README.md):"
+    order = [x.split(" (")[0] for x in lines[3:]]
+    assert order == ["- Stopped wallets", "- Night grid", "- Round 8", "- Round 3", "- Round 2", "- Round 1"]
+    assert sum("2026-11-08-round-9-early-leaders.md" in x for x in lines) == 2  # the head and its own line, once
+
+
+def test_the_record_of_this_checkout_names_its_highest_round_and_its_newest_reports():
+    """The research record the server's agents get, read from this checkout's docs/research: the round it names the
+    newest is the one with the highest number in any round file's name, and the newest report the index lists is in
+    it (22 Nov: it named round 7 of 8 Nov the newest and carried nothing written after it)."""
+    import re
+
+    from snipetech.operator.paths import research_dir
+
+    d = research_dir()
+    numbers = {int(m.group(1)): p.name for p in d.iterdir() if (m := re.search(r"-round-(\d+)\D", p.name))}
+    top = max(numbers)
+    text = L.research_record(d)
+    assert f"round {top} ({numbers[top]})" in text.splitlines()[0]
+    listed = re.findall(r"^- \[[^\]]*\]\(([^)]+)\)", (d / "README.md").read_text(), re.MULTILINE)
+    assert listed and f"({listed[-1]})" in text  # the index's last report, the newest
+    assert len(text) <= L.RESEARCH_MAX_CHARS
 
 
 def test_a_missing_section_leaves_out_only_its_part(tmp_path):

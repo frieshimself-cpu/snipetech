@@ -17,3 +17,13 @@ def test_the_fee_analyst_counts_a_place_open_only_with_nobody_within_k_places():
     assert '"+0" is the price the leader\'s own buy left, ahead of every buyer after it' in fees
     assert "no send that reacts to the landed buy reaches" in fees
     assert "count it open only when no buy of 0.1 SOL or more stands within K block places of the leader" in fees
+
+
+def test_the_operator_and_the_analyst_are_told_what_the_research_record_holds():
+    """docs#1: the record now carries the newest round's outcome and lessons, or its line of the index, then a line
+    for each other report, newest first: the dated reports of 9-12 Nov too, not only the rounds older than the
+    newest."""
+    for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
+        text = _flat(system)
+        assert "one line for each other report, newest first, as many as fit" in text
+        assert "one line for each older round" not in text
