@@ -683,6 +683,24 @@ def test_the_fee_records_of_transactions_the_tape_no_longer_holds_go_in_the_dail
     st.close()
 
 
+def test_the_daily_walk_keeps_the_fee_records_of_what_a_listed_wallet_paid(tmp_path):
+    """Review of the walk above: a list keeps a wallet's trades past the cutoff, so it keeps the fee records of the
+    transactions the wallet paid that hold no trade too: a bundle's tip paid in a transaction of its own (the only
+    record of what its place cost: analysis.sniper's tip_only), its creates, its transfers. Another's go, as before."""
+    from snipetech.solana.txmeta import TxMeta
+
+    def meta(sig: str, payer: str | None) -> TxMeta:
+        return TxMeta(sig=sig, slot=150, block_time=None, version=0, fee_payer=payer, signers=[], n_signatures=1,
+                      fee=5000, priority_lamports=0, cu_limit=None, cu_price=None, cu_consumed=None)  # fmt: skip
+
+    st = Store(tmp_path / "t.db")
+    _old_tape(st)  # the wallet KEEP is listed
+    st.add_tx_meta([meta("keep-tip-old", "KEEP"), meta("other-tip-old", "U7"), meta("no-payer-old", None)])
+    st.prune(T0 + 2 * 3600)  # its first trade at or after the cutoff is at slot 700
+    assert {r[0] for r in st._q("SELECT sig FROM tx_meta")} == {"keep-tip-old"}  # was gone with the others
+    st.close()
+
+
 def test_the_prune_rests_between_its_steps_three_times_as_long_as_each_took(tmp_path, monkeypatch):
     """11 Nov, the server: between two reads of the prune the loop got one turn, so for the 47-50 s of an hourly prune
     the streams were served once every 0.1-0.4 s (the PumpSwap stream dropped: DATA_LOSS, "client could not keep up").

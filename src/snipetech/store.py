@@ -1710,10 +1710,12 @@ class Store:
     # The fee records (tx_meta) of transactions the tape no longer holds, in the daily walk after the trades: no ts
     # column, so against the slot of the first trade at the cutoff; one with a stored trade (a listed wallet's are
     # kept) or a fill of ours stays (audit 22 Nov: nothing pruned it, 5.8M rows on the server, 30 % of them older than
-    # the cutoff, about 225,000 more a day, every one rewritten by every read-only copy).
+    # the cutoff, about 225,000 more a day, every one rewritten by every read-only copy), and so does one a listed
+    # wallet paid: its trades stay, and so do its tips paid in a transaction of their own (review of 22 Nov).
     _PRUNED_BY_SLOT = (
         ("tx_meta", "rowid", ("slot<? AND NOT EXISTS (SELECT 1 FROM trades WHERE trades.sig=tx_meta.sig) "
-                              "AND NOT EXISTS (SELECT 1 FROM fills WHERE fills.sig=tx_meta.sig)")),
+                              "AND NOT EXISTS (SELECT 1 FROM fills WHERE fills.sig=tx_meta.sig) "
+                              "AND (fee_payer IS NULL OR fee_payer NOT IN (SELECT address FROM lists))")),
     )  # fmt: skip
     # The rows one step of the prune reads, after the last row the step before it read. The first batched prune (7 Nov)
     # searched again from the oldest row for every batch: across every old row a list protects, a pile that grows every
