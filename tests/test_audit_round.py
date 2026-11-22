@@ -538,3 +538,70 @@ def test_round3_a_snapshot_from_before_the_record_is_not_counted_twice(book):
     tick(st, 1995)
     b = take(st, cfg, paths, legacy, 2000.0, 4.0, [coin(COIN, 1.0)])
     assert b.fills == [] and b.bot_cash == 0.0 and b.counted == {}
+
+
+# -- round#8: a spent day still reads the bot's result, and leaves a loss for a round that can tell it ---------------
+
+
+def test_round8_a_spent_day_still_reads_the_bots_loss(tmp_path):
+    """decide() answered 'budget' before it looked at anything: a loss of the bot's in the hours after the day's cap was
+    spent was never weighed. It is weighed and kept in the reasons, with no call and no state stamped as told."""
+    from snipetech.operator.gate import decide
+    from snipetech.operator.snapshot import Snapshot
+
+    paths = OperatorPaths(tmp_path).ensure()
+    base = {"ts": NOW, "services": dict(UP), "tape_last_ts": int(NOW) - 5, "wallet": W, "native_sol": 10.0, "wsol": 0.0,
+            "held": [], "snipers": [], "fills": [], "equity_ref": 10.0, "ref_ours_sol": 0.0, "bot_cash_since_ref": 0.0,
+            "bot_cash": 0.0}  # fmt: skip
+    spent = OperatorConfig().daily_usd + 1
+    lost = Snapshot(**(base | {"native_sol": 5.0, "bot_cash": -5.0, "spent_today": spent,
+                               "snipers": [{"id": "x", "name": "x", "status": "running"}]}))  # fmt: skip
+    d = decide(lost, Snapshot(**base), NOW, OperatorConfig(), paths)
+    assert not d.call and d.mode == "none" and d.reasons[0] == "budget"
+    assert any("-5.000 SOL of it by the bot's own" in r for r in d.reasons[1:]), d.reasons
+    assert "1 sniper(s) running, expected 0" in d.reasons and d.state_reasons == []
+    assert decide(
+        Snapshot(**(base | {"spent_today": spent})), Snapshot(**base), NOW, OperatorConfig(), paths
+    ).reasons == ["budget"]
+
+
+def test_round8_the_loss_seen_while_the_budget_is_spent_is_told_once_the_agents_may_run(world, monkeypatch):
+    """The round saved its snapshot before the budget's return, so the baseline moved past the loss and no later round
+    read it. While the day's cap is spent and the bot's result moved, the round keeps the baseline: the first round
+    that may call the agents again (the owner's /budget, or the next day) is told the loss."""
+    from snipetech.operator.budget_switch import set_budget
+    from snipetech.operator.run import operate
+
+    st, cfg, paths = world
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    st.add_oktech_sniper({"id": "s1", "external_id": "e1", "kind": "copy", "source": "x", "name": "snipetech copy",
+                          "config_hash": "h", "payload": {"priorityFee": 0.001, "tipAmount": 0.199}})  # fmt: skip
+    paths.spend.write_text(json.dumps({"ts": NOW - 10, "mode": "operator", "usd": 15.0}) + "\n")
+    calls, clock = [], {"now": NOW}
+
+    def turn(*a, **k):
+        calls.append(a[4])
+        return {"usd": 0.0, "tool_calls": 0, "stopped": "end_turn", "notes": 0}
+
+    class RoundSvc(Svc):
+        async def oktech_status(self):
+            return {"snipers": [{"id": "s1", "name": "snipetech copy", "status": "idle"}]}
+
+    def go(native):
+        return asyncio.run(operate(cfg, RoundSvc(st), repo=paths.data, branch="main", now=lambda: clock["now"],
+                                   services=lambda: dict(UP), balances=lambda w: (native, 0.0, []), turn=turn,
+                                   disk_free_gb=lambda: 100.0, send=lambda t: True))  # fmt: skip
+
+    tick(st, int(NOW) - 5)
+    go(10.0)
+    trade(st, "copy", int(NOW) + 300, COIN, True, 3.5, BOT_BUY_FEES)
+    trade(st, "exit", int(NOW) + 312, COIN, False, 1.5, (1_000_000, 0))
+    tick(st, int(NOW) + 895)
+    clock["now"] = NOW + 900
+    go(7.8)  # the day's cap is spent: nobody is called, and the loss is kept
+    assert calls == [] and "budget:" in paths.log.read_text()
+    set_budget(paths, cfg, {"daily_usd": 200}, "telegram", NOW + 1000)  # the owner raises the day's cap
+    tick(st, int(NOW) + 1795)
+    clock["now"] = NOW + 1800
+    go(7.8)
+    assert len(calls) == 1 and any("-2.201 SOL of it by the bot's own" in r for r in calls[0].reasons), calls

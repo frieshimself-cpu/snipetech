@@ -239,9 +239,10 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     `refire_secs`. A loop stage that ended cleanly is neither. `new_trips` live round trips since the last post-mortem
     (from `trips_since`) start an analyst turn as a post-mortem (mode "postmortem") when `postmortem_due`; the daily
     analysis reviews them itself. An analysis by the cadence waits while it has nothing to read or start
-    (`nothing_for_the_cadence`). The day's cap is the owner's /budget when set, else the config's daily_usd."""
-    if snap.spent_today >= effective_daily_usd(cfg, paths):
-        return Decision(False, "none", ["budget"])
+    (`nothing_for_the_cadence`). The day's cap is the owner's /budget when set, else the config's daily_usd: once it is
+    spent nothing is called, and the decision is "budget" followed by what this round saw (a loss of the bot's in those
+    hours was never weighed: audit 22 Nov, round#8); no state counts as told."""
+    spent = snap.spent_today >= effective_daily_usd(cfg, paths)
     events: list[str] = []
     states: list[str] = []
     # a job a session started through the ops endpoint (a deploy, a check, a profile, its own lab) is read by whoever
@@ -350,6 +351,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     state_keys = [_state_key(r) for r in states]
     fresh_states = [r for r, k in zip(states, state_keys) if now - prev_ts.get(k, -1e18) >= refire_secs(k)]
     reasons = events + fresh_states
+    if spent:
+        return Decision(False, "none", ["budget", *reasons])
     trips = _trips_line(new_trips, trips_since, now) if new_trips else None
     why = analyst_reason(paths, now, cfg, snap.spent_today)
     if why and why.startswith(CADENCE_PREFIX) and nothing_for_the_cadence(snap, paths, now, new_trips):

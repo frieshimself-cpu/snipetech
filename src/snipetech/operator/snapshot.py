@@ -588,6 +588,20 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
     return snap
 
 
+def hold_baselines(snap: Snapshot, prev: Snapshot | None) -> None:
+    """Keep the previous snapshot's baselines, with this round's trades added to them, as a round that cannot value the
+    wallet does: a round that saw the bot's result move and could tell nobody (the day's budget spent) leaves it for the
+    first round that can (audit 22 Nov, round#8: the saved snapshot moved the baseline past the loss)."""
+    if prev is None:
+        return
+    snap.equity_ref = getattr(prev, "equity_ref", None)
+    ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
+    snap.bot_since_ref = bool(getattr(prev, "bot_since_ref", False)) or ours_now
+    snap.ref_ours_sol = getattr(prev, "ref_ours_sol", None)
+    before = getattr(prev, "bot_cash_since_ref", None)
+    snap.bot_cash_since_ref = None if before is None else round(float(before) + float(snap.bot_cash or 0), 9)
+
+
 def load_prev(paths: OperatorPaths) -> Snapshot | None:
     for p in (paths.snapshot_prev,):
         if p.exists():
