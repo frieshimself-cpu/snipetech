@@ -829,7 +829,8 @@ def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda s
         if unknown is not None:
             unknown.extend(off)
         if coins is not None:
-            return coins(clock["t"]) + off
+            got = coins(clock["t"])  # a read that takes time: `coins` gives a coroutine
+            return (await got if asyncio.iscoroutine(got) else got) + off
         return ([{"mint": "M1", "amount": 1.0, "value_sol": 0.2, "priced": True}] if holds() else []) + off
 
     def risk_guard(address, sol, held):

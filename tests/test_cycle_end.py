@@ -342,3 +342,45 @@ def test_a_coin_no_buy_on_the_tape_explains_stops_no_sniper(monkeypatch):
                        spent=lambda i, now, last_start: i == B and now >= T0 + 90, minutes=5)  # fmt: skip
     assert not _stops(client, A)
     assert "a coin is held" in rep["reason"] and A in rep["left_running"]
+
+
+def test_a_second_signal_on_the_way_out_does_not_cancel_the_stop(monkeypatch):
+    """Review of 22 Nov: `remote kill` signals the job's whole group, and the job's own `timeout` wrapper passes its
+    SIGTERM on too, so the runner gets two. The second cancelled the stop on the way out and every sniper stayed armed
+    with nobody watching (12 of 12 trials in the reviewer's probe). Once the run is on its way out a signal changes
+    nothing."""
+    import asyncio
+    import os
+    import signal
+
+    import pytest
+
+    from tests import test_oktech
+
+    clients, sent = [], {"n": 0}
+    real_init, real_sleep = test_oktech._SpentClient.__init__, asyncio.sleep  # (before the run's clock replaces it)
+
+    def init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        clients.append(self)
+
+    monkeypatch.setattr(test_oktech._SpentClient, "__init__", init)
+
+    def coins(now):
+        async def read():
+            if now >= T0 + 140 and sent["n"] == 0:  # the kill reaches the run at its read, as above
+                sent["n"] = 1
+                raise asyncio.CancelledError
+            if sent["n"] == 1:  # the stop on the way out reads the wallet, and the second SIGTERM comes now
+                sent["n"] = 2
+                assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL, "the run's handler is gone"
+                os.kill(os.getpid(), signal.SIGTERM)
+                await real_sleep(0.05)  # the read takes real time: the signal is handled meanwhile
+            return []
+
+        return read()
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(monkeypatch, lambda now: 10.0, coins=coins, minutes=30)
+    (client,) = clients
+    assert sent["n"] == 2 and _stops(client, A, since=T0 + 140) and _stops(client, B, since=T0 + 140)

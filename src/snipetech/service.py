@@ -1956,6 +1956,15 @@ class Service:
                 caught.append(sig)
             except (NotImplementedError, RuntimeError, ValueError):  # no signals here (not the main thread)
                 pass
+
+        def quiet_signals() -> None:
+            """From here the run is on its way out and a signal changes nothing: `remote kill` signals the job's whole
+            group and the job's own `timeout` wrapper passes its SIGTERM on, so a second one came and cancelled the
+            stop on the way out, every sniper left armed (review of 22 Nov). The handler stays (none would kill the
+            process at once) and does nothing; the job's SIGKILL 30 s on is the limit."""
+            for sig in caught:
+                with contextlib.suppress(Exception):
+                    loop.add_signal_handler(sig, lambda: None)
         try:
             if wait_for_sol is not None:
                 want, until, said = float(wait_for_sol), time.time() + float(wait_minutes) * 60, ""
@@ -2302,6 +2311,7 @@ class Service:
                     "rests": {i: u for i, u in rests.items() if u > time.time()}, "events": events}  # fmt: skip
         except asyncio.CancelledError:
             # 22 Nov audit: a runner its job's limit, a kill or a restart ended left every sniper armed, nobody watching
+            quiet_signals()
             log("the job was told to stop (its time limit, a kill or a restart): stopping what strands nothing first")
             try:
                 await asyncio.wait_for(last_stop(), 20.0)
@@ -2311,6 +2321,7 @@ class Service:
         except Exception as exc:
             # 22 Nov audit, finding 7: an error out of the loop (OKTech timing out on a start) left what was armed
             # running with nobody watching. It ends the run as a stop signal does, then is raised as before.
+            quiet_signals()
             log(f"the run failed ({type(exc).__name__}: {exc}): stopping what strands nothing first")
             if armed:
                 try:
