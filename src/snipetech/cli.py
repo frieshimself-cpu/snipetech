@@ -1373,6 +1373,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hours", type=float, default=72.0)
     sp.add_argument("--top", type=int, default=60, help="followed wallets to list")
     sp = cmd(
+        "sends",
+        "a wallet's sends that failed on chain beside its buys on the tape, placed at the first buys of the wallets it "
+        "follows: whether a bot tries every one and wins the place now and then, or picks its coins (reads the chain: "
+        "a credit a thousand signatures and one a failed send; a research job)",
+    )
+    sp.add_argument("wallet")
+    sp.add_argument("--leader", action="append", default=[], help="a wallet it follows (repeatable; default: the "
+                    "wallets its first buys followed most, read off the tape as `playbook` reads them)")  # fmt: skip
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--min-sol", type=float, default=1.9, help="a leader's smallest first buy that is a moment")
+    sp.add_argument("--max-credits", type=int, default=5000, help="Helius credits the run may count at most")
+    sp = cmd(
         "copy-context",
         "what a known wallet's buy is worth by its context: entered a block late and marked at each horizon, split by "
         "how many known wallets were in, the coin's volume, age, hour, the leader's size and the buys later in its own "
@@ -3431,6 +3443,33 @@ def _main(args) -> int:
         for t in out["triggers"][:20]:
             print(f"  follows {t['wallet']} ({t['label'] or 'no label'}): {t['coins']} coins, "
                   f"{t['followed_share']} of that wallet's {t['its_coins']}")  # fmt: skip
+        return 0
+    if args.cmd == "sends":
+        from .analysis import sends as sends_mod
+
+        svc = Service(cfg)
+
+        async def go_sends():
+            try:
+                leaders = list(args.leader)
+                if not leaders:  # the wallets its first buys followed most
+                    from .analysis.playbook import playbook
+
+                    pb = playbook(svc.tape_store, args.wallet, time.time(), hours=args.hours, top=5)
+                    leaders = [str(t["wallet"]) for t in pb.get("triggers") or [] if int(t.get("coins") or 0) >= 3][:5]
+                return await sends_mod.sends(svc.store, svc.tape_store, svc.rpc, args.wallet, leaders, time.time(),
+                                             hours=args.hours, min_sol=args.min_sol, max_credits=args.max_credits)  # fmt: skip
+            finally:
+                await svc.close()
+                svc.store.close()
+
+        out = asyncio.run(go_sends())
+        if args.json:
+            print(json.dumps(out, indent=1))
+            return 0
+        print(f"{out['wallet']}: {out['verdict']}")
+        for lead, row in (out.get("per_leader") or {}).items():
+            print(f"  behind {lead}: {row}")
         return 0
     if args.cmd == "history":
         return _history(args, cfg)

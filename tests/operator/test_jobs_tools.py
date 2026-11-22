@@ -1706,3 +1706,18 @@ def test_an_exit_word_with_a_slash_starts_a_lab_and_a_paper_freeze(jobs):
         jobs._check_paths(argv)  # refused before 22 Nov: "path not allowed: TP+10% MOM2%/s@3s<30s-10% hold30s"
     with pytest.raises(PermissionError, match="path not allowed"):
         jobs._check_paths(["copy", "--out", "/etc/snipetech/env"])
+
+
+def test_the_scout_and_the_fee_analyst_are_told_how_to_read_a_bots_failed_sends(rolebox):
+    """22 Nov (I605): whether 8r6N8w races every first buy of its leaders or picks one in ten needs its failed sends,
+    which the tape does not hold. `sends` reads them off the chain: the scout and the fee analyst may start it and are
+    told what it says; the job endpoint runs it and a deploy waits for it, as for any job that reports numbers."""
+    from snipetech import ops
+    from snipetech.operator import roles
+
+    tools, _, _ = rolebox
+    assert "sends" in ops.ALLOWED and "sends" in ops.HOLDS_DEPLOY
+    for role in ("scout", "fees"):
+        assert "sends" in roles.ROLE_COMMANDS[role]
+        assert '["sends", "<wallet>", "--leader", "<wallet>", "--json"]' in _help(tools(role)["start_job"])
+    assert '["sends"' not in _help(tools("tester")["start_job"])
