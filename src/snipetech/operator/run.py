@@ -28,7 +28,7 @@ from .notify import from_env
 from .paths import OperatorPaths
 from .refusals import RPC_REFUSED_KEY, clear_refusal, note_refusal, refusal_status, scrub
 from .resources import alert_lines, check_resources, disk_free_gb_at, status_line
-from .snapshot import load_current, save, take_snapshot
+from .snapshot import hold_baselines, load_current, save, take_snapshot
 from .standin import start_standins
 from .tools import NoteSink
 
@@ -273,7 +273,7 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             try:
                 gone = outage.check(paths, t0, (boot or outage.boot_ts)())
                 if gone is not None:
-                    notifier.send(notes.write(outage.words(gone, snap.services), "decision"))
+                    notifier.send(notes.write(outage.words(gone, snap.services, snap.snipers), "decision"))
                     _log(paths, t0, f"uptime: {gone['kind']} of {gone['secs']} s told")
             except Exception as exc:  # noqa: BLE001 - the notice never breaks the round
                 _log(paths, t0, redact(f"uptime: failed: {type(exc).__name__}: {exc}"))
@@ -362,7 +362,8 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             _log(paths, t0, f"digest: failed: {type(exc).__name__}: {exc}")
         trips = _trips(svc, cfg, paths, t0)
         decision = decide(snap, prev, t0, cfg.operator, paths, new_trips=trips["n"], trips_since=trips["since_ts"])
-        if analyst and decision.reasons != ["budget"]:
+        budget = decision.reasons[:1] == ["budget"]  # the day's cap is spent: what the round saw follows (gate.decide)
+        if analyst and not budget:
             decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
         if dry_run:
             # what a round would see and decide, and nothing kept: a saved snapshot is what the next round compares
@@ -378,10 +379,16 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             return 0
         prev_ts = dict(getattr(prev, "reason_ts", {}) or {}) if prev is not None else {}
         snap.reason_ts = carry_reason_ts(prev_ts, decision, t0)
+        held_back = decision.reasons[1:] if budget else []
+        if any(r.startswith("equity moved") for r in held_back):
+            # nobody may be told now: the baselines stay where the last round left them, so the first round that may
+            # call the agents again reads the bot's result whole (audit 22 Nov, round#8)
+            hold_baselines(snap, prev)
         save(snap, paths)
-        if decision.reasons == ["budget"]:
+        if budget:
             daily = effective_daily_usd(cfg, paths)  # the owner's /budget when set, else the config's
-            _log(paths, t0, f"budget: {snap.spent_today:.2f} $ of {daily:.2f} $ spent today")
+            _log(paths, t0, f"budget: {snap.spent_today:.2f} $ of {daily:.2f} $ spent today"
+                 + (f"; not told: {'; '.join(held_back)}" if held_back else ""))  # fmt: skip
             # once a day for each cap, matched on this exact note: never on a turn's "turn budget reached (...)" or the
             # strategist's line (7 Nov review: one turn at its own cap hid the day's), and a cap the owner raised with
             # /budget is announced again when it is reached in its turn

@@ -171,7 +171,8 @@ def test_analyst_not_due_before_0600(paths):
 
 def test_budget_reached_blocks_call(paths):
     d = decide(snap(spent_today=15.0, jobs_ended=[{"id": "x"}]), snap(), NOW, CFG, paths)
-    assert d.call is False and d.reasons == ["budget"]
+    # what the round saw follows "budget", told to nobody (audit 22 Nov, round#8)
+    assert d.call is False and d.reasons[0] == "budget" and d.state_reasons == []
 
 
 def test_first_round_without_previous_is_quiet(paths):
@@ -440,12 +441,13 @@ def test_the_owners_budget_file_sets_the_daily_cap(paths):
     from snipetech.operator.budget_switch import set_budget
 
     ended = [{"id": "x", "argv": ["follow", "W"], "exit_code": 0}]
-    assert decide(snap(spent_today=15.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons == ["budget"]
+    # a spent day answers "budget" first, then what the round saw (audit 22 Nov, round#8)
+    assert decide(snap(spent_today=15.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons[0] == "budget"
     set_budget(paths, CFG, {"daily_usd": 200}, "telegram", NOW)
     d = decide(snap(spent_today=15.0, jobs_ended=ended), snap(), NOW, CFG, paths)
-    assert d.call and d.reasons != ["budget"]
+    assert d.call and d.reasons[0] != "budget"
     set_budget(paths, CFG, {"daily_usd": 10}, "telegram", NOW)
-    assert decide(snap(spent_today=12.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons == ["budget"]
+    assert decide(snap(spent_today=12.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons[0] == "budget"
 
 
 # -- the analyst's cadence: besides the daily analysis, one every N hours since the last analyst turn -----------------

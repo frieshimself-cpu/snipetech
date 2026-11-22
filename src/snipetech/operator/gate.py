@@ -215,12 +215,29 @@ def _state_key(reason: str) -> str:
     return "".join(ch for ch in reason if not ch.isdigit() and ch not in "+-.").strip()
 
 
+def runner_ids(jobs_running: list[dict] | None) -> set[str]:
+    """The snipers a live runner drives: the `--id` values of each running `oktech cycle` job, as its record holds its
+    arguments (the live test finds its runner the same way, live_test.py)."""
+    out: set[str] = set()
+    for j in jobs_running or []:
+        argv = [str(a) for a in j.get("argv") or []]
+        if argv[:2] != ["oktech", "cycle"]:
+            continue
+        for i, a in enumerate(argv):
+            if a == "--id" and i + 1 < len(argv):
+                out.add(argv[i + 1])
+            elif a.startswith("--id="):
+                out.add(a.split("=", 1)[1])
+    return out
+
+
 def bot_result(snap, prev) -> float | None:
     """The SOL the bot's own trades and coins moved since the round that set the baseline (`prev.equity_ref`): what its
     trades took in less what they paid, fees in (the baseline's carried `bot_cash_since_ref` and this round's
     `bot_cash`), plus what its coins are worth now less what they were worth then (`ref_ours_sol`). None when a part
-    cannot be told (trades that could not be read, a snapshot taken before 22 Nov)."""
-    if prev is None:
+    cannot be told (trades that could not be read, a snapshot taken before 22 Nov, a coin of the bot's with no price or
+    balances not read this round: `Snapshot.bot_valued`)."""
+    if prev is None or not snap.bot_valued:
         return None
     ref_ours = getattr(prev, "ref_ours_sol", None)
     before = getattr(prev, "bot_cash_since_ref", None)
@@ -238,9 +255,10 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     `refire_secs`. A loop stage that ended cleanly is neither. `new_trips` live round trips since the last post-mortem
     (from `trips_since`) start an analyst turn as a post-mortem (mode "postmortem") when `postmortem_due`; the daily
     analysis reviews them itself. An analysis by the cadence waits while it has nothing to read or start
-    (`nothing_for_the_cadence`). The day's cap is the owner's /budget when set, else the config's daily_usd."""
-    if snap.spent_today >= effective_daily_usd(cfg, paths):
-        return Decision(False, "none", ["budget"])
+    (`nothing_for_the_cadence`). The day's cap is the owner's /budget when set, else the config's daily_usd: once it is
+    spent nothing is called, and the decision is "budget" followed by what this round saw (a loss of the bot's in those
+    hours was never weighed: audit 22 Nov, round#8); no state counts as told."""
+    spent = snap.spent_today >= effective_daily_usd(cfg, paths)
     events: list[str] = []
     states: list[str] = []
     # a job a session started through the ops endpoint (a deploy, a check, a profile, its own lab) is read by whoever
@@ -265,6 +283,7 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     # are the book working, not a deviation; anything else running still counts against expected.json
     book_on = bool(getattr(snap, "book_live", False)) and not paths.stop_flag.exists()
     book_running: list[dict] = []
+    runner_running: list[dict] = []
     if snap.snipers is None:
         states.append("oktech state unknown")
     else:
@@ -272,18 +291,36 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
         if book_on:
             book_running = [s for s in running if BOOK_NAME_RE.match(str(s.get("name") or ""))]
             running = [s for s in running if s not in book_running]
-        if len(running) > exp["snipers_running"]:
-            states.append(f"{len(running)} sniper(s) running, expected {exp['snipers_running']}")
-    allowed_held = exp["held"] + len(book_running)
-    if len(snap.held) > allowed_held:
-        states.append(f"{len(snap.held)} coin(s) held, expected {allowed_held}")
+        # so are a live runner's own snipers (the --id of a running `oktech cycle` job), which never writes
+        # expected.json: they read "2 sniper(s) running, expected 0" and bought a turn every ~75 min while the run
+        # worked (audit 22 Nov, round#7). A runner's sniper left running after its job ended still counts
+        if not paths.stop_flag.exists():
+            driven = runner_ids(getattr(snap, "jobs_running", None))
+            runner_running = [s for s in running if str(s.get("id")) in driven]
+            running = [s for s in running if s not in runner_running]
+        # a live test's expected.json already counts its own cycler's sniper and coin: a runner's snipers make up what
+        # is expected, never on top of it (review of round#7: a second sniper during a test said nothing)
+        others = max(0, exp["snipers_running"] - len(runner_running))
+        if len(running) > others:
+            states.append(f"{len(running)} sniper(s) running, expected {others}")
+    # the bot's coins only (snapshot.mark_held): the owner's own coin, and one no buy brought in (an airdrop the watch
+    # already says once a day), are nobody's deviation; on 22 Nov an airdrop woke 7 operator turns that paged the owner
+    # about it (audit 22 Nov, round#6, docs#2)
+    bots = [h for h in snap.held if h.get("ours", True)]
+    allowed_held = max(exp["held"], len(runner_running)) + len(book_running)  # each may hold the coin it bought
+    if len(bots) > allowed_held:
+        states.append(f"{len(bots)} coin(s) held, expected {allowed_held}")
     # the watchdog's coins nobody is selling (written by the one-minute pass), while the wallet still holds them: a
-    # decision now, reminded hourly, whatever the book expects to hold
-    held_mints = {str(h.get("mint")) for h in snap.held if h.get("mint")}
-    nobody = [h for h in current_hits(paths, now) if str(h.get("mint")) in held_mints]
+    # decision now, reminded hourly, whatever the book expects to hold. A coin the watch calls a stray (no buy of ours
+    # on the tape) counts only when a buy of the bot's is on record after all: a PumpSwap copy the tape never holds,
+    # which the measure stage's fills do (`whose` "ours"; server#1)
+    held_mints = {str(h.get("mint")) for h in bots if h.get("mint")}
+    bought = {str(h.get("mint")) for h in bots if h.get("whose") == "ours"}
+    nobody = [h for h in current_hits(paths, now) if str(h.get("mint")) in held_mints
+              and (not h.get("stray") or str(h.get("mint")) in bought)]  # fmt: skip
     if nobody:
         states.append(f"unmanaged: {len(nobody)} coin(s) nobody is selling (operator/watch.json)")
-    stuck = [h for h in snap.held if now - float(h.get("since", now)) > STUCK_SECS]
+    stuck = [h for h in bots if now - float(h.get("since", now)) > STUCK_SECS]
     if stuck:
         states.append(f"coin(s) held over {STUCK_SECS // 60} min: {len(stuck)}")  # which: the snapshot's held coins
     if prev is not None:
@@ -298,28 +335,35 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     if ref is None and prev is not None and not prev.held:  # a snapshot written before equity_ref existed
         ref = prev.equity
     total = snap.total_equity
-    if total is not None and ref is not None:
+    # The owner takes SOL out, puts it in and trades by hand in this wallet ("Don't flag, I constantly take out and put
+    # money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss). The alert is on the bot's own
+    # result since the baseline (`bot_result`: its trades' SOL, fees in, and its coins' worth); the rest of the move is
+    # the owner's, never news (review of 22 Nov: a withdrawal beside one small copy paged in full). It needs the bot's
+    # own coins valued, not the whole wallet: a coin of someone else's with no price (an airdrop) kept it off for as
+    # long as it was held (audit 22 Nov, round#0); the whole move is then said not to be known.
+    own = bot_result(snap, prev)
+    if own is not None:
+        if abs(own) > cfg.equity_alert_sol:
+            whole = (f"{total - ref:+.3f} SOL" if total is not None and ref is not None
+                     else "(the whole move is not known: a coin that is not the bot's has no price)")  # fmt: skip
+            rest = " (the rest is the owner's)" if total is not None and ref is not None else ""
+            events.append(f"equity moved {whole}, {own:+.3f} SOL of it by the bot's own trades and coins{rest}")
+    elif total is not None and ref is not None and snap.bot_valued:
+        # (a round that cannot value the bot's coins tells nothing: one whose tape is behind the wallet, where what the
+        # balances show may not be on the tape yet, and one holding a coin of the bot's the tape stopped pricing, whose
+        # last price can be hours old: it paged the wallet's whole move, the owner's withdrawals in it; review of
+        # round#4)
         move = total - ref
-        # The owner takes SOL out, puts it in and trades by hand in this wallet ("Don't flag, I constantly take out and
-        # put money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss). The alert is on the bot's
-        # own result since the baseline (`bot_result`: its trades' SOL, fees in, and its coins' worth); the rest of the
-        # move is the owner's, never news (review of 22 Nov: a withdrawal beside one small copy paged in full).
-        own = bot_result(snap, prev)
-        if own is not None:
-            if abs(own) > cfg.equity_alert_sol:
-                events.append(f"equity moved {move:+.3f} SOL, {own:+.3f} SOL of it by the bot's own trades and coins "
-                              "(the rest is the owner's)")  # fmt: skip
-        else:
-            # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the
-            # whole move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;
-            # `bot_since_ref` carried while a coin was unpriced; unread trades count as the bot's) or holds a coin
-            # (`snapshot.mark_held`)
-            bot_traded = (any(f.get("ours", True) for f in snap.fills or [])
-                          or bool(getattr(snap, "fills_unread", False))
-                          or bool(getattr(prev, "bot_since_ref", False)))  # fmt: skip
-            bot_holds = any(h.get("ours", True) for h in snap.held or [])
-            if abs(move) > cfg.equity_alert_sol and (bot_traded or bot_holds):
-                events.append(f"equity moved {move:+.3f} SOL")
+        # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the whole
+        # move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;
+        # `bot_since_ref` carried while a coin was unpriced; unread trades count as the bot's) or holds a coin
+        # (`snapshot.mark_held`)
+        bot_traded = (any(f.get("ours", True) for f in snap.fills or [])
+                      or bool(getattr(snap, "fills_unread", False))
+                      or bool(getattr(prev, "bot_since_ref", False)))  # fmt: skip
+        bot_holds = any(h.get("ours", True) for h in snap.held or [])
+        if abs(move) > cfg.equity_alert_sol and (bot_traded or bot_holds):
+            events.append(f"equity moved {move:+.3f} SOL")
     if snap.tape_last_ts is not None and now - snap.tape_last_ts > cfg.tape_stale_secs:
         states.append(f"tape stale {int(now - snap.tape_last_ts)} s")
     from .snapshot import ONESHOT_UNITS, WATCHED_UNITS
@@ -337,6 +381,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     state_keys = [_state_key(r) for r in states]
     fresh_states = [r for r, k in zip(states, state_keys) if now - prev_ts.get(k, -1e18) >= refire_secs(k)]
     reasons = events + fresh_states
+    if spent:
+        return Decision(False, "none", ["budget", *reasons])
     trips = _trips_line(new_trips, trips_since, now) if new_trips else None
     why = analyst_reason(paths, now, cfg, snap.spent_today)
     if why and why.startswith(CADENCE_PREFIX) and nothing_for_the_cadence(snap, paths, now, new_trips):

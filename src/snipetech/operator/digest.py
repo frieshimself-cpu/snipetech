@@ -55,18 +55,13 @@ def digest_text(
     snap: Snapshot, resources: list[dict], ledger: Ledger, store: Store, now: float, *, paths: OperatorPaths
 ) -> str:
     lines = [f"digest {_day(now)}"]
-    # Wallet and its 24 h change against yesterday's digest value.
+    # The wallet as it is. Its change since the last digest is no line: it is mostly the owner's own deposits and
+    # withdrawals, and the owner's rule is never to report a balance change no trade of ours explains (audit 22 Nov,
+    # round#13: "-12.143 since the last digest" after the owner took the wallet's SOL out).
     if snap.equity is None:
         lines.append("wallet: unknown (balances not read)")
     else:
-        change = ""
-        try:
-            last = store.coverage(LAST_KEY)
-            if last.get("equity") is not None:
-                change = f" ({snap.equity - float(last['equity']):+.3f} since the last digest)"
-        except Exception:  # noqa: BLE001
-            change = ""
-        lines.append(f"wallet: {snap.equity:.3f} SOL{change}, {len(snap.held)} coin(s) held")
+        lines.append(f"wallet: {snap.equity:.3f} SOL, {len(snap.held)} coin(s) held")
     if snap.snipers is None:
         lines.append("snipers: unknown (OKTech not answering)")
     else:

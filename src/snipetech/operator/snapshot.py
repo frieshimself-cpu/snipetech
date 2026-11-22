@@ -67,6 +67,12 @@ class Snapshot:
     bot_cash: float | None = None  # this round: SOL the bot's own trades took in less what they paid, fees in
     bot_cash_since_ref: float | None = None  # the same since the round that set equity_ref (carried with it)
     ref_ours_sol: float | None = None  # what the bot's own coins were worth in the round that set equity_ref
+    held_ts: float | None = None  # when `held` was read from the wallet (a round that could not read it keeps the last)
+    # the wallet's trades counted into bot_cash ("sig:ev" -> block time) since `counted_from`: a round reads back to
+    # there and skips these, so a trade the tape writes late is counted by a later round, and once (round#3)
+    counted: dict[str, int] | None = None
+    counted_from: float | None = None
+    tape_behind: bool = False  # the wallet has a transaction newer than anything the tape had written when it was read
 
     @property
     def equity(self) -> float | None:
@@ -86,6 +92,18 @@ class Snapshot:
                 return None
             total += float(h["value_sol"])
         return total
+
+    @property
+    def bot_valued(self) -> bool:
+        """Whether this round can value what the bot holds: the balances were read and every coin of the bot's (`ours`)
+        has a price. A coin that is not the bot's (an airdrop the tape never priced, the owner's coin on a venue it does
+        not record) leaves the whole wallet unvalued, never the bot's own result (audit 22 Nov, round#0). Nor can it
+        while the tape is behind the wallet (`tape_behind`): a trade the balances show may not be on the tape yet
+        (round#3)."""
+        if self.native_sol is None or self.wsol is None or self.tape_behind:
+            return False
+        return all(h.get("priced") is not False and h.get("value_sol") is not None and not h.get("stale_price")
+                   for h in self.held or [] if h.get("ours", True))  # fmt: skip
 
     def to_json(self) -> str:
         return json.dumps(asdict(self) | {"equity": self.equity}, default=str)
@@ -220,15 +238,25 @@ def systemd_services(units: tuple[str, ...] | None = None) -> dict[str, str]:
     return out
 
 
-async def transaction_counts(svc, wallet: str, now: float, window: int = 3600) -> tuple[int | None, int | None]:
-    """(failed, landed) transactions of the wallet inside `window` seconds; (None, None) when the RPC does not answer."""
+async def wallet_signatures(svc, wallet: str, now: float,
+                            window: int = 3600) -> tuple[int | None, int | None, int | None]:  # fmt: skip
+    """(failed, landed) transactions of the wallet inside `window` seconds, and the block time of its newest landed one
+    (any age), read at "confirmed" as the balances are (the node's default, finalized, misses the last 13 s); Nones when
+    the RPC does not answer."""
     try:
-        sigs = await svc.rpc.call("getSignaturesForAddress", [wallet, {"limit": 50}])
+        sigs = await svc.rpc.call("getSignaturesForAddress", [wallet, {"limit": 50, "commitment": "confirmed"}])
     except Exception:  # noqa: BLE001
-        return None, None
+        return None, None, None
     recent = [s for s in sigs or [] if (s.get("blockTime") or 0) >= now - window]
     failed = sum(1 for s in recent if s.get("err") is not None)
-    return failed, len(recent) - failed
+    landed = [int(s["blockTime"]) for s in sigs or [] if s.get("err") is None and s.get("blockTime") is not None]
+    return failed, len(recent) - failed, max(landed, default=None)
+
+
+async def transaction_counts(svc, wallet: str, now: float, window: int = 3600) -> tuple[int | None, int | None]:
+    """(failed, landed) transactions of the wallet inside `window` seconds; (None, None) when the RPC does not answer."""
+    failed, landed, _newest = await wallet_signatures(svc, wallet, now, window)
+    return failed, landed
 
 
 async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) -> int | None:
@@ -236,12 +264,15 @@ async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) 
     return (await transaction_counts(svc, wallet, now, window))[0]
 
 
-async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, list[dict]]:
-    """(native SOL, wrapped SOL, open positions) from the RPC; positions by the one shared rule (positions.py)."""
+async def rpc_balances(svc, wallet: str, ignore: tuple[str, ...] = ()) -> tuple[float | None, float | None, list[dict]]:
+    """(native SOL, wrapped SOL, open positions) from the RPC; positions by the one shared rule (positions.py), the
+    owner's ignored coins (`ignore`: [operator] ignore_mints) left out as every other reader of the wallet does."""
     from ..positions import filter_positions
     from ..solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 
-    native = (await svc.rpc.call("getBalance", [wallet]))["value"] / 1e9
+    # at the coins' commitment: the node's default (finalized) is about 13 s behind them, and for that long after a
+    # trade one side of it counted twice or not at all (audit 22 Nov, round#12)
+    native = (await svc.rpc.call("getBalance", [wallet, {"commitment": "confirmed"}]))["value"] / 1e9
     wsol, accounts = 0.0, []
     for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
         r = await svc.rpc.call("getTokenAccountsByOwner", [wallet, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}])
@@ -257,7 +288,7 @@ async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, li
             accounts.append(
                 {"mint": info["mint"], "amount": amt, "raw": raw, "decimals": decimals, "account": a.get("pubkey")}
             )
-    held = filter_positions(accounts, svc.store.last_price)
+    held = filter_positions(accounts, svc.store.last_price, ignore=tuple(ignore or ()))
     return native, wsol, held
 
 
@@ -268,35 +299,234 @@ def trade_cash(is_buy, quote, fee, priority, tip) -> float:
     return (-(int(quote) + fees) if is_buy else int(quote) - fees) / 1e9
 
 
-def mark_ours(store, fills: list[dict]) -> list[dict]:
-    """Each of the wallet's trades with `ours`: whether the bot made it, by the fees our snipers and the run's own
-    sale pay (measure/ours.py); unknown fees, or no sniper on record, count as the bot's. The owner trades by hand in
-    this wallet too."""
+def _coin_whose(store, wallet: str, sale: dict, marks: dict[str, frozenset],
+                held_before: dict[str, dict]) -> str | None:  # fmt: skip
+    """Whose the coin a sale sells is: as the round before held it (its `whose`), else by the wallet's newest buy of it
+    before the sale, on the tape (its fees) or in the measure stage's fills (measure/ours.bot_buy); None when nothing
+    tells."""
+    from ..measure.ours import _paid, bot_buy
+
+    mint = str(sale.get("mint") or "")
+    h = held_before.get(mint) or {}
+    if h.get("whose") in ("ours", "owner"):
+        return h["whose"]
+    if "whose" not in h and h.get("ours") is False:  # marked before `whose`: the tape had said the owner's
+        return "owner"
+    try:
+        rows = store._q("SELECT priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND (slot<? OR (slot=? "
+                        "AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1",
+                        (wallet, mint, sale.get("slot", 0), sale.get("slot", 0), sale.get("pos", 0)))  # fmt: skip
+        if rows:
+            return "owner" if _paid(rows[0][0], rows[0][1], marks["buy"]) is False else "ours"
+        rows = store._q("SELECT sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills WHERE wallet=? "
+                        "AND mint=? AND side='buy' AND ts<=? ORDER BY ts DESC LIMIT 1",
+                        (wallet, mint, int(sale.get("ts") or 0)))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not readable now: the sale's own fees tell
+        return None
+    if rows:
+        row = dict(zip(("sniper_id", "priority_lamports", "tip_lamports", "wallet_copied"), rows[0], strict=True))
+        return "ours" if bot_buy(row, marks) else "owner"
+    return None
+
+
+def mark_ours(store, fills: list[dict], prev: Snapshot | None = None, wallet: str = "") -> list[dict]:
+    """Each of the wallet's trades with `ours`: whether the bot made it. A buy by its fees: those our snipers pay
+    (measure/ours.py); unknown fees, or no sniper on record, count as the bot's. A sale goes with the coin it sells
+    (`_coin_whose`: as the round before held it, else by the wallet's buy of it) and only when nothing tells by its own
+    fees (a sniper's, or the run's own sweep): the owner sells the bot's stuck coin by hand as the watch tells them to,
+    and /sell pays the sweep's fees on the owner's own coin (audit 22 Nov, round#2). The owner trades by hand in this
+    wallet too. `slot` and `pos` (where a sale is on the tape) are read here and not kept."""
     from ..measure.ours import _paid, fee_marks
 
     marks = fee_marks(store)
+    held_before = {str(h["mint"]): h for h in (prev.held if prev is not None else None) or [] if h.get("mint")}
     out = []
     for f in fills:
         side = "buy" if f.get("side") == "buy" else "sell"
         paid = _paid(f.get("priority"), f.get("tip"), marks[side]) if marks[side] else None
-        out.append({k: v for k, v in f.items() if k not in ("priority", "tip")} | {"ours": paid is not False})
+        whose = _coin_whose(store, wallet, f, marks, held_before) if side == "sell" and marks["buy"] else None
+        ours = whose == "ours" if whose is not None else paid is not False
+        out.append({k: v for k, v in f.items() if k not in ("priority", "tip", "slot", "pos")} | {"ours": ours})
     return out
 
 
-def mark_held(store, wallet: str, held: list[dict]) -> list[dict]:
-    """Each held coin with `ours`: whether the bot holds it, by the wallet's newest buy of it on the tape since the
-    holding began (its `since`, WHOSE_MARGIN_SECS earlier: a node shows a coin late), as the runner tells them apart
-    (measure/ours.tape_whose); a coin with no buy read counts as the bot's. The gate wakes the round when a coin of
-    the bot's moves, never for the owner's own coin (22 Nov review)."""
+ROUND_SECS = 900  # the operator's rounds run every quarter of an hour (snipetech-operator.timer)
+WHOSE_LOOKBACK_SECS = 3 * 86400  # with no earlier read of the wallet, a coin's buy is looked for this far back
+
+
+def last_read(prev: Snapshot | None) -> float | None:
+    """When the wallet's coins were last read before this round: the previous snapshot's `held_ts`, or, for one written
+    before that field existed, its own time when it read the balances; None when no round read them."""
+    if prev is None:
+        return None
+    if getattr(prev, "held_ts", None) is not None:
+        return float(prev.held_ts)
+    return float(prev.ts) if prev.native_sol is not None else None
+
+
+def fills_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str, frozenset]) -> str | None:
+    """Whose the wallet's holding of `mint` is by the measure stage's fills, which it reads off the chain every five
+    minutes and so also holds a buy the tape never does (a PumpSwap copy past the tape's 30 minutes): the wallet's
+    newest buy or sale of the coin there since `since_ts`. A buy says "ours" or "owner" by measure's own rule
+    (measure/ours.bot_buy); a sale, or nothing, says nothing (None). With no marks every coin is ours."""
+    from ..measure.ours import bot_buy
+
+    if not marks["buy"]:
+        return "ours"
+    try:
+        rows = store._q("SELECT side, sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills "
+                        "WHERE wallet=? AND mint=? AND ts>=? AND side IN ('buy', 'sell') ORDER BY ts DESC, slot DESC "
+                        "LIMIT 1",
+                        (wallet, mint, int(since_ts)))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not readable now: the next round asks again
+        return None
+    if not rows or rows[0][0] != "buy":
+        return None
+    _side, sniper, priority, tip, copied = rows[0]
+    row = {"sniper_id": sniper, "priority_lamports": priority, "tip_lamports": tip, "wallet_copied": copied}
+    return "ours" if bot_buy(row, marks) else "owner"
+
+
+def window_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str, frozenset]) -> str | None:
+    """Whose a held coin is by the wallet's newest buy of it since `since_ts`, on the tape (its fees) or in the measure
+    stage's fills (measure/ours.bot_buy), whichever is later, a sale after it or not: the coin is held, so that sale
+    sold part of it (OKTech's take-profit stages, the owner's partial sale). `tape_whose` and `fills_whose` read a buy
+    with a sale after it as an ended holding's, and the rest of a copy half sold between two rounds was nobody's
+    (review of round#1). None with no buy since `since_ts`."""
+    from ..measure.ours import _paid, bot_buy
+
+    if not marks["buy"]:
+        return "ours"
+    try:
+        tape = store._q("SELECT ts, priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND ts>=? "
+                        "ORDER BY slot DESC, pos DESC LIMIT 1", (wallet, mint, int(since_ts)))  # fmt: skip
+        fill = store._q("SELECT ts, sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills "
+                        "WHERE wallet=? AND mint=? AND side='buy' AND ts>=? ORDER BY ts DESC, slot DESC LIMIT 1",
+                        (wallet, mint, int(since_ts)))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not readable now: the next round asks again
+        return None
+    # the same buy in both: measure's rule knows more (its sniper, its copied wallet)
+    if fill and (not tape or int(fill[0][0] or 0) >= int(tape[0][0])):
+        row = dict(zip(("sniper_id", "priority_lamports", "tip_lamports", "wallet_copied"), fill[0][1:], strict=True))
+        return "ours" if bot_buy(row, marks) else "owner"
+    if tape:
+        return "owner" if _paid(tape[0][1], tape[0][2], marks["buy"]) is False else "ours"
+    return None
+
+
+def mark_held(store, wallet: str, held: list[dict], prev: Snapshot | None = None,
+              now: float | None = None) -> list[dict]:  # fmt: skip
+    """Each held coin with `whose` it is and `ours` (whose == "ours"), as the runner tells them apart
+    (measure/ours.RunCoins): the wallet's newest buy of it since the holding began says "ours" (a sniper's fees, or fees
+    nobody recorded) or "owner" (other fees); the tape's buy (measure/ours.tape_whose), else the measure stage's fills
+    (`fills_whose`), else the newest buy with a sale after it (`window_whose`: the rest of a coin sold in part). With
+    none, nothing tells (None: an airdrop, a coin sent in, a buy not recorded yet), and such a
+    coin is not the bot's: 'nothing told' counted as the bot's paged the owner's coins as its gains (audit 22 Nov,
+    round#1). An answer holds while the coin stays held (the owner's partial sale left no buy after it, and the rest of
+    the coin read as the bot's); a coin nothing told yet is asked again each round, over the same window: from the read
+    of the wallet before the coin was first seen (`whose_since`, WHOSE_MARGIN_SECS earlier: a node shows a coin late),
+    not from when it was first seen (a hand buy 6 minutes before a round fell outside). The gate wakes the round when a
+    coin of the bot's moves, never for the owner's own coin (22 Nov review)."""
     from ..measure.ours import WHOSE_MARGIN_SECS, fee_marks, tape_whose
 
     marks = fee_marks(store)
+    before = {str(h["mint"]): h for h in (prev.held if prev is not None else None) or [] if h.get("mint")}
+    last = last_read(prev)
+    new_since = (last if last is not None else float(now or 0) - WHOSE_LOOKBACK_SECS) - WHOSE_MARGIN_SECS
     out = []
     for h in held:
-        since = float(h.get("since") or 0) - WHOSE_MARGIN_SECS
-        whose = tape_whose(store, wallet, str(h.get("mint") or ""), since, marks) if h.get("mint") else None
-        out.append(h | {"ours": whose != "owner"})
+        mint = str(h.get("mint") or "")
+        old = before.get(mint)
+        if old is not None and old.get("whose") in ("ours", "owner"):
+            whose, since = old["whose"], old.get("whose_since")
+        elif old is not None and "whose" not in old and old.get("ours") is False:
+            whose, since = "owner", None  # a snapshot from before `whose`: the tape had said the owner's
+        else:
+            if old is not None and old.get("whose_since") is not None:
+                since = float(old["whose_since"])
+            elif old is not None:  # a snapshot from before `whose`: the read before it was first seen, a round earlier
+                since = float(h.get("since") or 0) - ROUND_SECS - WHOSE_MARGIN_SECS
+            else:
+                since = new_since
+            whose = ((tape_whose(store, wallet, mint, since, marks) or fills_whose(store, wallet, mint, since, marks)
+                      or window_whose(store, wallet, mint, since, marks)) if mint else None)  # fmt: skip
+        out.append(h | {"whose": whose, "whose_since": since, "ours": whose == "ours"})
     return out
+
+
+FILL_COLS = ("sig", "ts", "slot", "pos", "mint", "side", "sol", "priority_lamports", "tip_lamports", "sniper_id",
+             "wallet_copied", "buy_sig")  # fmt: skip
+
+
+def off_tape_fills(store, wallet: str, start: float, counted: dict[str, int]) -> list[dict]:
+    """The wallet's buys and sales since `start` that the measure stage read off the chain and the tape does not hold,
+    not counted yet: a coin's PumpSwap trades past the tape's 30 minutes after it left its curve (audit 22 Nov, round#4:
+    three of the bot's 16 buys since 21 Nov, and their sales, were on no round's count)."""
+    rows = store._q("SELECT sig, ts, slot, pos_in_slot, mint, side, sol, priority_lamports, tip_lamports, sniper_id, "
+                    "wallet_copied, buy_sig FROM fills WHERE wallet=? AND ts>? AND side IN ('buy', 'sell') ORDER BY ts",
+                    (wallet, start))  # fmt: skip
+    fresh = [dict(zip(FILL_COLS, r, strict=True)) for r in rows if f"{r[0]}:chain" not in counted]
+    sigs, taped = [f["sig"] for f in fresh], set()
+    for i in range(0, len(sigs), 500):
+        chunk = sigs[i : i + 500]
+        taped |= {s for (s,) in store._q(f"SELECT DISTINCT sig FROM trades WHERE sig IN ({','.join('?' * len(chunk))})",
+                                         chunk)}  # fmt: skip
+    return [f for f in fresh if f["sig"] not in taped]
+
+
+def mark_off_tape(store, fills: list[dict], prev: Snapshot | None, wallet: str) -> list[dict]:
+    """Each off-tape fill with `ours`, by measure's own rule: a buy by its sniper, its fees or its copied wallet
+    (measure/ours.bot_buy); a sale with its coin as `mark_ours` tells it, else by the buy it closes (`buy_sig`), else by
+    its own fees (measure/ours.bot_sale_fees)."""
+    from ..measure.ours import bot_buy, bot_sale_fees, fee_marks
+
+    marks = fee_marks(store)
+    held_before = {str(h["mint"]): h for h in (prev.held if prev is not None else None) or [] if h.get("mint")}
+    out = []
+    for f in fills:
+        if not marks["buy"]:
+            ours = True
+        elif f["side"] == "buy":
+            ours = bot_buy(f, marks)
+        else:
+            whose = _coin_whose(store, wallet, f, marks, held_before)
+            if whose is None and f.get("buy_sig"):
+                b = store.fill(str(f["buy_sig"]))
+                whose = None if b is None else ("ours" if bot_buy(b, marks) else "owner")
+            ours = whose == "ours" if whose is not None else bot_sale_fees(f, marks)
+        out.append(f | {"ours": bool(ours)})
+    return out
+
+
+PRICE_STALE_SECS = 600  # a coin off its curve with no trade on the tape this long: the tape no longer follows its price
+
+
+def stale_price(store, mint: str, now: float) -> bool:
+    """Whether the tape's last price of a coin is one it stopped keeping up: the coin left its pump.fun curve (the tape
+    keeps its PumpSwap trades only for [live] amm_recent_secs after that) and the tape's newest trade of it is
+    PRICE_STALE_SECS old. A coin still on its curve is priced by its last trade however long ago (round#4)."""
+    try:
+        if store.completion(mint) is None and store.migration(mint) is None:
+            return False
+        rows = store._q("SELECT ts FROM trades WHERE mint=? ORDER BY slot DESC, pos DESC LIMIT 1", (mint,))
+    except Exception:  # noqa: BLE001 - nothing known: the tape's price stands, as before
+        return False
+    return bool(rows) and now - float(rows[0][0]) > PRICE_STALE_SECS
+
+
+FILLS_LOOKBACK_SECS = 3600  # a round reads the wallet's trades this far back: one the tape writes late is still counted
+
+
+def fills_window(prev: Snapshot | None, now: float) -> tuple[float, dict[str, int]]:
+    """Where this round reads the wallet's trades from (block time, after it) and which of them are counted already:
+    back to the previous snapshot's `counted_from`, skipping its `counted`; from the previous round's own time for a
+    snapshot written before that record existed (it had counted every trade up to then); an hour back with none."""
+    if prev is None:
+        return now - 3600, {}
+    if getattr(prev, "counted", None) is None:
+        return float(prev.ts), {}
+    start = prev.counted_from if getattr(prev, "counted_from", None) is not None else prev.ts
+    return float(start), dict(prev.counted)
 
 
 def carry_since(held: list[dict], prev: Snapshot | None, now: float) -> list[dict]:
@@ -339,48 +569,97 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"tape: {exc}")
     if wallet:
+        store = getattr(svc, "store", None)
+        held: list[dict] | None = None  # the wallet's coins as read this round; None when the read failed
         try:
-            res = balances(wallet) if balances else rpc_balances(svc, wallet)
+            # the owner's ignored coins are no holding here either (audit 22 Nov, round#5: the watch offers that list
+            # for a stray coin, and the round kept counting it)
+            ignore = tuple(str(m) for m in cfg.operator.ignore_mints or ())
+            res = balances(wallet) if balances else rpc_balances(svc, wallet, ignore=ignore)
             if hasattr(res, "__await__"):
                 res = await res
-            snap.native_sol, snap.wsol, held = res
-            snap.held = mark_held(getattr(svc, "store", None), wallet, carry_since(list(held or []), prev, now))
-            total = snap.total_equity
-            snap.equity_ref = total if total is not None else getattr(prev, "equity_ref", None)
-            clear_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, now)
+            snap.native_sol, snap.wsol, read = res
+            held, snap.held_ts = carry_since(list(read or []), prev, now), now
+            clear_refusal(store, RPC_REFUSED_KEY, now)
         except Exception as exc:  # noqa: BLE001
             if refusal_status(exc) is not None:  # Helius turned the key away: an alert once it lasts (resources)
-                note_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, exc, now)
+                note_refusal(store, RPC_REFUSED_KEY, exc, now)
             snap.errors.append(scrub(f"balances: {exc}"))
-            snap.equity_ref = (
-                getattr(prev, "equity_ref", None) if prev is not None else None
-            )  # keep the last valued equity
-        if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
-            snap.failed_tx_1h, snap.ok_tx_1h = await transaction_counts(svc, wallet, now)
+            # the coins as last read (`stale`), with their answers and that read's time: a snapshot with none made the
+            # next round date every coin "first seen now", and the owner's coin read as the bot's (round#1)
+            snap.held = [h | {"stale": True} for h in (prev.held if prev is not None else None) or []]
+            snap.held_ts = last_read(prev)
+        newest = None
+        if balances is None:  # the real RPC path also counts failed transactions and dates the wallet's newest one
+            snap.failed_tx_1h, snap.ok_tx_1h, newest = await wallet_signatures(svc, wallet, now)
+        # the wallet's trades since the window's start, less those an earlier round counted: one the tape writes after
+        # a round read it is counted by a later round, once (audit 22 Nov, round#3: such a sale was counted by none)
+        start, counted = fills_window(prev, now)
+        rows, chain, frontier = None, [], None
         try:
-            rows = svc.store._q("select ts, mint, is_buy, quote, priority, tip, fee from trades where user=? and ts>? "
-                                "order by ts", (wallet, since))  # fmt: skip
-            snap.fills = mark_ours(svc.store, [
-                {"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4), "priority": pr,
-                 "tip": tp} for ts, m, b, q, pr, tp, _fe in rows])  # fmt: skip
-            snap.bot_cash = round(sum(trade_cash(b, q, fe, pr, tp) for (_ts, _m, b, q, pr, tp, fe), f
-                                      in zip(rows, snap.fills, strict=True) if f.get("ours", True)), 9)  # fmt: skip
+            frontier = svc.store._q("select max(ts) from trades")[0][0]
+            rows = svc.store._q("select sig, ev, ts, mint, is_buy, quote, priority, tip, fee, slot, pos from trades "
+                                "where user=? and ts>? order by ts", (wallet, start))  # fmt: skip
+            chain = off_tape_fills(svc.store, wallet, start, counted)  # the measure stage's, from the chain (round#4)
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
-            snap.fills_unread, snap.bot_cash = True, None
+            # the tape's trades without the fills' would be half a result: nothing is counted, the next round reads the
+            # same window (review of round#4)
+            snap.fills_unread, snap.bot_cash, rows = True, None, None
+        # the wallet's newest transaction (a trade, a deposit) no older than the newest trade on the tape: what the
+        # balances show may not be on the tape yet, so this round cannot tell the bot's result and carries its baselines
+        snap.tape_behind = (held is not None and rows is not None and newest is not None
+                            and (frontier is None or int(newest) >= int(frontier)))  # fmt: skip
+        if held is not None:  # whose each coin is, asked after the trades were read: a buy counted below is seen there
+            try:
+                snap.held = mark_held(store, wallet, held, prev, now)
+            except Exception as exc:  # noqa: BLE001 - the coins still count; whose they are is asked again next round
+                snap.errors.append(f"whose: {exc}")
+                snap.held = held
+            # a coin of the bot's the tape stopped following (off its curve, past the tape's PumpSwap window) has no
+            # value known: its last tape price can be hours old (round#4)
+            for h in snap.held:
+                if h.get("ours") and h.get("mint") and stale_price(store, str(h["mint"]), now):
+                    h["stale_price"] = True
+        if rows is not None:
+            new = [r for r in rows if f"{r[0]}:{r[1]}" not in counted and f"{r[0]}:chain" not in counted]
+            trades = [{"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4),
+                       "priority": pr, "tip": tp, "slot": sl, "pos": po}
+                      for _s, _e, ts, m, b, q, pr, tp, _fe, sl, po in new]  # fmt: skip
+            taped = mark_ours(svc.store, trades, prev, wallet)
+            off = mark_off_tape(svc.store, chain, prev, wallet)
+            snap.fills = taped + [{"ts": int(f["ts"] or 0), "mint": f["mint"], "side": f["side"],
+                                   "sol": round(float(f["sol"] or 0), 4), "ours": f["ours"]} for f in off]  # fmt: skip
+            cash = [trade_cash(b, q, fe, pr, tp) for (_s, _e, _ts, _m, b, q, pr, tp, fe, _sl, _po), f
+                    in zip(new, taped, strict=True) if f.get("ours", True)]  # fmt: skip
+            cash += [trade_cash(f["side"] == "buy", round(float(f["sol"] or 0) * 1e9), 0, f["priority_lamports"],
+                                f["tip_lamports"]) for f in off if f["ours"]]  # fmt: skip
+            snap.bot_cash = round(sum(cash), 9)
+            counted |= {f"{s}:{e}": int(ts) for s, e, ts, *_rest in new}
+            counted |= {f"{f['sig']}:chain": int(f["ts"] or 0) for f in off}
+            # while the tape is behind the wallet the window stays: a recorder that stood still replays what it missed
+            # with its block time, hours back after a long stall, and a window moved on by the hour counted none of it
+            snap.counted_from = start if snap.tape_behind else max(start, now - FILLS_LOOKBACK_SECS)
+            snap.counted = {k: ts for k, ts in counted.items() if ts > snap.counted_from}
+        else:  # nothing read: the next round reads from the same place
+            snap.counted, snap.counted_from = counted, start
         # the gate measures the move from equity_ref, which a round with an unpriced coin carries from an older round:
-        # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed
+        # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed.
+        # A coin of the bot's the tape stopped pricing is no value either (`bot_valued`: its price can be hours old)
+        valued = snap.total_equity is not None and snap.bot_valued
+        snap.equity_ref = snap.total_equity if valued else getattr(prev, "equity_ref", None)
         ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
-        snap.bot_since_ref = snap.total_equity is None and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)
-        # and the bot's own result since then (the gate's alert, review of 22 Nov): its trades' SOL and its coins' worth
-        if snap.total_equity is not None:  # this round values the wallet: the baseline is this round
+        snap.bot_since_ref = not valued and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)
+        # and the bot's own result since then (the gate's alert, review of 22 Nov): its trades' SOL and its coins'
+        # worth, whose baseline moves whenever the bot's own coins are valued, whatever else the wallet holds (round#0),
+        # and its trades were read (unread ones are counted by a later round, from the same window)
+        if snap.bot_valued and not snap.fills_unread:  # this round values the bot's coins: the baseline is this round
             snap.ref_ours_sol = round(sum(float(h["value_sol"]) for h in snap.held if h.get("ours", True)), 9)
             snap.bot_cash_since_ref = 0.0
         else:
             snap.ref_ours_sol = getattr(prev, "ref_ours_sol", None)
             before = getattr(prev, "bot_cash_since_ref", None)
-            snap.bot_cash_since_ref = (None if before is None or snap.bot_cash is None
-                                       else round(float(before) + snap.bot_cash, 9))  # fmt: skip
+            snap.bot_cash_since_ref = None if before is None else round(float(before) + float(snap.bot_cash or 0), 9)
     try:
         st = await svc.oktech_status()
         snap.snipers = [
@@ -413,6 +692,20 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"verdicts: {exc}")
     return snap
+
+
+def hold_baselines(snap: Snapshot, prev: Snapshot | None) -> None:
+    """Keep the previous snapshot's baselines, with this round's trades added to them, as a round that cannot value the
+    wallet does: a round that saw the bot's result move and could tell nobody (the day's budget spent) leaves it for the
+    first round that can (audit 22 Nov, round#8: the saved snapshot moved the baseline past the loss)."""
+    if prev is None:
+        return
+    snap.equity_ref = getattr(prev, "equity_ref", None)
+    ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
+    snap.bot_since_ref = bool(getattr(prev, "bot_since_ref", False)) or ours_now
+    snap.ref_ours_sol = getattr(prev, "ref_ours_sol", None)
+    before = getattr(prev, "bot_cash_since_ref", None)
+    snap.bot_cash_since_ref = None if before is None else round(float(before) + float(snap.bot_cash or 0), 9)
 
 
 def load_prev(paths: OperatorPaths) -> Snapshot | None:
