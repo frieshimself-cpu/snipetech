@@ -6,6 +6,33 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 22 Nov, 06:15 UTC: who holds the place right behind the big wallets (I603, answered)
+
+- **The table** (the fee analyst, 22 Nov 05:50; first buys of 15-21 Nov: Cented 351, Decu 351, Cupseyy 164, Cooker
+  70). The position right behind a first buy (the next one in the same block) is taken on only 23-27 % of them (80,
+  94 and 36 buys), about 80 % of those by seven bots: 8r6N8w, Fhbh1D, HmR7Sx, FfW5e8, 9AGtz3, 3RYcHv and 6Z91
+  (priority 0.08-0.3 SOL, some at 0, beside 8r6N8w's 0.5). On the other three in four the first outsider stands 3 to
+  200 positions back, 120-131 different wallets, a third of them bidding under 0.01 SOL. Second place: 109-128
+  wallets, two in three under 0.01, never adjacent. Behind Cooker his own two wallets stand first. OKTech gave us the
+  next position 0 times in 13 tipped buys.
+- **One bot owns it behind Cented and Decu.** 8r6N8w (no label, funded with 5 SOL by a wallet nobody we track shares)
+  is first in 62 of its 63 entries, buys 6-8 SOL, pays about 0.5 SOL priority and a 0.11 tip a buy, holds 11-21 s,
+  and made about +100 SOL after fees and bids in the week (92 coins; behind Cented 25 wins of 29, +50.1; behind Decu
+  20 of 31, +28.6). It enters only 8-9 % of their first buys: a coin filter, or only its winning sends land. The
+  scout studies it now (I605: which coins it takes, and whether a copy of ours 2-3 behind makes money on those).
+- **What it means for 100 a day.** The place right behind is open three times in four, and the bot that takes it
+  behind the two busiest wallets makes about +14 SOL a day, at about 0.6 SOL a buy to get there. 100 a day at that
+  place means landing right behind many wallets at once, as 6Z91 does (+52 to +105 a day across hundreds). That needs
+  a sender of our own; whether one reaches the next position, and at what fee, is not measured (OKTech never has). The
+  decision to build one is the owner's; I605 is the next fact for it.
+- **Since 04:45.** Deployed 4881ff6 at 05:30 (everything of the list below, and the kinds of copy). Pushed after
+  green suites, waiting for a deploy: 067e563 (the runner survives a failed start, a lost answer, an unsent sale and a
+  hung read; --sweep-after needs the selling key to be the run's wallet), 67ba989 (a run's end never stops a sniper
+  that may hold a coin: OKTech reads a sniper that bought "running"), 02ff3c7 (whose a buy is: the chain read knows the
+  learned tip accounts; a copied wallet on a fill counts only with our priority), 6c5bf34 (`paper freeze --exit`: a
+  forward record with the exit the live sniper runs; the tester's I597 freezes failed for want of it). The review of
+  c54388d..997a010 is still checking its findings, most of them about the floor while the owner trades by hand.
+
 ## 22 Nov, 04:45 UTC: checked against all our data, 100 SOL a day is out of reach through OKTech
 
 - **The verdict.** Six research sweeps of the server's data, then an adversarial check of each of their 22 candidates
