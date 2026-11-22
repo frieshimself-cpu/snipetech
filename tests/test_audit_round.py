@@ -709,3 +709,29 @@ def test_round4_a_held_copy_the_tape_stopped_pricing_is_not_valued_from_its_old_
     c = take(st, cfg, paths, b, 2800.0, 8.79, [])
     lines = bot_lines(paths, c, b, 2800.0)
     assert len(lines) == 1 and "-1.203 SOL of it by the bot's own" in lines[0], lines
+
+
+# -- the review of these fixes -----------------------------------------------------------------------------------------
+
+
+def test_review_a_copy_partly_sold_before_the_round_saw_it_is_the_bots(book):
+    """OKTech's take-profit stages sell part of a coin (oktech.replica_from_study: half at +20 %), and so can the owner:
+    a copy bought and half sold between two rounds is held with a sale after its buy. The tape's rule (tape_whose) and
+    the fills' read such a buy as an ended holding's, so the rest of the copy was nobody's: the round paged -1.953 SOL
+    as the bot's loss where it lost 0.203, and the coin counted in no held state. The newest buy since the read before
+    still tells, a sale after it or not."""
+    st, cfg, paths = book
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 10.0, [])
+    trade(st, "copy", 1200, COIN, True, 3.5, BOT_BUY_FEES)
+    trade(st, "half", 1300, COIN, False, 1.75, BOT_SELL_FEES)  # a take-profit stage sells half, on the tape
+    put_fill(st, "pb", 1400, SWAP, "buy", 3.5, BOT_BUY_FEES)  # and a PumpSwap copy the tape never holds, the same
+    put_fill(st, "ps", 1500, SWAP, "sell", 1.75, BOT_SELL_FEES)
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, 6.09398, [coin(COIN, 1.75), coin(SWAP, 1.75)])
+    assert whose(b) == {COIN: "ours", SWAP: "ours"}
+    lines = bot_lines(paths, b, a, 2000.0)
+    assert len(lines) == 1 and "-0.406 SOL of it by the bot's own" in lines[0], lines
+    tick(st, 3995)
+    c = take(st, cfg, paths, b, 4000.0, 6.09398, [coin(COIN, 1.75), coin(SWAP, 1.75)])
+    assert "coin(s) held over 30 min: 2" in _held_reasons(paths, c, b, 4000.0)

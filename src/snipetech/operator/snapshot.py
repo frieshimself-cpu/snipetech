@@ -387,12 +387,40 @@ def fills_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str,
     return "ours" if bot_buy(row, marks) else "owner"
 
 
+def window_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str, frozenset]) -> str | None:
+    """Whose a held coin is by the wallet's newest buy of it since `since_ts`, on the tape (its fees) or in the measure
+    stage's fills (measure/ours.bot_buy), whichever is later, a sale after it or not: the coin is held, so that sale
+    sold part of it (OKTech's take-profit stages, the owner's partial sale). `tape_whose` and `fills_whose` read a buy
+    with a sale after it as an ended holding's, and the rest of a copy half sold between two rounds was nobody's
+    (review of round#1). None with no buy since `since_ts`."""
+    from ..measure.ours import _paid, bot_buy
+
+    if not marks["buy"]:
+        return "ours"
+    try:
+        tape = store._q("SELECT ts, priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND ts>=? "
+                        "ORDER BY slot DESC, pos DESC LIMIT 1", (wallet, mint, int(since_ts)))  # fmt: skip
+        fill = store._q("SELECT ts, sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills "
+                        "WHERE wallet=? AND mint=? AND side='buy' AND ts>=? ORDER BY ts DESC, slot DESC LIMIT 1",
+                        (wallet, mint, int(since_ts)))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not readable now: the next round asks again
+        return None
+    # the same buy in both: measure's rule knows more (its sniper, its copied wallet)
+    if fill and (not tape or int(fill[0][0] or 0) >= int(tape[0][0])):
+        row = dict(zip(("sniper_id", "priority_lamports", "tip_lamports", "wallet_copied"), fill[0][1:], strict=True))
+        return "ours" if bot_buy(row, marks) else "owner"
+    if tape:
+        return "owner" if _paid(tape[0][1], tape[0][2], marks["buy"]) is False else "ours"
+    return None
+
+
 def mark_held(store, wallet: str, held: list[dict], prev: Snapshot | None = None,
               now: float | None = None) -> list[dict]:  # fmt: skip
     """Each held coin with `whose` it is and `ours` (whose == "ours"), as the runner tells them apart
     (measure/ours.RunCoins): the wallet's newest buy of it since the holding began says "ours" (a sniper's fees, or fees
     nobody recorded) or "owner" (other fees); the tape's buy (measure/ours.tape_whose), else the measure stage's fills
-    (`fills_whose`). With neither, nothing tells (None: an airdrop, a coin sent in, a buy not recorded yet), and such a
+    (`fills_whose`), else the newest buy with a sale after it (`window_whose`: the rest of a coin sold in part). With
+    none, nothing tells (None: an airdrop, a coin sent in, a buy not recorded yet), and such a
     coin is not the bot's: 'nothing told' counted as the bot's paged the owner's coins as its gains (audit 22 Nov,
     round#1). An answer holds while the coin stays held (the owner's partial sale left no buy after it, and the rest of
     the coin read as the bot's); a coin nothing told yet is asked again each round, over the same window: from the read
@@ -420,8 +448,8 @@ def mark_held(store, wallet: str, held: list[dict], prev: Snapshot | None = None
                 since = float(h.get("since") or 0) - ROUND_SECS - WHOSE_MARGIN_SECS
             else:
                 since = new_since
-            whose = (tape_whose(store, wallet, mint, since, marks) or fills_whose(store, wallet, mint, since, marks)
-                     if mint else None)  # fmt: skip
+            whose = ((tape_whose(store, wallet, mint, since, marks) or fills_whose(store, wallet, mint, since, marks)
+                      or window_whose(store, wallet, mint, since, marks)) if mint else None)  # fmt: skip
         out.append(h | {"whose": whose, "whose_since": since, "ours": whose == "ours"})
     return out
 
