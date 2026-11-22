@@ -634,6 +634,36 @@ def test_a_lab_on_long_tailed_coins_is_the_same_with_the_cut(monkeypatch):
     assert cut["rows"] == whole["rows"]
 
 
+def test_the_forward_run_hands_its_exit_the_cut_path_and_scores_the_same(monkeypatch):
+    """The paper run's position (`paper._position`) is prepared on the path cut past its exit's reach, the copied
+    wallet's sales read on that path too, and its trade is the very one the whole path gives (review of 22 Nov:
+    without this test the forward run's half of the cut could go and no test would say so)."""
+    from snipetech.analysis import paper
+    from snipetech.analysis.lab import kind_exits
+    from snipetech.sim.exits import Costs
+    from snipetech.sim.market import MarketPath
+
+    st = Store(":memory:")
+    mint, _mig = _long_tail(st, 0)
+    path = MarketPath.build(st.trades_for_mint(mint), st.launch(mint))
+    st.close()
+    i = path.users.index(LEAD)
+    trig = parse_trigger({"kind": "kol", "group": "wallet", "sol": 1, "only": LEAD})
+    # the copy sniper's sale: watched, with the copy exit on the followed wallet's half sold 40 s in
+    (ex,) = kind_exits([ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=60, sell_on_dev_sell=False)],
+                       Config())["kol"]  # fmt: skip
+    costs = Costs(per_tx_lamports=0.0045e9)
+    handed = []
+    real = paper.prepare
+    monkeypatch.setattr(paper, "prepare", lambda p, *a, **k: handed.append(p.n) or real(p, *a, **k))
+    cut, why = paper._position({}, path, {"buy_sol": 2.0}, trig, ex, costs, i, i + 2, None, float(path.ts[-1]))
+    monkeypatch.setattr(paper, "held_path", lambda p, e, secs: p)
+    whole, why_whole = paper._position({}, path, {"buy_sol": 2.0}, trig, ex, costs, i, i + 2, None, float(path.ts[-1]))
+    assert why is None and why_whole is None and cut is not None
+    assert handed[0] < handed[1] == path.n  # the forward run read its exit's own stretch, not the hour after it
+    assert cut.exit_reason == whole.exit_reason and cut.to_dict() == whole.to_dict()
+
+
 def test_a_dead_exit_is_handed_the_path_its_sale_lands_on():
     """A dead exit fires on the last trade before its timer once nothing trades for its pause, and its sale lands that
     long after that trade: "STALE158s hold10s" sells 158 s after its timer's last trade, past the timer and the margin
