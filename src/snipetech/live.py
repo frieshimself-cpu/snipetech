@@ -534,20 +534,17 @@ class LiveWatcher:
     async def run(self) -> None:
         laser = self.firehose and self._use_laserstream()
         if self.migrated is not None:
-            if laser:
-                self._load_position()  # first: the coins seeded next are replayed from where the tape's stream stood
-            self._seed_recent(self.clock())
+            self.amm_source = "laserstream" if laser else "logs" if self.firehose else None
+            self._seed_recent(self.clock())  # on LaserStream: replayed from where the tape's stream stood
         tasks = [asyncio.create_task(self._maintenance())]
         if laser:
             tasks.append(asyncio.create_task(self._laserstream()))
             if self.migrated is not None:
-                self.amm_source = "laserstream"
                 tasks.append(asyncio.create_task(self._amm_stream()))
         elif self.firehose:
             for program in self._log_firehoses():
                 tasks.append(asyncio.create_task(self._firehose(program)))
             if self.migrated is not None:
-                self.amm_source = "logs"
                 tasks.append(asyncio.create_task(self._amm_logs()))
         tasks.append(asyncio.create_task(self._follow_wallets()))
         try:
@@ -1366,12 +1363,15 @@ class LiveWatcher:
 
     def _seed_recent(self, now: float) -> None:
         """Start with the coins that left their curve within the window before this start (a restart, `remote update`),
-        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it. When
-        the tape's stream goes on from where the last process stood (`_load_position`, which run() reads first), their
-        PumpSwap trades are replayed from SEED_BACK_SLOTS before that slot, so every second this process's run of the
-        coverage record claims is handed over (a coin that left before the run's start is claimed by no run). Without
-        that position nothing of theirs is replayed: a start with a hole, and the record claims none of them."""
+        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it. On
+        LaserStream, where the tape's stream goes on from where the last process stood (`_load_position`, read here
+        first), their PumpSwap trades are replayed from SEED_BACK_SLOTS before that slot, so every second this
+        process's run of the coverage record claims is handed over (a coin that left before the run's start is claimed
+        by no run). Without that position nothing of theirs is replayed: a start with a hole, and the record claims
+        none of them."""
         assert self.migrated is not None
+        if self.amm_source == "laserstream":
+            self._load_position()  # idempotent; run() seeds before the tape's stream starts
         since = int(now - self.migrated.secs)
         slot = None if self.tape_slot is None else max(0, self.tape_slot - SEED_BACK_SLOTS)
         try:

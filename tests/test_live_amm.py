@@ -639,8 +639,8 @@ def test_after_a_restart_the_seeded_coins_are_replayed_from_where_the_tapes_stre
     w = watcher(store=st)
     w.amm_source = "laserstream"
     w.clock = lambda: A1_TS + 5.0  # the new process, five seconds after the last one stood
-    w._load_position()  # run() reads where the tape's stream stood before it seeds
-    w._seed_recent(w.clock())
+    w._seed_recent(w.clock())  # run(): before the tape's stream has read where it stood
+    w._load_position()  # _laserstream(): the stream's place (already read)
     start = w._amm_start(w._amm_want())  # the PumpSwap side's first subscription
     assert start is not None and start <= A1_SLOT - 1  # was None: live
     w.amm_gap = None  # its on_connect
