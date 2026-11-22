@@ -32,7 +32,7 @@ def test_qualify_defers_while_the_lab_lock_is_held(tmp_path):
     try:
         from tests.synth import Market, addr
 
-        for k in range(12):  # the buys a wallet needs to be measured at all (the count before the lab, 11 Nov)
+        for k in range(20):  # the buys a wallet with no history needs to be measured at all (the count, qualify#3)
             m = Market(st, addr(f"c{k}"), addr("dev"), NOW - 3000 + k * 60, 400_000_000 + k * 150)
             m.buy(addr("dev"), 1.0, 0)
             m.buy("W1", 0.5, 5)

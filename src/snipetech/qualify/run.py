@@ -410,15 +410,18 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
     # The count before the lab. A copy is a coin whose first buy by the wallet was at the book's floor ([book]
     # min_copy_sol: the lab copies a wallet's first buy in a coin at its own floor, never below the book's, and never a
     # top-up) on pump.fun's curve or PumpSwap (where the copy snipers buy: lab._fire, oktech.COPY_PLATFORMS), and a
-    # wallet needs `need` of them at the least: one with fewer such coins cannot pass, and is told so here. 11 Nov:
+    # wallet needs as many of them as its verdict needs copies (gates.verdict_for: 10 with a strong history, else 20;
+    # its history is known before the lab): one with fewer such coins cannot pass, and is told so here. 11 Nov:
     # of 9,808 verdicts in two days 7,425 had no copy on the tape and 8,835 fewer than 20, each after a lab and four
     # reads per wallet. 20 Nov: the count still took every coin bought with 0.1 SOL or more, anywhere, and 11,364 of
-    # 18,266 lab verdicts had fewer than 20 copies (the 03:45 run: 109 of 214 under 10). It never counts fewer coins
+    # 18,266 lab verdicts had fewer than 20 copies (the 03:45 run: 109 of 214 under 10). 22 Nov: it still held every
+    # wallet to the 10 a strong history needs, and with no history source on since 20 Nov 275 of the 10:01 run's 401
+    # lab rows were wallets with 10-19 copies and no history, "n < 20" before the lab ran. It never counts fewer coins
     # than the lab finds copies, so no wallet that could pass is held back. The tape store is what the lab reads; a
     # wallet with more trades than the count walks is measured.
     floor = float(cfg.book.min_copy_sol)
     where = f"{floor:g} SOL or more on pump.fun (curve or PumpSwap) on the tape"
-    need = min(q.min_n_tape, q.min_n_tape_strong)
+    need = min(q.min_n_tape, q.min_n_tape_strong)  # the least any wallet needs: the readings in `judge` below
     tape = getattr(svc, "tape_store", store)
     screen_spans = tape.tape_spans()  # a wallet short of coins comes back at its own pace on this tape
     measurable = []
@@ -427,7 +430,9 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
             measurable.append(c)
             continue
         coins, more = tape.coins_bought(c["wallet"], round(floor * 1e9), venues=PUMP_VENUES)
-        if coins >= need or more:
+        _, strong, _ = history_gate(normalise_history(c["stats"]), q)
+        need_c = q.min_n_tape_strong if strong else q.min_n_tape  # what this wallet's verdict needs
+        if coins >= need_c or more:
             measurable.append(c)
             continue
         v = verdict_for(c["wallet"], normalise_history(c["stats"]), None, None, dict(EMPTY_CROWD), True, [], q, now)
@@ -436,11 +441,11 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         # lists wallets trading right now, and one was parked 72 h for trades the next copy held)
         newer = first_ts is None and tape is not store and store.first_trade_ts(c["wallet"]) is not None
         if first_ts is not None:  # it trades on the tape: what it lacks is said, and when it is looked at again
-            hours = sample_review_hours(coins, need, first_ts, screen_spans, q, now)
+            hours = sample_review_hours(coins, need_c, first_ts, screen_spans, q, now)
             if coins:
-                why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {where}: fewer than the {need} copies a "
-                       f"wallet needs at the least, not measured; looked at again in {hours:.1f} h, at its pace on "
-                       "the tape")  # fmt: skip
+                why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {where}: fewer than the {need_c} copies a "
+                       f"wallet {'with' if strong else 'without'} a strong history needs, not measured; looked at "
+                       f"again in {hours:.1f} h, at its pace on the tape")  # fmt: skip
             else:
                 why = (f"no coin bought with {where}, the only buys a copy sniper copies: not measured; looked at "
                        f"again in {hours:.1f} h")  # fmt: skip

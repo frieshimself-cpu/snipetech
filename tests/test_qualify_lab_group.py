@@ -131,11 +131,11 @@ def test_the_stage_labels_no_wallet_it_measures(tmp_path):
 
     svc, st, data = svc_(tmp_path)
     try:
-        _tape(st, ["NEW"], coins=12)
-        st.upsert_candidate("NEW", "tape", {"positions": 12}, NOW - 3600)
+        _tape(st, ["NEW"], coins=20)  # 20: it has no history, and needs that many to be measured (qualify#3)
+        st.upsert_candidate("NEW", "tape", {"positions": 20}, NOW - 3600)
         svc.cfg.verdict.bootstrap_samples = 50
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW)
-        assert out["evaluated"] == 1 and st.latest_verdicts()[0]["n_tape"] == 12
+        assert out["evaluated"] == 1 and st.latest_verdicts()[0]["n_tape"] == 20
         assert st.labels("cand") == {} and "labelled" not in out
     finally:
         st.close()

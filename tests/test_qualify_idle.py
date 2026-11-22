@@ -42,8 +42,9 @@ def test_the_rules_numbers():
 def test_a_wallet_short_of_coins_is_looked_at_again_when_its_pace_would_have_brought_them(tmp_path):
     """The 2UgKTq group: its first look said "1 coin, not measured" and came back 72 h later; it traded about 1,800
     times in between and had stopped 50 h before it was measured. FAST bought 3 coins in its first two hours on the
-    tape: at that pace the 7 more it needs take about 4.5 hours, and that is when it is looked at again. SLOW bought 2
-    in five days: 72 h, as before."""
+    tape: at that pace the 17 more it needs take about 11 hours (20 without a strong history, since the audit of 22
+    Nov, qualify#3; the 7 more to 10 took 4.5 until then), and that is when it is looked at again. SLOW bought 2 in
+    five days: 72 h, as before."""
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["FAST"], coins=3)
@@ -60,7 +61,7 @@ def test_a_wallet_short_of_coins_is_looked_at_again_when_its_pace_would_have_bro
         assert out["too_few"] == 2
         by = {v["wallet"]: v for v in st.latest_verdicts()}
         fast, slow = by["FAST"], by["SLOW"]
-        assert NOW + 4 * H < fast["next_review"] < NOW + 5 * H, (fast["next_review"] - NOW) / H
+        assert NOW + 11 * H < fast["next_review"] < NOW + 11.1 * H, (fast["next_review"] - NOW) / H
         assert fast["status"] == "candidate" and "at its pace" in fast["reasons"][-1]
         assert slow["next_review"] == NOW + 72 * H
     finally:
