@@ -77,6 +77,18 @@ AGENT_BACKFILL_STRETCH_TXS = 50_000
 # full spellings), so a shortened one is refused here whatever the command line makes of it.
 BACKFILL_LIMIT_FLAGS = ("--max-credits", "--month-credits", "--max-stretch-txs")
 BACKFILL_LOG_TAIL = 64_000  # bytes read from the end of an earlier backfill's log to see whether a limit ended it
+# `sends` reads a wallet's history off the chain on the same Helius plan (a credit a thousand signatures and one a
+# failed send). An agent's run asks for at most AGENT_SENDS_CREDITS (the one real run, 8r6N8w over 72 h, counted
+# 4,907; fourteen days of a very busy bot are some hundreds of thousands), over at most AGENT_SENDS_HOURS (the tape's
+# fourteen days: a send before the tape is near no moment it holds), and never more than what the backfills and the
+# earlier runs left of the month's limit (`amm_backfill.MONTH_CREDITS`). Audit of 22 Nov: until then any number ran.
+AGENT_SENDS_CREDITS = 200_000
+AGENT_SENDS_HOURS = 336.0
+# `launch-tools` fetches one create transaction a launch it never read (the tape's fourteen days hold about 600,000),
+# and a coin by --mint that is not on the tape costs up to 500 pages of signatures: an agent's run reads at most this
+# many launches, or this many coins.
+AGENT_LAUNCH_TOOLS_MAX = 100_000
+AGENT_LAUNCH_TOOLS_COINS = 50
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 TWIN_MAX_SECS = 6 * 3600 + 600  # a job's own limit (ops.op_run) and some slack: past it a "running" record is no job
 # a look-up of somebody else's live data answers differently minutes later: the same one may run again after this long
@@ -348,6 +360,45 @@ class OperatorJobs:
                                       "as many credits; a busier one is the owner's call: name it in an "
                                       "idea)")  # fmt: skip
 
+    def _check_helius(self, argv: list[str], now: float) -> None:
+        """What an agent's `sends` and `launch-tools` may ask of the Helius plan (AGENT_SENDS_CREDITS and the rest),
+        read as the command line reads the words: the last value of a flag given twice, `--flag=value` as well. Words
+        the command line refuses start a job that ends before its first request."""
+        if argv[:1] not in (["sends"], ["launch-tools"]):
+            return
+        parsed = _parsed(tuple(str(a).strip() for a in argv))
+        if parsed is None:
+            return
+        said = json.loads(parsed)
+        if argv[0] == "launch-tools":
+            n, coins = said.get("max"), len(said.get("mint") or [])
+            if not (isinstance(n, int) and 1 <= n <= AGENT_LAUNCH_TOOLS_MAX and coins <= AGENT_LAUNCH_TOOLS_COINS):
+                raise PermissionError(f"launch-tools refused, no job started: a run an agent starts reads at most "
+                                      f"{AGENT_LAUNCH_TOOLS_MAX:,} launches (--max {n}) or {AGENT_LAUNCH_TOOLS_COINS} "
+                                      f"coins (--mint given {coins} times), one Helius request or more each; a "
+                                      "launch once read is kept, so run it again for the rest")  # fmt: skip
+            return
+        credits, hours = said.get("max_credits"), said.get("hours")
+        if not (isinstance(credits, int) and 0 < credits <= AGENT_SENDS_CREDITS):
+            raise PermissionError(f"--max-credits {credits} refused, no job started: a run of sends an agent starts "
+                                  f"asks for at most {AGENT_SENDS_CREDITS:,} Helius credits (a credit a thousand "
+                                  "signatures and one a failed send; 4,907 for 8r6N8w over 72 hours)")  # fmt: skip
+        if not (isinstance(hours, (int, float)) and math.isfinite(hours) and 0 < hours <= AGENT_SENDS_HOURS):
+            raise PermissionError(f"--hours {hours} refused, no job started: a run of sends reads at most the tape's "
+                                  f"{AGENT_SENDS_HOURS:g} hours (a send before the tape is near no moment it "
+                                  "holds)")  # fmt: skip
+        from .. import amm_backfill as ab
+        from ..analysis.sends import USAGE as SENDS_USAGE
+
+        counted = [ab.month_count(str(self.ops.db), now, usage) for usage in (ab.USAGE, SENDS_USAGE)]
+        if all(c is not None for c in counted):
+            left = max(0, ab.MONTH_CREDITS - sum(c or 0 for c in counted))
+            if credits > left:
+                raise PermissionError(f"--max-credits {credits:,} refused, no job started: {left:,} of the month's "
+                                      f"{ab.MONTH_CREDITS:,} Helius credits are left (the backfills and the runs of "
+                                      "sends count together), so ask for that much at the most; the limit is the "
+                                      "owner's to lift: say so in an idea with owner_needed")  # fmt: skip
+
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
         """The newest run of this same job (`job_key`) that ended well inside its repeat window."""
         window = LOOKUP_REPEAT_SECS.get(str(argv[0]).strip(), REPEAT_AFTER_SECS)
@@ -517,6 +568,7 @@ class OperatorJobs:
         self._check_hunt_landing(argv)
         self._check_lab_window(argv)
         now = time.time() if now is None else now
+        self._check_helius(argv, now)
         self._check_repeat(argv, now, backfill=action)
         self._check_twin(argv, now, role, idea)  # after it: a backfill that goes on has its own words for its twin
         running = self.running()

@@ -118,10 +118,11 @@ def stopped_in(log: str) -> str | None:
     return found[-1] if found else None
 
 
-def month_count(db_path: str, now: float) -> int | None:
-    """What the backfills of `now`'s month have counted so far, read from the database file without opening it for
-    writing (`Store.usage_month`'s number for a caller that holds no Store); None when it cannot be read."""
-    key = f"api_usage:{USAGE}:{time.strftime('%Y-%m', time.gmtime(now))}"
+def month_count(db_path: str, now: float, usage: str = USAGE) -> int | None:
+    """What the backfills of `now`'s month have counted so far (or the runs that count under `usage`), read from the
+    database file without opening it for writing (`Store.usage_month`'s number for a caller that holds no Store);
+    None when it cannot be read."""
+    key = f"api_usage:{usage}:{time.strftime('%Y-%m', time.gmtime(now))}"
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
         try:

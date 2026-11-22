@@ -1042,6 +1042,60 @@ def test_no_agent_starts_a_freeze_that_drops_every_rule_under_forward_test(jobs,
     assert jobs.start(["paper", "freeze", "--trigger", KOL, "--hours", "24"], role=role, idea=idea)["id"]  # beside them
 
 
+BOT = "8r6N8wGJcqQGtKmJHwHaEmJ8NcZ1j9yBtw9xQZt9fJVw"
+
+
+@pytest.mark.parametrize("role", ["scout", "fees", None])
+def test_an_agents_sends_asks_for_a_bounded_number_of_helius_credits(jobs, role):
+    """Audit of 22 Nov (agents#2, tools#1): `sends` pays Helius credits (one a thousand signatures, one a failed send)
+    and an agent could ask for any number, over any window, where the backfill an agent starts is held to 5,000,000
+    credits and the month's limit. The one real run (8r6N8w, 72 h) counted 4,907; fourteen days of a very busy bot are
+    some hundreds of thousands. An agent's run asks for at most 200,000, over at most the tape's 336 hours, read the
+    way the command line reads them (the last value of a flag given twice, `--flag=value` too)."""
+    idea = _queue(jobs, role) if role else None
+    for argv in (["sends", BOT, "--hours", "72", "--max-credits", "50000000", "--json"],
+                 ["sends", BOT, "--max-credits=200001"],
+                 ["sends", BOT, "--max-credits", "1", "--max-credits", "9999999"],
+                 ["sends", BOT, "--hours", "337"], ["sends", BOT, "--hours", "inf"], ["sends", BOT, "--hours", "nan"],
+                 ["sends", BOT, "--hours=0"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="refused, no job started"):
+            jobs.start(argv, role=role, idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["sends", BOT, "--hours", "336", "--max-credits", "200000", "--json"], role=role, idea=idea)["id"]
+
+
+def test_an_agents_sends_never_asks_for_more_than_the_month_has_left(jobs):
+    """The backfills' month (amm_backfill.MONTH_CREDITS) is the Helius month the agents' runs share: a run of `sends`
+    an agent starts asks for no more than what the backfills and the earlier runs left of it."""
+    from snipetech import amm_backfill
+    from snipetech.analysis import sends
+
+    now = 1_795_348_400
+    st = Store(jobs.ops.db)
+    st.usage_add(amm_backfill.USAGE, amm_backfill.MONTH_CREDITS - 10_000, now)
+    st.usage_add(sends.USAGE, 4_000, now)
+    st.close()
+    idea = _queue(jobs, "scout")
+    with pytest.raises(PermissionError, match="6,000 of the month's 30,000,000 Helius credits are left"):
+        jobs.start(["sends", BOT, "--max-credits", "6001", "--json"], now=now, role="scout", idea=idea)
+    assert jobs.start(["sends", BOT, "--max-credits", "6000", "--json"], now=now, role="scout", idea=idea)["id"]
+
+
+def test_an_agents_launch_tools_reads_a_bounded_number_of_launches(jobs):
+    """launch-tools fetches one create transaction a launch it has never read (14 days of tape hold about 600,000), and
+    a coin not on the tape costs up to 500 pages of signatures: an agent's run reads at most 100,000 launches, or 50
+    coins by --mint."""
+    idea = _queue(jobs, "tester")
+    many = [w for k in range(51) for w in ("--mint", f"M{k:02d}" + "1" * 40)]
+    for argv in (["launch-tools", "--hours", "336", "--max", "1000000", "--json"], ["launch-tools", "--max=100001"],
+                 ["launch-tools", *many, "--json"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="refused, no job started"):
+            jobs.start(argv, role="tester", idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["launch-tools", "--hours", "336", "--max", "100000", "--json"], role="tester", idea=idea)["id"]
+    assert jobs.start(["launch-tools", *many[:100], "--json"], role="tester", idea=idea)["id"]
+
+
 def test_tester_cannot_start_a_wallet_study(jobs):
     idea = _queue(jobs, "tester")
     for argv in (["winners", "--json"], ["follow", "--kols"], ["label", "W", "why", "--kind", "cand"],
@@ -1740,3 +1794,14 @@ def test_the_scout_and_the_fee_analyst_are_told_how_to_read_a_bots_failed_sends(
         assert "sends" in roles.ROLE_COMMANDS[role]
         assert '["sends", "<wallet>", "--leader", "<wallet>", "--json"]' in _help(tools(role)["start_job"])
     assert '["sends"' not in _help(tools("tester")["start_job"])
+
+
+def test_the_scout_and_the_fee_analyst_are_told_what_a_run_of_sends_may_ask_for(rolebox):
+    """Audit of 22 Nov (agents#2): the bound a run of sends is held to is in the words they read."""
+    from snipetech.operator import jobs as J
+
+    tools, _, _ = rolebox
+    for role in ("scout", "fees"):
+        text = _help(tools(role)["start_job"])
+        assert f"{J.AGENT_SENDS_CREDITS:,} at most" in text and f'"--hours" {J.AGENT_SENDS_HOURS:g} at most' in text
+        assert "left of the month" in text

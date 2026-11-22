@@ -1631,8 +1631,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         leaders' first buys of 1.9 SOL or more ("--min-sol"), how many it tried, landed right behind ("adjacent"),
         behind other buyers in the block, later, tried with failed sends only, or did not try, and what the failed ones
         paid (a failed send pays its priority; its tip is undone). It costs Helius credits: one a thousand signatures
-        and one a failed send ("--max-credits", 5000 unless told). A send that never landed (dropped, or a bundle that
-        lost its auction) leaves nothing on chain, so the tries it counts are the least the bot made.
+        and one a failed send ("--max-credits", 5000 unless told; 200,000 at most and "--hours" 336 at most from an
+        agent, and never more than the backfills and the earlier runs left of the month). A send that never landed
+        (dropped, or a bundle that lost its auction) leaves nothing on chain, so the tries it counts are the least the
+        bot made.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
         gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
