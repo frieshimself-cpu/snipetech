@@ -1623,6 +1623,7 @@ class Service:
         # each coin's sales by the run itself that landed, (signature, tokens), until the tape has them (`unwritten_sold`)
         unwritten: dict[str, list[tuple[str, float]]] = {}
         rest_said: set[str] = set()  # the coins said to hold none of the run's tokens any more, once each holding
+        short_said: set[str] = set()  # and those said to hold less than the tape's buys explain (a sale not on it yet)
         # the readings in a row that found a coin of the run's all the owner's (`owners_rest`)
         rest_n: dict[str, int] = {}
         sight: dict[str, float] = {}  # each coin held now, anyone's, and when this holding of it was first seen
@@ -1654,6 +1655,7 @@ class Service:
                 coins.forget(m)
                 unsure_said.discard(m)
                 rest_said.discard(m)
+                short_said.discard(m)
                 rest_n.pop(m, None)
             run_coins, new_owner = [], []
             for h in held_all:
@@ -1760,11 +1762,13 @@ class Service:
                 # the run's own tokens only, when the wallet holds more of the coin than they are: the owner bought into
                 # it by hand, and the sale would sell their tokens too (22 Nov review)
                 try:
-                    mine = run_tokens()[0].get(mint)
+                    tokens = run_tokens()
+                    mine, owner_part = tokens[0].get(mint), tokens[3].get(mint, 0.0)
                 except Exception:  # noqa: BLE001 - the tape cannot say: the holding is the run's, as it was known
-                    mine = None
+                    mine, owner_part = None, 0.0
                 if theirs and mine is None:
                     continue  # the tape cannot say how much of the owner's coin is the run's: nothing is sold
+                raw = int(h.get("raw") or 0)
                 if mine is not None:
                     # less what its own sales sold that the tape has not written yet, and none at all once its buys of
                     # the coin on the tape are all sold: what the wallet still holds is the owner's (22 Nov audit, runner
@@ -1776,8 +1780,19 @@ class Service:
                             log(f"the run's own tokens of {mint} are all sold (its trades of it on the tape): what the "
                                 "wallet still holds of it is not the run's, and the run does not sell it")  # fmt: skip
                         continue
+                    # and less of it in the wallet than the run's tokens and the owner's own buys of it on the tape: a
+                    # sale of it the recorder has not written yet (OKTech's exit of the run's part, or the owner's own),
+                    # so the run's tokens may be all sold and the rest the owner's (review of the runner fixes, 22 Nov:
+                    # OKTech's sale written 15 s late, the run sold the owner's whole holding): not sold until it has it
+                    if not theirs and owner_part >= 1 and raw + 1 < mine + owner_part:
+                        sweep_due[mint] = now + SWEEP_SOON_SECS
+                        if mint not in short_said:
+                            short_said.add(mint)
+                            log(f"the wallet holds {raw:,} of {mint}, less than the run's {mine:,.0f} and the owner's "
+                                f"{owner_part:,.0f} on the tape: a sale of it is not on the tape yet, so the run does "
+                                f"not sell it until the tape has it (read again every {SWEEP_SOON_SECS:g} s)")  # fmt: skip
+                        continue
                 sweep_due[mint] = now + SWEEP_RETRY_SECS
-                raw = int(h.get("raw") or 0)
                 part = int(mine) if mine is not None and (theirs or mine < raw) else None
                 sale = self.sweep_coin(mint) if part is None else self.sweep_coin(mint, amount=part)
                 try:
