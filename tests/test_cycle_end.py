@@ -134,6 +134,70 @@ def test_a_run_told_to_stop_stops_its_spare_snipers_before_it_goes(monkeypatch):
     assert _stops(client, B, since=T0 + 140) and not _stops(client, A)
 
 
+def test_one_failed_read_at_the_end_is_read_again_before_the_snipers_are_left_armed(monkeypatch):
+    """Audit of 22 Nov, runner finding 2: the end read the wallet once and on any failure left every sniper armed,
+    nobody watching (one more buy each: no floor, no fills cap, no time limit). One 429 at the moment /stop ended a run
+    with nothing held did it. The main loop and the watch after the end read again on a failure; now the end does."""
+    state = {"stopped": False, "failed": 0}
+
+    def coins(now):  # nothing is ever held; /stop at 60 s, and the end's first read of the wallet fails once
+        if state["stopped"] and state["failed"] == 0:
+            state["failed"] += 1
+            raise RuntimeError("HTTP 429 (rate limited)")
+        if now >= T0 + 60:
+            state["stopped"] = True
+        return []
+
+    rep, _client = _run(monkeypatch, lambda now: 10.0, coins=coins, stop_at=T0 + 60, minutes=5)
+    assert state["failed"] == 1
+    assert rep["left_running"] == [], (rep["reason"], rep["left_running"])
+    assert "could not be read" not in rep["reason"]
+
+
+def test_a_wallet_that_stays_unreadable_at_the_end_leaves_the_snipers_running_within_the_watch(monkeypatch):
+    """The end reads again every 5 s, END_WATCH_SECS after the end at most (the job's limit allows the run that much
+    past its minutes): then unknown holdings still stop nothing, and it says so."""
+    from snipetech.service import END_WATCH_SECS
+
+    reads = []
+
+    def coins(now):
+        if now >= T0 + 60:
+            reads.append(now)
+            raise RuntimeError("HTTP 503")
+        return []
+
+    rep, client = _run(monkeypatch, lambda now: 10.0, coins=coins, stop_at=T0 + 60, minutes=5)
+    assert "could not be read" in rep["reason"] and sorted(rep["left_running"]) == sorted(client.ids)
+    assert len(reads) > 100 and reads[-1] - reads[0] <= END_WATCH_SECS + 10, (len(reads), reads[-1] - reads[0])
+
+
+def test_one_failed_read_on_the_way_out_is_read_again_within_its_15_s(monkeypatch):
+    """Runner finding 2, the way out (`last_stop`, told to stop by the job's limit, a kill or a restart): it has 15 s
+    and read again every 3 s while a coin could not be placed, but one failed read ended it at once, every sniper left
+    running."""
+    import asyncio
+
+    import pytest
+
+    clients, state = _capture_clients(monkeypatch), {"told": False, "failed": 0}
+
+    def coins(now):
+        if now >= T0 + 60 and not state["told"]:  # the job's limit reaches the run at its read
+            state["told"] = True
+            raise asyncio.CancelledError
+        if state["told"] and state["failed"] == 0:  # the first read on the way out fails once
+            state["failed"] += 1
+            raise RuntimeError("HTTP 429 (rate limited)")
+        return []
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(monkeypatch, lambda now: 10.0, coins=coins, minutes=30)
+    (client,) = clients
+    assert state["failed"] == 1
+    assert {i for kind, i, t in client.timed if kind == "stop" and t >= T0 + 60} == set(SNIPER_IDS)
+
+
 def test_a_job_limit_shorter_than_the_run_refuses_it_before_anything_is_armed(monkeypatch):
     """Killed mid-run at its job's limit, a runner leaves its snipers armed: 6 h by default against a 24 h run."""
     import pytest

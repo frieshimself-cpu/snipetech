@@ -112,6 +112,43 @@ def test_a_repeat_is_only_tagged_and_a_first_buy_counted(monkeypatch):
     assert [p["kind"] for p in rep["places"]] == ["repeat"] and rep["rests"] == {}
 
 
+def test_a_copy_of_another_wallets_first_buy_in_a_launchers_coin_is_no_own_launch_copy(monkeypatch):
+    """Audit of 22 Nov, runner finding 6: the kinds looked at who signed the coin's create before which copied buy ours
+    followed. Cooker launched L1 and bought in it; B copied Cupseyy's first buy of L1, and it was taken for a copy of
+    Cooker's own launch: sold at once (not at the exit the paper scored), never placed, and Cooker's sniper A rested
+    3 hours although it bought nothing."""
+    sweeps = []
+    first = _trade(T0 + 99, CUPSEYY, "L1", 4.0, pos=1)  # Cupseyy's first buy of the coin Cooker launched at 40 s
+    tape = [_trade(T0 + 40, COOKER, "L1", 3.0, pos=1), first, _ours(T0 + 100, "L1")]
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0,
+                        coins=lambda now: [_coin("L1")] if T0 + 102 <= now < T0 + 112 else [], payload=_payload,
+                        launches=[_launch(T0 + 40, "L1", COOKER, FRESH)], tape=tape, sweeps=sweeps, sweep_after=60,
+                        rearm_after=60, minutes=5)  # fmt: skip
+    assert [(c["kind"], c["wallet"]) for c in rep["copies"]] == [("first", CUPSEYY)]
+    assert sweeps == [] and A not in rep["rests"]
+
+
+def test_a_copy_of_another_wallets_buy_in_a_coin_naming_a_copied_wallet_is_no_bait(monkeypatch):
+    """Runner finding 6, the named creator: a create naming Cooker, signed by someone else, that Cupseyy then bought;
+    B's copy of Cupseyy's buy was bait (Cooker bought nothing) and sold at once. Bait is a copy with no copied buy
+    before it."""
+    sweeps = []
+    rep, _client = _run(monkeypatch, lambda now: 10.0, coins=lambda now: [_coin("N1")] if T0 + 102 <= now < T0 + 112 else [],
+                        payload=_payload, launches=[_launch(T0 + 90, "N1", BAITER, COOKER)],
+                        tape=[_trade(T0 + 99, CUPSEYY, "N1", 4.0, pos=1), _ours(T0 + 100, "N1")], sweeps=sweeps,
+                        sweep_after=60, minutes=5)  # fmt: skip
+    assert [(c["kind"], c["wallet"]) for c in rep["copies"]] == [("first", CUPSEYY)] and sweeps == []
+
+
+def test_a_copy_after_a_launchers_create_with_no_copied_buy_is_still_an_own_launch_copy(monkeypatch):
+    """A copied wallet's create with no buy of its own (Cented's empty launches) and ours right after it: no copied buy
+    before ours, so the launcher's create is what ours followed, an own launch, as before."""
+    rep, _client = _run(monkeypatch, lambda now: 10.0, coins=lambda now: [_coin("E1")] if T0 + 102 <= now < T0 + 112 else [],
+                        payload=_payload, launches=[_launch(T0 + 99, "E1", COOKER, FRESH)], tape=[_ours(T0 + 100, "E1")],
+                        minutes=5)  # fmt: skip
+    assert [(c["kind"], c["wallet"]) for c in rep["copies"]] == [("own launch", COOKER)]
+
+
 def test_a_rest_an_earlier_run_left_holds_at_the_start(monkeypatch):
     """A run restarted inside the 3 hours does not arm the resting sniper; the other one starts as usual."""
 

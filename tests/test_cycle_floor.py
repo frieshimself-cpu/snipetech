@@ -374,6 +374,164 @@ def test_a_real_loss_after_the_owner_took_sol_out_still_ends_the_run(monkeypatch
     assert "7.0" in floor_hit, floor_hit  # the floor moved from 9 to 7 with the owner's 2 SOL, then the loss crossed it
 
 
+def _two_copies(withdrawal_at, first_shows_at, first_sold_at):
+    """20 SOL and a 5 SOL max loss (floor 15): copy 1 of 3 SOL whose coin shows at `first_shows_at` and sells flat at
+    `first_sold_at`; the owner takes 4 SOL out at `withdrawal_at`; copy 2 of 3 SOL at 300 s whose coin is worth 1.5:
+    the run's own trades come to -1.5 of the 5 SOL it may lose. (sol, coins, tape)"""
+    from dataclasses import replace
+
+    from tests.test_cycle_owner import OURS, _coin, _copy
+
+    second = "Second" + "3" * 38
+    bought_at = first_shows_at - 2
+
+    def sol(now):
+        out = 20.0
+        if now >= withdrawal_at:
+            out -= 4.0
+        if bought_at <= now < first_sold_at:
+            out -= 3.0
+        return out - 3.0 if now >= T0 + 300 else out
+
+    def coins(now):
+        if first_shows_at <= now < first_sold_at:
+            return [_coin(OURS, 3.0)]
+        return [_coin(second, 1.5)] if now >= T0 + 302 else []
+
+    sale = replace(_copy(first_sold_at, mint=OURS), sig="sale1", is_buy=False, quote=3_000_000_000, priority=1_000_000,
+                   tip=0)  # fmt: skip
+    tape = [_copy(bought_at, mint=OURS, sol=3.0), sale, _copy(T0 + 300, mint=second, sol=3.0)]
+    return sol, coins, tape
+
+
+def test_sol_the_owner_takes_out_while_a_copy_is_held_is_no_loss_of_the_run(monkeypatch):
+    """Audit of 22 Nov, runner finding 3: any fall of the SOL while a coin of the run's was held was taken for that
+    coin's buy. The owner took 4 SOL out while copy 1 was held (they move SOL mid-run: 21 Nov 22:33, 1.65 SOL; 22 Nov
+    02:13, 2 SOL), the floor never moved, and copy 2's 1.5 SOL loss ended the run on a floor the owner's 4 SOL had
+    tightened: stopped at -1.5 of the 5 SOL allowed."""
+    from tests.test_cycle_owner import FEES
+
+    sol, coins, tape = _two_copies(withdrawal_at=T0 + 130, first_shows_at=T0 + 102, first_sold_at=T0 + 160)
+    rep, _client = _run(monkeypatch, sol, coins=coins, payload=FEES, tape=tape, floor=None, max_loss=5.0, minutes=10)
+    assert not rep["reason"].startswith("EMERGENCY"), (rep["reason"], rep["floor_moves"])
+    assert rep["floor_moves"] == [pytest.approx(-4.0)]
+
+
+def test_sol_the_owner_takes_out_just_before_a_copy_shows_is_no_loss_of_the_run(monkeypatch):
+    """Runner finding 3, the skeptic's variant: the owner took 4 SOL out at 100 s with nothing held, and a copy's coin
+    showed at 112 s, inside the 30 s the floor waits for a buy's coin: the coin was taken for that SOL's buy, and the
+    withdrawal was wiped with it. A coin that shows is the newest fall's buy; an older fall is the owner's."""
+    from tests.test_cycle_owner import FEES
+
+    sol, coins, tape = _two_copies(withdrawal_at=T0 + 100, first_shows_at=T0 + 112, first_sold_at=T0 + 125)
+    rep, _client = _run(monkeypatch, sol, coins=coins, payload=FEES, tape=tape, floor=None, max_loss=5.0, minutes=10)
+    assert not rep["reason"].startswith("EMERGENCY"), (rep["reason"], rep["floor_moves"])
+    assert rep["floor_moves"] == [pytest.approx(-4.0)]
+
+
+def test_sol_the_owner_takes_out_past_the_floor_while_a_copy_is_held_ends_nothing(monkeypatch):
+    """Runner finding 3: a withdrawal that takes the wallet's reading under the floor while a copy is held. Nothing
+    was held back for a fall of the SOL beside a held coin, so two readings under the floor ended the run at once,
+    before the floor could move with the owner's SOL. A fall waits FRESH_HOLD_SECS for its coin, held coin or not."""
+    from tests.test_cycle_owner import FEES, OURS, _coin, _copy
+
+    def sol(now):  # 20 SOL; a 3 SOL copy held 102-200 s; the owner takes 6 SOL out at 130 s
+        return 20.0 - (3.0 if T0 + 100 <= now < T0 + 200 else 0.0) - (6.0 if now >= T0 + 130 else 0.0)
+
+    rep, _client = _run(monkeypatch, sol, coins=lambda now: [_coin(OURS, 3.0)] if T0 + 102 <= now < T0 + 200 else [],
+                        payload=FEES, tape=[_copy(T0 + 100, mint=OURS, sol=3.0)], floor=None, max_loss=5.0,
+                        minutes=5)  # fmt: skip
+    assert rep["reason"].startswith("time limit"), (rep["reason"], rep["floor_moves"])
+    assert rep["floor_moves"] == [pytest.approx(-6.0)]
+
+
+def test_a_second_copy_while_one_is_held_moves_no_floor(monkeypatch):
+    """The SOL that leaves while a copy is held now waits for a coin like any other fall: the other sniper's copy of
+    another coin, whose coin shows 10 s after its SOL left, is that SOL's buy, not the owner's move."""
+    from tests.test_cycle_owner import FEES, OURS, _coin, _copy
+
+    second = "Second" + "3" * 38
+
+    def sol(now):
+        out = 10.0 - (1.0 if T0 + 100 <= now < T0 + 160 else 0.0)
+        return out - (1.0 if T0 + 130 <= now < T0 + 200 else 0.0)
+
+    def coins(now):
+        held = [_coin(OURS, 1.0)] if T0 + 102 <= now < T0 + 160 else []
+        return held + ([_coin(second, 1.0)] if T0 + 140 <= now < T0 + 200 else [])
+
+    from dataclasses import replace
+
+    def sale(ts, mint):  # sold flat by the sniper's own exit
+        return replace(_copy(ts, mint=mint), sig=f"sale-{mint}", is_buy=False, priority=1_000_000, tip=0)
+
+    tape = [_copy(T0 + 100, mint=OURS), _copy(T0 + 130, mint=second), sale(T0 + 160, OURS), sale(T0 + 200, second)]
+    rep, _client = _run(monkeypatch, sol, coins=coins, payload=FEES, tape=tape, floor=None, max_loss=1.5, minutes=5)
+    assert rep["floor_moves"] == [] and rep["reason"].startswith("time limit"), (rep["reason"], rep["floor_moves"])
+
+
+def _sale_at(ts, mint, sol):
+    """The run's copy of `mint` sold by its sniper's exit at `ts` for `sol`."""
+    from dataclasses import replace
+
+    from tests.test_cycle_owner import _copy
+
+    return replace(_copy(ts, mint=mint), sig=f"sale-{mint}-{ts:.0f}", is_buy=False, quote=round(sol * 1e9),
+                   priority=1_000_000, tip=0)  # fmt: skip
+
+
+def test_a_copys_sol_that_leaves_a_reading_after_its_coin_shows_moves_no_floor(monkeypatch):
+    """Review of the runner fixes (22 Nov): each reading reads the SOL a moment before the coins, so a copy's coin can
+    show one reading before its SOL leaves. Since a fall beside a held coin waits for a coin to show (runner finding 3),
+    that fall found none and moved the floor down by the copy's 3 SOL as the owner's own move: a run allowed to lose 5
+    SOL could lose 8. A fall in the reading after a coin of the run's showed with no fall to take is that coin's buy."""
+    from tests.test_cycle_owner import FEES, OURS, _coin, _copy
+
+    rep, _client = _run(monkeypatch, lambda now: 17.0 if T0 + 107 <= now < T0 + 200 else 20.0,
+                        coins=lambda now: [_coin(OURS, 3.0)] if T0 + 102 <= now < T0 + 200 else [], payload=FEES,
+                        tape=[_copy(T0 + 101, mint=OURS, sol=3.0), _sale_at(T0 + 200, OURS, 3.0)], floor=None,
+                        max_loss=5.0, minutes=6)  # fmt: skip
+    assert rep["floor_moves"] == [], [e for e in rep["events"] if "floor" in e]
+
+
+def test_a_pumpswap_copy_wrapped_again_a_reading_after_its_coin_shows_moves_no_floor(monkeypatch):
+    """Review of the runner fixes (22 Nov): a PumpSwap copy is paid from the wrapped SOL, and OKTech wraps as much plain
+    SOL again a second or two later (the wrap test, 21 Nov). With the coin shown before that, the fall of the plain SOL
+    found the wrapped SOL where it was before the buy, read as SOL gone with no coin to come, and moved the floor down
+    by the 3 SOL OKTech had only wrapped."""
+    from tests.test_cycle_owner import FEES, OURS, _coin, _copy
+
+    rep, _client = _run(monkeypatch, lambda now: 17.0 if T0 + 107 <= now < T0 + 200 else 20.0,
+                        coins=lambda now: [_coin(OURS, 3.0)] if T0 + 102 <= now < T0 + 200 else [],
+                        wsol=lambda now: 0.3 if T0 + 101 <= now < T0 + 107 else 3.3, payload=FEES,
+                        tape=[_copy(T0 + 101, mint=OURS, sol=3.0), _sale_at(T0 + 200, OURS, 3.0)], floor=None,
+                        max_loss=5.0, minutes=6)  # fmt: skip
+    assert rep["floor_moves"] == [], [e for e in rep["events"] if "floor" in e or "wrapped" in e]
+
+
+def test_the_owners_sol_taken_out_beside_a_copy_bought_right_after_a_sale_still_moves_the_floor(monkeypatch):
+    """A copy's SOL that leaves within FRESH_HOLD_SECS of a sale waits for no coin (`traded`: a trade's SOL around a
+    sale), so its coin, shown a reading later as usual, finds no fall to take: that is no coin whose SOL is yet to
+    leave. The owner's 6 SOL taken out in the next reading, 33 s after the sale, is theirs: the floor moves with it."""
+    from tests.test_cycle_owner import FEES, OURS, _coin, _copy
+
+    second = "Second" + "3" * 38
+
+    def sol(now):  # 20 SOL; copy 1 (1 SOL) sold flat at 150 s; copy 2 (3 SOL) at 173 s; the owner takes 6 out at 183 s
+        out = 20.0 - (1.0 if T0 + 100 <= now < T0 + 150 else 0.0) - (3.0 if T0 + 173 <= now < T0 + 250 else 0.0)
+        return out - (6.0 if now >= T0 + 183 else 0.0)
+
+    def coins(now):  # the readings come at 152, 157, 163.5, 170, 175, 180, 185 s (the re-arms take 1.5 s each)
+        first = [_coin(OURS, 1.0)] if T0 + 101 <= now < T0 + 150 else []
+        return first + ([_coin(second, 3.0)] if T0 + 178 <= now < T0 + 250 else [])
+
+    tape = [_copy(T0 + 100, mint=OURS), _sale_at(T0 + 150, OURS, 1.0), _copy(T0 + 173, mint=second, sol=3.0),
+            _sale_at(T0 + 250, second, 3.0)]  # fmt: skip
+    rep, _client = _run(monkeypatch, sol, coins=coins, payload=FEES, tape=tape, floor=None, max_loss=5.0, minutes=6)
+    assert not rep["reason"].startswith("EMERGENCY"), (rep["reason"], rep["floor_moves"])
+    assert rep["floor_moves"] == [pytest.approx(-6.0)]
+
+
 def test_a_buy_whose_coin_shows_after_the_wait_takes_the_floor_back(monkeypatch):
     """A slow node can show a coin later than FRESH_HOLD_SECS: the SOL of a 1.1 SOL buy left at 100 s and the coin
     showed at 140 s. The floor moved down at 130 s as for the owner's own move, and goes back up when the coin shows:
