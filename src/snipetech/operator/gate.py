@@ -215,6 +215,22 @@ def _state_key(reason: str) -> str:
     return "".join(ch for ch in reason if not ch.isdigit() and ch not in "+-.").strip()
 
 
+def bot_result(snap, prev) -> float | None:
+    """The SOL the bot's own trades and coins moved since the round that set the baseline (`prev.equity_ref`): what its
+    trades took in less what they paid, fees in (the baseline's carried `bot_cash_since_ref` and this round's
+    `bot_cash`), plus what its coins are worth now less what they were worth then (`ref_ours_sol`). None when a part
+    cannot be told (trades that could not be read, a snapshot taken before 22 Nov)."""
+    if prev is None:
+        return None
+    ref_ours = getattr(prev, "ref_ours_sol", None)
+    before = getattr(prev, "bot_cash_since_ref", None)
+    now_cash = getattr(snap, "bot_cash", None)
+    if ref_ours is None or before is None or now_cash is None:
+        return None
+    worth = sum(float(h.get("value_sol") or 0) for h in snap.held or [] if h.get("ours", True))
+    return float(before) + float(now_cash) + worth - float(ref_ours)
+
+
 def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, new_trips: int = 0,
            trips_since: float | None = None) -> Decision:  # fmt: skip
     """Events (a research job ended, equity moved, inbox, analysis due) always call. States (sniper running, coin held,
@@ -285,16 +301,25 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     if total is not None and ref is not None:
         move = total - ref
         # The owner takes SOL out, puts it in and trades by hand in this wallet ("Don't flag, I constantly take out and
-        # put money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss): a move with no trade of
-        # the bot's since the last round (each fill marked by its fees, `snapshot.mark_ours`) and no coin of the bot's
-        # held (`snapshot.mark_held`: its value moves the equity too; 22 Nov review) is theirs, never news. "Since the
-        # last round" is since the round that set the baseline (`bot_since_ref`, carried while a coin was unpriced), and
-        # trades that could not be read count as the bot's
-        bot_traded = (any(f.get("ours", True) for f in snap.fills or []) or bool(getattr(snap, "fills_unread", False))
-                      or bool(getattr(prev, "bot_since_ref", False)))  # fmt: skip
-        bot_holds = any(h.get("ours", True) for h in snap.held or [])
-        if abs(move) > cfg.equity_alert_sol and (bot_traded or bot_holds):
-            events.append(f"equity moved {move:+.3f} SOL")
+        # put money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss). The alert is on the bot's
+        # own result since the baseline (`bot_result`: its trades' SOL, fees in, and its coins' worth); the rest of the
+        # move is the owner's, never news (review of 22 Nov: a withdrawal beside one small copy paged in full).
+        own = bot_result(snap, prev)
+        if own is not None:
+            if abs(own) > cfg.equity_alert_sol:
+                events.append(f"equity moved {move:+.3f} SOL, {own:+.3f} SOL of it by the bot's own trades and coins "
+                              "(the rest is the owner's)")  # fmt: skip
+        else:
+            # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the
+            # whole move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;
+            # `bot_since_ref` carried while a coin was unpriced; unread trades count as the bot's) or holds a coin
+            # (`snapshot.mark_held`)
+            bot_traded = (any(f.get("ours", True) for f in snap.fills or [])
+                          or bool(getattr(snap, "fills_unread", False))
+                          or bool(getattr(prev, "bot_since_ref", False)))  # fmt: skip
+            bot_holds = any(h.get("ours", True) for h in snap.held or [])
+            if abs(move) > cfg.equity_alert_sol and (bot_traded or bot_holds):
+                events.append(f"equity moved {move:+.3f} SOL")
     if snap.tape_last_ts is not None and now - snap.tape_last_ts > cfg.tape_stale_secs:
         states.append(f"tape stale {int(now - snap.tape_last_ts)} s")
     from .snapshot import ONESHOT_UNITS, WATCHED_UNITS

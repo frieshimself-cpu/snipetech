@@ -49,12 +49,14 @@ def _op(env, **over):
 
 
 def _bot_sale(store, ts):
-    """A sale of the bot's on the tape (no fee recorded: it counts as the bot's) since the last round: the round's
-    equity move is the bot's then, and news (a move with no trade of the bot's is the owner's own, never news)."""
+    """A sale of the bot's on the tape since the last round (no fee recorded: it counts as the bot's) that brought the
+    1 SOL the round's equity move shows: the move is the bot's own then, and news (one the bot's own trades and coins do
+    not explain is the owner's, never news: the gate's `bot_result`, 22 Nov)."""
     from snipetech.models import Trade
 
     store.add_trades([Trade(sig=f"bot-sale-{ts}", ev=0, slot=int(ts), pos=0, ts=int(ts), mint="M", venue="curve",
-                            user="W", is_buy=False, quote=1, base=1, fee=0, fee_bps=0, q_after=1, b_after=1)])  # fmt: skip
+                            user="W", is_buy=False, quote=1_000_005_000, base=1, fee=0, fee_bps=0, q_after=1,
+                            b_after=1)])  # fmt: skip
 
 
 def test_second_instance_exits_locked(tmp_env):

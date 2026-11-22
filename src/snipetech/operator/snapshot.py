@@ -64,6 +64,9 @@ class Snapshot:
     ok_tx_1h: int | None = None  # landed transactions by the wallet in the last hour (None = could not read)
     fills_unread: bool = False  # the wallet's trades could not be read this round: the gate counts them as the bot's
     bot_since_ref: bool = False  # the bot traded since the round that set equity_ref (carried with it)
+    bot_cash: float | None = None  # this round: SOL the bot's own trades took in less what they paid, fees in
+    bot_cash_since_ref: float | None = None  # the same since the round that set equity_ref (carried with it)
+    ref_ours_sol: float | None = None  # what the bot's own coins were worth in the round that set equity_ref
 
     @property
     def equity(self) -> float | None:
@@ -258,6 +261,13 @@ async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, li
     return native, wsol, held
 
 
+def trade_cash(is_buy, quote, fee, priority, tip) -> float:
+    """The SOL one trade moved for the wallet, fees in: a buy pays its quote, the venue's fee, its bid (priority and
+    tip) and the signature; a sale brings its quote less them (as the runner's own result counts them)."""
+    fees = int(fee or 0) + int(priority or 0) + int(tip or 0) + 5000
+    return (-(int(quote) + fees) if is_buy else int(quote) - fees) / 1e9
+
+
 def mark_ours(store, fills: list[dict]) -> list[dict]:
     """Each of the wallet's trades with `ours`: whether the bot made it, by the fees our snipers and the run's own
     sale pay (measure/ours.py); unknown fees, or no sniper on record, count as the bot's. The owner trades by hand in
@@ -348,18 +358,29 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
             snap.failed_tx_1h, snap.ok_tx_1h = await transaction_counts(svc, wallet, now)
         try:
-            rows = svc.store._q("select ts, mint, is_buy, quote, priority, tip from trades where user=? and ts>? "
+            rows = svc.store._q("select ts, mint, is_buy, quote, priority, tip, fee from trades where user=? and ts>? "
                                 "order by ts", (wallet, since))  # fmt: skip
             snap.fills = mark_ours(svc.store, [
                 {"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4), "priority": pr,
-                 "tip": tp} for ts, m, b, q, pr, tp in rows])  # fmt: skip
+                 "tip": tp} for ts, m, b, q, pr, tp, _fe in rows])  # fmt: skip
+            snap.bot_cash = round(sum(trade_cash(b, q, fe, pr, tp) for (_ts, _m, b, q, pr, tp, fe), f
+                                      in zip(rows, snap.fills, strict=True) if f.get("ours", True)), 9)  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
-            snap.fills_unread = True
+            snap.fills_unread, snap.bot_cash = True, None
         # the gate measures the move from equity_ref, which a round with an unpriced coin carries from an older round:
         # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed
         ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
         snap.bot_since_ref = snap.total_equity is None and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)
+        # and the bot's own result since then (the gate's alert, review of 22 Nov): its trades' SOL and its coins' worth
+        if snap.total_equity is not None:  # this round values the wallet: the baseline is this round
+            snap.ref_ours_sol = round(sum(float(h["value_sol"]) for h in snap.held if h.get("ours", True)), 9)
+            snap.bot_cash_since_ref = 0.0
+        else:
+            snap.ref_ours_sol = getattr(prev, "ref_ours_sol", None)
+            before = getattr(prev, "bot_cash_since_ref", None)
+            snap.bot_cash_since_ref = (None if before is None or snap.bot_cash is None
+                                       else round(float(before) + snap.bot_cash, 9))  # fmt: skip
     try:
         st = await svc.oktech_status()
         snap.snipers = [

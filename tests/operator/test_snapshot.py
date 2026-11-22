@@ -195,6 +195,33 @@ def test_a_bot_trade_is_carried_until_a_round_values_the_wallet(tmp_path, fake_s
     assert unread.fills_unread is True and any("fills" in e for e in unread.errors)
 
 
+def test_the_bots_own_cash_is_read_with_its_fees_and_carried_with_the_baseline(tmp_path, fake_service):
+    """The loss alert measures the bot's own result (review of 22 Nov): each round reads what the bot's trades took in
+    and paid out, fees in (`bot_cash`: W's buy of 0.05 SOL and sale of 0.04, each with its 5,000-lamport signature),
+    carries the sum since the baseline while a round cannot value the wallet (`bot_cash_since_ref`), and keeps what the
+    bot's coins were worth in the round that set the baseline (`ref_ours_sol`)."""
+    cfg = Config()
+    cfg.operator.wallet = W
+    paths = OperatorPaths(tmp_path).ensure()
+    unpriced = [{"mint": "M1", "amount": 1.0, "priced": False, "value_sol": None}]
+
+    def take(prev, now, held):
+        return asyncio.run(take_snapshot(fake_service, paths, cfg, prev=prev, now=now,
+                                         services=lambda: {"snipetech-tape": "active"},
+                                         balances=lambda w: (1.0, 0.0, held)))  # fmt: skip
+
+    first = take(None, 2_000, [])
+    assert first.bot_cash == pytest.approx(-0.01001) and first.bot_cash_since_ref == 0.0 and first.ref_ours_sol == 0.0
+    valued = Snapshot(ts=1_750, wallet=W, native_sol=1.0, wsol=0.0, equity_ref=1.0, ref_ours_sol=0.3,
+                      bot_cash_since_ref=0.0)  # fmt: skip
+    blind = take(valued, 1_850, unpriced)  # carried: the baseline's cash and coins with it
+    assert blind.bot_cash_since_ref == pytest.approx(-0.01001) and blind.ref_ours_sol == 0.3
+    held = [{"mint": "M1", "amount": 1.0, "priced": True, "value_sol": 0.25}]
+    again = take(Snapshot(ts=1_950, wallet=W, equity_ref=1.0, ref_ours_sol=0.3, bot_cash_since_ref=-0.5, held=unpriced),
+                 2_000, held)  # fmt: skip
+    assert again.bot_cash == 0.0 and again.bot_cash_since_ref == 0.0 and again.ref_ours_sol == pytest.approx(0.25)
+
+
 def test_snapshot_records_whether_the_book_is_live(tmp_path, fake_service):
     from snipetech.book.switch import book_switch
 

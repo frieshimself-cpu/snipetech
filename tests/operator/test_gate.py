@@ -110,6 +110,35 @@ def test_a_bot_trade_in_a_round_that_could_not_value_the_wallet_still_counts(pat
     assert decide(snap(native_sol=10.23, fills_unread=True), snap(native_sol=12.23), NOW, CFG, paths).call
 
 
+def test_the_owners_withdrawal_beside_a_small_bot_round_trip_wakes_nobody(paths):
+    """Review of 22 Nov: a move with any trade of the bot's in the window woke the analyst for the whole move, so the
+    owner's 2 SOL withdrawal beside one 0.01 SOL copy that broke even read as a 2 SOL loss. The alert measures the bot's
+    own result since the baseline: what its trades took in and paid out, fees in (`bot_cash`, carried with the
+    baseline), and how the coins it holds moved (`ref_ours_sol`); the rest of the move is the owner's."""
+    trip = [{"ts": NOW - 120, "mint": "M", "side": "buy", "sol": 0.01, "ours": True},
+            {"ts": NOW - 60, "mint": "M", "side": "sell", "sol": 0.0101, "ours": True}]  # fmt: skip
+    before = snap(native_sol=12.23, equity_ref=12.33, ref_ours_sol=0.0, bot_cash_since_ref=0.0)
+    assert not decide(snap(native_sol=10.23, fills=trip, bot_cash=-0.0001), before, NOW, CFG, paths).call
+    d = decide(snap(native_sol=10.23, fills=trip, bot_cash=-1.5), before, NOW, CFG, paths)  # the bot's own loss
+    assert d.call and any("-1.500" in r for r in d.reasons)
+    # a buy of the bot's in a round that could not value the wallet, sold at a loss by now: the carried cash counts
+    carried = snap(native_sol=11.23, equity_ref=12.33, ref_ours_sol=0.0, bot_cash_since_ref=-1.0)
+    d = decide(snap(native_sol=10.23, bot_cash=0.2), carried, NOW, CFG, paths)
+    assert d.call and any("-0.800" in r for r in d.reasons)
+
+
+def test_the_bots_own_coins_move_its_result_and_the_owners_do_not(paths):
+    def coin(value, ours):
+        return {"mint": "M", "amount": 1.0, "value_sol": value, "priced": True, "since": NOW - 600, "ours": ours}
+
+    paths.expected.write_text(json.dumps({"snipers_running": 0, "held": 1}))  # a coin held is what quiet means now
+    before = snap(held=[coin(2.0, True)], equity_ref=3.1, ref_ours_sol=2.0, bot_cash_since_ref=0.0)
+    d = decide(snap(held=[coin(0.5, True)], bot_cash=0.0), before, NOW, CFG, paths)
+    assert d.call and any("-1.500" in r for r in d.reasons)
+    owners = snap(held=[coin(2.0, False)], equity_ref=3.1, ref_ours_sol=0.0, bot_cash_since_ref=0.0)
+    assert not decide(snap(held=[coin(0.5, False)], bot_cash=0.0), owners, NOW, CFG, paths).call
+
+
 def test_small_equity_move_is_quiet(paths):
     assert not decide(snap(native_sol=1.0), snap(native_sol=1.05), NOW, CFG, paths).call
 
