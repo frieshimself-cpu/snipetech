@@ -453,9 +453,11 @@ class LiveWatcher:
         self.disconnected_at: float | None = time.time()
         self.closed_launches: list[Launch] = []
         self.due: set[str] = set()
-        # the days of tape kept: the configured ones until a prune has looked at what was asked for in the database
-        # and at the disk (infra/retention.py)
+        # the days of tape kept: the configured ones (the floor) until a prune has worked out what was asked for in the
+        # database and what the disk fits (infra/retention.py, `retain_known`); only the prune acts on them
         self.retain_days = float(self.cfg.storage.retain_days)
+        self.retain_known = False
+        self.pruned_before: int | None = None  # the latest cutoff a prune of this process deleted before
         self.stats: defaultdict[str, int] = defaultdict(int)
         self.span_start: int | None = None  # current gap-free stretch of the firehose
         self.tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget tasks aren't collected
@@ -1769,15 +1771,25 @@ class LiveWatcher:
             walks = now - walked >= PRUNE_WALK_SECS
             try:
                 self.retain_days = float(retention.current(self.store, self.cfg.storage.retain_days, now)["effective"])
+                self.retain_known = True
             except Exception as exc:  # noqa: BLE001 - the days in force stay; never a prune at a number not understood
+                if not self.retain_known:
+                    # a new process holds the configured floor, not the days asked for (audit 22 Nov: 6 of the 14,
+                    # 8 days of tape deleted): nothing is deleted before the days have been worked out once
+                    log.warning("tape: the days to keep could not be worked out (%s); nothing is pruned until they "
+                                "are", exc)  # fmt: skip
+                    return
                 log.warning("tape: the days to keep could not be worked out (%s); keeping %.1f", exc, self.retain_days)
-            steps = self.store.prune_steps(int(now - self.retain_days * 86400), walks=walks)
+            cutoff = int(now - self.retain_days * 86400)
+            steps = self.store.prune_steps(cutoff, walks=walks)
             while True:
                 t0 = time.perf_counter()
                 with self.meter.timed("prune"):
                     step = next(steps, None)
                 if step is None:
                     break
+                # its first step clipped the tape's record there: the stretch never claims what the deletes take
+                self.pruned_before = cutoff if self.pruned_before is None else max(self.pruned_before, cutoff)
                 # the loop's turn: with one turn between steps the streams were served once a step for as long as the
                 # prune ran (11 Nov: 47-50 s an hour, PumpSwap dropped with "client could not keep up")
                 await asyncio.sleep(max(PRUNE_REST_MIN_SECS, PRUNE_REST * (time.perf_counter() - t0)))
@@ -1813,11 +1825,15 @@ class LiveWatcher:
         # while it is silent. Never taken back within a stretch.
         stands = min(now, self.tape_at) if self.tape_at is not None else now
         self.span_end = max(self.span_end, int(stands - max(2.0, self.lag + 1.0)))
-        start = max(self.span_start, int(now - self.retain_days * 86400))
+        # The stretch's start moves only with a prune, to the latest cutoff this process deleted before (the prune
+        # clips the record there first, store.prune_steps; one before this process clipped the stretch it goes on
+        # with). Never with the days held in memory: before its first prune a new process holds the configured floor,
+        # not the days asked for (audit 22 Nov: 6 of the 14; the first tick wrote the stretch cut to 6 days, a stop in
+        # those seconds made the cut the next process's position, and the disk rule read it as a 6-day tape).
+        start = self.span_start if self.pruned_before is None else max(self.span_start, self.pruned_before)
         if self.span_end < start:
             return
-        # earlier connections' spans end before this one started (the one a replaying start goes on with is this one);
-        # this span is clipped to what retention keeps
+        # earlier connections' spans end before this one started (the one a replaying start goes on with is this one)
         spans = [s for s in cov.get("spans", []) if s[1] < self.span_start]
         spans.append([start, self.span_end])
         cov["spans"] = sorted(spans)[-500:]
