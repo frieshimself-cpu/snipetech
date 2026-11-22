@@ -41,6 +41,10 @@ FETCH_CHUNK = 100
 OUTCOMES = ("adjacent", "block", "later", "failed", "none", "unread")
 UNTRIED = ("none", "unread")  # the outcomes not counted as tried: nothing seen, or nothing read
 UNSEEN = "a send that never landed (dropped, or a bundle that lost its auction) leaves nothing on chain"
+FEES_NOTE = (f"fee_sol and priority_sol are over the fetched sends only (the failed ones that landed within "
+             f"{TRY_SLOTS} slots of a moment: no other is fetched), not over all the failed sends; placed_fee_sol over "
+             "the tries at every tried moment, failed_only_fee_sol over those at the moments with failed sends only; "
+             "errors over every failed send (the listing's own)")  # fmt: skip
 
 
 def _err_text(err: Any) -> str:
@@ -165,12 +169,14 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
     per_leader: dict[str, dict[str, int]] = {
         lead: dict.fromkeys(("moments", "tried", *OUTCOMES), 0) for lead in leaders
     }
-    placed_fee = 0
+    placed_fee = failed_only_fee = 0  # the tries' fees at every tried moment; at those with failed sends only
     for i, m in enumerate(moments):
         where = _place(tape, m, buys_by_mint.get(m["mint"], []))
         if where is None:
             where = "failed" if tries.get(i) else "unread" if i in unread else "none"
         placed_fee += sum(f["fee"] for f in tries.get(i, []))
+        if where == "failed":
+            failed_only_fee += sum(f["fee"] for f in tries[i])
         outcomes[where] += 1
         row = per_leader.setdefault(m["leader"], dict.fromkeys(("moments", "tried", *OUTCOMES), 0))
         row["moments"] += 1
@@ -180,18 +186,22 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
     fee_sol = round(sum(f["fee"] for f in fails) / LAMPORTS, 9)
     verdict = (f"tried {tried} of {len(moments)} first buys of {min_sol:g} SOL or more: right behind on "
                f"{outcomes['adjacent']}, behind other buyers in the block on {outcomes['block']}, later on "
-               f"{outcomes['later']}; {outcomes['failed']} with only failed sends ({placed_fee / LAMPORTS:.4f} SOL in "
-               f"their fees); {outcomes['none']} with nothing seen. {UNSEEN}")  # fmt: skip
+               f"{outcomes['later']}; {outcomes['failed']} with only failed sends "
+               f"({failed_only_fee / LAMPORTS:.4f} SOL in their fees); {outcomes['none']} with nothing seen; the "
+               f"{placed} failed sends at the {tried} tried buys paid {placed_fee / LAMPORTS:.4f} SOL. "
+               f"{UNSEEN}")  # fmt: skip
     if stopped:
-        verdict += (f"; stopped at the {max_credits:g} credit limit: {outcomes['unread']} unread (a first buy whose sends "
-                    f"near it, or the listing back to it, were not read: it may have been tried; a higher --max-credits "
-                    f"reads it)")  # fmt: skip
+        verdict += (f"; stopped at the {max_credits:g} credit limit: {outcomes['unread']} unread (a first buy whose "
+                    f"sends near it, or the listing back to it, were not read: it may have been tried; a higher "
+                    f"--max-credits reads it)")  # fmt: skip
     return {"wallet": wallet, "hours": float(hours), "window": [int(since), int(end)], "leaders": list(leaders),
             "min_sol": float(min_sol), "moments": len(moments), "tried": tried, "outcomes": outcomes,
             "per_leader": per_leader, "signatures": len(listed),
-            "failed": {"sends": len(failed_listed), "near": len(near_sends), "fetched": len(txs), "placed": placed,
-                       "fee_sol": fee_sol, "placed_fee_sol": round(placed_fee / LAMPORTS, 9),
+            "failed": {"sends": len(failed_listed), "near": len(near_sends), "fetched": len(txs),
+                       "placed": placed, "fee_sol": fee_sol, "placed_fee_sol": round(placed_fee / LAMPORTS, 9),
+                       "failed_only_fee_sol": round(failed_only_fee / LAMPORTS, 9),
                        "priority_sol": round(sum(f["priority"] for f in fails) / LAMPORTS, 9),
                        # the listing's own error of every failed send, free: no transaction is fetched for it
-                       "errors": dict(Counter(_err_text(e["err"]) for e in failed_listed).most_common())},
+                       "errors": dict(Counter(_err_text(e["err"]) for e in failed_listed).most_common()),
+                       "note": FEES_NOTE},
             "credits": meter.credits, "stopped": stopped, "unseen": UNSEEN, "verdict": verdict}  # fmt: skip

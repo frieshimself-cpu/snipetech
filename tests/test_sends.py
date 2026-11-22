@@ -162,6 +162,27 @@ def test_a_moment_whose_tries_the_limit_left_unread_reads_unread_not_untried(mon
     assert "1 unread" in out["verdict"], out["verdict"]
 
 
+def test_the_verdict_gives_the_moments_with_only_failed_sends_their_own_fees():
+    """Audit 22 Nov (tools#4): "N with only failed sends (X SOL in their fees)" summed the failed tries of every tried
+    moment, the landed ones too: the first run's 2.0497 SOL was the fee of all 764 failed sends at its 62 tried moments,
+    not of the 15 with failed sends only. M1: the bot landed right behind it after a failed try that paid 0.3 SOL; M2:
+    one failed try that paid 0.001 SOL."""
+    store = Store(":memory:")
+    store.add_trades([_t(LEAD, "M1", 1100, 0, 2.5), _t(BOT, "M1", 1100, 1, 6.0), _t(LEAD, "M2", 1200, 0, 3.0),
+                      _t(OTHER, "Else", 2000, 0, 0.1)])  # fmt: skip
+    entries = [{"signature": "f2", "slot": 1201, "err": ERR, "blockTime": int(T0 + 201 * 0.4)},
+               {"signature": "f1", "slot": 1101, "err": ERR, "blockTime": int(T0 + 101 * 0.4)}]  # fmt: skip
+    txs = {"f1": _failed("f1", 1101, "M1", 300_000_000), "f2": _failed("f2", 1201, "M2", 1_000_000)}
+    out = _run(store, Chain(entries, txs))
+    assert out["outcomes"]["adjacent"] == 1 and out["outcomes"]["failed"] == 1
+    assert "1 with only failed sends (0.0010 SOL in their fees)" in out["verdict"], out["verdict"]
+    assert "the 2 failed sends at the 2 tried buys paid 0.3010 SOL" in out["verdict"], out["verdict"]
+    f = out["failed"]
+    assert f["failed_only_fee_sol"] == pytest.approx(0.001) and f["placed_fee_sol"] == pytest.approx(0.301)
+    # fee_sol and priority_sol are over the fetched sends, which sit beside all the failed ones: the output says so
+    assert "fee_sol and priority_sol" in f["note"] and "fetched" in f["note"]
+
+
 def test_a_moment_the_listing_never_reached_reads_unread():
     """Audit 22 Nov (tools#0): a limit that stops the listing itself leaves every moment it did not reach unread; a
     landed buy is on the tape and needs no listing."""
