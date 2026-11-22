@@ -2221,6 +2221,10 @@ class Service:
                     continue  # a position is open, one the tape cannot price too: never restart now
                 if fresh:
                     continue  # a buy on its way: a reading shows its coin within FRESH_HOLD_SECS
+                if unseen_buy(time.time()):
+                    # the tape has a buy of the run's whose coin no reading has shown yet (one paid from wrapped SOL
+                    # moves no plain SOL): its sniper holds it, and a re-arm would stop it (22 Nov review)
+                    continue
                 if empty_n < 2:
                     continue  # one reading with nothing held is no proof: a node can leave a coin out of one reply
                 if keep_plain is not None and b < float(keep_plain):  # the next copy cannot be paid in plain SOL

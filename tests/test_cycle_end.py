@@ -384,3 +384,17 @@ def test_a_second_signal_on_the_way_out_does_not_cancel_the_stop(monkeypatch):
         _run(monkeypatch, lambda now: 10.0, coins=coins, minutes=30)
     (client,) = clients
     assert sent["n"] == 2 and _stops(client, A, since=T0 + 140) and _stops(client, B, since=T0 + 140)
+
+
+def test_no_rearm_while_a_buy_of_the_runs_is_on_its_way(monkeypatch):
+    """Review of 22 Nov: the tape had the run's buy (a PumpSwap buy paid from wrapped SOL moves no plain SOL) while the
+    node had not shown its coin yet, and the re-arm, which counts that buy as a fill, stopped the sniper that had just
+    bought it: a stopped sniper strands its coin. No sniper is re-armed while a buy of the run's is on its way."""
+
+    def pay(i):
+        return _payloads() | {"ctbotWallets": [{"address": LEAD_A if i == A else LEAD_B}]}
+
+    rep, client = _run(monkeypatch, lambda now: 10.0, coins=lambda now: _coin() if T0 + 140 <= now < T0 + 200 else [],
+                       payload=pay, tape=[_buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0),
+                                          _buy(T0 + 100, W6, 1.0, pos=1)], rearm_after=1800, minutes=5)  # fmt: skip
+    assert not [t for kind, _i, t in client.timed if kind in ("start", "stop") and T0 + 100 < t < T0 + 140]
