@@ -272,6 +272,70 @@ def test_a_coin_bought_again_is_a_new_holding_for_the_sweep_and_the_rearm(monkey
     assert rep["fills"] == 2
 
 
+def test_sol_the_owner_takes_out_is_no_loss_of_the_run(monkeypatch):
+    """22 Nov 02:13: the owner took 2 SOL out of the wallet ("Took 2 sol out btw that was me"); no coin came in, and the
+    run ended on its floor with no fill, as the 1 SOL day of 20 Nov had ended on the owner's own trades. SOL that leaves
+    with no coin coming in within FRESH_HOLD_SECS is no buy: the floor moves down with it, said once, and only the
+    run's own trades count against the max loss."""
+
+    def sol(now):
+        return 10.0 if now < T0 + 100 else 8.0
+
+    rep, _client = _run(monkeypatch, sol, floor=None, max_loss=1.0, minutes=10)
+    assert rep["reason"].startswith("time limit"), rep["reason"]
+    assert rep["floor_moves"] == [pytest.approx(-2.0)]
+    assert any("2.0000 SOL left the wallet" in e and "not a trade" in e for e in rep["events"]), rep["events"]
+
+
+def test_sol_the_owner_puts_in_raises_the_floor_by_as_much(monkeypatch):
+    """A deposit is no profit of the run: 5 SOL put in, then a copy that loses 1.5 under a 1 SOL max loss ends the
+    run on its floor, which rose with the deposit (before, the run went on losing the owner's 5 SOL)."""
+
+    def sol(now):
+        if now < T0 + 100:
+            return 10.0
+        return 15.0 if now < T0 + 300 else 13.4  # put in at 100 s; a 1.6 SOL copy at 300 s
+
+    rep, _client = _run(monkeypatch, sol, coins=lambda now: _coin(0.1) if now >= T0 + 304 else [], floor=None,
+                        max_loss=1.0, minutes=10)  # fmt: skip
+    assert rep["reason"].startswith("EMERGENCY"), rep["reason"]
+    assert rep["floor_moves"] == [pytest.approx(5.0)]
+
+
+def test_a_real_loss_after_the_owner_took_sol_out_still_ends_the_run(monkeypatch):
+    """The floor moves with the owner's SOL, not with the run's trades: 2 SOL taken out at 100 s, then a 1.6 SOL copy
+    whose coin is worth 0.1 takes the run 1.5 under its max loss of 1, and the run ends there."""
+
+    def sol(now):
+        if now < T0 + 100:
+            return 10.0
+        return 8.0 if now < T0 + 300 else 6.4
+
+    rep, _client = _run(monkeypatch, sol, coins=lambda now: _coin(0.1) if now >= T0 + 304 else [], floor=None,
+                        max_loss=1.0, minutes=10)  # fmt: skip
+    assert rep["reason"].startswith("EMERGENCY"), rep["reason"]
+    assert rep["floor_moves"] == [pytest.approx(-2.0)]
+    floor_hit = next(e for e in rep["events"] if "under the floor" in e)
+    assert "7.0" in floor_hit, floor_hit  # the floor moved from 9 to 7 with the owner's 2 SOL, then the loss crossed it
+
+
+def test_a_buy_whose_coin_shows_after_the_wait_takes_the_floor_back(monkeypatch):
+    """A slow node can show a coin later than FRESH_HOLD_SECS: the SOL of a 1.1 SOL buy left at 100 s and the coin
+    showed at 140 s. The floor moved down at 130 s as for the owner's own move, and goes back up when the coin shows:
+    a buy is never the owner's SOL."""
+
+    def sol(now):
+        if now < T0 + 100:
+            return 10.0
+        return 8.9 if now < T0 + 152 else 9.95
+
+    rep, _client = _run(monkeypatch, sol, coins=lambda now: _coin(1.05) if T0 + 140 <= now < T0 + 152 else [],
+                        floor=None, max_loss=1.0, minutes=10)  # fmt: skip
+    assert rep["reason"].startswith("time limit"), rep["reason"]
+    assert rep["floor_moves"] == []
+    assert any("was a buy" in e for e in rep["events"]), rep["events"]
+
+
 def _crash_at_100(sweeps):
     """The 22 Nov 00:54 copy: 10 SOL, a 5.2 SOL buy at 100 s whose coin shows at 104 s worth 5 and is worth 0.1 from
     110 s (the wallet then reads 4.9, under a floor of 5); its sniper never sells it, and it leaves the wallet only when

@@ -1121,11 +1121,21 @@ def test_a_cycle_that_runs_out_of_time_leaves_nothing_armed(monkeypatch):
 
 def test_a_cycle_under_its_floor_leaves_nothing_armed(monkeypatch):
     """Under the floor the plan promises no more buys. With nothing held, the armed sniper is stopped; before, it was
-    left running "to sell" a coin it did not hold, and could buy once more under the floor."""
+    left running "to sell" a coin it did not hold, and could buy once more under the floor. The loss is a trade: the
+    re-armed sniper buys a coin, holds it three readings and sells it, leaving 0.9 SOL (SOL that leaves with no coin
+    bought is the owner's own move since 22 Nov, and the floor moves with it)."""
     flag = {"stop": False}
-    sol = {"now": 5.0}
-    client = _CycleClient(on_start=lambda n: sol.update(now=0.9 if n >= 2 else 5.0))  # after the first re-arm: 0.9 SOL
-    svc, store = _cycle_svc(monkeypatch, client, flag, balance=lambda: sol["now"])
+    state = {"start": 0, "reads": 0}
+
+    def holds():  # after the first re-arm the sniper's coin is held three readings, then sold at a loss
+        if state["start"] < 2:
+            return False
+        state["reads"] += 1
+        return state["reads"] <= 3
+
+    client = _CycleClient(on_start=lambda n: state.update(start=n))
+    svc, store = _cycle_svc(monkeypatch, client, flag, holds=holds,
+                            balance=lambda: 0.9 if state["start"] >= 2 else 5.0)  # fmt: skip
     rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
     assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a"), ("start", "a"), ("stop", "a")]
     assert rep["reason"].startswith("EMERGENCY") and "stopped" in rep["reason"] and rep["left_running"] == []
