@@ -833,3 +833,35 @@ def test_measure_7_an_owners_failed_hand_sale_is_no_try_of_the_bots_sale(tmp_pat
     finally:
         st.close()
 
+
+def test_measure_7_the_automatic_test_charges_a_sales_failed_tries_once(tmp_path):
+    """measure#7, review: a sale's tries that failed before it landed are in its result now (twin_fee_sol), and the
+    automatic test's reading (autotest.block_live) charged them a second time, as failed sends that are no sale's twin.
+    It ties them to their sale as the measure stage does (the buy the sale closes, its buy_sig); a failed send that is
+    neither a twin nor a try is still the block's to pay."""
+    from snipetech.operator import autotest as AT
+    from snipetech.solana.txmeta import PumpIx
+
+    st = Store(tmp_path / "t.db")
+    try:
+        start = NOW - 3600
+        t = {"started_at": start, "ended_at": NOW, "report": {"held": [], "job_ended": NOW - 60, "reason": "time"}}
+        base = {"wallet": W, "mint": M8}
+        st.put_fill(base | {"sig": "buy", "ts": start + 100, "slot": 7000, "side": "buy", "sol": 0.5, "tokens": 1e9,
+                            "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
+        st.put_fill(base | {"sig": "sale", "ts": start + 160, "slot": 7150, "side": "sell", "sol": 0.49, "tokens": 1e9,
+                            "pnl_sol": -0.014, "buy_sig": "buy", "twin_fee_sol": 0.001005,
+                            "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
+        metas = []
+        # a try of the sale's, 10 s before it landed (no twin), and a failed buy of the coin, which is neither
+        for sig, ts, slot, ix in (("try", start + 150, 7120, "sell"), ("failed-buy", start + 99, 6998, "buy")):
+            st.put_fill(base | {"sig": sig, "ts": ts, "slot": slot, "side": "failed", "sol": 0.0, "tokens": 0.0,
+                                "priority_lamports": 1_000_000, "tip_lamports": 0})  # fmt: skip
+            meta = _meta(sig, (1_000_000, 0))
+            meta.pump_ixs = [PumpIx("pump", ix, W, {}, None, M8)]
+            metas.append(meta)
+        st.add_tx_meta(metas)
+        live = AT.block_live(st, W, t, NOW, per_tx_sol=0.0035, failed_fee_sol=0.001)
+        assert [f["sig"] for f in live["failed"]] == ["failed-buy"]  # the try is in the sale's result, once
+    finally:
+        st.close()

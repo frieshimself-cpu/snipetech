@@ -543,12 +543,17 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
               if float(f.get("ts") or 0) <= end
               or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled)]  # fmt: skip
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
-    twins = twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], sells)
+    # and a sale's tries that failed before it landed, which the measure stage ties to it by the buy it closes (its
+    # buy_sig) and charges in its result as it does its twins (measure/run.twin_sells): never charged here again
+    closes = {x["sig"]: b for x in paired
+              if x.get("buy_sig") and (b := buys.get(x["buy_sig"]) or store.fill(x["buy_sig"]))}  # fmt: skip
+    sends = [f | {"is_sell": (sold := _sells_a_coin(metas.get(f["sig"]))), "sells_ix": sold} for f in failed]
+    twins = twin_sells(sends, sells, bought=closes)
     with_result = {x["sig"] for x in paired}
     charged = []
     for f in failed:
-        # a twin is in its sale's result; a sale with no result (its buy not on record: the tape missed it) holds
-        # nothing, so its twins are charged here as the failed sends they are (review of 8 Nov: counted nowhere)
+        # a twin (or a try) is in its sale's result; a sale with no result (its buy not on record: the tape missed it)
+        # holds nothing, so its twins are charged here as the failed sends they are (review of 8 Nov: counted nowhere)
         if twins.get(f["sig"]) in with_result:
             continue
         prio = f.get("priority_lamports")
