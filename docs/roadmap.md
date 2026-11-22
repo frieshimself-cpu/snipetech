@@ -68,7 +68,8 @@ first on the server's recording and only then run live in capped batches.
   several landing services at once, with a blockhash kept fresh by the stream; a trigger from the processed or shred
   feed; and rule 1's caps and the guard. Today the repo signs only sales, each 4-5 requests one after another. Build
   it only once the route check and a lab copy scored K block places after the leader show a place that clears the
-  live gap.
+  live gap. That landing is not in the lab yet: its "+N" and "+Nx" count the coin's own trades behind the leader, not
+  the block's places, so a reacting sender's place is still the rough mix above.
 - **Since 06:15.** The review of 22 Nov ended with 35 confirmed findings, all fixed test-first except low ones the
   runner's second loss check bounds; deployed a26aeee at 07:21, 4773984 at 07:40 (the loss alert on the bot's own
   trades and coins, never the owner's moves) and 226ea5e at 07:41 (`sends`). docs/autopilot.md lists each fix.

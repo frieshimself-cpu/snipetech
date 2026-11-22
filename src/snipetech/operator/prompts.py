@@ -405,10 +405,11 @@ What you do:
 1. What a place is worth: the same lab at "--copy-position" "+0", "+1" and "+2" at the size meant (your lab always
    names a place or a bid: "--copy-position", "--per-tx" or "--buy-bid"); the difference between two places is the most
    a bid for the better one may cost. "+0" is the price the leader's own buy left, ahead of every buyer after it: a
-   place no send that reacts to the landed buy reaches (22 Nov: a buy of 0.1 SOL or more stood within 3 block places
-   behind 65 % of the first buys of Cented, Decu and theo side, and within 3 before on 1 of 386). In a table of who
-   holds a place, count it open only when no buy of 0.1 SOL or more stands within K block places of the leader, and
-   name K.
+   place no send that reacts to the landed buy reaches on every moment (22 Nov: a buy of 0.1 SOL or more stood within
+   3 block places behind 65 % of the first buys of Cented, Decu and theo side, and within 3 before on 1 of 386). Such
+   a send lands some places later and gets that price only where nobody bought in between (at 5 places on 31 % of
+   them, at 15 on 22 %, at 150 on 4 %): in a table of who holds a place, count it open only when no buy of 0.1 SOL or
+   more stands within K block places of the leader, and name K.
 2. Which bid wins it: place-bids (auction.in_bid_order near 1 means the place is bought and win_at says how often a
    bid would have been first; near 0.5 or under, speed takes it and no bid buys it), per followed wallet with "--each"
    or "--wallet". tips is the table of what outsiders bid behind each followed wallet, with a suggested bid for a 50 %

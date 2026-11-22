@@ -19,6 +19,16 @@ def test_the_fee_analyst_counts_a_place_open_only_with_nobody_within_k_places():
     assert "count it open only when no buy of 0.1 SOL or more stands within K block places of the leader" in fees
 
 
+def test_the_fee_analyst_is_told_a_reacting_send_gets_the_leaders_price_where_nobody_bought_in_between():
+    """Review of 22 Nov (goal#0): the text said +0 is a place no reacting send reaches, with no exception. Such a send
+    lands some places after the leader and pays the price the leader's buy left wherever nobody bought in between: at
+    5 places on 31 % of the 386 first buys, at 15 on 22 %, at 150 on 4 %. There speed still counts, and that share is
+    what counting a place open within K places measures."""
+    fees = _flat(P.FEES_SYSTEM)
+    assert "a place no send that reacts to the landed buy reaches on every moment" in fees
+    assert "gets that price only where nobody bought in between (at 5 places on 31 % of them" in fees
+
+
 def test_the_operator_and_the_analyst_are_told_what_the_research_record_holds():
     """docs#1: the record now carries the newest round's outcome and lessons, or its line of the index, then a line
     for each other report, newest first: the dated reports of 9-12 Nov too, not only the rounds older than the
