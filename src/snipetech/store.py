@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import functools
 import json
 import logging
@@ -15,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .models import Completion, Launch, Migration, Trade
+from .models import AMM, Completion, Launch, Migration, Trade
 from .solana.txmeta import TxMeta
 
 log = logging.getLogger(__name__)
@@ -756,10 +757,6 @@ class Store:
     def mark_seen(self, items: Iterable[tuple[str, int, int]]) -> None:
         self._many("INSERT OR IGNORE INTO seen_sigs (sig, slot, ts) VALUES (?,?,?)", list(items))
 
-    def set_trade_positions(self, rows: list[tuple[int, str]]) -> None:
-        """(pos, sig): each trade's place in its slot, from a listing that knows it (ingest's authoritative order)."""
-        self._many("UPDATE trades SET pos=? WHERE sig=?", rows)
-
     # -- reads -----------------------------------------------------------------
 
     def unseen(self, sigs: list[str]) -> list[str]:
@@ -771,6 +768,34 @@ class Store:
             rows = self._q(f"SELECT sig FROM seen_sigs WHERE sig IN ({','.join('?' * len(chunk))})", chunk)
             seen.update(r[0] for r in rows)
         return [s for s in sigs if s not in seen]
+
+    def held_whole(self, sigs: list[str]) -> set[str]:
+        """The signatures whose transaction the tape already holds whole: a curve or LaunchLab trade of it is stored,
+        at a time inside the tape's spans. Only the recorder and `ingest` write those, and both decode and store a
+        transaction whole; the recorder writes no seen_sigs. A PumpSwap row says nothing: the PumpSwap backfill
+        (amm_backfill.py) stores some of a transaction's PumpSwap trades only. Nor does a row before the record's
+        spans: the prune deletes a transaction's rows wallet by wallet, and a listed wallet's stays while the create and
+        the other wallets' trades of its transaction go (review of 22 Nov). A primary-key lookup a signature, 900 a
+        read."""
+        spans: list[list[int]] = []
+        for a, b in sorted(self.tape_spans()):  # merged, so each time falls in at most one
+            if spans and a <= spans[-1][1]:
+                spans[-1][1] = max(spans[-1][1], b)
+            else:
+                spans.append([a, b])
+        if not spans:
+            return set()
+        starts = [a for a, _b in spans]
+        held: set[str] = set()
+        for i in range(0, len(sigs), 900):
+            chunk = sigs[i : i + 900]
+            rows = self._q(f"SELECT sig, ts FROM trades WHERE sig IN ({','.join('?' * len(chunk))}) AND venue!=?",
+                           [*chunk, AMM])  # fmt: skip
+            for sig, ts in rows:
+                k = bisect.bisect_right(starts, ts) - 1
+                if k >= 0 and ts <= spans[k][1]:
+                    held.add(sig)
+        return held
 
     def launch(self, mint: str) -> Launch | None:
         rows = self._q(f"SELECT {_LAUNCH_COLS} FROM launches WHERE mint=?", (mint,))
@@ -1682,6 +1707,16 @@ class Store:
         ("seen_sigs", "rowid", "ts<?"),
         ("ftrades", "ts", "ts<? AND user NOT IN (SELECT address FROM lists)"),
     )
+    # The fee records (tx_meta) of transactions the tape no longer holds, in the daily walk after the trades: no ts
+    # column, so against the slot of the first trade at the cutoff; one with a stored trade (a listed wallet's are
+    # kept) or a fill of ours stays (audit 22 Nov: nothing pruned it, 5.8M rows on the server, 30 % of them older than
+    # the cutoff, about 225,000 more a day, every one rewritten by every read-only copy), and so does one a listed
+    # wallet paid: its trades stay, and so do its tips paid in a transaction of their own (review of 22 Nov).
+    _PRUNED_BY_SLOT = (
+        ("tx_meta", "rowid", ("slot<? AND NOT EXISTS (SELECT 1 FROM trades WHERE trades.sig=tx_meta.sig) "
+                              "AND NOT EXISTS (SELECT 1 FROM fills WHERE fills.sig=tx_meta.sig) "
+                              "AND (fee_payer IS NULL OR fee_payer NOT IN (SELECT address FROM lists))")),
+    )  # fmt: skip
     # The rows one step of the prune reads, after the last row the step before it read. The first batched prune (7 Nov)
     # searched again from the oldest row for every batch: across every old row a list protects, a pile that grows every
     # day a wallet stays listed (10 listed wallets made a tenth of the trades: ~250k rows a day), and through most of
@@ -1700,8 +1735,8 @@ class Store:
 
     def prune_steps(self, before_ts: int, walks: bool = True) -> Iterator[dict[str, int]]:
         """`prune` one short step at a time, yielding the counts so far after each: the tape recorder runs its
-        hourly prune between its own writes. `walks` False leaves out the tables read whole (seen_sigs, no index on
-        ts: every prune of it reads all of it, old rows or none); the recorder walks those once a day. In one transaction it held the write lock for as long as the deletes took
+        hourly prune between its own writes. `walks` False leaves out the tables read whole (seen_sigs and tx_meta, no
+        index on ts: every prune of them reads all of them, old rows or none); the recorder walks those once a day. In one transaction it held the write lock for as long as the deletes took
         and its event loop waited with it: on a 2.4M-trade copy (7 Nov) another writer waited 2.0 s while the oldest
         hour went (89k trades), 12.4 s for six hours; in batches of 500, 0.05 and 0.08 s at most.
 
@@ -1724,10 +1759,14 @@ class Store:
         self._write(clip)
         counts = {"trades": 0, "launches": 0, "protected_addresses": protected}
         yield counts
-        for table, by, where in self._PRUNED:
+        tables = [(table, by, where, before_ts) for table, by, where in self._PRUNED]
+        cut_slot = self._first_slot_from(before_ts) if walks else None
+        if cut_slot is not None:
+            tables += [(table, by, where, cut_slot) for table, by, where in self._PRUNED_BY_SLOT]
+        for table, by, where, cut in tables:
             if by == "rowid" and not walks:
                 continue
-            found = self._prune_scan(table, by, where, before_ts)
+            found = self._prune_scan(table, by, where, cut)
             doomed: list[int] = []
             more = True
             while more or doomed:  # a step: one read, one delete, at most
@@ -1737,10 +1776,15 @@ class Store:
                     doomed += ids or []
                 if doomed and (len(doomed) >= self.WRITE_BATCH or not more):
                     batch, doomed = doomed[: self.WRITE_BATCH], doomed[self.WRITE_BATCH :]
-                    deleted = self._prune_delete(table, where, before_ts, batch)
+                    deleted = self._prune_delete(table, where, cut, batch)
                     if table in counts:
                         counts[table] += deleted
                 yield counts
+
+    def _first_slot_from(self, ts: int) -> int | None:
+        """The slot of the first trade at or after `ts` (by the ts index): where a cutoff in time lies on the chain."""
+        rows = self._q("SELECT slot FROM trades WHERE ts>=? ORDER BY ts LIMIT 1", (ts,))
+        return int(rows[0][0]) if rows else None
 
     def _prune_scan(self, table: str, by: str, where: str, before_ts: int) -> Iterator[list[int]]:
         """The rowids of `table`'s rows that `where` lets go, one read of at most PRUNE_SCAN rows at a time, each read

@@ -125,6 +125,12 @@ SKIP_MARGIN_SECS = 5  # every skipped stretch is widened by this on both sides a
 # a new PumpSwap subscription replays at most this many slots (96 s at 0.214 s a slot); what lies further back is a
 # skipped stretch
 REPLAY_MAX_SLOTS = 450
+# After a restart the coins that left their curve before it (seeded from the database) are replayed from this many
+# slots before the last one the tape's stream handed over whole (11 s of chain): this process's run of the coverage
+# record starts at the last stretch's end, which lies up to about 2 s before that slot (audit 22 Nov: they started live,
+# and 4-23 s of their PumpSwap trades after every restart were never handed over). What is handed over twice is
+# recorded once.
+SEED_BACK_SLOTS = 50
 # the fields of a run of the coverage record that every version of this recorder wrote: a run with them is kept
 RUN_FIELDS = frozenset({"run", "from", "to", "secs", "skipped"})
 SHRINK_RESTART_SECS = 120  # expired pools leave the PumpSwap subscription at its next restart, or after 2 min
@@ -453,9 +459,11 @@ class LiveWatcher:
         self.disconnected_at: float | None = time.time()
         self.closed_launches: list[Launch] = []
         self.due: set[str] = set()
-        # the days of tape kept: the configured ones until a prune has looked at what was asked for in the database
-        # and at the disk (infra/retention.py)
+        # the days of tape kept: the configured ones (the floor) until a prune has worked out what was asked for in the
+        # database and what the disk fits (infra/retention.py, `retain_known`); only the prune acts on them
         self.retain_days = float(self.cfg.storage.retain_days)
+        self.retain_known = False
+        self.pruned_before: int | None = None  # the latest cutoff a prune of this process deleted before
         self.stats: defaultdict[str, int] = defaultdict(int)
         self.span_start: int | None = None  # current gap-free stretch of the firehose
         self.tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget tasks aren't collected
@@ -524,19 +532,19 @@ class LiveWatcher:
     # -- entry point --------------------------------------------------------------------------
 
     async def run(self) -> None:
+        laser = self.firehose and self._use_laserstream()
         if self.migrated is not None:
-            self._seed_recent(self.clock())
+            self.amm_source = "laserstream" if laser else "logs" if self.firehose else None
+            self._seed_recent(self.clock())  # on LaserStream: replayed from where the tape's stream stood
         tasks = [asyncio.create_task(self._maintenance())]
-        if self.firehose and self._use_laserstream():
+        if laser:
             tasks.append(asyncio.create_task(self._laserstream()))
             if self.migrated is not None:
-                self.amm_source = "laserstream"
                 tasks.append(asyncio.create_task(self._amm_stream()))
         elif self.firehose:
             for program in self._log_firehoses():
                 tasks.append(asyncio.create_task(self._firehose(program)))
             if self.migrated is not None:
-                self.amm_source = "logs"
                 tasks.append(asyncio.create_task(self._amm_logs()))
         tasks.append(asyncio.create_task(self._follow_wallets()))
         try:
@@ -1236,7 +1244,7 @@ class LiveWatcher:
         if replayed and (self.span_start is not None or self.resume_span is not None):
             if self.span_start is None:
                 self.span_start, self.span_end = self.resume_span[0], self.resume_span[1]
-                self.amm_from = self.resume_span[1] + 1  # the PumpSwap side has nothing from before this process
+                self.amm_from = self.resume_span[1] + 1  # the PumpSwap side claims nothing from before this process
             self.disconnected_at = None
             return
         now = self.clock()
@@ -1355,16 +1363,23 @@ class LiveWatcher:
 
     def _seed_recent(self, now: float) -> None:
         """Start with the coins that left their curve within the window before this start (a restart, `remote update`),
-        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it. Nothing
-        of theirs is replayed (a restart is a gap in the whole tape; the coverage record claims none of them)."""
+        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it. On
+        LaserStream, where the tape's stream goes on from where the last process stood (`_load_position`, read here
+        first), their PumpSwap trades are replayed from SEED_BACK_SLOTS before that slot, so every second this
+        process's run of the coverage record claims is handed over (a coin that left before the run's start is claimed
+        by no run). Without that position nothing of theirs is replayed: a start with a hole, and the record claims
+        none of them."""
         assert self.migrated is not None
+        if self.amm_source == "laserstream":
+            self._load_position()  # idempotent; run() seeds before the tape's stream starts
         since = int(now - self.migrated.secs)
+        slot = None if self.tape_slot is None else max(0, self.tape_slot - SEED_BACK_SLOTS)
         try:
             done = self.store._q("SELECT mint, ts FROM completions WHERE ts>=?", (since,))
             moved = self.store._q("SELECT mint, pool, ts FROM migrations WHERE ts>=?", (since,))
             rows = [(ts, mint, self._derived_pool(mint)) for mint, ts in done] + [(ts, m, p) for m, p, ts in moved]
             for ts, mint, pool in sorted(rows):
-                self.migrated.note(mint, ts, [pool])
+                self.migrated.note(mint, ts, [pool], slot)
         except Exception as exc:  # noqa: BLE001 — a start without the earlier coins beats no start
             self._amm_failed("seed", exc)
 
@@ -1763,21 +1778,32 @@ class LiveWatcher:
         from there, and the recorder never stops for it (a failed prune used to end the maintenance task, and with it
         the recorder)."""
         try:
-            # the tables read whole (seen_sigs, no index on ts) once a day, the day kept in the database: every hour
-            # and after every restart it was 472 reads of 0.1-0.4 s to find nothing (11 Nov; retention keeps 30 days)
+            # the tables read whole (seen_sigs, tx_meta: no index on ts) once a day, the day kept in the database:
+            # every hour and after every restart it was 472 reads of 0.1-0.4 s to find nothing (11 Nov; retention
+            # keeps 30 days)
             walked = float((self.store.coverage(PRUNE_KEY) or {}).get("walked") or 0)
             walks = now - walked >= PRUNE_WALK_SECS
             try:
                 self.retain_days = float(retention.current(self.store, self.cfg.storage.retain_days, now)["effective"])
+                self.retain_known = True
             except Exception as exc:  # noqa: BLE001 - the days in force stay; never a prune at a number not understood
+                if not self.retain_known:
+                    # a new process holds the configured floor, not the days asked for (audit 22 Nov: 6 of the 14,
+                    # 8 days of tape deleted): nothing is deleted before the days have been worked out once
+                    log.warning("tape: the days to keep could not be worked out (%s); nothing is pruned until they "
+                                "are", exc)  # fmt: skip
+                    return
                 log.warning("tape: the days to keep could not be worked out (%s); keeping %.1f", exc, self.retain_days)
-            steps = self.store.prune_steps(int(now - self.retain_days * 86400), walks=walks)
+            cutoff = int(now - self.retain_days * 86400)
+            steps = self.store.prune_steps(cutoff, walks=walks)
             while True:
                 t0 = time.perf_counter()
                 with self.meter.timed("prune"):
                     step = next(steps, None)
                 if step is None:
                     break
+                # its first step clipped the tape's record there: the stretch never claims what the deletes take
+                self.pruned_before = cutoff if self.pruned_before is None else max(self.pruned_before, cutoff)
                 # the loop's turn: with one turn between steps the streams were served once a step for as long as the
                 # prune ran (11 Nov: 47-50 s an hour, PumpSwap dropped with "client could not keep up")
                 await asyncio.sleep(max(PRUNE_REST_MIN_SECS, PRUNE_REST * (time.perf_counter() - t0)))
@@ -1785,10 +1811,11 @@ class LiveWatcher:
                 self.store.set_coverage(PRUNE_KEY, {"walked": int(now)})
         except Exception as exc:  # noqa: BLE001 - the tape goes on; the next hour's prune tries again
             log.warning("tape: the hourly prune failed (%s); the next one goes on from there", exc)
-        if self.pay_dests is not None:
+        if self.pay_dests is not None and self.retain_known:
             # the learned destinations last paid before the tape's own cutoff go with it (the table only grew
             # otherwise); a tip account goes only after PAY_DESTS_KEEP_LEARNED_SECS unseen. A batch a call, by an
-            # index, and the loop's turn after each, as for the trades above.
+            # index, and the loop's turn after each, as for the trades above. Never before the days have been worked
+            # out once: a new process holds the configured floor until then (review of 22 Nov: 6 of the 14 days).
             try:
                 before, learned = int(now - self.retain_days * 86400), int(now - PAY_DESTS_KEEP_LEARNED_SECS)
                 while True:
@@ -1813,11 +1840,15 @@ class LiveWatcher:
         # while it is silent. Never taken back within a stretch.
         stands = min(now, self.tape_at) if self.tape_at is not None else now
         self.span_end = max(self.span_end, int(stands - max(2.0, self.lag + 1.0)))
-        start = max(self.span_start, int(now - self.retain_days * 86400))
+        # The stretch's start moves only with a prune, to the latest cutoff this process deleted before (the prune
+        # clips the record there first, store.prune_steps; one before this process clipped the stretch it goes on
+        # with). Never with the days held in memory: before its first prune a new process holds the configured floor,
+        # not the days asked for (audit 22 Nov: 6 of the 14; the first tick wrote the stretch cut to 6 days, a stop in
+        # those seconds made the cut the next process's position, and the disk rule read it as a 6-day tape).
+        start = self.span_start if self.pruned_before is None else max(self.span_start, self.pruned_before)
         if self.span_end < start:
             return
-        # earlier connections' spans end before this one started (the one a replaying start goes on with is this one);
-        # this span is clipped to what retention keeps
+        # earlier connections' spans end before this one started (the one a replaying start goes on with is this one)
         spans = [s for s in cov.get("spans", []) if s[1] < self.span_start]
         spans.append([start, self.span_end])
         cov["spans"] = sorted(spans)[-500:]
@@ -1903,7 +1934,8 @@ class LiveWatcher:
         try:
             chain = self._chain_now()
             # where this process's stretch began: the tape's own, or, in a stretch it goes on with after a restart (the
-            # tape's stream replays; the PumpSwap side of the coins that left before it does not), where it took over
+            # tape's stream replays it; the PumpSwap side replays the coins that left before it only from just before
+            # where the last process stood, SEED_BACK_SLOTS), where it took over
             began = None if self.span_start is None else max(self.span_start, self.amm_from or self.span_start)
             if self.disconnected_at is None and began is not None and int(chain) - 2 > began:
                 self.amm_runs[f"{int(self.started)}-{began}"] = [began, int(chain) - 2]

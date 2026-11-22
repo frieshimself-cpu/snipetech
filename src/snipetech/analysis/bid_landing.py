@@ -84,6 +84,8 @@ def landing_name(position: Any, latency: int = 0, bid_sol: float = 0.0) -> str:
 
 
 def _bid(t: Trade) -> float | None:
+    """The transaction's bid for its place: priority fee plus tip, in SOL (None: no fee record). The tip is its own
+    transaction's: a bundle that pays its tip in a transaction of its own reads as tip 0 (place_bids.TIP_READING)."""
     return None if t.priority is None else (int(t.priority) + int(t.tip or 0)) / LAMPORTS
 
 

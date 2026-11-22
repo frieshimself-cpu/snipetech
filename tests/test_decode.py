@@ -110,6 +110,33 @@ def test_amm_events_use_pre_trade_effective_reserves(prefix):
         assert t.quote + t.fee == f["user_quote_amount_in"]
 
 
+def _quote_vault_after(tx: dict, f: dict) -> int:
+    """The pool's quote vault after the transaction: the pool's token account that held the event's reserve before."""
+    pre = {b["accountIndex"]: int(b["uiTokenAmount"]["amount"]) for b in tx["meta"]["preTokenBalances"]}
+    (after,) = [int(b["uiTokenAmount"]["amount"]) for b in tx["meta"]["postTokenBalances"]
+                if b.get("owner") == f["pool"] and pre.get(b["accountIndex"]) == f["pool_quote_token_reserves"]]  # fmt: skip
+    return after
+
+
+@pytest.mark.parametrize(
+    "path",
+    [next(FIX.glob(f"{p}*.json")) for p in ("3kz7PFEU", "3ErkbBtM", "4bTasFM5", "41uRdjyF", "Q13fDdg5")]
+    + [FIX.parent / "pumpswap_buy_landed_10nov.json", FIX.parent / "tips" / "FLPjyS_44HzhKyVMJ.json"],
+    ids=lambda p: p.name[:12],
+)
+def test_the_reserve_after_a_pumpswap_trade_is_what_its_pool_holds_after_it(path):
+    """Audit 22 Nov: the *_v2 instructions (buy_v2, sell_v2, buy_exact_quote_in_v2) keep the coin creator's fee and the
+    buyback fee in the pool's quote vault, and the next trade is priced from that vault plus its virtual quote reserves.
+    The tape wrote every flavour's reserve as v1's (before, plus or minus the quote, plus the LP fee): short by both
+    fees after each v2 trade (5,481,969 lamports after FLPjyS's 0.57 SOL buy). The v1 instructions pay both out."""
+    tx = json.loads(path.read_text())
+    ev = extract_from_transaction(tx)
+    (raw,) = [e for e in ev.events if e.name in ("BuyEvent", "SellEvent")]
+    (t,) = normalize(ev).trades
+    after = _quote_vault_after(tx, raw.fields) + int(raw.fields.get("virtual_quote_reserves") or 0)
+    assert abs(t.q_after - after) <= 2  # a buy's constant-product quote is rounded up
+
+
 def test_amm_pools_quoted_in_another_token_are_not_sol_trades():
     """A routed swap wrapped BTC -> token A -> token B: neither PumpSwap pool is quoted in SOL, so
     neither hop is a SOL trade (read naively, the second hop looked like an 18 SOL buy)."""

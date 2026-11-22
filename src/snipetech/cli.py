@@ -500,6 +500,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="instead: subscribe the tape's stream this many slots back and print the order its "
                          "transactions, slot ticks and block summaries came in (how a recorder may resume)")  # fmt: skip
     sp.add_argument("--secs", type=float, default=20.0, help="how long --stream-replay listens")
+    sp.add_argument("--feed-latency", type=float, default=0.0, metavar="SECS",
+                    help="instead: listen this long to pump.fun at processed (every slot status, failed sends too) "
+                         "and print how many ms after a slot's first shred each step of it and its first "
+                         "transaction reach this machine (the tape's own stream stays at confirmed)")  # fmt: skip
     sp.add_argument("--settings", action="store_true",
                     help="instead: what the settings file sets differently from today's defaults (a file written by "
                          "`init` pins the defaults of its day; values that could hold a key are not shown)")  # fmt: skip
@@ -1844,6 +1848,12 @@ async def _run(args, cfg: Config) -> int:
         c = args.cmd
         if c == "status":
             _out(args, svc.status(), lambda d: "\n".join(f"{k}: {v}" for k, v in d.items()))
+        elif c == "doctor" and args.feed_latency:
+            from .solana import laserstream as LS
+            from .solana.programs import PUMP_PROGRAM
+
+            out = await LS.probe_feed_latency([PUMP_PROGRAM], args.feed_latency, endpoint=cfg.live.laserstream_endpoint)
+            print(json.dumps(out))
         elif c == "doctor" and args.stream_replay:
             from .solana import laserstream as LS
             from .solana.programs import LAUNCHLAB_PROGRAM, PUMP_PROGRAM

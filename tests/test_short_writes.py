@@ -174,16 +174,7 @@ def test_a_signal_waits_out_a_briefly_locked_database(tmp_path):
     st.close()
 
 
-def test_repositioning_trades_waits_out_a_briefly_locked_database(tmp_path):
-    from snipetech.ingest import Ingestor
-
-    st = _impatient(tmp_path / "t.db")
-    st.add_trades([_trade(1), _trade(2)])
-    _lock_for(tmp_path / "t.db", 1.0)
-    Ingestor(st, rpc=None)._reposition({"sig1": (101, 9), "sig2": (102, 8)})
-    assert sorted(st._q("SELECT sig, pos FROM trades")) == [("sig1", 9), ("sig2", 8)]
-    assert not st.conn.in_transaction
-    st.close()
+# (audit 22 Nov, tape#3: a backfill no longer rewrites trades' places, so the reposition write and its test are gone)
 
 
 def test_opening_a_database_that_needs_a_new_column_waits_out_a_briefly_locked_database(tmp_path, monkeypatch):
@@ -657,6 +648,56 @@ def test_the_table_with_no_time_index_is_walked_once_a_day_whatever_restarts_the
     assert _old_trades(st, cut + 3600) == 0  # the tables with a ts index are pruned every hour, as before
     asyncio.run(recorder()._prune(now + 86400 + 60))  # a day after the walk: it is walked again
     assert _old_seen(st, cut + 86400) == 0
+    st.close()
+
+
+def test_the_fee_records_of_transactions_the_tape_no_longer_holds_go_in_the_daily_walk(tmp_path):
+    """Audit 22 Nov: nothing pruned tx_meta (5,772,555 rows on the server, 1,755,281 of them older than the tape's
+    cutoff, about 225,000 more a day), and every read-only copy rewrote them all. The daily walk drops a fee record
+    older than the cutoff whose transaction holds no stored trade and no fill of ours: a listed wallet's kept trades,
+    and our own fills, keep theirs."""
+    from snipetech.solana.txmeta import TxMeta
+
+    def meta(sig: str, slot: int) -> TxMeta:
+        return TxMeta(sig=sig, slot=slot, block_time=None, version=0, fee_payer="payer", signers=[], n_signatures=1,
+                      fee=5000, priority_lamports=0, cu_limit=None, cu_price=None, cu_consumed=None)  # fmt: skip
+
+    st = Store(tmp_path / "t.db")
+    _old_tape(st)  # trades of T0 .. T0 + 3 h at slots 100 + n; the wallet KEEP is listed: its trades stay
+    trades = st._q("SELECT sig, slot, user FROM trades")
+    st.add_tx_meta([meta(sig, slot) for sig, slot, _user in trades])
+    st.add_tx_meta([meta("tip-only-old", 150), meta("tip-only-new", 800), meta("our-old-fill", 120)])
+    st.put_fill({"sig": "our-old-fill", "ts": T0 + 20, "slot": 120, "wallet": "ours", "side": "buy"})
+    cut = T0 + 2 * 3600  # its first trade at or after the cutoff is n = 600, at slot 700
+
+    def held() -> set[str]:
+        return {r[0] for r in st._q("SELECT sig FROM tx_meta")}
+
+    before = held()
+    list(st.prune_steps(cut, walks=False))  # an hourly prune: the walked tables wait for the day's walk
+    assert held() == before
+    st.prune(cut)
+    kept = {sig for sig, slot, user in trades if slot >= 700 or user == "KEEP"}
+    assert held() == kept | {"tip-only-new", "our-old-fill"}  # was everything: nothing pruned tx_meta
+    assert len(before - held()) == 593 + 1  # the old trades of unlisted wallets, and the old tip-only transaction
+    st.close()
+
+
+def test_the_daily_walk_keeps_the_fee_records_of_what_a_listed_wallet_paid(tmp_path):
+    """Review of the walk above: a list keeps a wallet's trades past the cutoff, so it keeps the fee records of the
+    transactions the wallet paid that hold no trade too: a bundle's tip paid in a transaction of its own (the only
+    record of what its place cost: analysis.sniper's tip_only), its creates, its transfers. Another's go, as before."""
+    from snipetech.solana.txmeta import TxMeta
+
+    def meta(sig: str, payer: str | None) -> TxMeta:
+        return TxMeta(sig=sig, slot=150, block_time=None, version=0, fee_payer=payer, signers=[], n_signatures=1,
+                      fee=5000, priority_lamports=0, cu_limit=None, cu_price=None, cu_consumed=None)  # fmt: skip
+
+    st = Store(tmp_path / "t.db")
+    _old_tape(st)  # the wallet KEEP is listed
+    st.add_tx_meta([meta("keep-tip-old", "KEEP"), meta("other-tip-old", "U7"), meta("no-payer-old", None)])
+    st.prune(T0 + 2 * 3600)  # its first trade at or after the cutoff is at slot 700
+    assert {r[0] for r in st._q("SELECT sig FROM tx_meta")} == {"keep-tip-old"}  # was gone with the others
     st.close()
 
 

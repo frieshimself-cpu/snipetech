@@ -429,8 +429,9 @@ def test_a_replay_that_begins_later_than_asked_is_a_hole_not_a_claim(monkeypatch
 
 
 def test_after_a_restart_the_pumpswap_record_claims_nothing_from_before_this_process(monkeypatch):
-    """The tape's stretch goes on across a restart (its own stream replays). The PumpSwap side of the coins that had
-    left their curve before it is not replayed: this process's run of that record starts where this process did."""
+    """The tape's stretch goes on across a restart (its own stream replays). This process's run of the PumpSwap record
+    starts where this process took over, the last stretch's end: the coins that had left their curve before it are
+    replayed from only a little before that point (audit 22 Nov, the next test), never from the stretch's start."""
     from snipetech.live import AMM_RECENT_KEY
 
     async def go():
@@ -454,6 +455,33 @@ def test_after_a_restart_the_pumpswap_record_claims_nothing_from_before_this_pro
 
     (run,) = asyncio.run(go())
     assert run["from"] == A1_TS and run["to"] == A1_TS + 98  # never from A1_TS - 9000, the stretch's own start
+
+
+def test_after_a_restart_the_seeded_coins_pumpswap_side_replays_from_where_the_tapes_stream_stood(monkeypatch):
+    """Audit 22 Nov: run() seeded the coins that left their curve before the restart before the tape's stream had read
+    its position from the record, so they were noted without a slot and their first PumpSwap subscription started live:
+    4-23 s of their trades after every deploy were never handed over. run() reads the position first."""
+    from snipetech.models import Migration
+    from tests.test_live_amm import A1_MINT, A1_POOL
+
+    async def go():
+        streams = FakeLaserStream(monkeypatch)
+        st = Store(":memory:")
+        st.set_coverage("tape", {"spans": [[A1_TS - 9000, A1_TS - 1]], "slot": A1_SLOT, "head": [A1_SLOT, A1_TS]})
+        st.add_migrations([Migration(A1_MINT, A1_POOL, A1_SLOT - 2800, A1_TS - 600, "migrate-sig")])
+        w = recorder(st)
+        w.clock = lambda: A1_TS + 5.0  # five seconds after the last process stood
+        run = asyncio.create_task(w.run())
+        await until(lambda: any("amm" in s["request"].transactions for s in streams.subs))
+        side = next(s for s in streams.subs if "amm" in s["request"].transactions)
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+        return side["request"]
+
+    req = asyncio.run(go())
+    assert list(req.transactions["amm"].account_include) == [A1_POOL]
+    assert req.HasField("from_slot") and req.from_slot == A1_SLOT - L.SEED_BACK_SLOTS  # was live
 
 
 def test_the_recorder_measures_how_far_back_a_replay_starts_before_its_first_transaction(monkeypatch):

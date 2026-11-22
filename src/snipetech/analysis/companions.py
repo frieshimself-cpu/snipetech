@@ -75,8 +75,10 @@ def pack_end(i: int, n: int, at: Callable[[int], tuple[int, str, int, bool, str]
     behind its first buy. A link must sit in the very next block place: one foreign transaction between two of an
     operator's transactions ends the pack there, and the rest of its buys are outsiders again. And any transaction in
     the next place with two wallets' buys is a link, whoever sent it: both errors put a copy later, never earlier.
-    Block places are the block's own only on rows the stream recorder wrote; a listing's numbering (the logs
-    fallback, an RPC backfill) counts the coin's transactions 0, 1, 2 and makes every next one "the next place"."""
+    Block places are the block's own on rows the stream recorder wrote and, since 22 Nov, on rows an RPC backfill
+    wrote with the answer's own index; a listing's numbering (the logs fallback, an answer without the index, and a
+    mint backfill before 22 Nov, which wrote it over the recorder's places too) counts the coin's transactions 0, 1,
+    2 and makes every next one "the next place"."""
     slot, sig, place, _, _ = at(i)
     last, j = i, i + 1
     while j < n and at(j)[0] == slot and at(j)[1] == sig:  # the rest of its own transaction

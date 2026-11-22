@@ -113,6 +113,170 @@ def test_the_tapes_record_is_clipped_at_the_days_the_recorder_keeps(tmp_path, mo
     st.close()
 
 
+# -- a new process before its first prune (audit 22 Nov) -----------------------------------------------------------
+#
+# The server's env file holds SNIPETECH_RETAIN_DAYS=6, the owner's `db retain` asks for 14, and the current stretch of
+# the tape (begun 11 Nov 06:00:52) is replayed across every restart. A new recorder holds the configured 6 days until
+# its first prune has worked out the 14: its first tick wrote the stretch cut to the last 6 days, a stop in those
+# seconds left that cut as the next process's position, and once the stretch is the record's only span the prune reads
+# a 6-day tape, takes the 90 GB file as 15 GB a day and deletes everything older than 8.5 days.
+
+DAY = 86400
+
+
+def _held_tape(st: Store, now: float, start: int, older: bool = True) -> None:
+    """The record a deploy finds: the current stretch from `start` to 3 s ago (an older span before it when `older`),
+    with the stream's slot and chain clock, and the 14 days the owner asked for."""
+    spans = [[int(now - 13 * DAY), int(now - 12 * DAY)]] if older else []
+    st.set_coverage("tape", {"spans": spans + [[start, int(now - 3)]], "slot": 472_000_000,
+                             "head": [472_000_000, int(now - 2)]})  # fmt: skip
+    R.ask(st, 14, now, "db retain")
+
+
+def _new_process(st: Store, now: float, configured: float = 6.0):
+    """A recorder just started (SNIPETECH_RETAIN_DAYS=6), its stream's replay connected: the stretch goes on."""
+    w = watcher(store=st)
+    w.cfg.storage.retain_days = configured
+    w.retain_days = configured  # what LiveWatcher.__init__ holds until a prune works the days out
+    w.clock = lambda: now
+    w._load_position()
+    w._connected(replayed=True)
+    w.tape_at = now
+    return w
+
+
+def _day_trades(st: Store, now: float, *days: int) -> None:
+    from dataclasses import replace
+
+    from tests.test_store_lock import _trade
+
+    st.add_trades([replace(_trade(d), sig=f"day{d}", ts=int(now - d * DAY)) for d in days])
+
+
+def _days_left(st: Store, now: float) -> list[int]:
+    return sorted(round((now - t.ts) / DAY) for t in st.trades_for_mint("M"))
+
+
+def test_a_new_process_never_cuts_the_tapes_stretch_to_the_configured_days():
+    now = float(T0)
+    st = Store(":memory:")
+    start = int(now - 11 * DAY)
+    _held_tape(st, now, start)
+    w = _new_process(st, now)
+    assert w.span_start == start
+    w._mark_tape()  # the first tick, or run()'s finally of a process stopped within its first 10 s
+    assert st.coverage("tape")["spans"][-1][0] == start  # was now - 6 days: the stretch's first 5 days unclaimed
+    w2 = watcher(store=st)
+    w2.clock = lambda: now + 5
+    w2._load_position()
+    assert w2.resume_span[0] == start  # the next process goes on with the whole stretch
+
+
+def test_a_restart_never_feeds_the_disk_rule_a_tape_cut_to_the_configured_days(tmp_path, monkeypatch):
+    """The server's sizes (643.8 GB disk, 90.44 GB database) once the current stretch is the record's only span: the
+    first prune of a new process keeps the 14 days asked for (the disk fits 19.9), not 8.5."""
+    now = float(T0)
+    st = Store(tmp_path / "t.db")
+    _held_tape(st, now, int(now - 14 * DAY + 600), older=False)
+    _day_trades(st, now, 10, 1)
+    monkeypatch.setattr(R, "current", lambda store, configured, at: R.state(store, configured, at,
+                        total_bytes=643.8 * GB, db_bytes=90.44 * GB))  # fmt: skip
+    monkeypatch.setattr("snipetech.live.PRUNE_REST", 0.0)
+    w = _new_process(st, now)
+    w._mark_tape()  # tick 1
+    asyncio.run(w._prune(now))  # the prune tick 1 starts
+    assert w.retain_days == 14.0 and _days_left(st, now) == [1, 10]
+    st.close()
+
+
+def test_the_stretch_starts_where_a_prune_deleted_and_never_before(tmp_path, monkeypatch):
+    """The stretch's start moves only with a prune, to the cutoff it deleted before: also when the clip dropped the
+    record's span whole (a stretch resumed from before the cutoff), and also after the days asked for go up (the rows
+    the earlier cutoff deleted stay deleted)."""
+    now = float(T0)
+    st = Store(tmp_path / "t.db")
+    start = int(now - 30 * 3600)
+    held = {"spans": [[start, start + 7200]], "slot": 472_000_000, "head": [472_000_000, start + 7201]}
+    st.set_coverage("tape", held)
+    w = watcher(store=st)
+    w.cfg.storage.retain_days = 1.0
+    w.clock = lambda: now
+    w._load_position()
+    w._connected(replayed=True)  # a replay of 28 hours: the stretch goes on from 30 hours ago
+    w.lag, w.tape_at = 28 * 3600.0, now
+    asyncio.run(w._prune(now))  # one day kept: the record's span ended before the cutoff and is dropped
+    w.lag = 1.0  # the replay has caught up
+    w._mark_tape()
+    assert st.coverage("tape")["spans"] == [[int(now - DAY), int(now - 2)]]
+    R.ask(st, 5.0, now, "more days")  # the cutoff goes back four days: what the first prune deleted stays deleted
+    monkeypatch.setattr(R, "disk_total_bytes", lambda _path: 644 * GB)
+    asyncio.run(w._prune(now + 3600))
+    w.clock, w.tape_at = (lambda: now + 3600), now + 3600
+    w._mark_tape()
+    assert w.retain_days == 5.0 and st.coverage("tape")["spans"] == [[int(now - DAY), int(now + 3598)]]
+    st.close()
+
+
+def test_a_new_process_that_cannot_work_out_its_days_prunes_nothing(monkeypatch):
+    """Its days are the configured floor (6) until a prune has worked out the 14 asked for: a prune whose days cannot
+    be worked out deletes nothing. Once worked out, a later failure keeps them."""
+    now = float(T0)
+    st = Store(":memory:")
+    R.ask(st, 14, now, "db retain")
+    _day_trades(st, now, 10, 1)
+    w = watcher(store=st)
+    w.cfg.storage.retain_days = 6.0
+    w.retain_days = 6.0
+
+    def broken(*_a, **_k):
+        raise OSError("disk usage could not be read")
+
+    monkeypatch.setattr(R, "current", broken)
+    monkeypatch.setattr("snipetech.live.PRUNE_REST", 0.0)
+    asyncio.run(w._prune(now))
+    assert _days_left(st, now) == [1, 10]  # was [1]: a 10-day-old trade deleted though 14 days were asked for
+    monkeypatch.setattr(R, "current", lambda *_a, **_k: {"effective": 9.0})
+    asyncio.run(w._prune(now))
+    assert _days_left(st, now) == [1]  # worked out: 9 days
+    _day_trades(st, now, 8)
+    monkeypatch.setattr(R, "current", broken)
+    asyncio.run(w._prune(now + 3600))
+    assert w.retain_days == 9.0 and _days_left(st, now) == [1, 8]  # the days worked out stay in force
+
+
+def test_a_new_process_prunes_no_learned_destination_before_its_days_are_worked_out(monkeypatch):
+    """Review of the fix above: a prune that failed before it worked the days out (the day's walk record could not be
+    read) still pruned the learned payment destinations, at the configured floor: 6 days where 14 were asked for."""
+    import sqlite3
+
+    from snipetech import live as L
+
+    now = float(T0)
+    st = Store(":memory:")
+    R.ask(st, 14, now, "db retain")
+    w = watcher(store=st)
+    w.cfg.storage.retain_days = 6.0
+    w.retain_days = 6.0
+    assert w.pay_dests is not None
+    cuts: list[int] = []
+    monkeypatch.setattr(st, "prune_pay_dests", lambda before, learned: cuts.append(before) or 0)
+    real = st.coverage
+
+    def coverage(key):
+        if key == L.PRUNE_KEY:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(key)
+
+    monkeypatch.setattr(st, "coverage", coverage)
+    monkeypatch.setattr("snipetech.live.PRUNE_REST", 0.0)
+    asyncio.run(w._prune(now))
+    assert cuts == []  # was [now - 6 days]: the configured floor, not the 14 days asked for
+    monkeypatch.setattr(st, "coverage", real)
+    monkeypatch.setattr(R, "current", lambda *_a, **_k: {"effective": 14.0})
+    asyncio.run(w._prune(now))
+    assert cuts == [int(now - 14 * DAY)]
+
+
 def test_the_command_shows_the_state_and_sets_the_days(tmp_path, capsys, monkeypatch):
     db = tmp_path / "snipetech.db"
     Store(db).close()

@@ -94,3 +94,81 @@ def test_dispatch_hands_each_transaction_over_with_its_block_index_and_can_route
         and b58decode(PUMP_PROGRAM) not in p2.transaction.transaction.transaction.message.account_keys
     )
     assert LS.dispatch(geyser_pb2.SubscribeUpdate(), lambda tx, index: 1 / 0) is None  # a ping carries no transaction
+
+
+# -- the feed-latency probe (audit 22 Nov, goal#3) ---------------------------------------------------------------------
+
+
+def _slot(slot: int, status: int):
+    from snipetech.solana.ys import geyser_pb2
+
+    return geyser_pb2.SubscribeUpdate(slot=geyser_pb2.SubscribeUpdateSlot(slot=slot, status=status))
+
+
+def _tx(slot: int, failed: bool = False):
+    from snipetech.solana.ys import geyser_pb2
+
+    u = geyser_pb2.SubscribeUpdate()
+    u.transaction.slot = slot
+    if failed:
+        u.transaction.transaction.meta.err.err = b"\x01"
+    return u
+
+
+def _meta(slot: int, executed: int):
+    from snipetech.solana.ys import geyser_pb2
+
+    return geyser_pb2.SubscribeUpdate(
+        block_meta=geyser_pb2.SubscribeUpdateBlockMeta(slot=slot, executed_transaction_count=executed)
+    )
+
+
+def test_the_feed_latency_probe_asks_for_every_step_of_every_slot_and_failed_sends_too():
+    """The tape reads confirmed transactions only, keeps no receive time and drops failed sends: nothing on the server
+    said how many milliseconds after a leader's buy a processed feed hands it over, nor who lost the race. The probe
+    is a subscription of its own (the tape stays at confirmed): processed, every slot status including the steps inside
+    a slot, each block's summary, and failed transactions beside the others."""
+    req = LS.feed_latency_request(["P"])
+    f = req.transactions["probe"]
+    assert list(f.account_include) == ["P"] and f.vote is False and not f.HasField("failed")  # failed ones too
+    assert req.commitment == 0  # processed
+    assert req.slots["probe"].filter_by_commitment is False and req.slots["probe"].interslot_updates is True
+    assert "probe" in req.blocks_meta and not req.HasField("from_slot")
+
+
+def test_the_feed_latency_probe_says_how_soon_each_step_of_a_slot_reached_this_machine():
+    first_shred, bank, processed, confirmed, dead = 3, 5, 0, 1, 6
+    probe = LS.FeedLatencyProbe()
+    # slot 10: first shred at 0.00 s, processed 0.40 s, a pump.fun buy at 0.45 s (and a failed send), confirmed 1.20 s
+    # slot 11: first shred at 0.40 s, processed 0.70 s, its transactions at 0.65 and 0.72 s, confirmed 1.50 s
+    for update, at in [(_slot(10, first_shred), 0.0), (_slot(10, bank), 0.05), (_slot(10, processed), 0.40),
+                       (_tx(10), 0.45), (_tx(10, failed=True), 0.46), (_slot(11, first_shred), 0.40),
+                       (_tx(11), 0.65), (_slot(11, processed), 0.70), (_tx(11), 0.72), (_meta(10, 1200), 0.80),
+                       (_slot(10, confirmed), 1.20), (_slot(10, confirmed), 1.30), (_slot(11, confirmed), 1.50),
+                       (_slot(12, dead), 1.6)]:  # fmt: skip
+        probe.feed(update, at)
+    out = probe.summary()
+    assert out["slots"] == 3 and out["dead"] == 1 and out["txs"] == 4 and out["failed"] == 1
+    assert out["first_shred_to_processed_ms"] == {"n": 2, "p10": 300.0, "p50": 300.0, "p90": 400.0, "max": 400.0}
+    assert out["processed_to_confirmed_ms"]["n"] == 2 and out["processed_to_confirmed_ms"]["max"] == 800.0  # once
+    assert out["first_tx_after_first_shred_ms"] == {"n": 2, "p10": 250.0, "p50": 250.0, "p90": 450.0, "max": 450.0}
+    assert out["first_tx_after_processed_ms"]["p10"] == -50.0  # slot 11's first transaction came before its status
+    assert out["block_txs"] == {"n": 1, "p10": 1200, "p50": 1200, "p90": 1200, "max": 1200}
+
+
+def test_doctor_runs_the_feed_latency_probe_only_when_asked(tmp_path, capsys, monkeypatch):
+    import json
+
+    from snipetech.cli import main
+    from snipetech.solana.programs import PUMP_PROGRAM
+
+    seen = {}
+
+    async def probe(programs, secs, endpoint=LS.DEFAULT_ENDPOINT, token=None):
+        seen.update(programs=programs, secs=secs)
+        return {"slots": 0, "error": None}
+
+    monkeypatch.setattr(LS, "probe_feed_latency", probe)
+    assert main(["--db", str(tmp_path / "t.db"), "doctor", "--feed-latency", "30"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"slots": 0, "error": None}
+    assert seen == {"programs": [PUMP_PROGRAM], "secs": 30.0}  # pump.fun's transactions, for the seconds asked

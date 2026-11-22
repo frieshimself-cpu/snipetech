@@ -7,7 +7,8 @@ Semantics verified against mainnet transactions (see tests/test_decode.py):
   `sol_amount - fee - creator_fee` on a sell (buyback is a share *of* `fee`).
 * PumpSwap `BuyEvent`/`SellEvent`: `pool_*_token_reserves` are *before* the trade and
   pricing uses effective quote reserves `pool_quote + virtual_quote_reserves` (signed).
-  The LP fee stays in the pool; protocol/creator fees never count as liquidity.
+  The LP fee stays in the pool and the protocol fee never does; the creator and buyback fees
+  leave it in the v1 instructions and stay in its quote vault in the `*_v2` ones.
 """
 
 from __future__ import annotations
@@ -243,16 +244,20 @@ def _amm_trade(tx: TxEvents, ev: RawEvent, pos: int, mint: str) -> Trade:
         + int(f.get("protocol_fee_basis_points") or 0)
         + int(f.get("coin_creator_fee_basis_points") or 0)
     )
+    ix = f.get("ix_name") or ev.ix_name  # a SellEvent has no ix_name field: the instruction's own name
+    # The *_v2 instructions keep the coin creator's fee and the buyback fee in the pool's quote vault, which prices the
+    # next trade (audit 22 Nov: 5,481,969 lamports after a 0.57 SOL buy_exact_quote_in_v2); v1 pays both out.
+    kept = int(f.get("coin_creator_fee") or 0) + int(f.get("buyback_fee") or 0) if (ix or "").endswith("_v2") else 0
     if ev.name == "BuyEvent":
         base = int(f["base_amount_out"])
         # Constant-product quote for the tokens received; exact for every buy flavour.
         quote = _ceil_div(quote_before * base, base_before - base) if base_before > base else int(f["quote_amount_in"])
-        q_after, b_after = quote_before + quote + lp_fee, base_before - base
+        q_after, b_after = quote_before + quote + lp_fee + kept, base_before - base
         is_buy = True
     else:
         base = int(f["base_amount_in"])
         quote = int(f["quote_amount_out"])
-        q_after, b_after = quote_before - quote + lp_fee, base_before + base
+        q_after, b_after = quote_before - quote + lp_fee + kept, base_before + base
         is_buy = False
     return Trade(
         sig=tx.signature,
@@ -270,5 +275,5 @@ def _amm_trade(tx: TxEvents, ev: RawEvent, pos: int, mint: str) -> Trade:
         fee_bps=fee_bps,
         q_after=q_after,
         b_after=b_after,
-        ix=f.get("ix_name") or ev.ix_name,
+        ix=ix,
     )
