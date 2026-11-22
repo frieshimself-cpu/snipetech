@@ -140,6 +140,13 @@ def arm_for(store: Store, sniper_id: str | None) -> str:
     return "control"
 
 
+# The copied buy is looked for this far before ours (a minute), by the tape reading as by the chain reading
+# (chain_landing). A copy lands in the copied wallet's block or the next; a buy of the coin by a copied wallet minutes or
+# hours before ours is not what ours copied (22 Nov audit: with no limit the owner's hand buy 2.8 hours after one became
+# a live copy of that wallet, 40 trades behind it).
+LEADER_WINDOW_SLOTS = 150
+
+
 def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
     if not leaders:
         return None
@@ -149,8 +156,9 @@ def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
         chunk = ws[i : i + 500]
         rows = store._q(
             "SELECT user, slot, pos, quote, q_after, b_after, venue FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
-            "AND (slot<? OR (slot=? AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(chunk)),
-            (trade.mint, *chunk, trade.slot, trade.slot, trade.pos),
+            "AND slot>=? AND (slot<? OR (slot=? AND pos<?)) "
+            "ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(chunk)),
+            (trade.mint, *chunk, int(trade.slot) - LEADER_WINDOW_SLOTS, trade.slot, trade.slot, trade.pos),
         )
         if rows and (best is None or (rows[0][1], rows[0][2]) > (best[1], best[2])):
             best = rows[0]
