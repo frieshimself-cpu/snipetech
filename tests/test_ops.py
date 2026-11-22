@@ -128,6 +128,60 @@ def test_files_stay_inside_data(env):
         req(ops, key, "write", name="../reports/x.txt", content="x")
 
 
+def test_remote_read_sends_its_tail_and_says_when_a_file_was_cut(env, monkeypatch, capsys):
+    """22 Nov audit (ops#2): `remote read PATH --tail N` sent no tail and printed the content alone: the server's last
+    200 kB of a file (from a whole line) read as the whole file, and a one-line file past them as nothing, exit 0."""
+    from snipetech import cli
+
+    ops, key = env
+    path = ops.data / "reports" / "big.txt"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("HEADER: the summary line a reader needs\n" + "".join(f"row {i}\n" for i in range(60000)))
+    seen = []
+
+    def call(url, k, op, **kw):
+        seen.append((op, kw))
+        return req(ops, key, op, **kw)
+
+    monkeypatch.setattr(O, "call", call)
+    base = ["remote", "--url", "https://x", "--key", "k", "read", "reports/big.txt"]
+    assert cli.main([*base, "--tail", "5000000"]) == 0
+    got = capsys.readouterr()
+    assert seen[-1] == ("read", {"path": "reports/big.txt", "tail": 5000000})
+    assert got.out == path.read_text() and got.err == ""  # whole, and nothing to say
+    assert cli.main(base) == 0  # the server's default: its last 200 kB, from a whole line
+    got, size = capsys.readouterr(), path.stat().st_size
+    assert got.out.startswith("row ") and "HEADER" not in got.out
+    assert f"{size:,} bytes" in got.err and f"--tail {size}" in got.err
+    one = ops.data / "operator" / "snapshot.json"  # one line of 185,676 bytes on the server, and growing
+    one.parent.mkdir(exist_ok=True)
+    one.write_text(json.dumps({"snipers": [], "pad": "x" * 210_000}))
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "read", "operator/snapshot.json"]) == 0
+    got = capsys.readouterr()
+    assert got.out == "" and "longer than the tail shows nothing" in got.err
+    assert req(ops, key, "read", path="operator/snapshot.json")["cut"] is True
+    assert req(ops, key, "read", path="operator/snapshot.json", tail=10**6)["cut"] is False
+
+
+def test_a_job_s_log_cut_by_its_tail_says_so(env, monkeypatch, capsys):
+    """`remote --wait run` reads a job's last 20 kB: a job whose report is one line longer than that printed nothing,
+    and nothing said why."""
+    from snipetech import cli
+
+    ops, key = env
+    jid = "20261122-101010-abcdef"
+    log = ops.data / "jobs" / f"{jid}.log"
+    log.write_text("first line\n" + json.dumps({"report": "x" * 30_000}) + "\n")
+    (ops.data / "jobs" / f"{jid}.json").write_text(json.dumps({"id": jid, "argv": ["lab"], "started": 1, "ended": 2,
+                                                               "exit_code": 0, "running": False}))  # fmt: skip
+    st = req(ops, key, "job", id=jid)
+    assert st["output"] == "" and st["output_cut"] is True and st["output_bytes"] == log.stat().st_size
+    assert "output_cut" not in req(ops, key, "job", id=jid, tail=10**6)  # whole: nothing more in the answer
+    monkeypatch.setattr(O, "call", lambda url, k, op, **kw: req(ops, key, op, **kw))
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "job", jid]) == 0
+    assert f"remote read jobs/{jid}.log --tail {log.stat().st_size}" in capsys.readouterr().err
+
+
 def test_sql_is_read_only(env):
     ops, key = env
     r = req(ops, key, "sql", query="SELECT key, updated FROM coverage")

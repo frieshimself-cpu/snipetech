@@ -298,13 +298,19 @@ def redact(text: str) -> str:
 def _tail(path: Path, tail: int) -> str:
     """The last `tail` bytes of a file, from the first whole line in them: a read that cut into a line would hand
     out the rest of it, a secret's rest too, which the scrub (whole values) lets through (22 Nov review)."""
+    return _tail_of(path, tail)[0]
+
+
+def _tail_of(path: Path, tail: int) -> tuple[str, int]:
+    """`_tail`, and the size of the file it read: one larger than `tail` was cut (22 Nov audit: a cut read said
+    nothing, and one line longer than the tail read as an empty file)."""
     size = path.stat().st_size
     with path.open("rb") as f:
         f.seek(max(0, size - tail))
         data = f.read()
     if size > tail:
         data = data.split(b"\n", 1)[1] if b"\n" in data else b""
-    return data.decode(errors="replace")
+    return data.decode(errors="replace"), size
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -478,11 +484,12 @@ class Ops:
         if job is None and meta is None:
             raise OpsError(404, f"no job {id}")
         log = self.data / "jobs" / f"{id}.log"
-        text = ""
+        text, size = "", 0
         if log.exists():
-            text = _tail(log, int(tail))
+            text, size = _tail_of(log, int(tail))
         state = self._job_dict(job) if job else meta
-        return state | {"output": text}
+        cut = {"output_bytes": size, "output_cut": True} if size > int(tail) else {}  # only its end: said (`remote`)
+        return state | {"output": text} | cut
 
     def op_jobs(self) -> dict[str, Any]:
         """Every running job first, however old (a session checks this list before a deploy kills running jobs: a
@@ -533,10 +540,12 @@ class Ops:
         return {"path": str(d.relative_to(self.data)), "items": items}
 
     def op_read(self, path: str, tail: int = 200000) -> dict[str, Any]:
+        """The file's last `tail` bytes from a whole line (`_tail`); `cut`: the file is longer, this is its end only."""
         p = self._inside(path)
         if not p.is_file() or self._hidden(p):
             raise OpsError(404, f"no file {path}")
-        return {"path": path, "bytes": p.stat().st_size, "content": _tail(p, int(tail))}
+        text, size = _tail_of(p, int(tail))
+        return {"path": path, "bytes": size, "content": text, "cut": size > int(tail)}
 
     def op_write(self, name: str, content: str) -> dict[str, Any]:
         base = (self.data / "inputs").resolve()
