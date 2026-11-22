@@ -66,6 +66,8 @@ from .lab import (
     LAUNCH_KINDS,
     MIG_CAP,
     MIG_LAND_SLOTS,
+    OUTSIDE_WORDS,
+    SIZE_FLOOR_SHARE,
     SIZE_WORDS,
     SKIP_WORDS,
     SNIPER_NOTE,
@@ -1626,10 +1628,11 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
     priced on the curve tape, as the lab scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is
     left out, as in the lab. So is a buy too large for its pool to be replayed, at any rule (`lab.size_gap`: it would
     end its curve, or is most of what the curve still takes or of the pool's coins): its reason is a key of
-    lab.SIZE_WORDS."""
+    lab.SIZE_WORDS. The third value is the position's share of the pool's coins at its entry (None with no position):
+    what says whether a sale priced past the curve counts as outside the model (`outside_marks`)."""
     gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
     gap = migration_sell_gap(amm_cov, path, e, mig, exits_horizon([ex])) if gated else None
-    res = None
+    res, share = None, None
     if gap is None or trig.kind in LAUNCH_KINDS:
         frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
         prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
@@ -1637,11 +1640,36 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
         if prep is not None:
             sized = size_gap(prep)  # a buy this size against this pool: left out and counted, as in the lab
             if sized is not None:
-                return None, sized
-            res = run_exit(prep, ex, costs, end_ts=float(end))
+                return None, sized, None
+            res, share = run_exit(prep, ex, costs, end_ts=float(end)), float(prep.pool_share)
             if gated and trig.kind in LAUNCH_KINDS:
                 gap = exit_gap(amm_cov, path, prep, res, ex, mig)
-    return res, gap
+    return res, gap, share
+
+
+def outside_marks(res, share: float | None) -> dict[str, Any]:
+    """What a forward trade's data says of the prices its result rests on (audit of 22 Nov), as the lab marks a scored
+    exit (`lab.exit_pnls`): the position's share of the pool's coins at its entry (`pool_share`), `past_curve` when the
+    replay, with our coins out of the pool, ran past the end of the curve before its last sale, and `fallback` when our
+    coins became more than half the pool's on the way (`SimResult`). Only the marks that hold are written. A trade
+    written before carries none of them (`outside_model` counts it as not known)."""
+    marks: dict[str, Any] = {} if share is None else {"pool_share": round(float(share), 6)}
+    if getattr(res, "past_curve", False):
+        marks["past_curve"] = True
+    if getattr(res, "fallback", False):
+        marks["fallback"] = True
+    return marks
+
+
+def outside_model(data: dict) -> str | None:
+    """Which price outside the model a forward trade rests on, by the lab's own rule (`lab.exit_pnls`): "fallback",
+    or "past_curve" for a position of SIZE_FLOOR_SHARE of the pool or more (under it our own effect on any later price
+    is under 2 %); None for a trade priced by the model, or one that carries no marks."""
+    if data.get("fallback"):
+        return "fallback"
+    if data.get("past_curve") and float(data.get("pool_share") or 0) >= SIZE_FLOOR_SHARE:
+        return "past_curve"
+    return None
 
 
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
@@ -1806,9 +1834,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 mig = migs.get(mint)
                 # a copy that buys on PumpSwap: only where the tape holds the stretch whole, as in the lab
                 gap = wallet_amm_gap(store, amm_cov, backfill.get(mint), path, trig, ex, i, e, mig, mint)
-                res = None
+                res = share = None
                 if gap is None:
-                    res, gap = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
+                    res, gap, share = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
                 if gap is not None:
                     skipped.setdefault(s["id"], {})
                     skipped[s["id"]][gap] = skipped[s["id"]].get(gap, 0) + 1
@@ -1826,7 +1854,10 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                              **({"mates": len(own or ())} if trig.kind == "kol" else {}),
                              # the bid this buy paid once, and at a bid landing the place it got
                              **({"buy_bid_sol": bid_of(s)} if bid_of(s) > 0 else {}),
-                             **({"place": placed["place"]} if placed else {})},
+                             **({"place": placed["place"]} if placed else {}),
+                             # its share of the pool at the entry, and whether a sale rests on a price outside the
+                             # model, as the lab marks it (rows without `pool_share` were written before 22 Nov)
+                             **outside_marks(res, share)},
                 })  # fmt: skip
                 added += wrote
                 if s["id"] in research:  # a research record: never counted as a trade at the live landing
@@ -2007,16 +2038,19 @@ def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy
                 continue
             if priced:
                 continue
-            res, gap = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
+            res, gap, share = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
             if gap is not None or res is None:
                 leave(sid, "size" if gap in SIZE_WORDS else "gap" if gap is not None else "position", row)
                 continue
             tally[sid]["rescored"] += 1
             tally[sid]["after"] += float(res.pnl_sol)
+            # (the marks of the prices it rests on, as today's simulator reads them: `outside_marks`)
+            kept = {k: v for k, v in data.items() if k not in ("pool_share", "past_curve", "fallback")}
             updates[sid].append({
                 "strategy": sid, "mint": mint, "trigger_ts": row["trigger_ts"], "exit_ts": res.exit_ts,
                 "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
-                "data": data | {"hold_secs": res.hold_secs, "model": FILL_MODEL, "pnl_old": row["pnl"]},
+                "data": kept | {"hold_secs": res.hold_secs, "model": FILL_MODEL, "pnl_old": row["pnl"],
+                                **outside_marks(res, share)},
             })  # fmt: skip
     for rows in updates.values():
         store.update_paper_trades(rows)
@@ -2057,7 +2091,15 @@ def _robust(pnl: np.ndarray, buy_sol: float, conf: float, samples: int) -> dict:
 # trades), while 17 strategies with 6,200 trades between them had had a trade in two hours. The live page shows the
 # same kept numbers (dash._paper): a rule's record, never every row of it.
 REPORT_CACHE_KEY = "paper:report"
-REPORT_VERSION = 1
+REPORT_VERSION = 2  # 2 (22 Nov): `outside_model`, the trades of a record that rest on a price outside the model
+
+
+def _outside_count(kept: list[dict]) -> dict[str, Any]:
+    """Of a record's trades, how many rest on a price outside the model (`outside_model`) and what they made, out of
+    how many say (`of`: the trades that carry the marks, written since 22 Nov; the older ones are not known)."""
+    known = [r for r in kept if "pool_share" in (r.get("data") or {})]
+    out = [r for r in known if outside_model(r.get("data") or {})]
+    return {"trades": len(out), "sol": round(sum(float(r["pnl"]) for r in out), 6), "of": len(known)}
 
 
 def _numbers(store: Store, strategy: dict, conf: float, samples: int, bounds: bool, counted: int) -> tuple[dict, bool]:
@@ -2076,7 +2118,8 @@ def _numbers(store: Store, strategy: dict, conf: float, samples: int, bounds: bo
     if bounds:
         st = summarize(pnl, conf, samples) if len(pnl) else {}
         nums |= {"mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"),
-                 "other_venue": other, **_robust(pnl, strategy["buy_sol"], conf, samples)}  # fmt: skip
+                 "other_venue": other, **_robust(pnl, strategy["buy_sol"], conf, samples),
+                 "outside_model": _outside_count(kept)}  # fmt: skip
     else:
         nums["mean"] = float(pnl.mean()) if len(pnl) else None
     return nums, not asks_tape and len(rows) == counted
@@ -2130,7 +2173,9 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "ev_lower": nums["ev_lower"], "total": nums["total"], "win_rate": nums["win_rate"],
                     "per_hour": n / hours if hours else None, "lab_mean": s["lab"].get("mean"),
                     "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing"),
-                    "venue": strategy_venue(s), "other_venue": other, **robust})  # fmt: skip
+                    "venue": strategy_venue(s), "other_venue": other, **robust,
+                    # its trades that rest on a price outside the model, as the lab counts them (`_outside_count`)
+                    "outside_model": nums.get("outside_model")})  # fmt: skip
         if any_buyer(s.get("trigger")):  # why its place is no live landing, in the row itself
             out[-1]["landing_note"] = ANY_BUYER_NOTE
         if sniper_rule(s.get("trigger")):
@@ -2155,6 +2200,9 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
             store.set_coverage(REPORT_CACHE_KEY, {"rows": fresh})
         except sqlite3.Error:
             pass  # a store that cannot be written (a read-only copy): the report is the same, computed each time
+    # what a price outside the model is, said once when a record holds trades priced there
+    outside = any(((r.get("outside_model") or {}).get("trades") or 0) > 0 for r in out)
     return {"strategies": out, "scored_until": done_until, "landing": landings(copy_pos),
             "landing_note": landing_note(copy_pos), "superseded": superseded,
-            **({"research_only_why": whys} if whys else {})}  # fmt: skip
+            **({"research_only_why": whys} if whys else {}),
+            **({"outside_why": dict(OUTSIDE_WORDS)} if outside else {})}  # fmt: skip

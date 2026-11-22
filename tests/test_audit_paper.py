@@ -152,3 +152,51 @@ def test_only_a_record_frozen_in_those_two_days_at_that_cost_counts_as_overcharg
     assert not paper.overcharged(rule | {"from_ts": 1_794_192_400, "per_tx_sol": 0.01})  # 8 Nov, a cost given by hand
     assert not paper.overcharged(rule | {"from_ts": TODAY})  # a measured cost of today, whatever it is
     assert not paper.overcharged(rule | {paper.FED: "dev_forward"})  # a rule another job feeds keeps its record
+
+
+# -- paper#5: a forward trade says when its sale was priced outside the model ------------------------------------------
+# The lab marks a score that rests on a price outside the model (`lab.exit_pnls`: the replay ran past the curve's end
+# with our coins out of the pool, for a position of SIZE_FLOOR_SHARE of the pool or more; or our coins became more than
+# half the pool's) and counts them. The forward record kept nothing of it: the best hunt's three biggest wins of 22 Nov
+# (+23.7 of its +16.22 SOL) were all priced past the curve, and no report could say so.
+
+
+def test_a_forward_trade_priced_past_the_curve_says_so_and_the_report_counts_it():
+    from tests.test_size_honesty import BIG, EXITS, NOW, _world
+
+    store = Store(":memory:")
+    t0 = NOW - 5000
+    _world(store, t0=t0, run_to=45.0)  # on the first coin the buyers behind us take the curve from 6 to 45 SOL
+    rule = Trigger("kol", sol=1.0, only=BIG)  # a copy of the big wallet's buys
+    ex = EXITS[1].to_dict()  # held 60 s: it sells after the curve, with our 10 SOL out of it, had ended
+    sid = paper.strategy_id(rule.__dict__, ex, "+6", 0, 10.0)
+    store.set_coverage("paper_strategies", {"strategies": [
+        {"id": sid, "label": f"{rule.label()} | hold60s", "trigger": rule.__dict__, "exit": ex, "position": "+6",
+         "latency": 0, "buy_sol": 10.0, "per_tx_sol": 0.0045, "from_ts": t0 - 100, "lab": {}}], "superseded": []})  # fmt: skip
+    paper.run(store, Config(), now=t0 + 3000)
+    rows = {r["mint"]: r for r in store.paper_trades(sid)}
+    first = rows.pop(addr("size-0"))
+    assert first["data"]["past_curve"] is True and first["data"]["pool_share"] >= 0.01
+    assert rows and all("past_curve" not in r["data"] and "pool_share" in r["data"] for r in rows.values())
+    (row,) = paper.report(store, Config(), t0 + 3000)["strategies"]
+    assert row["outside_model"] == {"trades": 1, "sol": round(first["pnl"], 6), "of": len(rows) + 1}
+    from snipetech import report as R
+
+    text = R.render_paper("report", paper.report(store, Config(), t0 + 3000))
+    assert f"{sid}: 1 of its {len(rows) + 1} trades" in text and "rest on a price outside the model" in text
+    store.close()
+
+
+def test_a_trade_written_before_the_mark_existed_is_counted_as_not_known():
+    """Rows the run wrote before 22 Nov carry no pool share: the report says on how many trades it knows."""
+    store = Store(":memory:")
+    sid = "o1d0000000"
+    store.set_coverage("paper_strategies", {"strategies": [
+        {"id": sid, "label": "a rule | hold60s", "trigger": {"kind": "kol", "sol": 1.0}, "exit": {"max_hold_secs": 60},
+         "position": "+6", "latency": 0, "buy_sol": 1.0, "per_tx_sol": 0.0045, "from_ts": 1, "lab": {}}],
+        "superseded": []})  # fmt: skip
+    for k in range(3):
+        store.put_paper_trade({"strategy": sid, "mint": f"m{k}", "trigger_ts": 10 + k, "pnl": 0.1, "data": {}})
+    (row,) = paper.report(store, Config(), 100)["strategies"]
+    assert row["outside_model"] == {"trades": 0, "sol": 0.0, "of": 0}
+    store.close()

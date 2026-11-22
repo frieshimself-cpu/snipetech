@@ -1173,6 +1173,13 @@ def render_paper(action: str, r: dict) -> str:
     # or a rule scored without serial crews' coins or on them alone): what their trades are not
     out += [f"{', '.join(ids)}: {why}." for why, ids in _by_note(rows, "exit_note")]
     out += [f"{why}." for why in (r.get("research_only_why") or {}).values()]  # each reason, once
+    # the trades of a record that rest on a price outside the model (paper.outside_model), as the lab counts them
+    for s in rows:
+        o = s.get("outside_model") or {}
+        if o.get("trades"):
+            out.append(f"{s['id']}: {o['trades']} of its {o['of']} trades ({float(o['sol']):+.3f} SOL) rest on a price "
+                       "outside the model: the replay ran past the curve's end with our coins out of the pool, or our "
+                       "coins became more than half the pool's.")  # fmt: skip
     other = sum(int(s.get("other_venue") or 0) for s in rows)
     if other:
         out.append(f"{other} trades on another launchpad's coins than their rule's are kept but not counted (until 8 Nov "

@@ -396,10 +396,12 @@ def test_the_paper_test_leaves_out_what_the_lab_leaves_out():
     path = MarketPath.build(store.trades_for_mint(addr("size-14")), store.launch(addr("size-14")))  # 60 SOL in it
     i = L._fire(RULE, path, store.launch(addr("size-14")), {"big": {BIG}})
     s = {"buy_sol": 30.0}
-    res, gap = paper._position({}, path, s, RULE, EXITS[0], Costs(), i, i, None, float(path.ts[-1]))
-    assert res is None and gap == "size_ends_curve"
-    res, gap = paper._position({}, path, {"buy_sol": 2.0}, RULE, EXITS[0], Costs(), i, i, None, float(path.ts[-1]))
-    assert res is not None and gap is None
+    # (since paper#5 of the audit of 22 Nov a position also says its share of the pool at the entry)
+    res, gap, share = paper._position({}, path, s, RULE, EXITS[0], Costs(), i, i, None, float(path.ts[-1]))
+    assert res is None and gap == "size_ends_curve" and share is None
+    two = {"buy_sol": 2.0}
+    res, gap, share = paper._position({}, path, two, RULE, EXITS[0], Costs(), i, i, None, float(path.ts[-1]))
+    assert res is not None and gap is None and 0 < share < 1
     store.close()
 
 
