@@ -419,7 +419,7 @@ def test_round11_a_refused_send_logs_no_token():
     status only."""
     import httpx
 
-    token = "123456789:AAH-fake-token-for-the-test-0123456789"
+    token = "123456:telegram-secret-value"  # the fake the other tests use: nothing shaped like a real bot token
     lines: list[str] = []
 
     def refused(url, data):
