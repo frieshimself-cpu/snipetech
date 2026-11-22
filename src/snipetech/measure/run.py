@@ -93,13 +93,33 @@ def _weights(ts_list: list[float], now: float, half_life_days: float) -> list[fl
     return [0.5 ** (max(0.0, now - t) / (half_life_days * 86400.0)) for t in ts_list]
 
 
+def _copies(trips: list[dict]) -> list[dict]:
+    """One entry per copy: the trips of one buy lot (`buy_sig`) added up, sold when its last sale was. A copy closed by
+    two sales (an OKTech part exit, the runner's sweep of what it left, a hand sale of half) is one copy, never two at
+    half its result each (22 Nov audit). A trip with no buy_sig stands alone."""
+    out: list[dict] = []
+    by_buy: dict[str, dict] = {}
+    for t in trips:
+        key = t.get("buy_sig")
+        if key is None or key not in by_buy:
+            out.append(dict(t))
+            if key is not None:
+                by_buy[key] = out[-1]
+            continue
+        c = by_buy[key]
+        c["pnl_sol"] = float(c["pnl_sol"]) + float(t["pnl_sol"])
+        c["sell_ts"] = max(float(c.get("sell_ts") or 0), float(t.get("sell_ts") or 0))
+    return out
+
+
 def wallet_live_rows(trips: list[dict], now: float, half_life_days: float,
                      starts: dict[str, float] | None = None) -> list[dict[str, Any]]:  # fmt: skip
-    """Per copied wallet: unweighted n, decay-weighted mean, a one-sided lower bound, live once n >= 10. `starts`: the
-    owner's fresh start per wallet (`book fresh`): only the trips sold after it count for that wallet."""
+    """Per copied wallet: unweighted n (copies, `_copies`: a copy sold in parts is one), decay-weighted mean, a
+    one-sided lower bound, live once n >= 10. `starts`: the owner's fresh start per wallet (`book fresh`): only the
+    copies sold after it count for that wallet."""
     by: dict[str, list[dict]] = {}
     starts = starts or {}
-    for t in trips:
+    for t in _copies(trips):
         w = t.get("wallet_copied")
         if w and float(t.get("sell_ts") or 0) < float(starts.get(w, 0)):
             continue

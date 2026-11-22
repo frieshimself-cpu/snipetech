@@ -644,3 +644,24 @@ def test_measure_8_the_windows_edge_keeps_a_right_pairing(tmp_path):
         assert {s.sig: (st.fill(s.sig)["buy_sig"], st.fill(s.sig)["pnl_sol"]) for s in (s1, s2)} == right
     finally:
         st.close()
+
+
+# -- measure#10: a copy sold in parts is one live copy -----------------------------------------------------------------
+
+
+def test_measure_10_one_copy_sold_in_two_parts_is_one_live_copy():
+    """measure#10: wallet_live_rows counted pair_round_trips' (buy lot, sale) pairs: a copy closed by two sales (an
+    OKTech part exit, the runner's sweep of what it left, a hand sale of half: 5 Nov EkqXDdZg) was two live copies at
+    half its result each, so a wallet reached the book's live_kill_n and live_n sooner, ranked on a per-part mean."""
+    from snipetech.measure.classify import pair_round_trips
+    from snipetech.measure.run import wallet_live_rows
+
+    buy = _row("b", 1000, "M", 1.0, 1000.0)
+    s1, s2 = _row("s1", 1012, "M", 0.4, 500.0), _row("s2", 1032, "M", 0.4, 500.0, tip=0)
+    trips = pair_round_trips([buy], [s1, s2], 0.0035)["trips"]
+    for t in trips:
+        t["wallet_copied"] = LEAD
+    rows = wallet_live_rows(trips, 1100, 7.0)
+    assert len(trips) == 2 and rows[0]["n"] == 1
+    assert rows[0]["mean_sol"] == pytest.approx(sum(t["pnl_sol"] for t in trips), abs=1e-6)
+    assert rows[0]["last_fill"] == 1032
