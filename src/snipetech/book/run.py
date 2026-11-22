@@ -21,7 +21,7 @@ from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
-from ..positions import SPENT_STATUSES, is_active
+from ..positions import SPENT_STATUSES, curve_plain_need, is_active
 from ..qualify.non_coin import NON_COIN_REASON, non_coin_traders
 from .policy import (
     BOOK_NAME_RE,
@@ -521,11 +521,14 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     # with them), and the ones that have or get a sniper: what the owner is told the book copies (book_reason)
     waits = [a for a in plan.actions if a.kind == "skip" and (CANNOT_PAY in a.reason or WAITS_FOR_MONEY in a.reason)]
     if waits:
+        fill = min((float(a.fill_sol) for a in waits if a.fill_sol), default=None)
         seen |= {
             "waiting": len(waits),
             "armed": sum(counts.get(k, 0) for k in ("keep", "create", "start")),
-            "waiting_fill": min((float(a.fill_sol) for a in waits if a.fill_sol), default=None),
+            "waiting_fill": fill,
         }
+        if fill and native is not None and wsol is not None:  # what one copy needs in plain SOL (policy.CANNOT_PAY)
+            seen["waiting_need"] = round(curve_plain_need(wsol, fill), 4)
     if effective_dry:
         for a in plan.actions:
             if a.kind in ("create", "start", "stop", "retire"):

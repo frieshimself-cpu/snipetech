@@ -608,6 +608,27 @@ def test_book6_no_sniper_is_made_whose_curve_copies_the_wrapped_sol_top_up_leave
     assert made(None, 0.0)[0]  # a balance that was not read says nothing, as before
 
 
+def test_book6_review_book_status_says_what_plain_sol_one_copy_needs(tmp_path):
+    """Review of the book#6 fix: with 0.30 SOL in the wallet and none wrapped the book makes no 0.2 SOL sniper (OKTech
+    would wrap 0.22 of it at the start), and /book status said only "the wallet cannot pay a 0.2 SOL buy", which reads
+    as false to an owner who sees 0.30 SOL there. It says what one copy needs in plain SOL, and why."""
+    from snipetech.book.state import last_run_line
+    from tests.test_book_run import _floor_off, _live
+
+    st, cfg = _env(tmp_path, enabled=True)
+    _floor_off(tmp_path)
+    svc = FakeSvc(st, cfg=cfg)
+    try:
+        _live(svc, cfg, [], balances=(0.30, 0.0, []))
+        assert not [c for c in svc.calls if c[0] == "create"], svc.calls
+        line = last_run_line(st)
+        assert "cannot pay a 0.2 SOL buy" in line and "0.425 SOL of plain SOL" in line and "OKTech wraps" in line, line
+        _live(FakeSvc(st, cfg=cfg), cfg, [], balances=(0.21, 0.22, []))  # the wrapped SOL is there already
+        assert "0.425" not in last_run_line(st)  # the copies are made: nothing waits
+    finally:
+        st.close()
+
+
 # -- book#7: our own copy that only the measure stage's fills hold -----------------------------------------------------
 
 

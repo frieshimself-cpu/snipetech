@@ -123,8 +123,15 @@ def last_run_line(store: Store, now: float | None = None) -> str:
     did = ", ".join(f"{k} {v}" for k, v in sorted((rec.get("actions") or {}).items())) or "nothing to change"
     waiting = int(rec.get("waiting") or 0)
     if waiting and not rec.get("dry"):  # the owner asks (/book status): said plainly, with the reason
-        fill = rec.get("waiting_fill")
+        from ..positions import BUY_NATIVE_SOL
+
+        fill, need = rec.get("waiting_fill"), rec.get("waiting_need")
         size = f"a {float(fill):g} SOL buy" if fill else "a buy"
+        if fill and need:  # what one copy needs in plain SOL, beside what OKTech wraps from it (review of book#6)
+            wrap = float(need) - float(fill) - BUY_NATIVE_SOL
+            size += (f" (one copy needs {float(need):.3f} SOL of plain SOL: the buy, about {BUY_NATIVE_SOL:g} SOL "
+                     "for its costs" + (f", and the {wrap:.3f} SOL OKTech wraps from it to keep beside a running "
+                                        "sniper)" if wrap > 0.0005 else ")"))  # fmt: skip
         armed = rec.get("armed")
         none = "none armed" if not armed else f"{armed} armed, {waiting} not"
         return (f"last run {when}: {ranked if ranked is not None else '?'} wallet(s) above the bar, {none}: the wallet "
