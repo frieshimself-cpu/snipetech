@@ -33,7 +33,8 @@ Hard rules (the tools enforce them too):
 - Spend: the round has a dollar cap. Do the minimum reading that answers the question, then write the note.
 - Secrets never appear in notes or reports.
 - Resources (credits, data-API budgets, SOL float, disk, failed sends) are checked and alerted by code every round;
-  the snapshot's `resources` rows are the result. Explain an anomaly if it bears on a decision; never re-alert it.
+  the snapshot's `resources` rows are the result: each check that is not ok (none listed, every check is ok; no
+  `resources` at all, the check did not run). Explain an anomaly if it bears on a decision; never re-alert it.
 
 How a wallet gets money: `discover` (hourly) fills the candidates table from every source; `qualify` (every 30 min,
 one lab at a time) writes a verdict per wallet at the copy landing ("+3x": behind the 3rd buy by others after the
@@ -661,6 +662,11 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         strategies = sorted((s for s in rows if not s.get("research_only")), key=lambda s: -(s.get("total") or 0))[:6]
         d["paper_top"] = strategies
         d["paper_research_only"] = sum(1 for s in rows if s.get("research_only"))
+    # the code's resource checks (run.py fills them before the turn; the rules point at them): the rows that are not
+    # "ok", an empty list when every check is; left out when the check did not run (audit of 22 Nov: never sent)
+    if getattr(snap, "resources", None):
+        d["resources"] = [{"name": r.get("name"), "status": r.get("status"), "message": r.get("message")}
+                          for r in snap.resources if r.get("status") != "ok"]  # fmt: skip
     return d
 
 

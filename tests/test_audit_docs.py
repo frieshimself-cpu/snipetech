@@ -62,3 +62,33 @@ def test_no_agent_text_says_the_failed_twins_pay_the_sell_priority():
             assert words not in _flat(text), (who, words)
     for who in ("playbook", "strategist", "fees.RULE", "the sell priority's reason", "oktech.autosell"):
         assert "buy priority" in _flat(texts[who]) and "not used" in _flat(texts[who]), who
+
+
+def test_the_snapshot_the_operator_and_the_analyst_read_carries_the_resource_rows_that_need_a_look():
+    """docs#6: their rules say "the snapshot's `resources` rows are the result" of the code's checks, and run.py fills
+    snap.resources before the turn, but the snapshot the model is sent left them out: a credit, budget, disk or SOL
+    float problem could be neither seen nor explained. The rows that are not "ok" go in; none listed means every
+    check is ok, and no `resources` at all means the check did not run this round."""
+    import time
+
+    from snipetech.operator.gate import Decision
+    from snipetech.operator.snapshot import Snapshot
+
+    snap = Snapshot(ts=time.time(), wallet="W", native_sol=1.0, wsol=0.0, snipers=[])
+    low = {"name": "helius_credits", "value": 8.0, "unit": "%", "threshold": 10.0, "status": "warn",
+           "message": "8 % of the month's credits left"}  # fmt: skip
+    disk = {"name": "disk", "value": 120.0, "unit": "gb", "threshold": 30.0, "status": "ok", "message": "120.0 GB free"}
+    snap.resources = [low, disk]
+    assert P._compact_snapshot(snap)["resources"] == [
+        {"name": "helius_credits", "status": "warn", "message": "8 % of the month's credits left"}
+    ]
+    msg = P.user_message(snap, Decision(True, "analyst", ["test"]), inbox="")
+    assert "8 % of the month's credits left" in msg and "120.0 GB free" not in msg
+    snap.resources = [disk]
+    assert P._compact_snapshot(snap)["resources"] == []
+    snap.resources = []  # the check failed or did not run: nothing is claimed either way
+    assert "resources" not in P._compact_snapshot(snap)
+    for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
+        text = _flat(system)
+        assert "the snapshot's `resources` rows are the result: each check that is not ok" in text
+        assert "none listed, every check is ok" in text
