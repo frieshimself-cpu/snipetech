@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import sys
 import time
 
@@ -15,6 +16,7 @@ from snipetech.operator.tools import NoteSink, make_operator_tools
 from snipetech.store import Store
 
 PROBE = "import sys; print('ran', sys.argv[1:])"
+HOLD = "import time; time.sleep(600)"  # a job that runs until its test stops it (lasting_jobs); ten minutes at most
 
 
 def _ops(tmp_path) -> O.Ops:
@@ -31,6 +33,20 @@ def jobs(tmp_path) -> OperatorJobs:
     )
     j.ops = _ops(tmp_path)  # the test probe instead of the real snipetech binary
     return j
+
+
+@pytest.fixture
+def lasting_jobs(jobs):
+    """The jobs `jobs` starts run until the test is over, then are stopped: for a test that reads a lab it started
+    as still running. The probe ends a few milliseconds after its start. On 22 Nov, under pytest -n 4, it had ended
+    9 to 35 ms after jobs.start returned while a test's checks of it took 1 to 22 ms, and a test now and then found
+    the lab it had just started gone."""
+    jobs.ops.command = [sys.executable, "-c", HOLD]
+    yield jobs
+    for job in jobs.ops.jobs.values():
+        if job.proc is not None and job.proc.poll() is None:
+            O._signal_group(job.proc, signal.SIGTERM)  # its whole group, as op_kill stops a job: wrapper and command
+            job.proc.wait(timeout=30)
 
 
 def _meta(jobs_dir, jid, argv, running=True, pid=None):
@@ -1519,7 +1535,7 @@ def test_the_agents_are_told_what_a_same_actor_verdict_is():
     assert "TWINS" in hint and "They are twins" in hint and "twin_with" in hint  # the twin rule of 13 Nov evening
 
 
-def test_the_agents_use_the_second_lab_slot_while_nothing_else_asks_for_it(jobs, monkeypatch):
+def test_the_agents_use_the_second_lab_slot_while_nothing_else_asks_for_it(jobs, lasting_jobs, monkeypatch):
     """13 Nov evening, the first hour after the credit came back: "No new test started: the one lab slot is held by my
     consensus lab", "The +0 lab ... could not start (lab slot held)", "the sniper-group lab waits for the lab slot",
     while the machine's second slot stood empty for all but qualify's few minutes every two hours. The roles take the

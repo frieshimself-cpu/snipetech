@@ -20,6 +20,7 @@ from . import test_turn as _turn
 
 _call, _queue = _base._call, _base._queue
 jobs, rolebox, toolbox = _base.jobs, _base.rolebox, _base.toolbox  # the same fixtures as the tools' other tests
+lasting_jobs = _base.lasting_jobs
 env = _turn.env  # a whole turn against a scripted model, as the turn's own tests run one
 
 NOW = 1_793_923_200  # the tools' clock in these fixtures: 2026-11-06 00:00 UTC
@@ -1206,7 +1207,7 @@ def test_a_first_table_needs_a_title_a_header_and_rows_that_fit_it(rolebox):
     )
 
 
-def test_the_lab_slots_line_says_what_start_job_will_do(rolebox, jobs, monkeypatch):
+def test_the_lab_slots_line_says_what_start_job_will_do(rolebox, jobs, lasting_jobs, monkeypatch):
     """F12. Two slots, one held by a lab that is no job of the agents', and qualify's mark that it waits: the line
     told the tester "qualify ... gets it before a lab of yours" while start_job started the tester's lab all the
     same (the roles give way only while their own running labs are at their share of the slots)."""
