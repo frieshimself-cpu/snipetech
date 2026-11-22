@@ -73,6 +73,7 @@ SELL_MAX_AGE_SECS = 300  # a /sell older than this (it waited out an outage) is 
 # command, and the RPC client retries one call for minutes (7 Nov: about 250 s). Past it the owner hears so and asks again
 READ_SECS = 20
 SELL_SECS = 60
+STOPS_SECS = 40  # all of /stop's stop calls together: six book snipers at READ_SECS each would outlast the pass
 
 
 def _waited(cmd: Command, now: float) -> int | None:
@@ -280,12 +281,18 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
         )
         return f"stop flag set, but {len(running)} sniper(s) left running ({ids}) because coins are held: {coins}. A stopped sniper strands its coin; stop again once they are sold."
     stopped, failed = [], []
+    loop = asyncio.get_running_loop()
+    until = loop.time() + STOPS_SECS
     for s in running:
+        left = min(READ_SECS, until - loop.time())
+        if left <= 0:
+            failed.append(f"{s.get('id')} (not asked: OKTech was too slow; send /stop again)")
+            continue
         try:
-            await asyncio.wait_for(svc.oktech_task("stop", str(s.get("id"))), READ_SECS)
+            await asyncio.wait_for(svc.oktech_task("stop", str(s.get("id"))), left)
             stopped.append(str(s.get("id")))
         except Exception as exc:  # noqa: BLE001
-            failed.append(f"{s.get('id')} ({_late(exc, READ_SECS, 'OKTech')})")
+            failed.append(f"{s.get('id')} ({_late(exc, left, 'OKTech')})")
     beside = "; ".join(f"{m[:6]}… {why}" for m, why in list(theirs.items())[:5])
     beside = f" (the wallet holds only coins no sniper of ours holds: {beside})" if beside else ""
     notes.write(

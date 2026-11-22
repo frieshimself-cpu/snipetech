@@ -282,6 +282,20 @@ def test_stop_answers_within_its_own_time_limit_when_a_read_hangs(tmp_path, monk
     assert "send /stop again" in reply.lower() or what == "stop", reply
 
 
+def test_stop_answers_in_time_when_every_stop_hangs(tmp_path, monkeypatch):
+    """Six book snipers whose stops all hang would take 6 x READ_SECS: past the pass's 2 minutes. All of /stop's stops
+    together wait STOPS_SECS at most; the ones not answered are named for the owner to stop again."""
+    from snipetech.operator import commands
+
+    monkeypatch.setattr(commands, "READ_SECS", 0.3)
+    monkeypatch.setattr(commands, "STOPS_SECS", 0.4)
+    svc = Hangs("stop")
+    svc._snipers = [{"id": f"s{k}", "name": "a", "status": "running"} for k in range(6)]
+    ctx, sent = _ctx(tmp_path, svc)
+    reply = asyncio.run(asyncio.wait_for(handle_command(_cmd("stop"), **ctx), 1.2))  # six times 0.3 s is 1.8 s
+    assert sent == [reply] and "stopped 0 sniper(s)" in reply and all(f"s{k}" in reply for k in range(6)), reply
+
+
 def test_sell_answers_within_its_time_limits_when_the_wallet_or_the_sale_hangs(tmp_path, monkeypatch, sell_key):
     from snipetech.operator import commands
 
