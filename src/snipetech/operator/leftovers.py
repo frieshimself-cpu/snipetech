@@ -8,7 +8,8 @@ book saw no live run on the wallet. The round's snapshot finds the job's end (`s
 gone) and the round closes what it left (`close`):
 
 * each of its snipers still active on OKTech is stopped once the wallet holds nothing on two readings PAUSE_SECS
-  apart (a stopped sniper strands its coin: never while the wallet holds one, CLAUDE.md rule 1);
+  apart and the tape has no buy of it whose coin they did not show (a stopped sniper strands its coin: never while
+  the wallet holds one, CLAUDE.md rule 1);
 * while the wallet holds a coin they keep running to sell it: the owner hears which coin, with /sell, and the round
   looks again every 15 minutes until nothing of the run is armed;
 * until then the run still drives the wallet (`armed`, read by `live_test._drivers`): the book adds no sniper beside
@@ -33,6 +34,9 @@ from .paths import OperatorPaths
 
 STATE = "leftovers.json"  # operator/: {job id: what its run left}, until nothing of it is armed
 PAUSE_SECS = 5.0  # between the two readings of the wallet before a stop: a buy on its way shows in the second
+# and a buy of the wallet on the tape since this long before the round whose coin neither reading showed, with no sale
+# after it, is a coin held: it landed and the node has not shown it yet (as the runner's own end, unseen_buy)
+UNSEEN_SECS = 60
 READ_SECS = 20.0  # each call to OKTech or the RPC waits this long at most (as live_test.WALLET_READ_SECS)
 KEEP_SECS = (
     2 * 86400
@@ -147,8 +151,31 @@ def _driven(paths: OperatorPaths) -> set[str]:
 
 async def _held(svc, cfg, address: str, r: dict) -> list[dict]:
     """The wallet's coins by the shared rule (positions.py), the owner's ignored coins and the run's own left out."""
-    ignore = list(dict.fromkeys([*(cfg.operator.ignore_mints or ()), *(r.get("ignore") or [])]))
-    return list(await asyncio.wait_for(svc.open_positions(address, ignore=ignore), READ_SECS) or [])
+    return list(await asyncio.wait_for(svc.open_positions(address, ignore=_ignored(cfg, r)), READ_SECS) or [])
+
+
+def _ignored(cfg, r: dict) -> list[str]:
+    return list(dict.fromkeys([*(cfg.operator.ignore_mints or ()), *(r.get("ignore") or [])]))
+
+
+def _unseen(svc, cfg, address: str, r: dict, now: float) -> list[str]:
+    """The coins of the wallet's buys on the tape since UNSEEN_SECS before the round that no sale followed, the
+    ignored coins left out: asked only once both readings showed nothing, so no reading showed them. The runner's own
+    end waits for such a buy before it stops a sniper (review of the 22 Nov audit's fix). A tape that cannot be read
+    says none: the two readings decide alone, as in the runner."""
+    store = getattr(svc, "store", None)
+    try:
+        trades = list(store.trades_for_user(address, int(now) - UNSEEN_SECS)) if store is not None else []
+    except Exception:  # noqa: BLE001 - the tape cannot say
+        return []
+    skip = set(_ignored(cfg, r))
+    out: list[str] = []
+    for t in trades:
+        if not t.is_buy or t.mint in skip or t.mint in out:
+            continue
+        if not any(not u.is_buy and u.mint == t.mint and (u.slot, u.pos) > (t.slot, t.pos) for u in trades):
+            out.append(t.mint)
+    return out
 
 
 def _tell(r: dict, kind: str, text: str, words: list[str]) -> None:
@@ -217,6 +244,8 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
             if not held:  # a second reading: a buy on its way shows in it
                 await asyncio.sleep(PAUSE_SECS)
                 held = await _held(svc, cfg, address, r)
+            if not held:  # or on the tape before it shows in a reading: held all the same
+                held = [{"mint": m} for m in _unseen(svc, cfg, address, r, now)]
         except Exception as exc:  # noqa: BLE001 - unknown coins never stop a sniper
             _tell(r, "wallet", f"{head} Its sniper(s) {', '.join(mine)} may still be armed: the wallet's coins could "
                                f"not be read ({type(exc).__name__}), and a sniper is stopped only while the wallet "

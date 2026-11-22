@@ -98,6 +98,52 @@ def test_a_buy_on_its_way_shows_in_the_second_reading_and_nothing_is_stopped(env
     assert env.svc.stops == [] and COIN in said
 
 
+class Tape:
+    """The store's side the round reads: the wallet's trades on the tape since a time (Store.trades_for_user)."""
+
+    def __init__(self, *rows, broken=False):
+        self.rows, self.broken = list(rows), broken
+
+    def trades_for_user(self, user, since_ts=0, fees=False):
+        if self.broken:
+            raise RuntimeError("database is locked")
+        return [t for t in self.rows if t.user == user and t.ts >= since_ts]
+
+
+def _trade(mint, *, buy=True, ts=NOW - 20, slot=100, pos=1, user=W):
+    from snipetech.models import Trade
+
+    return Trade(sig=f"s{slot}{pos}", ev=0, slot=slot, pos=pos, ts=ts, mint=mint, venue="curve", user=user,
+                 is_buy=buy, quote=10**8, base=10**9, fee=10**6, fee_bps=100, q_after=0, b_after=0)  # fmt: skip
+
+
+def test_a_buy_on_the_tape_that_no_reading_of_the_wallet_shows_stops_nothing(env):
+    """Review of the ops#0 fix: two empty readings of the wallet are no proof while the tape has a buy of it that
+    neither reading showed and no sale followed: it landed, and the node has not shown its coin yet (or left it out of
+    its reply). The runner's own end waits for such a buy before it stops a sniper (service.oktech_cycle, unseen_buy);
+    stopped now, the sniper that bought it would strand it. Nothing is stopped, the owner hears the coin, and a later
+    round stops them once the wallet holds nothing and the tape has no such buy."""
+    env.svc.store = Tape(_trade(COIN))
+    (said,) = _close(env, _ended(env))
+    assert env.svc.stops == [] and COIN in said and "/sell" in said
+    assert [d["id"] for d in LT._drivers(env.paths)] == [JOB]
+    _close(env, now=NOW + 900)  # a round later the buy is older than the look back, and nothing is held
+    assert env.svc.stops == [A, B]
+
+
+def test_a_tape_buy_already_sold_an_ignored_coin_s_or_a_tape_that_cannot_be_read_leave_the_readings_to_decide(env):
+    env.cfg.operator.ignore_mints = ["OwnerCoin1111111111111111111111111111111111"]
+    env.svc.store = Tape(_trade(COIN), _trade(COIN, buy=False, slot=101, pos=0),  # bought and sold since
+                         _trade("OwnerCoin1111111111111111111111111111111111"), _trade("Other", user="SomeoneElse"),
+                         _trade("Earlier", ts=NOW - L.UNSEEN_SECS - 60))  # fmt: skip
+    _close(env, _ended(env))
+    assert env.svc.stops == [A, B]
+    env.svc.tasks, env.svc.stops = {A: "running", B: "running"}, []
+    env.svc.store = Tape(_trade(COIN), broken=True)  # the tape cannot say: the two readings decide, as in the runner
+    _close(env, _ended(env, jid="20261122-100000-cccccc"))
+    assert env.svc.stops == [A, B]
+
+
 def test_the_run_s_own_ignored_coins_and_the_owner_s_are_no_holding(env):
     env.cfg.operator.ignore_mints = ["OwnerCoin1111111111111111111111111111111111"]
     env.svc.readings = [[{"mint": "OwnerCoin1111111111111111111111111111111111"}, {"mint": COIN}]]
