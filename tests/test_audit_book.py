@@ -507,3 +507,28 @@ def test_book4_neither_the_guard_nor_a_manual_start_arms_a_sniper_while_the_owne
     _results, failures = asyncio.run(oktech_tasks(svc, "start", ["a"]))
     assert client.calls == [("start", "a")] and not failures
     store.close()
+
+
+def test_book9_a_coin_on_the_owners_ignore_list_refuses_no_manual_stop_and_holds_no_push_back(monkeypatch):
+    """`oktech stop` / `delete` and the push's retires read the holdings without the owner's [operator] ignore_mints,
+    so an airdrop the owner said to ignore refused every manual stop, and --force (which strands any real coin too) was
+    the only way on. The book, the watch and the cycle all leave such a coin out."""
+    from snipetech.oktech import SyncPlan
+    from snipetech.service import oktech_tasks
+
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 2.0, coin=lambda t: 1_000_000_000)  # an airdrop
+    _results, failures = asyncio.run(oktech_tasks(svc, "stop", ["a"]))
+    assert failures and "coin(s) held" in failures[0][1] and client.calls == []  # not ignored: refused, as before
+    svc.cfg.operator.ignore_mints = [MINT]
+    _results, failures = asyncio.run(oktech_tasks(svc, "stop", ["a"]))
+    assert not failures and client.calls == [("stop", "a")], failures
+    seen = {}
+
+    async def apply(client, store, sync, wallet, prune=False, held=None):
+        seen["held"] = held
+        return []
+
+    monkeypatch.setattr("snipetech.oktech.apply", apply)
+    asyncio.run(svc.oktech_push({"_sync": SyncPlan()}))
+    assert seen["held"] == []  # the ignored coin holds no retire back
+    store.close()

@@ -880,8 +880,8 @@ class Service:
 
         held: list[dict] | None = None
         if self.cfg.operator.wallet:
-            try:
-                held = await self.open_positions(self.cfg.operator.wallet)
+            try:  # the owner's ignored coins (an airdrop) hold no retire back
+                held = await self.open_positions(self.cfg.operator.wallet, ignore=self.cfg.operator.ignore_mints)
             except Exception as exc:  # noqa: BLE001 - unknown holdings block every retire
                 self.progress(f"holdings unknown ({exc}): nothing will be retired")
         client = self._oktech()
@@ -3151,8 +3151,8 @@ async def oktech_tasks(
         if why:
             return [], [(i, f"{why}: nothing started (the owner's /risk changes it, or --force)") for i in ids]
     if action in ("stop", "delete") and not force and svc.cfg.operator.wallet:
-        try:
-            held = await svc.open_positions(svc.cfg.operator.wallet)
+        try:  # the owner's ignored coins (an airdrop) are no holding, as for the book, the watch and the cycle
+            held = await svc.open_positions(svc.cfg.operator.wallet, ignore=svc.cfg.operator.ignore_mints)
         except Exception as exc:  # noqa: BLE001 - unknown holdings: refuse, like /stop
             return [], [
                 (i, f"holdings could not be read ({type(exc).__name__}): nothing {action}ped; --force to override")
