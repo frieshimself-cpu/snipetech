@@ -21,15 +21,34 @@ first on the server's recording and only then run live in capped batches.
   copied at 6 SOL right behind with 0.6 SOL charged for the bid: +1.32 SOL a copy behind Cented (311 copies in 7 days,
   lower bound +1.19) and +1.07 behind Decu (339, lower +0.98). Two places further back the same copies lose 0.48 and
   0.75. So the place itself is worth about 1.8 SOL a copy. The bot's own picks did no better than all the moments, so
-  its filter is not explained yet (I615).
+  its filter is not explained yet (I615). "Right behind" is the lab's +0: the copy takes the price the leader's own
+  buy left, ahead of every buyer after it, 8r6N8w and the buyers below included. The 7 SOL lab of the same leaders'
+  first buys (+1.31 a copy, n 330) reads -0.89 SOL a copy with nothing a later buyer adds (its crowd-free reading):
+  the profit is the price those buyers push up behind the copy.
+- **Who stands there** (the audit of 22 Nov, tape of 19-22 Nov: 386 first buys of 1.9 SOL or more by Cented, Decu and
+  theo side). Another wallet's buy of 0.1 SOL or more stands within 3 block places after the leader on 251 of them
+  (65 %), and within 3 places before it on 1. 8r6N8w stands at exactly +1. One operator buys exactly 3.457 SOL from
+  54 different wallets at exactly +2, on 119 of the 386 (31 %). Beside 8r6N8w's 0.6 SOL, the first buyers within 3
+  places bid about 0.06 SOL, those 11 or more places back about 0.23: the closest bid the least, so this is no bid
+  race. They can stand there only with the leader's transaction in hand before it runs.
+- **Where a sender that reacts lands.** A buy sent once the leader's buy is seen lands some places after it. At 5
+  places it finds nobody of 0.1 SOL or more ahead on 31 % of the moments, at 15 on 22 %, at 50 on 10 %, at 150 on
+  4 %. OKTech's copies landed 5 to 630 places after the leader, or a slot later (16 copy buys since 12 Nov). A rough
+  mix with the lab's own numbers one and two buys back: about +0.3 SOL a copy at 5 places, +0.2 at 15, about 0 at 50
+  and about -0.5 at the block's end, all before the live gap of 0.18-0.40 SOL a copy.
 - **OKTech cannot take it** (I608). Our 13 tipped buys were never first. OKTech charges the buy's bid again on every
   sell and every failed send: about 1.6 SOL a round trip with one sell, 4.8 with 8 parts, against 2.13 SOL a coin. And
   selling in timed parts is not an OKTech exit.
-- **What it means for 100 a day.** On paper, about 650 such copies a week at +1.1 to +1.3 SOL each is about 100 SOL
-  a day, at 6 SOL a buy. That is paper with the place assumed, and 8r6N8w already takes the place on the moments it
-  wants. Taking it ourselves needs a sender of our own: our code signing the buys, a high bid, a dozen sends a moment,
-  and sells in parts at almost no bid. That decision is the owner's. The next facts for it: I615 (the bot's filter
-  and what its send ladder costs) and I610 (the tester scores the place on every first buy).
+- **What it means for 100 a day** (corrected by the audit of 22 Nov). On paper, about 650 such copies a week at
+  +1.1 to +1.3 SOL each is about 100 SOL a day, at 6 SOL a buy. That paper copy stands at +0, a place no sender that
+  reacts to the leader's landed buy reaches, OKTech or one of our own. So the +1.1 to +1.3 is evidence only for a
+  route that puts our buy next to the leader's transaction before it runs (CLAUDE.md rule 2). At the places OKTech
+  reached (10 of its 16 copies 50 or more places back or a slot later), the copy makes about 0 or less before the
+  live gap. 100 SOL a day stays unmeasured until that route is found. This bullet said before that taking the place
+  needs a sender of our own with a high bid and a dozen sends a moment: the tape says a faster send or a bid alone
+  does not take it; speed still counts on the 22-31 % of moments with nobody within 5 to 15 places. Any sender is
+  the owner's decision. The next facts for it: I615 (the bot's filter and what its send ladder costs) and I610 (the
+  tester scores the place on every first buy).
 - **Since 06:15.** The review of 22 Nov ended with 35 confirmed findings, all fixed test-first except low ones the
   runner's second loss check bounds; deployed a26aeee at 07:21, 4773984 at 07:40 (the loss alert on the bot's own
   trades and coins, never the owner's moves) and 226ea5e at 07:41 (`sends`). docs/autopilot.md lists each fix.
@@ -42,7 +61,9 @@ first on the server's recording and only then run live in capped batches.
   (priority 0.08-0.3 SOL, some at 0, beside 8r6N8w's 0.5). On the other three in four the first outsider stands 3 to
   200 positions back, 120-131 different wallets, a third of them bidding under 0.01 SOL. Second place: 109-128
   wallets, two in three under 0.01, never adjacent. Behind Cooker his own two wallets stand first. OKTech gave us the
-  next position 0 times in 13 tipped buys.
+  next position 0 times in 13 tipped buys. (Corrected by the audit of 22 Nov: "right behind" here is block place +1
+  only, the very next transaction. Within three places, a buy of 0.1 SOL or more stands behind 65 % of the first buys
+  of Cented, Decu and theo side on 19-22 Nov; see 07:50.)
 - **One bot owns it behind Cented and Decu.** 8r6N8w (no label, funded with 5 SOL by a wallet nobody we track shares)
   is first in 62 of its 63 entries, buys 6-8 SOL, pays about 0.5 SOL priority and a 0.11 tip a buy, holds 11-21 s,
   and made about +100 SOL after fees and bids in the week (92 coins; behind Cented 25 wins of 29, +50.1; behind Decu
@@ -52,7 +73,9 @@ first on the server's recording and only then run live in capped batches.
   behind the two busiest wallets makes about +14 SOL a day, at about 0.6 SOL a buy to get there. 100 a day at that
   place means landing right behind many wallets at once, as 6Z91 does (+52 to +105 a day across hundreds). That needs
   a sender of our own; whether one reaches the next position, and at what fee, is not measured (OKTech never has). The
-  decision to build one is the owner's; I605 is the next fact for it.
+  decision to build one is the owner's; I605 is the next fact for it. (Corrected by the audit of 22 Nov: "open three
+  times in four" counts block place +1 only. The buyers 1 to 3 places behind must have the leader's transaction
+  before it runs, so a sender that only reacts faster does not reach the place; 07:50 says what it is open to.)
 - **Since 04:45.** Deployed 4881ff6 at 05:30 (everything of the list below, and the kinds of copy), then 394a24a at
   06:15 and 6d00b48 at 06:18, which carry: 067e563 (the runner survives a failed start, a lost answer, an unsent sale and a
   hung read; --sweep-after needs the selling key to be the run's wallet), 67ba989 (a run's end never stops a sniper
