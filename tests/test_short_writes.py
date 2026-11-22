@@ -651,6 +651,38 @@ def test_the_table_with_no_time_index_is_walked_once_a_day_whatever_restarts_the
     st.close()
 
 
+def test_the_fee_records_of_transactions_the_tape_no_longer_holds_go_in_the_daily_walk(tmp_path):
+    """Audit 22 Nov: nothing pruned tx_meta (5,772,555 rows on the server, 1,755,281 of them older than the tape's
+    cutoff, about 225,000 more a day), and every read-only copy rewrote them all. The daily walk drops a fee record
+    older than the cutoff whose transaction holds no stored trade and no fill of ours: a listed wallet's kept trades,
+    and our own fills, keep theirs."""
+    from snipetech.solana.txmeta import TxMeta
+
+    def meta(sig: str, slot: int) -> TxMeta:
+        return TxMeta(sig=sig, slot=slot, block_time=None, version=0, fee_payer="payer", signers=[], n_signatures=1,
+                      fee=5000, priority_lamports=0, cu_limit=None, cu_price=None, cu_consumed=None)  # fmt: skip
+
+    st = Store(tmp_path / "t.db")
+    _old_tape(st)  # trades of T0 .. T0 + 3 h at slots 100 + n; the wallet KEEP is listed: its trades stay
+    trades = st._q("SELECT sig, slot, user FROM trades")
+    st.add_tx_meta([meta(sig, slot) for sig, slot, _user in trades])
+    st.add_tx_meta([meta("tip-only-old", 150), meta("tip-only-new", 800), meta("our-old-fill", 120)])
+    st.put_fill({"sig": "our-old-fill", "ts": T0 + 20, "slot": 120, "wallet": "ours", "side": "buy"})
+    cut = T0 + 2 * 3600  # its first trade at or after the cutoff is n = 600, at slot 700
+
+    def held() -> set[str]:
+        return {r[0] for r in st._q("SELECT sig FROM tx_meta")}
+
+    before = held()
+    list(st.prune_steps(cut, walks=False))  # an hourly prune: the walked tables wait for the day's walk
+    assert held() == before
+    st.prune(cut)
+    kept = {sig for sig, slot, user in trades if slot >= 700 or user == "KEEP"}
+    assert held() == kept | {"tip-only-new", "our-old-fill"}  # was everything: nothing pruned tx_meta
+    assert len(before - held()) == 593 + 1  # the old trades of unlisted wallets, and the old tip-only transaction
+    st.close()
+
+
 def test_the_prune_rests_between_its_steps_three_times_as_long_as_each_took(tmp_path, monkeypatch):
     """11 Nov, the server: between two reads of the prune the loop got one turn, so for the 47-50 s of an hourly prune
     the streams were served once every 0.1-0.4 s (the PumpSwap stream dropped: DATA_LOSS, "client could not keep up").

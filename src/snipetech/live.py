@@ -1778,8 +1778,9 @@ class LiveWatcher:
         from there, and the recorder never stops for it (a failed prune used to end the maintenance task, and with it
         the recorder)."""
         try:
-            # the tables read whole (seen_sigs, no index on ts) once a day, the day kept in the database: every hour
-            # and after every restart it was 472 reads of 0.1-0.4 s to find nothing (11 Nov; retention keeps 30 days)
+            # the tables read whole (seen_sigs, tx_meta: no index on ts) once a day, the day kept in the database:
+            # every hour and after every restart it was 472 reads of 0.1-0.4 s to find nothing (11 Nov; retention
+            # keeps 30 days)
             walked = float((self.store.coverage(PRUNE_KEY) or {}).get("walked") or 0)
             walks = now - walked >= PRUNE_WALK_SECS
             try:
