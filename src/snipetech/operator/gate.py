@@ -215,6 +215,22 @@ def _state_key(reason: str) -> str:
     return "".join(ch for ch in reason if not ch.isdigit() and ch not in "+-.").strip()
 
 
+def runner_ids(jobs_running: list[dict] | None) -> set[str]:
+    """The snipers a live runner drives: the `--id` values of each running `oktech cycle` job, as its record holds its
+    arguments (the live test finds its runner the same way, live_test.py)."""
+    out: set[str] = set()
+    for j in jobs_running or []:
+        argv = [str(a) for a in j.get("argv") or []]
+        if argv[:2] != ["oktech", "cycle"]:
+            continue
+        for i, a in enumerate(argv):
+            if a == "--id" and i + 1 < len(argv):
+                out.add(argv[i + 1])
+            elif a.startswith("--id="):
+                out.add(a.split("=", 1)[1])
+    return out
+
+
 def bot_result(snap, prev) -> float | None:
     """The SOL the bot's own trades and coins moved since the round that set the baseline (`prev.equity_ref`): what its
     trades took in less what they paid, fees in (the baseline's carried `bot_cash_since_ref` and this round's
@@ -267,6 +283,7 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     # are the book working, not a deviation; anything else running still counts against expected.json
     book_on = bool(getattr(snap, "book_live", False)) and not paths.stop_flag.exists()
     book_running: list[dict] = []
+    runner_running: list[dict] = []
     if snap.snipers is None:
         states.append("oktech state unknown")
     else:
@@ -274,13 +291,20 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
         if book_on:
             book_running = [s for s in running if BOOK_NAME_RE.match(str(s.get("name") or ""))]
             running = [s for s in running if s not in book_running]
+        # so are a live runner's own snipers (the --id of a running `oktech cycle` job), which never writes
+        # expected.json: they read "2 sniper(s) running, expected 0" and bought a turn every ~75 min while the run
+        # worked (audit 22 Nov, round#7). A runner's sniper left running after its job ended still counts
+        if not paths.stop_flag.exists():
+            driven = runner_ids(getattr(snap, "jobs_running", None))
+            runner_running = [s for s in running if str(s.get("id")) in driven]
+            running = [s for s in running if s not in runner_running]
         if len(running) > exp["snipers_running"]:
             states.append(f"{len(running)} sniper(s) running, expected {exp['snipers_running']}")
     # the bot's coins only (snapshot.mark_held): the owner's own coin, and one no buy brought in (an airdrop the watch
     # already says once a day), are nobody's deviation; on 22 Nov an airdrop woke 7 operator turns that paged the owner
     # about it (audit 22 Nov, round#6, docs#2)
     bots = [h for h in snap.held if h.get("ours", True)]
-    allowed_held = exp["held"] + len(book_running)
+    allowed_held = exp["held"] + len(book_running) + len(runner_running)  # each may hold the coin it bought
     if len(bots) > allowed_held:
         states.append(f"{len(bots)} coin(s) held, expected {allowed_held}")
     # the watchdog's coins nobody is selling (written by the one-minute pass), while the wallet still holds them: a

@@ -273,7 +273,7 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             try:
                 gone = outage.check(paths, t0, (boot or outage.boot_ts)())
                 if gone is not None:
-                    notifier.send(notes.write(outage.words(gone, snap.services), "decision"))
+                    notifier.send(notes.write(outage.words(gone, snap.services, snap.snipers), "decision"))
                     _log(paths, t0, f"uptime: {gone['kind']} of {gone['secs']} s told")
             except Exception as exc:  # noqa: BLE001 - the notice never breaks the round
                 _log(paths, t0, redact(f"uptime: failed: {type(exc).__name__}: {exc}"))

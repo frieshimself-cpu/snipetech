@@ -605,3 +605,55 @@ def test_round8_the_loss_seen_while_the_budget_is_spent_is_told_once_the_agents_
     clock["now"] = NOW + 1800
     go(7.8)
     assert len(calls) == 1 and any("-2.201 SOL of it by the bot's own" in r for r in calls[0].reasons), calls
+
+
+# -- round#7: a live runner's snipers are no deviation, and the restart notice names armed snipers ------------------
+
+RUNNER = ["oktech", "cycle", "--id", "ed50", "--id", "ed5d", "--address", W, "--max-loss", "2"]
+
+
+def _sniper_snap(now, snipers, jobs, held=()):
+    s = _held_snap(now, list(held))
+    s.snipers, s.jobs_running = snipers, jobs
+    return s
+
+
+def test_round7_a_live_runners_own_snipers_are_no_deviation(tmp_path):
+    """Every active sniper that was not the book's counted against expected.json, which `oktech cycle` never writes:
+    while a run worked its snipers read '2 sniper(s) running, expected 0' and bought an operator turn every ~75 min.
+    The snipers a running `oktech cycle` job names (--id) are the run working, and each may hold its coin; any other
+    sniper still counts, and after the owner's /stop they all do."""
+    from snipetech.operator.gate import decide
+
+    paths = OperatorPaths(tmp_path).ensure()
+    now = 1_795_321_800.0
+    run = [{"id": "20261121-222552-9f7455", "argv": RUNNER, "started": now - 3600}]
+    armed = [{"id": "ed50", "name": "snipetech copy Cented CyaE1V arm:size35", "status": "running"},
+             {"id": "ed5d", "name": "snipetech copy Decu 4vw54B arm:size35", "status": "running"}]  # fmt: skip
+    held = [coin(COIN, 3.4) | {"since": now - 120, "whose": "ours", "ours": True}]
+    s = _sniper_snap(now, armed, run, held)
+    assert [r for r in decide(s, s, now, OperatorConfig(), paths).reasons if "sniper" in r or "held" in r] == []
+    other = armed + [{"id": "crew", "name": "snipetech hunt crew", "status": "running"}]
+    s = _sniper_snap(now, other, run)
+    assert "1 sniper(s) running, expected 0" in decide(s, s, now, OperatorConfig(), paths).reasons
+    s = _sniper_snap(now, armed, [])  # the run is over and its snipers still run: orphans
+    assert "2 sniper(s) running, expected 0" in decide(s, s, now, OperatorConfig(), paths).reasons
+    paths.stop_flag.write_text(str(int(now)))  # /stop: every running sniper is a deviation until it stops
+    s = _sniper_snap(now, armed, run)
+    assert "2 sniper(s) running, expected 0" in decide(s, s, now, OperatorConfig(), paths).reasons
+
+
+def test_round7_the_restart_notice_names_the_snipers_that_stayed_armed(tmp_path):
+    """After a restart the owner was told 'for N min nothing was traded and nothing was checked', while the snipers a
+    dead runner armed kept copying on OKTech's side. The round's notice names the armed snipers instead."""
+    from snipetech.operator import outage
+
+    paths = OperatorPaths(tmp_path).ensure()
+    outage.check(paths, 1_000_000.0, 900_000)
+    gone = outage.check(paths, 1_003_600.0, 1_003_000)
+    armed = [{"id": "ed50", "name": "snipetech copy Cented CyaE1V arm:size35", "status": "running"},
+             {"id": "old", "name": "snipetech copy old", "status": "finished"}]  # fmt: skip
+    text = outage.words(gone, {"snipetech-tape": "active"}, armed)
+    assert "nothing was traded" not in text and "1 sniper(s) stayed armed on OKTech" in text, text
+    assert "snipetech copy Cented CyaE1V arm:size35" in text and "snipetech copy old" not in text
+    assert "nothing was traded and nothing was checked" in outage.words(gone, {}, [armed[1]])

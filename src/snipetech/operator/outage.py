@@ -22,6 +22,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..ops import boot_ts
+from ..positions import is_active
 from .paths import OperatorPaths
 from .snapshot import WATCHED_UNITS
 
@@ -91,15 +92,24 @@ def _at(ts: float, day_of: float, zone: bool = True) -> str:
     )
 
 
-def words(event: Mapping[str, Any], services: Mapping[str, str] | None = None) -> str:
+def words(event: Mapping[str, Any], services: Mapping[str, str] | None = None,
+          snipers: list[dict] | None = None) -> str:  # fmt: skip
     """The message for the owner. `services`: each unit's state now (the round's reading): the long-running services
-    and the timers that are not active are named."""
+    and the timers that are not active are named. `snipers`: OKTech's tasks now; one still active was armed before the
+    restart and kept copying on OKTech's side with nobody watching (a dead runner's: audit 22 Nov, round#7), so the
+    message names it instead of saying nothing was traded."""
     a, b, secs = event["from_ts"], event["to_ts"], event["secs"]
     if event["kind"] == "restart":
         tape = ("The recorder replays the trades it missed by itself." if secs <= REPLAY_SECS else
                 "That is longer than the recorder can replay (40 hours): the tape keeps a hole there.")  # fmt: skip
+        armed = [str(s.get("name") or s.get("id")) for s in snipers or [] if is_active(s.get("status"))]
+        missed = "nothing was traded and nothing was checked"
+        if armed:
+            more = f" and {len(armed) - 5} more" if len(armed) > 5 else ""
+            missed = (f"nothing was checked, and {len(armed)} sniper(s) stayed armed on OKTech and may have traded: "
+                      f"{', '.join(armed[:5])}{more}")  # fmt: skip
         text = (f"The server restarted at {_at(b, b)}. The last round before it ran at {_at(a, b)}: for {_span(secs)} "
-                f"nothing was traded and nothing was checked. {tape}")  # fmt: skip
+                f"{missed}. {tape}")  # fmt: skip
     else:
         text = (f"No round ran between {_at(a, b, zone=False)} and {_at(b, b)} ({_span(secs)}) and the server did not "
                 "restart: it stood still, or the agents' timer was stopped. Rounds run again.")  # fmt: skip
