@@ -665,3 +665,52 @@ def test_measure_10_one_copy_sold_in_two_parts_is_one_live_copy():
     assert len(trips) == 2 and rows[0]["n"] == 1
     assert rows[0]["mean_sol"] == pytest.approx(sum(t["pnl_sol"] for t in trips), abs=1e-6)
     assert rows[0]["last_fill"] == 1032
+
+
+# -- measure#9: a row the chain reading wrote before a reader fix is read again ----------------------------------------
+
+
+def _stale_world(tmp_path, t0, row_ts):
+    from tests.chain import Chain, key, sig, token_move
+    from tests.test_chain_landing import COIN, S
+
+    me = key("our wallet")
+    chain = Chain(t0=t0 + 240, slot0=S)
+    chain.put(S + 10, token_move("dust in", key("a dust sender"), COIN, tokens=100, to=me))
+    st = Store(tmp_path / "t.db")
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "t.db")
+    cfg.operator.wallet = me
+    svc = Service(cfg, store=st)
+    svc._rpc = chain
+    # what the reader before 22 Nov wrote for it: a buy of 0 SOL, venue "other" (the server's 3kA7a2QS / 3h1KvzFZ)
+    st.put_fill({"sig": sig("dust in"), "slot": S + 10, "ts": row_ts if row_ts is not None else chain.ts(S + 10),
+                 "wallet": me, "side": "buy", "mint": COIN, "sol": 0.0, "tokens": 100.0, "priority_lamports": 50,
+                 "tip_lamports": 0, "venue": "other", "landing_src": "chain-none"})  # fmt: skip
+    return svc, st, cfg, sig("dust in")
+
+
+def test_measure_9_a_stale_trade_of_0_sol_in_the_runs_window_is_read_again(tmp_path):
+    """measure#9: run_measure read an off-tape signature again only when its stored row had no venue, and every row the
+    chain reading writes has one, so ed009c3's clean-up (a coin that only moved is no trade) reached a row written
+    before it in a backfill alone. A stored trade of 0 SOL is read again, and dropped when it was a move."""
+    t0 = 1_794_502_800
+    svc, st, cfg, dust = _stale_world(tmp_path, t0, None)
+    try:
+        asyncio.run(run_measure(svc, cfg, t0 + 1200, since_ts=t0))  # the five-minute run, not a backfill
+        assert st.fill(dust) is None
+    finally:
+        st.close()
+
+
+def test_measure_9_a_stale_trade_of_0_sol_in_the_lookback_is_read_again(tmp_path):
+    """measure#9: the server's two rows are days old, outside any five-minute run's window of signatures, though inside
+    the 7-day window every run pairs: a stored chain trade of 0 SOL there is read again too."""
+    t0 = 1_794_502_800
+    svc, st, cfg, dust = _stale_world(tmp_path, t0, None)
+    try:
+        later = t0 + 3 * 86400  # three days on: the row is in the 7-day window, its signature in no run's window
+        asyncio.run(run_measure(svc, cfg, later, since_ts=later - 600))
+        assert st.fill(dust) is None
+    finally:
+        st.close()

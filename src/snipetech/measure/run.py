@@ -502,6 +502,16 @@ def _chain_context(svc, cfg: Config, now: float) -> dict[str, Any]:
     return {"mates": mates, "own": own_wallets(store, cfg), "services": store.labels("service")}
 
 
+def _stale_trade(row: dict | None) -> bool:
+    """A trade of 0 SOL the chain reading wrote (it has a venue): what the reader before 22 Nov wrote for a coin that
+    only moved, a dust transfer another wallet paid for among them (3kA7a2QS, 3h1KvzFZ). A run reads it again, so the
+    reader of today says what it was and a move is dropped (22 Nov audit: such a row was read again in a backfill
+    alone, paired a sale three hours before it and raised a false alert)."""
+    if not row or row.get("side") not in ("buy", "sell"):
+        return False
+    return bool(row.get("venue")) and not float(row.get("sol") or 0)
+
+
 def _chain_row(fill: dict, landing: dict | None, arms: dict[str, dict] | None) -> dict[str, Any]:
     """A `fills` row for a trade of ours the tape does not hold, from the chain reader (`chain_landing.read_fill`;
     `landing`: a buy's `read_landing`). Its place among the coin's trades in its block (pos_in_slot) and the copied
@@ -644,7 +654,17 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         if hasattr(svc, "progress"):  # one transaction that cannot be read never fails the run: tried again next run
             svc.progress(f"measure: chain reading of {sig[:8]}… failed: {type(exc).__name__}: {exc}")
 
-    todo = [s for s in off_tape if reclassify_arms or not (store.fill(s["signature"]) or {}).get("venue")]
+    def read_again(s: dict) -> bool:
+        stored = store.fill(s["signature"]) or {}
+        return reclassify_arms or not stored.get("venue") or _stale_trade(stored)
+
+    todo = [s for s in off_tape if read_again(s)]
+    if read_chain:  # and those of the window every run pairs, whose signatures no run's own window holds any more
+        listed = {s["signature"] for s in todo}
+        todo += [{"signature": f["sig"], "slot": f.get("slot"), "blockTime": f.get("ts")}
+                 for f in store.fills(wallet=wallet, since_ts=look, limit=100_000)
+                 if _stale_trade(f) and f["sig"] not in listed and f["sig"] not in on_tape
+                 and int(f.get("ts") or 0) <= until_ts]  # fmt: skip
     if todo:
         ctx = ctx or _chain_context(svc, cfg, now)
         try:
