@@ -96,7 +96,8 @@ OWNER_REST_READINGS = 2
 RUN_GONE_SECS = 60.0
 # and while the tape says the run still holds tokens of a coin the wallet holds (one the owner holds too counts as
 # theirs by its first buy), no sniper is re-armed, for this long after the run's last buy of it at most (an exit
-# whose sale the tape cannot tell as the run's never holds the re-arms back for good)
+# whose sale the tape cannot tell as the run's never holds the re-arms back for good), or for --sweep-after and two
+# tries of the run's own sale of them, when that is longer (the sale sees such a coin only while it is held)
 RUN_HOLD_MAX_SECS = 300.0
 # At a run's end every copied wallet with a buy of a held coin this long before our buy of it may be the one that buy
 # copied: each of their snipers may hold it, and none is stopped (22 Nov review)
@@ -1266,8 +1267,9 @@ class Service:
         when it leaves (`owner_coins` in the report). A coin of the run's the owner bought into by hand is sold by the
         run only for the run's own tokens of it, and is theirs once the tape shows those all sold and their own buys
         explain the rest (OWNER_REST_READINGS). A copy into a coin of the owner's leaves it theirs, but while the tape
-        says the run holds tokens of it (RUN_HOLD_MAX_SECS at most) no sniper is re-armed or stopped, at the end and on
-        the way out too, and past --sweep-after the run sells its own tokens of it, never the owner's (`run_parts`).
+        says the run holds tokens of it (RUN_HOLD_MAX_SECS at most, or --sweep-after and two tries of its sale) no
+        sniper is re-armed or stopped, at the end and on the way out too, and past --sweep-after the run sells its own
+        tokens of it, never the owner's (`run_parts`; no more than the wallet holds beyond theirs).
         A coin nobody can tell yet is held as the run's but never sold by it.
         The run starts beside the owner's coins; only one of its snipers' refuses the start.
 
@@ -1336,6 +1338,10 @@ class Service:
                              f"{address[:6]}…: it would sell nothing, or that wallet's coin. Run it on the selling key's "
                              "wallet, or without --sweep-after; nothing cycled")  # fmt: skip
         can_sell = seller == address  # without it, a copy of an own launch or of bait is left to its sniper's exit
+        # how long the run's tokens in a coin of the owner's are held as the run's after its last buy (`run_parts`)
+        hold_secs = RUN_HOLD_MAX_SECS
+        if sweep_after is not None:  # and long enough for the run's own sale of them, tried twice
+            hold_secs = max(hold_secs, float(sweep_after) + 2 * SWEEP_RETRY_SECS)
         from .measure.ours import WHOSE_MARGIN_SECS, RunCoins, bot_tape_buy, sniper_marks
 
         # whose each coin in the wallet is: the run's (its snipers' fees on the buy) or the owner's own (measure/ours.py)
@@ -1981,17 +1987,18 @@ class Service:
 
         def run_parts(held_all: list[dict], now: float) -> list[dict]:
             """The owner's own coins in `held_all` of which the tape says the run still holds tokens (its own landed
-            sales the tape has not written yet counted), bought RUN_HOLD_MAX_SECS ago at most: a copy into a coin the
-            owner holds is their coin by its first buy, and the run's count of its own coins sees nothing (22 Nov
-            review). Each is the run's as much as theirs: no sniper is re-armed or stopped while one is held, and the
-            run's own sale sells the run's tokens of it (22 Nov audit, runner finding 1: the end stopped the sniper
-            that held such a copy, and the run never sold it). Empty when the tape cannot say."""
+            sales the tape has not written yet counted), bought `hold_secs` ago at most (RUN_HOLD_MAX_SECS, or longer
+            for a long --sweep-after): a copy into a coin the owner holds is their coin by its first buy, and the run's
+            count of its own coins sees nothing (22 Nov review). Each is the run's as much as theirs: no sniper is
+            re-armed or stopped while one is held, and the run's own sale sells the run's tokens of it (22 Nov audit,
+            runner finding 1: the end stopped the sniper that held such a copy, and the run never sold it). Empty when
+            the tape cannot say."""
             try:
                 left, last_buy, _total, _owner = run_tokens()
             except Exception:  # noqa: BLE001 - the tape cannot say: the run's count of its coins alone, as before
                 return []
             return [h for h in held_all if (m := str(h.get("mint") or "")) in owner_val
-                    and now - last_buy.get(m, now) < RUN_HOLD_MAX_SECS and left.get(m, 0.0) - unwritten_sold(m) >= 1]  # fmt: skip
+                    and now - last_buy.get(m, now) < hold_secs and left.get(m, 0.0) - unwritten_sold(m) >= 1]  # fmt: skip
 
         async def run_held(now: float) -> list[dict]:
             """One reading of the coins the run holds tokens of: its own (`sort_coins`), and the owner's own with the

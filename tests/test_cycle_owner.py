@@ -509,6 +509,18 @@ def test_the_runs_sale_in_the_owners_coin_sells_none_of_theirs_when_the_tape_is_
     assert sold == [], f"the run sold the owner's tokens: {sold}"
 
 
+def test_the_runs_tokens_in_the_owners_coin_are_sold_past_a_long_sweep_after(monkeypatch):
+    """Review of the runner fixes (22 Nov), runner finding 1: a coin of the owner's with the run's tokens in it is held as
+    the run's RUN_HOLD_MAX_SECS (300 s) after the run's last buy at most, and the run's own sale sees it only while it
+    is: with --sweep-after 320 (snipers with a 300 s exit) the run's tokens were never sold. The hold lasts as long as
+    the sale needs."""
+    sold, sweeps = [], []
+    _run(monkeypatch, lambda now: 7.0 if now < T0 + 100 else 4.0, coins=_owners_coin_and_copy, payload=FEES,
+         tape=_owners_coin_tape(), floor=None, max_loss=5.0, sweeps=sweeps, sold_amounts=sold, sweep_after=320,
+         minutes=10)  # fmt: skip
+    assert sold == [(OWN, 1_000_000)] and T0 + 420 <= sweeps[0][1] < T0 + 430, (sold, [t - T0 for _m, t in sweeps])
+
+
 def test_told_to_stop_after_a_copy_into_the_owners_coin_stops_no_sniper(monkeypatch):
     """Runner finding 1, the way out (`last_stop`): told to stop 40 s after a copy into the owner's coin that OKTech
     left unsold (past the 30 s a fall of the SOL counts as a buy on its way), it read two readings with nothing of the
