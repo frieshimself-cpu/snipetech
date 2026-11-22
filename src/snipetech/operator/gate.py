@@ -275,16 +275,24 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
             running = [s for s in running if s not in book_running]
         if len(running) > exp["snipers_running"]:
             states.append(f"{len(running)} sniper(s) running, expected {exp['snipers_running']}")
+    # the bot's coins only (snapshot.mark_held): the owner's own coin, and one no buy brought in (an airdrop the watch
+    # already says once a day), are nobody's deviation; on 22 Nov an airdrop woke 7 operator turns that paged the owner
+    # about it (audit 22 Nov, round#6, docs#2)
+    bots = [h for h in snap.held if h.get("ours", True)]
     allowed_held = exp["held"] + len(book_running)
-    if len(snap.held) > allowed_held:
-        states.append(f"{len(snap.held)} coin(s) held, expected {allowed_held}")
+    if len(bots) > allowed_held:
+        states.append(f"{len(bots)} coin(s) held, expected {allowed_held}")
     # the watchdog's coins nobody is selling (written by the one-minute pass), while the wallet still holds them: a
-    # decision now, reminded hourly, whatever the book expects to hold
-    held_mints = {str(h.get("mint")) for h in snap.held if h.get("mint")}
-    nobody = [h for h in current_hits(paths, now) if str(h.get("mint")) in held_mints]
+    # decision now, reminded hourly, whatever the book expects to hold. A coin the watch calls a stray (no buy of ours on
+    # the tape) counts only when a buy of the bot's is on record after all: a PumpSwap copy the tape never holds, which
+    # the measure stage's fills do (`whose` "ours"; server#1)
+    held_mints = {str(h.get("mint")) for h in bots if h.get("mint")}
+    bought = {str(h.get("mint")) for h in bots if h.get("whose") == "ours"}
+    nobody = [h for h in current_hits(paths, now) if str(h.get("mint")) in held_mints
+              and (not h.get("stray") or str(h.get("mint")) in bought)]  # fmt: skip
     if nobody:
         states.append(f"unmanaged: {len(nobody)} coin(s) nobody is selling (operator/watch.json)")
-    stuck = [h for h in snap.held if now - float(h.get("since", now)) > STUCK_SECS]
+    stuck = [h for h in bots if now - float(h.get("since", now)) > STUCK_SECS]
     if stuck:
         states.append(f"coin(s) held over {STUCK_SECS // 60} min: {len(stuck)}")  # which: the snapshot's held coins
     if prev is not None:

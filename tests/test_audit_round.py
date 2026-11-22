@@ -298,3 +298,58 @@ def test_round0_a_coin_of_the_bots_the_tape_has_not_priced_still_waits(book):
     c = take(st, cfg, paths, b, 1900.0, 7.3, [])
     lines = bot_lines(paths, c, b, 1900.0)
     assert len(lines) == 1 and "-2.703 SOL of it by the bot's own" in lines[0], lines
+
+
+# -- docs#2, round#6, server#1: the held-coin states count only the bot's coins --------------------------------------
+
+
+def _held_snap(now, held):
+    from snipetech.operator.snapshot import Snapshot
+
+    return Snapshot(ts=now, services=dict(UP), tape_last_ts=int(now) - 5, wallet=W, native_sol=1.0, wsol=0.054,
+                    held=held, snipers=[], fills=[], equity_ref=1.6, ref_ours_sol=0.0, bot_cash_since_ref=0.0,
+                    bot_cash=0.0)  # fmt: skip
+
+
+def _held_reasons(paths, snap, prev, now):
+    from snipetech.operator.gate import decide
+
+    return [r for r in decide(snap, prev, now, OperatorConfig(), paths).reasons if "held" in r or "unmanaged" in r]
+
+
+def _watch(paths, now, hits):
+    (paths.root / "watch.json").write_text(json.dumps({"ts": now - 30, "hits": hits}))
+
+
+def test_docs2_the_owners_own_coin_and_an_airdrop_raise_no_held_state(tmp_path):
+    """'N coin(s) held, expected M', 'held over 30 min' and 'unmanaged' counted every coin: on 22 Nov an airdrop woke 7
+    operator turns (1.38 $) and the turns paged the owner about it twice, and the owner's own coin held half an hour
+    does the same. Only the bot's coins are held for these states."""
+    paths = OperatorPaths(tmp_path).ensure()
+    now = 1_795_321_800.0
+    owners = {"mint": "H8WTvo3Z", "amount": 1000.0, "value_sol": 0.5, "priced": True, "since": now - 7200,
+              "whose": "owner", "ours": False}  # fmt: skip
+    airdrop = unpriced(AIRDROP) | {"since": now - 3 * 3600, "whose": None, "ours": False}
+    _watch(paths, now, [{"mint": AIRDROP, "reason": "not_on_tape", "stray": True}])
+    s = _held_snap(now, [owners, airdrop])
+    assert _held_reasons(paths, s, s, now) == []
+    later = _held_snap(now + 3600, [owners, airdrop])
+    assert _held_reasons(paths, later, s, now + 3600) == []
+    bots = _held_snap(now, [coin(COIN, 1.0) | {"since": now - 7200, "whose": "ours", "ours": True}])
+    assert _held_reasons(paths, bots, bots, now) == ["1 coin(s) held, expected 0", "coin(s) held over 30 min: 1"]
+
+
+def test_server1_a_stray_counts_as_unmanaged_only_with_a_buy_of_the_bots_on_record(tmp_path):
+    """The watch says a coin with no buy of ours on the tape (`stray`) once a day; the gate raised the same hit as
+    'unmanaged' every hour. A stray stays out, unless a buy of the bot's is on record after all: a PumpSwap copy the tape
+    never holds is a stray to the watch, and the measure stage's fills hold its buy (mark_held: `whose` "ours")."""
+    paths = OperatorPaths(tmp_path).ensure()
+    now = 1_795_321_800.0
+    paths.expected.write_text(json.dumps({"snipers_running": 0, "held": 1}))
+    _watch(paths, now, [{"mint": SWAP, "reason": "not_on_tape", "stray": True}])
+    legacy = coin(SWAP, 0.05) | {"since": now - 600, "ours": True}  # a coin marked before `whose`: nothing on record
+    s = _held_snap(now, [legacy])
+    assert _held_reasons(paths, s, s, now) == []
+    copy = coin(SWAP, 0.05) | {"since": now - 600, "whose": "ours", "ours": True}  # its buy is in the fills
+    s = _held_snap(now, [copy])
+    assert _held_reasons(paths, s, s, now) == ["unmanaged: 1 coin(s) nobody is selling (operator/watch.json)"]
