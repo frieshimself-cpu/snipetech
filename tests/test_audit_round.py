@@ -2,10 +2,11 @@
 Telegram and the digest. Each test pins one confirmed finding (its id in the audit's record: round#N)."""
 
 import asyncio
+import json
 
 import pytest
 
-from snipetech.config import Config
+from snipetech.config import Config, OperatorConfig
 from snipetech.operator.commands import Command, handle_command
 from snipetech.operator.notify import Notifier
 from snipetech.operator.paths import OperatorPaths
@@ -112,3 +113,143 @@ def test_round5_stop_stops_a_sniper_when_only_an_ignored_coin_is_held(tmp_path):
     kept = StopSvc()
     reply = _stop(tmp_path / "again", kept, [])  # a coin not on the list still keeps the sniper that may sell it
     assert kept.calls == [] and "because coins are held" in reply
+
+
+# -- round#1: whose a held coin is -----------------------------------------------------------------------------------
+
+COIN = "Coin111111111111111111111111111111111111pump"  # a copy of the bot's
+HAND = "Hand111111111111111111111111111111111111pump"  # the owner's own buy
+SWAP = "Swap111111111111111111111111111111111111pump"  # a PumpSwap copy the tape never holds
+OWNER_FEES = (1_000_000, 32_000_000)  # what the owner's own terminal pays (22 Nov: Axiom's 0.032 SOL tip)
+BOT_BUY_FEES = (1_000_000, 199_000_000)  # the sniper's payload below: priorityFee 0.001, tipAmount 0.199
+
+
+@pytest.fixture
+def book(world):
+    """`world` with one sniper on record, so that a hand trade can be told from the bot's by its fees."""
+    st, cfg, paths = world
+    st.add_oktech_sniper({"id": "s1", "external_id": "e1", "kind": "copy", "source": "x", "name": "snipetech copy",
+                          "config_hash": "h", "payload": {"priorityFee": 0.001, "tipAmount": 0.199,
+                                                          "autoSell": {"sellPriorityFeeSol": 0.0001,
+                                                                       "sellTipAmount": 0.002}}})  # fmt: skip
+    return st, cfg, paths
+
+
+def trade(st, sig, ts, mint, is_buy, sol, fees, user=W):
+    prio, tip = fees
+    st._exec("insert into trades(sig,ev,slot,pos,ts,mint,venue,user,is_buy,quote,base,fee,fee_bps,q_after,b_after,"
+             "priority,tip) values (?,0,?,0,?,?,'curve',?,?,?,?,0,0,1000,1000,?,?)",
+             (sig, ts, ts, mint, user, int(is_buy), int(sol * 1e9), int(sol * 1e9), prio, tip))  # fmt: skip
+
+
+def tick(st, ts):
+    """Someone else's trade: the tape is current up to `ts`."""
+    trade(st, f"tick{ts}", ts, "Other", True, 0.000001, (0, 0), user="someone")
+
+
+def coin(mint, sol):
+    return {"mint": mint, "amount": 1.0, "raw": int(sol * 1e9), "decimals": 6, "value_sol": sol, "priced": True}
+
+
+def unpriced(mint):
+    return {"mint": mint, "amount": 1000.0, "raw": 1_000_000_000, "decimals": 6, "value_sol": None, "priced": False}
+
+
+def take(st, cfg, paths, prev, now, native, held):
+    def balances(w):
+        if isinstance(held, Exception):
+            raise held
+        return native, 0.0, list(held)
+
+    return asyncio.run(take_snapshot(Svc(st), paths, cfg, prev=prev, now=now, services=lambda: UP, balances=balances))
+
+
+def whose(snap):
+    return {h["mint"]: h["whose"] for h in snap.held}
+
+
+def decide_in(paths, snap, prev, now):
+    """The gate's decision, with five coins held being what quiet means (only the equity lines are looked at here)."""
+    from snipetech.operator.gate import decide
+
+    paths.expected.write_text(json.dumps({"snipers_running": 0, "held": 5}))
+    return decide(snap, prev, now, OperatorConfig(), paths)
+
+
+def bot_lines(paths, snap, prev, now):
+    return [r for r in decide_in(paths, snap, prev, now).reasons if "by the bot's own" in r]
+
+
+def test_round1_a_hand_buy_minutes_before_the_round_stays_the_owners(book):
+    """The coin's buy was looked for only from 5 minutes before the round that first saw it, and rounds are 15 apart:
+    a hand buy 6 minutes before it read as nothing told, which counted as the bot's, and paged '+3.000 SOL of it by
+    the bot's own'. The buy is looked for since the round before, which last read the wallet."""
+    st, cfg, paths = book
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 10.0, [])
+    trade(st, "hand", 1640, HAND, True, 3.0, OWNER_FEES)
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, 6.967, [coin(HAND, 3.0)])
+    assert whose(b) == {HAND: "owner"} and b.held[0]["ours"] is False
+    assert not bot_lines(paths, b, a, 2000.0)
+
+
+def test_round1_the_rest_of_the_owners_coin_after_a_partial_hand_sale_stays_the_owners(book):
+    """No buy came after the owner's own partial sale, so the coin's owner was asked afresh, told nothing, and the rest
+    of the coin counted as the bot's (+2.000 SOL paged). An answer holds while the coin stays held."""
+    st, cfg, paths = book
+    trade(st, "hbuy", 1000, HAND, True, 4.0, OWNER_FEES)
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 1.0, [coin(HAND, 4.0)])
+    assert whose(a) == {HAND: "owner"}
+    trade(st, "hsell", 1500, HAND, False, 2.0, (1_000_000, 22_000_000))
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, 3.0, [coin(HAND, 2.0)])
+    assert whose(b) == {HAND: "owner"} and not bot_lines(paths, b, a, 2000.0)
+
+
+def test_round1_a_failed_wallet_read_keeps_the_coins_as_last_read(book):
+    """One failed balance read left the snapshot with no coins, so the next round dated every coin 'first seen now':
+    the owner's buy of hours ago fell outside the window and the coin became the bot's (+3.000, later -3.000). The
+    coins as last read are kept (marked stale), with their answers and the time of that read."""
+    st, cfg, paths = book
+    trade(st, "hbuy", 1000, HAND, True, 3.0, OWNER_FEES)
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 7.0, [coin(HAND, 3.0)])
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, None, RuntimeError("rpc down"))
+    assert whose(b) == {HAND: "owner"} and b.held[0]["stale"] is True and b.held_ts == 1100.0
+    tick(st, 12_995)
+    c = take(st, cfg, paths, b, 13_000.0, 7.0, [coin(HAND, 3.0)])
+    assert whose(c) == {HAND: "owner"} and c.held[0]["since"] == 1100.0 and not bot_lines(paths, c, b, 13_000.0)
+
+
+def test_round1_a_coin_no_buy_brought_in_is_not_the_bots(book):
+    """An airdrop, or a coin sent in, has no buy at all: 'nothing told' counted it as the bot's. It is nobody's yet
+    (`whose` None) and not the bot's; a coin whose buy only the measure stage's fills hold (a PumpSwap copy past the
+    tape's 30 minutes) is the bot's by that buy's fees."""
+    st, cfg, paths = book
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 10.0, [])
+    st.put_fill({"sig": "pswap", "ts": 1500, "wallet": W, "mint": SWAP, "side": "buy", "sol": 0.05, "tokens": 1000.0,
+                 "priority_lamports": BOT_BUY_FEES[0], "tip_lamports": BOT_BUY_FEES[1], "venue": "PumpSwap"})  # fmt: skip
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, 9.9, [unpriced(AIRDROP), coin(SWAP, 0.05)])
+    assert whose(b) == {AIRDROP: None, SWAP: "ours"}
+    assert [h["ours"] for h in b.held] == [False, True]
+
+
+def test_round1_a_buy_the_tape_has_not_written_yet_is_told_by_the_next_round(book):
+    """The tape runs seconds behind the chain: a copy bought just before a round is in the wallet and not yet on the
+    tape. It is nobody's that round, and the next round asks again over the same window, finds the buy and says the
+    bot's (an answer is only kept once it is one)."""
+    st, cfg, paths = book
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 10.0, [])
+    tick(st, 1993)
+    b = take(st, cfg, paths, a, 2000.0, 6.8, [coin(COIN, 3.5)])
+    assert whose(b) == {COIN: None}
+    trade(st, "copy", 1996, COIN, True, 3.5, BOT_BUY_FEES)  # written after round B read the tape
+    tick(st, 2895)
+    c = take(st, cfg, paths, b, 2900.0, 6.8, [coin(COIN, 3.5)])
+    assert whose(c) == {COIN: "ours"}

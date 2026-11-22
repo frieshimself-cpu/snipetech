@@ -160,7 +160,9 @@ def test_held_coins_say_whose_they_are_by_the_buy_that_brought_them_in(tmp_path,
     snap = asyncio.run(take_snapshot(fake_service, paths, cfg, prev=None, now=2_000,
                                      services=lambda: {"snipetech-tape": "active"},
                                      balances=lambda w: (1.0, 0.0, coins)))  # fmt: skip
-    assert {h["mint"]: h["ours"] for h in snap.held} == {"H": False, "B": True, "U": True}  # U: no buy read: the bot's
+    # U: no buy read: nothing tells, and it is not the bot's (audit 22 Nov, round#1: it paged the owner's coins)
+    assert {h["mint"]: h["ours"] for h in snap.held} == {"H": False, "B": True, "U": False}
+    assert {h["mint"]: h["whose"] for h in snap.held} == {"H": "owner", "B": "ours", "U": None}
 
 
 def test_a_bot_trade_is_carried_until_a_round_values_the_wallet(tmp_path, fake_service, monkeypatch):
