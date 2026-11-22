@@ -109,15 +109,28 @@ def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = 
     return out
 
 
-def _bought_by_us(store, wallet: str, mint: str) -> bool:
-    """Whether a buy of ours explains holding `mint`: a buy by the wallet on the tape, or a buy fill of the measure
-    stage. Any read that fails counts as ours (the coin then keeps equity unknown, as before)."""
+def _bought_by_us(store, wallet: str, mint: str, marks: dict | None = None) -> bool:
+    """Whether a buy of ours explains holding `mint`: a buy of the bot's by the wallet on the tape, or a buy fill of
+    the bot's in the wallet (measure/ours.py: the fees a sniper of ours pays, a sniper or copied wallet the measure stage
+    tied it to, or fees nobody recorded; `marks`: fee_marks, read here when not given). The owner's own buy at other
+    fees explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Any read
+    that fails counts as ours (the coin then keeps equity unknown, as before)."""
+    from types import SimpleNamespace
+
+    from ..measure.ours import bot_buy, bot_tape_buy, fee_marks
+
     if not mint or mint == "unknown":
         return True
     try:
-        if store._q("SELECT 1 FROM trades WHERE mint=? AND user=? AND is_buy=1 LIMIT 1", (mint, wallet)):
-            return True
-        return bool(store._q("SELECT 1 FROM fills WHERE mint=? AND side='buy' LIMIT 1", (mint,)))
+        marks = fee_marks(store) if marks is None else marks
+        for priority, tip in store._q("SELECT priority, tip FROM trades WHERE mint=? AND user=? AND is_buy=1",
+                                      (mint, wallet)):  # fmt: skip
+            if bot_tape_buy(SimpleNamespace(priority=priority, tip=tip), marks):
+                return True
+        rows = store._q("SELECT sniper_id, wallet_copied, priority_lamports, tip_lamports FROM fills "
+                        "WHERE wallet=? AND mint=? AND side='buy'", (wallet, mint))  # fmt: skip
+        return any(bot_buy({"sniper_id": s, "wallet_copied": c, "priority_lamports": p, "tip_lamports": t}, marks)
+                   for s, c, p, t in rows)  # fmt: skip
     except Exception:  # noqa: BLE001
         return True
 
@@ -126,18 +139,21 @@ STRAY_AFTER_SECS = 600  # a coin no buy of ours explains, seen this long: no tap
 
 
 def _strays(store, wallet: str, holdings: list[dict] | None, paths: OperatorPaths, now: float) -> set[str]:
-    """Coins in the wallet that no buy of ours explains (an airdrop, the owner's own trade in another app) and that
-    the unsold-coin watch first saw STRAY_AFTER_SECS ago or more: no sniper of ours holds them, so they never keep a
-    spent sniper from being replaced (8 Nov: a dust airdrop held every replacement for hours). A coin seen just now may
-    be a buy the tape has not caught up with, and still counts as held."""
+    """Coins in the wallet that no buy of ours explains (an airdrop, the owner's own trade in another app or by hand
+    in this wallet) and that the unsold-coin watch first saw STRAY_AFTER_SECS ago or more: no sniper of ours holds
+    them, so they never keep a spent sniper from being replaced (8 Nov: a dust airdrop held every replacement for
+    hours), nor a book sniper armed under a kill, nor the clean-up waiting. A coin seen just now may be a buy the tape
+    has not caught up with, and still counts as held."""
+    from ..measure.ours import fee_marks
     from .watch import _load
 
     seen = (_load(paths).get("first_seen") or {}) if holdings else {}
+    marks = fee_marks(store) if holdings else None
     out: set[str] = set()
     for h in holdings or []:
         m = str(h.get("mint") or "")
         t = seen.get(m)
-        if m and t is not None and now - float(t) >= STRAY_AFTER_SECS and not _bought_by_us(store, wallet, m):
+        if m and t is not None and now - float(t) >= STRAY_AFTER_SECS and not _bought_by_us(store, wallet, m, marks):
             out.add(m)
     return out
 
@@ -157,7 +173,13 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     leader's own buy failed, or the tape missed it). Counting high only replaces a sniper early; counting low relies
     on the buy that uses up OKTech's cap. A buy from before the sniper existed, while another of our snipers on that
     leader was alive, is that one's (a replacement never inherits its predecessor's buy). A sniper without our own
-    record of it (when it was made, what it copies) is not counted, so it is never retired."""
+    record of it (when it was made, what it copies) is not counted, so it is never retired. A buy at fees no sniper of
+    ours pays is the owner's own (measure/ours.bot_tape_buy) and is no sniper's (22 Nov audit: counted for every book
+    sniper, one hand buy would have retired them all)."""
+    from types import SimpleNamespace
+
+    from ..measure.ours import bot_tape_buy, fee_marks
+
     local = {r["id"]: r for r in store.oktech_snipers(active=False)}
     mine: list[tuple[str, str, float]] = []
     for t in tasks:
@@ -171,8 +193,11 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     if not mine:
         return {}
     since = int(min(born for _, _, born in mine) - CREATED_GRACE_SECS)
-    buys = store._q("SELECT DISTINCT sig, mint, slot, pos, ts FROM trades WHERE user=? AND is_buy=1 AND ts>=? "
-                    "ORDER BY slot, pos", (wallet, since))  # fmt: skip
+    marks = fee_marks(store)
+    buys = [(sig, mint, slot, pos, ts) for sig, mint, slot, pos, ts, priority, tip in
+            store._q("SELECT DISTINCT sig, mint, slot, pos, ts, priority, tip FROM trades WHERE user=? AND is_buy=1 "
+                     "AND ts>=? ORDER BY slot, pos", (wallet, since))
+            if bot_tape_buy(SimpleNamespace(priority=priority, tip=tip), marks)]  # fmt: skip
     every_leader = sorted({ld for r in local.values() for ld in copied_leaders(r)})
 
     def leaders_before(mint: str, slot: int, pos: int) -> set[str]:
