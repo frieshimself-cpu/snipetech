@@ -271,17 +271,20 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: FakeClient())
     monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(svc, "risk_guard", _clear_guard)  # the owner's wallet-wide guard is clear here (book#4)
     monkeypatch.setattr(
         store, "last_price", lambda mint: 0.002
     )  # the held coin is worth 0.002 SOL: above dust, below the floor
     w = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
-    # runaway buying: emergency stop, and the leftovers are named
+    # runaway buying: the emergency, and the leftovers are named
     import itertools
 
     svc._rpc = FakeRpc(itertools.chain([1.0, 0.99, 0.95], itertools.repeat(0.7)))
     rep = asyncio.run(svc.oktech_guard(["a", "b"], w, 0.8, 5))
-    assert rep["stopped"] and "EMERGENCY" in rep["reason"] and rep["held"][0]["mint"].startswith("Mint")
-    assert ("stop", "a") in calls and ("stop", "b") in calls
+    # book#2 (22 Nov audit): a coin is held, so no sniper is stopped (a stopped sniper strands its coin, CLAUDE.md rule
+    # 1); the guard watched the wallet for its sale and left them running, said
+    assert not rep["stopped"] and "EMERGENCY" in rep["reason"] and rep["held"][0]["mint"].startswith("Mint")
+    assert not any(c[0] == "stop" for c in calls) and "keep running" in rep["reason"]
     # normal run past the time limit: nothing is stopped (the snipers keep selling)
     calls.clear()
     svc._rpc = FakeRpc(itertools.chain([1.0], itertools.repeat(0.98)))
@@ -643,8 +646,18 @@ def _guard_env(monkeypatch, balances, client, holdings_value=None, price=None):
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: client)
     monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
+    # book#4 (22 Nov audit): the guard reads the owner's wallet-wide guard before it starts anything; these wallets
+    # hold under its 10 SOL floor, so it is clear here and tested on its own (tests/test_audit_book.py)
+    monkeypatch.setattr(svc, "risk_guard", _clear_guard)
     svc._rpc = FakeRpc()
     return svc, store
+
+
+def _clear_guard(address, sol, held):
+    from snipetech.operator.risk_guard import Guard
+
+    return Guard(tripped=False, known=True, reason="", kinds=(), day=None, equity_sol=sol, day_stop_sol=1.0,
+                 floor_sol=10.0, owner_set=False)  # fmt: skip
 
 
 W6 = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
@@ -728,7 +741,9 @@ def test_guard_reports_failed_stops_and_survives_oktech_errors(monkeypatch):
     client = Client()
     svc, store = _guard_env(monkeypatch, itertools.chain([1.0, 1.0], itertools.repeat(0.95)), client)
     rep = asyncio.run(svc.oktech_guard(["a", "b"], W6, 0.8, 0.0001))
-    assert client.tasks_calls >= 1 and not rep["stopped"] and rep["stop_failed"] == []
+    # book#5 (22 Nov audit): at its time limit with nothing held the guard stops its snipers; this OKTech refuses every
+    # stop, and each is said as not stopped
+    assert client.tasks_calls >= 1 and not rep["stopped"] and rep["stop_failed"] == ["a", "b"]
     assert any("status check failed" in e for e in rep["events"])
     store.close()
 

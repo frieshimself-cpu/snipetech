@@ -599,7 +599,8 @@ def test_no_sniper_is_made_while_the_wallet_cannot_pay_a_buy():
     every ten minutes; each ended within minutes without a buy (OKTech: "finished") and the next run made another:
     165 snipers in two days, each with two messages to the owner, until OKTech refused ("TASK_LIMIT: This key already
     has 200 snipers"). What pays a buy is SOL: plain SOL for a curve buy, wrapped SOL for one on PumpSwap, and a few
-    thousandths of plain SOL beside either (positions.buys_payable, the rule the agents' snapshot reads)."""
+    thousandths of plain SOL beside either; a sniper is made only while a curve copy can be paid beside the wrapped SOL
+    OKTech keeps while it runs (positions.curve_buy_beside_topup, book#6)."""
     from snipetech.book.policy import BookStops
     from snipetech.positions import BUY_NATIVE_SOL
 
@@ -620,13 +621,17 @@ def test_no_sniper_is_made_while_the_wallet_cannot_pay_a_buy():
     assert not made(equity_sol=0.5007, native_sol=0.0007, wsol=0.0)[1]
     assert not made(equity_sol=None, native_sol=0.0007, wsol=0.0)[1]  # a coin the tape has not priced: equity unknown
     # wrapped SOL alone sends nothing either (11 Nov: 0.0008 SOL beside 0.47 wrapped, nothing sent on five signals);
-    # with a buy's costs in plain SOL beside it a PumpSwap buy is payable, and the snipers are made
+    # book#6 (22 Nov audit): with a buy's costs in plain SOL beside it a PumpSwap buy is payable, but every curve copy
+    # fails, so no sniper is made: a curve copy needs its fill and its costs in plain SOL
     assert not made(native_sol=0.0007, wsol=0.5)[1]
-    assert len(made(native_sol=BUY_NATIVE_SOL, wsol=0.5)[1]) == 3
-    # a fill and its costs in plain SOL: made as always, to the lamport; a balance that was not read says nothing
+    assert not made(native_sol=BUY_NATIVE_SOL, wsol=0.5)[1]
     fill = cfg.book.fill_min_sol
-    assert not made(native_sol=fill + BUY_NATIVE_SOL - 0.0001, wsol=0.0)[1]
-    assert len(made(native_sol=fill + BUY_NATIVE_SOL, wsol=0.0)[1]) == 3
+    assert len(made(native_sol=fill + BUY_NATIVE_SOL, wsol=0.5)[1]) == 3
+    # book#6: with nothing wrapped, OKTech wraps 1.1 times the fill from plain SOL once a sniper runs; the fill, its
+    # costs and that top-up in plain SOL: made, to the lamport; a balance that was not read says nothing
+    topup = 1.1 * fill
+    assert not made(native_sol=fill + BUY_NATIVE_SOL + topup - 0.0001, wsol=0.0)[1]
+    assert len(made(native_sol=fill + BUY_NATIVE_SOL + topup, wsol=0.0)[1]) == 3
     for unread in ({"native_sol": None, "wsol": 0.0}, {"native_sol": 0.0, "wsol": None}, {}):
         assert len(made(**unread)[1]) == 3
 

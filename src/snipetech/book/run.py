@@ -21,7 +21,7 @@ from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
-from ..positions import SPENT_STATUSES, is_active
+from ..positions import SPENT_STATUSES, curve_plain_need, is_active
 from ..qualify.non_coin import NON_COIN_REASON, non_coin_traders
 from .policy import (
     BOOK_NAME_RE,
@@ -109,15 +109,28 @@ def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = 
     return out
 
 
-def _bought_by_us(store, wallet: str, mint: str) -> bool:
-    """Whether a buy of ours explains holding `mint`: a buy by the wallet on the tape, or a buy fill of the measure
-    stage. Any read that fails counts as ours (the coin then keeps equity unknown, as before)."""
+def _bought_by_us(store, wallet: str, mint: str, marks: dict | None = None) -> bool:
+    """Whether a buy of ours explains holding `mint`: a buy of the bot's by the wallet on the tape, or a buy fill of
+    the bot's in the wallet (measure/ours.py: the fees a sniper of ours pays, a sniper or copied wallet the measure stage
+    tied it to, or fees nobody recorded; `marks`: fee_marks, read here when not given). The owner's own buy at other
+    fees explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Any read
+    that fails counts as ours (the coin then keeps equity unknown, as before)."""
+    from types import SimpleNamespace
+
+    from ..measure.ours import bot_buy, bot_tape_buy, fee_marks
+
     if not mint or mint == "unknown":
         return True
     try:
-        if store._q("SELECT 1 FROM trades WHERE mint=? AND user=? AND is_buy=1 LIMIT 1", (mint, wallet)):
-            return True
-        return bool(store._q("SELECT 1 FROM fills WHERE mint=? AND side='buy' LIMIT 1", (mint,)))
+        marks = fee_marks(store) if marks is None else marks
+        for priority, tip in store._q("SELECT priority, tip FROM trades WHERE mint=? AND user=? AND is_buy=1",
+                                      (mint, wallet)):  # fmt: skip
+            if bot_tape_buy(SimpleNamespace(priority=priority, tip=tip), marks):
+                return True
+        rows = store._q("SELECT sniper_id, wallet_copied, priority_lamports, tip_lamports FROM fills "
+                        "WHERE wallet=? AND mint=? AND side='buy'", (wallet, mint))  # fmt: skip
+        return any(bot_buy({"sniper_id": s, "wallet_copied": c, "priority_lamports": p, "tip_lamports": t}, marks)
+                   for s, c, p, t in rows)  # fmt: skip
     except Exception:  # noqa: BLE001
         return True
 
@@ -126,18 +139,21 @@ STRAY_AFTER_SECS = 600  # a coin no buy of ours explains, seen this long: no tap
 
 
 def _strays(store, wallet: str, holdings: list[dict] | None, paths: OperatorPaths, now: float) -> set[str]:
-    """Coins in the wallet that no buy of ours explains (an airdrop, the owner's own trade in another app) and that
-    the unsold-coin watch first saw STRAY_AFTER_SECS ago or more: no sniper of ours holds them, so they never keep a
-    spent sniper from being replaced (8 Nov: a dust airdrop held every replacement for hours). A coin seen just now may
-    be a buy the tape has not caught up with, and still counts as held."""
+    """Coins in the wallet that no buy of ours explains (an airdrop, the owner's own trade in another app or by hand
+    in this wallet) and that the unsold-coin watch first saw STRAY_AFTER_SECS ago or more: no sniper of ours holds
+    them, so they never keep a spent sniper from being replaced (8 Nov: a dust airdrop held every replacement for
+    hours), nor a book sniper armed under a kill, nor the clean-up waiting. A coin seen just now may be a buy the tape
+    has not caught up with, and still counts as held."""
+    from ..measure.ours import fee_marks
     from .watch import _load
 
     seen = (_load(paths).get("first_seen") or {}) if holdings else {}
+    marks = fee_marks(store) if holdings else None
     out: set[str] = set()
     for h in holdings or []:
         m = str(h.get("mint") or "")
         t = seen.get(m)
-        if m and t is not None and now - float(t) >= STRAY_AFTER_SECS and not _bought_by_us(store, wallet, m):
+        if m and t is not None and now - float(t) >= STRAY_AFTER_SECS and not _bought_by_us(store, wallet, m, marks):
             out.add(m)
     return out
 
@@ -157,7 +173,13 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     leader's own buy failed, or the tape missed it). Counting high only replaces a sniper early; counting low relies
     on the buy that uses up OKTech's cap. A buy from before the sniper existed, while another of our snipers on that
     leader was alive, is that one's (a replacement never inherits its predecessor's buy). A sniper without our own
-    record of it (when it was made, what it copies) is not counted, so it is never retired."""
+    record of it (when it was made, what it copies) is not counted, so it is never retired. A buy at fees no sniper of
+    ours pays is the owner's own (measure/ours.bot_tape_buy) and is no sniper's (22 Nov audit: counted for every book
+    sniper, one hand buy would have retired them all)."""
+    from types import SimpleNamespace
+
+    from ..measure.ours import bot_tape_buy, fee_marks
+
     local = {r["id"]: r for r in store.oktech_snipers(active=False)}
     mine: list[tuple[str, str, float]] = []
     for t in tasks:
@@ -171,8 +193,11 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     if not mine:
         return {}
     since = int(min(born for _, _, born in mine) - CREATED_GRACE_SECS)
-    buys = store._q("SELECT DISTINCT sig, mint, slot, pos, ts FROM trades WHERE user=? AND is_buy=1 AND ts>=? "
-                    "ORDER BY slot, pos", (wallet, since))  # fmt: skip
+    marks = fee_marks(store)
+    buys = [(sig, mint, slot, pos, ts) for sig, mint, slot, pos, ts, priority, tip in
+            store._q("SELECT DISTINCT sig, mint, slot, pos, ts, priority, tip FROM trades WHERE user=? AND is_buy=1 "
+                     "AND ts>=? ORDER BY slot, pos", (wallet, since))
+            if bot_tape_buy(SimpleNamespace(priority=priority, tip=tip), marks)]  # fmt: skip
     every_leader = sorted({ld for r in local.values() for ld in copied_leaders(r)})
 
     def leaders_before(mint: str, slot: int, pos: int) -> set[str]:
@@ -402,7 +427,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                      tape_holding=tape_holding, paused=paused_rec,
                      guard=guard is None or guard.tripped or not guard.known,
                      stops=book_stops(cfg, paths),  # the owner's /risk values where set, else [book]'s
-                     native_sol=native, wsol=wsol)  # fmt: skip
+                     native_sol=native, wsol=wsol, restart=_restarts(store, snipers))  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
@@ -496,11 +521,14 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     # with them), and the ones that have or get a sniper: what the owner is told the book copies (book_reason)
     waits = [a for a in plan.actions if a.kind == "skip" and (CANNOT_PAY in a.reason or WAITS_FOR_MONEY in a.reason)]
     if waits:
+        fill = min((float(a.fill_sol) for a in waits if a.fill_sol), default=None)
         seen |= {
             "waiting": len(waits),
             "armed": sum(counts.get(k, 0) for k in ("keep", "create", "start")),
-            "waiting_fill": min((float(a.fill_sol) for a in waits if a.fill_sol), default=None),
+            "waiting_fill": fill,
         }
+        if fill and native is not None and wsol is not None:  # what one copy needs in plain SOL (policy.CANNOT_PAY)
+            seen["waiting_need"] = round(curve_plain_need(wsol, fill), 4)
     if effective_dry:
         for a in plan.actions:
             if a.kind in ("create", "start", "stop", "retire"):
@@ -622,18 +650,80 @@ def _ignored(svc) -> list[str]:
     return list(getattr(getattr(getattr(svc, "cfg", None), "operator", None), "ignore_mints", None) or [])
 
 
-async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | frozenset) -> bool:
-    """Whether the wallet holds a coin of ours now, by its own balances and by the tape (a buy seconds old); holdings
-    that cannot be read count as held."""
+async def _coins_held(svc, wallet: str, strays: set[str] | frozenset) -> list[dict] | None:
+    """The wallet's coins by its own balances now, the strays and the owner's ignored coins left out; None when they
+    cannot be read."""
     try:
-        if [p for p in await svc.open_positions(wallet, ignore=_ignored(svc)) if str(p.get("mint")) not in strays]:
-            return True
-    except Exception:  # noqa: BLE001 - unknown holdings: treat as held
-        return True
+        return [p for p in await svc.open_positions(wallet, ignore=_ignored(svc)) if str(p.get("mint")) not in strays]
+    except Exception:  # noqa: BLE001 - unknown holdings
+        return None
+
+
+def _tape_holds(store, wallet: str, now: float) -> bool:
+    """`_tape_holding`, with a tape that cannot be read counting as holding."""
     try:
         return bool(store is not None and now and _tape_holding(store, wallet, now))
     except Exception:  # noqa: BLE001
         return True
+
+
+async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | frozenset) -> bool:
+    """Whether the wallet holds a coin of ours now, by its own balances and by the tape (a buy seconds old); holdings
+    that cannot be read count as held."""
+    coins = await _coins_held(svc, wallet, strays)
+    return coins is None or bool(coins) or _tape_holds(store, wallet, now)
+
+
+# A retire undone by a coin bought while its stop went out starts the sniper again (a stopped sniper sells nothing):
+# this many tries, RESTART_PAUSE_SECS apart, each RESTART_SECS at most (OKTech's client waits out a rate limit for up to
+# three minutes a call, and the machine ends the book's unit after four). 22 Nov audit: one try, its failure swallowed,
+# and the owner was told it had started.
+RESTART_TRIES = 2
+RESTART_PAUSE_SECS = 2.0
+RESTART_SECS = 45.0
+# the snipers such a start failed for: {sniper id: {"ts": when, "mints": the coins seen then}}. Written before the start
+# (a run cut off on its way leaves it for the next one); the plan starts each while the wallet holds a coin
+# (BookInputs.restart), and one OKTech lists running again, or not at all, leaves it
+RESTART_KEY = "book:restart"
+
+
+def _restarts(store, snipers: list[dict]) -> set[str]:
+    """The snipers RESTART_KEY holds that OKTech still lists stopped (idle, or stopping on its way there); the rest
+    leave the record. Nothing when it cannot be read."""
+    try:
+        rec = dict(store.coverage(RESTART_KEY) or {})
+    except Exception:  # noqa: BLE001
+        return set()
+    stopped = {str(s.get("id")) for s in snipers if str(s.get("status")) in ("idle", "stopping")}
+    keep = {sid: v for sid, v in rec.items() if sid in stopped}
+    if keep != rec:
+        with contextlib.suppress(Exception):
+            store.set_coverage(RESTART_KEY, keep)
+    return set(keep)
+
+
+def _mark_restart(store, sid: str, now: float, mints: list[str], pending: bool) -> None:
+    with contextlib.suppress(Exception):
+        rec = dict(store.coverage(RESTART_KEY) or {})
+        if pending:
+            rec[sid] = {"ts": int(now), "mints": mints}
+        else:
+            rec.pop(sid, None)
+        store.set_coverage(RESTART_KEY, rec)
+
+
+async def _start_again(svc, sid: str) -> str | None:
+    """Start `sid` again, RESTART_TRIES tries: None once OKTech has started it, else what the last try said."""
+    said = ""
+    for attempt in range(RESTART_TRIES):
+        try:
+            await asyncio.wait_for(svc.oktech_task("start", sid), RESTART_SECS)
+            return None
+        except Exception as exc:  # noqa: BLE001 - tried again, then told
+            said = f"{type(exc).__name__}: {str(exc)[:120]}".rstrip(": ")
+            if attempt + 1 < RESTART_TRIES:
+                await asyncio.sleep(RESTART_PAUSE_SECS)
+    return said
 
 
 TOLD_KEY = "book:told"  # the lines of today that Telegram has taken: {"day": "YYYY-MM-DD", "lines": [...]}
@@ -752,23 +842,34 @@ async def _retire(
 ) -> bool:
     """Stop and delete a sniper that made its relied-on buy, once the wallet holds nothing; True when it is gone. The
     holdings are read before the stop and again after it (with the tape): a coin bought in between gets its sniper
-    started again and nothing is deleted (a stopped sniper sells nothing, so its coin would be stranded)."""
+    started again and nothing is deleted (a stopped sniper sells nothing, so its coin would be stranded). That start is
+    tried RESTART_TRIES times; when it fails the owner is told so, with the coin's /sell line, and the next run starts
+    the sniper while the wallet holds a coin (RESTART_KEY)."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
     now = float(now if now is not None else 0)
 
-    async def held() -> bool:
-        return await _holds_a_coin(svc, wallet, store, now, strays)
-
-    if await held():
+    if await _holds_a_coin(svc, wallet, store, now, strays):
         notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again (or could not be read)", "info")
         return False
     with contextlib.suppress(Exception):  # an idle task may refuse a stop; the delete is what counts
         await svc.oktech_task("stop", sid)
-    if await held():
-        with contextlib.suppress(Exception):
-            await svc.oktech_task("start", sid)
-        notifier.send(notes.write(f"[book] retire {w6} ({sid}) undone: a coin appeared while it stopped; started again so "
-                                  "it can sell it", "decision"))  # fmt: skip
+    coins = await _coins_held(svc, wallet, strays)
+    if coins is None or coins or _tape_holds(store, wallet, now):
+        mints = [str(c["mint"]) for c in coins or [] if c.get("mint")]
+        if store is not None:
+            _mark_restart(store, sid, now, mints, pending=True)
+        failed = await _start_again(svc, sid)
+        if failed is None:
+            if store is not None:
+                _mark_restart(store, sid, now, mints, pending=False)
+            notifier.send(notes.write(f"[book] retire {w6} ({sid}) undone: a coin appeared while it stopped; started again "
+                                      "so it can sell it", "decision"))  # fmt: skip
+            return False
+        coin = f" ({', '.join(m[:8] for m in mints)})" if mints else ""
+        sell = f" Sell it now: /sell {mints[0]}" if len(mints) == 1 else ""
+        notifier.send(notes.write(f"[book] retire {w6} ({sid}) undone: a coin appeared while it stopped{coin}, and its "
+                                  f"start after the stop failed ({failed}): nothing sells that coin while it stays "
+                                  f"stopped; the next run tries to start it again.{sell}", "decision"))  # fmt: skip
         return False
     try:
         await svc.oktech_task("delete", sid)

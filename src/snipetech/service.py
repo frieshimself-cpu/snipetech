@@ -885,8 +885,8 @@ class Service:
 
         held: list[dict] | None = None
         if self.cfg.operator.wallet:
-            try:
-                held = await self.open_positions(self.cfg.operator.wallet)
+            try:  # the owner's ignored coins (an airdrop) hold no retire back
+                held = await self.open_positions(self.cfg.operator.wallet, ignore=self.cfg.operator.ignore_mints)
             except Exception as exc:  # noqa: BLE001 - unknown holdings block every retire
                 self.progress(f"holdings unknown ({exc}): nothing will be retired")
         client = self._oktech()
@@ -1051,14 +1051,55 @@ class Service:
         held = await self.open_positions(address, ignore=ignore)
         return b + wsol + sum(float(h.get("value_sol") or 0) for h in held), b, held
 
+    # `oktech guard`: every end reads the wallet this often (END_WATCH_SECS at most) until it holds nothing its snipers
+    # may manage, then stops them
+    GUARD_POLL_SECS = 5.0
+    # and a coin the tape has not priced holds its floor back this long after the guard first saw it (the tape prices a
+    # fresh buy within seconds), then counts as worth 0 SOL: 22 Nov an airdrop the tape never priced sat in the wallet
+    # for five hours, and the floor waited on it for as long as it stayed (22 Nov audit)
+    GUARD_UNPRICED_WAIT_SECS = 120.0
+
+    async def start_refusal(self, address: str, plain_sol: float | None = None,
+                            held: list[dict] | None = None) -> str | None:  # fmt: skip
+        """Why the owner's wallet-wide guard (operator/RISK: the day stop, the wallet's floor) refuses a start of a
+        sniper on `address` now, or None when it is clear; a guard that cannot tell refuses too, as for the cycle, the
+        book and /test (22 Nov audit: `oktech guard` and `oktech start` armed snipers while it held). `plain_sol` and
+        `held`: the wallet's plain SOL and its coins, the owner's ignore_mints left out, when the caller has read them."""
+        try:
+            sol = None
+            if address and self.risk_guard_reads_balance():
+                sol = (await self.wallet_sol(address) if plain_sol is None
+                       else float(plain_sol) + await self.wsol_balance(address))  # fmt: skip
+            if held is None and address:
+                held = await self.open_positions(address, ignore=self.cfg.operator.ignore_mints)
+            g = self.risk_guard(address, sol, held)
+        except Exception as exc:  # noqa: BLE001 - cannot tell is never clear
+            return f"the owner's wallet-wide guard cannot tell (the wallet could not be read: {type(exc).__name__})"
+        if g.tripped:
+            return f"the owner's wallet-wide guard holds ({g.reason})"
+        if not g.known:
+            return f"the owner's wallet-wide guard cannot tell ({g.reason})"
+        return None
+
     async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True,
-                           allow_uncapped: bool = False, native_reserve_sol: float = 0.05) -> dict:  # fmt: skip
-        """Start capped snipers and watch the wallet. A running sniper is the only thing that sells its positions,
-        so this never stops one except in an emergency, and then lists exactly what is left to sell. The emergency is
-        *equity* (SOL + the tape value of the coins held) below `floor_sol`, or the SOL balance below
-        `native_reserve_sol` (nothing left to pay sells with): buying coins moves SOL into positions, only losing
-        money moves equity. At `max_minutes` it stops watching and leaves them running (they are capped).
-        Stops that fail are reported as such, never as "stopped"."""
+                           allow_uncapped: bool = False, native_reserve_sol: float = 0.005) -> dict:  # fmt: skip
+        """Start capped snipers and watch the wallet. A running sniper is the only thing that sells its positions, so
+        this never stops one that may hold a coin (CLAUDE.md rule 1), and lists what is left. The emergency is *equity*
+        (SOL + the tape value of the coins held, the owner's [operator] ignore_mints left out everywhere) below
+        `floor_sol`: buying coins moves SOL into positions, only losing money moves equity. A coin the tape has not
+        priced holds the emergency back GUARD_UNPRICED_WAIT_SECS after the guard first saw it, then counts as worth
+        0 SOL. The SOL balance under `native_reserve_sol` (about what a sale costs) is said once, never an
+        emergency: a curve buy is paid in plain SOL, and the old 0.05 SOL reserve called one buy from a small wallet an
+        emergency and stopped the sniper that held its coin (22 Nov audit).
+
+        Every end (the emergency, `max_minutes`, a stop signal: the job's limit, a kill) stops its snipers once the
+        wallet holds nothing they may manage: a coin held, a buy of ours on the tape the wallet read does not show yet,
+        or a wallet that cannot be read keeps them running, read every GUARD_POLL_SECS for END_WATCH_SECS at most (once
+        on a stop signal), then left running and listed with /sell lines. A coin no buy of ours explains, seen
+        STRAY_AFTER_SECS (an airdrop, the owner's own), keeps no sniper running, as for the book. All of them finished
+        on their own ends it with nothing to stop. Stops that fail are reported as such, never as "stopped"."""
+        from .book.run import STRAY_AFTER_SECS, _bought_by_us, _tape_holding
+        from .oktech import OktechError
         from .positions import is_active
 
         address = self._check(address)
@@ -1069,6 +1110,7 @@ class Service:
         if uncapped and not allow_uncapped:
             raise SystemExit(f"refusing to start {uncapped}: not capped (singleSnipe + totalSnipes) or not made by snipetech. "
                              "A capped sniper stops buying by itself; its last buy can be left with no exit, so watch it.")  # fmt: skip
+        ignore = list(self.cfg.operator.ignore_mints or ())  # the owner's coins no sniper manages (an airdrop)
         client = self._oktech()
         events: list[str] = []
 
@@ -1080,25 +1122,105 @@ class Service:
         async def balance() -> float:
             return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
 
-        reason = (
-            "time limit: still running (capped; its exits run, but a last buy can be left unsold: check the wallet)"
-        )
         stopped, stop_failed = False, []
+        seen: dict[str, float] = {}  # when the guard first saw each coin held
+
+        def sight(held: list[dict]) -> None:
+            now = time.time()
+            for h in held:
+                if h.get("mint"):
+                    seen.setdefault(str(h["mint"]), now)
+
+        def theirs(held: list[dict]) -> list[dict]:
+            """The held coins a sniper may manage: all but a stray, seen STRAY_AFTER_SECS with no buy of ours to explain
+            it (book.run._strays: an airdrop, the owner's own)."""
+            now = time.time()
+            return [h for h in held if not (h.get("mint") and now - seen.get(str(h["mint"]), now) >= STRAY_AFTER_SECS
+                                            and not _bought_by_us(self.store, address, str(h["mint"])))]  # fmt: skip
+
+        async def holding() -> list[dict] | None:
+            """What keeps the snipers running at an end: the coins they may manage, or a buy of ours on the tape that the
+            wallet read does not show yet; None when the wallet cannot be read."""
+            try:
+                held = await self.open_positions(address, ignore=ignore)
+            except Exception:  # noqa: BLE001 - unknown holdings never stop a sniper
+                return None
+            sight(held)
+            held = theirs(held)
+            if held:
+                return held
+            try:
+                fresh = _tape_holding(self.store, address, time.time())
+            except Exception:  # noqa: BLE001 - the tape cannot say: a buy may be on its way
+                return None
+            return [{"mint": "a buy of ours on the tape, not in the wallet read yet"}] if fresh else []
+
+        async def stop_one(i: str) -> bool:
+            """Stop sniper i, STOP_TRIES times two seconds apart (OKTech's NOT_RUNNING: stopped already)."""
+            for attempt in range(STOP_TRIES):
+                try:
+                    await client.stop(i)
+                    return True
+                except Exception as exc:  # noqa: BLE001 - said; the reason names what is left to stop by hand
+                    if isinstance(exc, OktechError) and exc.code == "NOT_RUNNING":
+                        return True
+                    log(f"stop {i} FAILED ({attempt + 1} of {STOP_TRIES}): {exc}")
+                    if attempt + 1 < STOP_TRIES:
+                        await asyncio.sleep(2.0)
+            return False
+
+        async def disarm(why: str, watch: bool = True) -> str:
+            """How the guard ends: its snipers are stopped once the wallet holds nothing they may manage (two readings
+            agree); until then they keep running, watched every GUARD_POLL_SECS for END_WATCH_SECS at most (`watch`
+            off: one look), then left running and said (22 Nov audit: the time limit stopped nothing, an emergency
+            stopped the sniper holding its coin)."""
+            nonlocal stopped, stop_failed
+            until, reads = time.time() + END_WATCH_SECS, 0
+            while True:
+                held = await holding()
+                if held == []:  # one empty reply is no proof: a node can leave a coin out of one
+                    await asyncio.sleep(self.GUARD_POLL_SECS)
+                    held = await holding()
+                if held == []:
+                    stop_failed = [i for i in ids if not await stop_one(i)]
+                    stopped = not stop_failed
+                    return f"{why}; the wallet holds nothing its snipers bought, so they are stopped" + (
+                        f" except {stop_failed} (NOT stopped: stop them by hand)" if stop_failed else ""
+                    )
+                reads += 1
+                if not watch or time.time() >= until or reads * self.GUARD_POLL_SECS >= END_WATCH_SECS:
+                    what = ("the wallet could not be read" if held is None else
+                            "a coin is held (" + ", ".join(str(h.get("mint"))[:8] for h in held) + ")")  # fmt: skip
+                    return f"{why}; {what}, so its snipers keep running to sell it (a stopped sniper strands its coin)"
+                await asyncio.sleep(self.GUARD_POLL_SECS)
+
+        loop, me, caught = asyncio.get_running_loop(), asyncio.current_task(), []
+        for sig in (signal.SIGTERM, signal.SIGINT):  # the job's limit, a kill or a restart: the watch ends at its wait
+            try:
+                loop.add_signal_handler(sig, me.cancel)
+                caught.append(sig)
+            except (NotImplementedError, RuntimeError, ValueError):  # no signals here (not the main thread)
+                pass
+        reason, said_low, said_unpriced = "time limit", False, set()
         try:
             b0 = await balance()
-            eq0, _, held0 = await self.equity(address)
+            eq0, _, held0 = await self.equity(address, ignore=ignore)
+            sight(held0)
             log(f"wallet {address[:6]}… holds {b0:.4f} SOL, equity {eq0:.4f} SOL ({len(held0)} coin(s)); emergency floor "
-                f"{floor_sol} SOL equity / {native_reserve_sol} SOL balance; watching {max_minutes:g} min")  # fmt: skip
+                f"{floor_sol} SOL equity; watching {max_minutes:g} min")  # fmt: skip
             if eq0 <= floor_sol:
                 raise SystemExit(f"equity {eq0:.4f} is already at or below the floor {floor_sol}")
             if start:
+                why = await self.start_refusal(address, b0, held0)
+                if why:
+                    raise SystemExit(f"{why}: nothing started (the owner's /risk changes it)")
                 for i in ids:
                     try:
                         ans = await client.start(i)
                         log(f"started {i}: {ans.get('task', {}).get('status', ans)}")
                     except Exception as exc:  # the others are started and watched all the same
                         log(f"start {i} FAILED ({exc}); watching the rest")
-            t0, low = time.time(), b0
+            t0, low, ended = time.time(), b0, False
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(2)
                 try:
@@ -1109,30 +1231,34 @@ class Service:
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
-                if b < floor_sol or b < native_reserve_sol:
+                if b < native_reserve_sol and not said_low:
+                    said_low = True
+                    log(f"balance {b:.4f} SOL is under {native_reserve_sol:g} SOL, about what a sale costs: a sale may "
+                        "fail for its fee (said once, never an emergency: stopping a sniper would not sell its coin)")  # fmt: skip
+                if b < floor_sol:
                     # the SOL balance alone says nothing while coins are held: value them
                     try:
-                        eq, _, held = await self.equity(address)
+                        eq, _, held = await self.equity(address, ignore=ignore)
                     except Exception as exc:
                         log(f"equity check failed ({exc}); still watching")
                         continue
-                    unpriced = [h for h in held if not h.get("priced", True)]
-                    if unpriced:
-                        log(f"balance {b:.4f} SOL below the floor but {len(unpriced)} unpriced coin(s) held "
-                            f"({', '.join(str(h['mint'])[:8] for h in unpriced)}): waiting for the tape to price them, no emergency")  # fmt: skip
+                    sight(held)
+                    now = time.time()
+                    unpriced = [str(h["mint"]) for h in held if not h.get("priced", True) and h.get("mint")]
+                    waiting = [m for m in unpriced if now - seen.get(m, now) < self.GUARD_UNPRICED_WAIT_SECS]
+                    if waiting:  # a fresh buy the tape has not priced yet: no emergency on it, for a while
+                        if set(waiting) - said_unpriced:
+                            said_unpriced |= set(waiting)
+                            log(f"balance {b:.4f} SOL below the floor but {len(waiting)} coin(s) the tape has not "
+                                f"priced yet ({', '.join(m[:8] for m in waiting)}): waiting up to "
+                                f"{self.GUARD_UNPRICED_WAIT_SECS:g} s for its price, no emergency yet")  # fmt: skip
                         continue
-                    if eq < floor_sol or b < native_reserve_sol:
-                        reason = f"EMERGENCY: equity {eq:.4f} SOL (balance {b:.4f}) below the floor {floor_sol}"
-                        for i in ids:
-                            try:
-                                await client.stop(i)
-                            except Exception as exc:
-                                stop_failed.append(i)
-                                log(f"stop {i} FAILED ({exc})")
-                        stopped = not stop_failed
-                        reason += (
-                            f"; NOT stopped: {stop_failed} (stop them by hand)" if stop_failed else "; stopped buying"
-                        )
+                    if eq < floor_sol:
+                        why = f"EMERGENCY: equity {eq:.4f} SOL (balance {b:.4f}) below the floor {floor_sol}"
+                        if unpriced:
+                            why += (f" ({len(unpriced)} coin(s) the tape has not priced in "
+                                    f"{self.GUARD_UNPRICED_WAIT_SECS:g} s counted at 0 SOL)")  # fmt: skip
+                        reason, ended = await disarm(why), True
                         break
                 if int(time.time() - t0) % 20 < 2:
                     try:
@@ -1141,19 +1267,21 @@ class Service:
                         log(f"OKTech status check failed ({exc}); still watching")
                         continue
                     if states and not any(is_active(st) for st in states.values()):
-                        reason = f"all finished on their own ({states})"
+                        reason, ended = f"all finished on their own ({states})", True
                         break
+            if not ended:
+                reason = await disarm("time limit")
             log(reason)
             b1 = await balance()
             try:
-                eq1, _, held = await self.equity(address)
+                eq1, _, held = await self.equity(address, ignore=ignore)
             except Exception as exc:
                 eq1, held = b1, []
                 log(f"final holdings check failed ({exc}): list them with `oktech holdings`")
             log(f"wallet {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f}); equity {eq0:.4f} -> {eq1:.4f}")
             if held:
-                what = ("STILL HELD, sell these by hand (the stopped sniper no longer manages them)" if stopped or stop_failed
-                        else "still held (the sniper is managing them)")  # fmt: skip
+                what = ("STILL HELD after the stop, sell these by hand (no sniper of the guard's manages them now)"
+                        if stopped or stop_failed else "still held (the running snipers manage them)")  # fmt: skip
                 log(
                     what
                     + ": "
@@ -1162,11 +1290,27 @@ class Service:
                         for h in held
                     )
                 )
+                for h in held:  # the owner's Telegram command that sells it, last on its line (operator/commands.py)
+                    log(f"to sell {str(h['mint'])[:8]} by hand: /sell {h['mint']}")
             else:
                 log("no coins held")
             return {"start_sol": b0, "end_sol": b1, "equity_sol": eq1, "reason": reason, "stopped": stopped,
                     "stop_failed": stop_failed, "held": held, "events": events}  # fmt: skip
+        except asyncio.CancelledError:
+            # 22 Nov audit: a guard its job's limit, a kill or a restart ended left its snipers armed, nobody watching
+            for sig in caught:  # from here a signal changes nothing (a second one would cancel the stop on the way out)
+                with contextlib.suppress(Exception):
+                    loop.add_signal_handler(sig, lambda: None)
+            log("the guard was told to stop (its time limit, a kill or a restart): stopping its snipers if the wallet "
+                "holds nothing they bought")  # fmt: skip
+            try:
+                log(await asyncio.wait_for(disarm("told to stop", watch=False), 20.0))
+            except Exception as exc:  # noqa: BLE001 - said: the owner stops the rest with /stop
+                log(f"the stop on the way out did not finish ({type(exc).__name__})")
+            raise
         finally:
+            for sig in caught:
+                loop.remove_signal_handler(sig)
             await client.close()
 
     async def sweep_coin(self, mint: str, amount: int | None = None) -> dict:
@@ -3216,15 +3360,20 @@ async def oktech_tasks(
     svc: Service, action: str, ids: list[str], force: bool = False
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """`action` on every id, continuing past failures: (answers as {id, answer}, failures as (id, reason)).
-    `start` is refused while the owner's /stop flag is set; `stop` and `delete` are refused while the sniper wallet
-    holds a coin (a stopped sniper strands it) unless `force`."""
+    `start` is refused while the owner's /stop flag is set, or while the owner's wallet-wide guard holds or cannot tell
+    (`Service.start_refusal`, on the sniper wallet); `stop` and `delete` are refused while the sniper wallet holds a coin
+    (a stopped sniper strands it), the owner's ignore_mints left out. `force` overrides each."""
     results: list[dict] = []
     failures: list[tuple[str, str]] = []
     if action == "start" and not force and svc.stop_flag_set():
         return [], [(i, "the owner's /stop flag is set: /resume first (or --force)") for i in ids]
+    if action == "start" and not force:
+        why = await svc.start_refusal(svc.cfg.operator.wallet or "")
+        if why:
+            return [], [(i, f"{why}: nothing started (the owner's /risk changes it, or --force)") for i in ids]
     if action in ("stop", "delete") and not force and svc.cfg.operator.wallet:
-        try:
-            held = await svc.open_positions(svc.cfg.operator.wallet)
+        try:  # the owner's ignored coins (an airdrop) are no holding, as for the book, the watch and the cycle
+            held = await svc.open_positions(svc.cfg.operator.wallet, ignore=svc.cfg.operator.ignore_mints)
         except Exception as exc:  # noqa: BLE001 - unknown holdings: refuse, like /stop
             return [], [
                 (i, f"holdings could not be read ({type(exc).__name__}): nothing {action}ped; --force to override")

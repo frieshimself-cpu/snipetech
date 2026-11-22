@@ -547,8 +547,9 @@ ROLE_SYSTEM = {"scout": SCOUT_SYSTEM, "tester": TESTER_SYSTEM, "fees": FEES_SYST
 
 
 
-# What the wallet can pay (BUY_NATIVE_SOL, BOOK_FILL_SOL, buys_payable) is one rule for the agents' snapshot, the
-# conversion of wrapped SOL and the book: positions.py holds it, and it is read here under its old names.
+# What the wallet can pay (BUY_NATIVE_SOL, BOOK_FILL_SOL, buys_payable) is one rule for the agents' snapshot and the
+# conversion of wrapped SOL; the book adds the wrapped SOL OKTech keeps while a sniper runs
+# (positions.curve_buy_beside_topup). positions.py holds it, and it is read here under its old names.
 
 
 JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file

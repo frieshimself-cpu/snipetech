@@ -815,10 +815,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="show/start/stop/delete/guard: the sniper's id (from `oktech status`); guard takes several",
     )
     sp.add_argument("--address", help="guard: the buying wallet's public address (its balance is watched)")
-    sp.add_argument(
-        "--floor", type=float, help="guard: stop everything if the wallet's balance falls below this many SOL"
-    )
-    sp.add_argument("--max-minutes", type=float, default=60, help="guard: stop everything after this long")
+    sp.add_argument("--floor", type=float,
+                    help="guard/cycle: the emergency floor on the wallet's equity (its SOL, wrapped SOL and the tape "
+                         "value of its coins), in SOL: under it the run ends, and its snipers are stopped once the "
+                         "wallet holds nothing they bought (a stopped sniper strands its coin)")  # fmt: skip
+    sp.add_argument("--max-minutes", type=float, default=60,
+                    help="guard/cycle: how long the run watches; at its end its snipers are stopped once the wallet "
+                         "holds nothing they bought (a coin held is watched up to 15 more minutes)")  # fmt: skip
     sp.add_argument("--max-fills", type=int, default=10, help="cycle: stop re-arming after this many buys")
     sp.add_argument(
         "--rearm-after", type=float, default=60, help="cycle: re-arm an idle sniper after this many seconds"
