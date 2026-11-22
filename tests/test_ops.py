@@ -872,6 +872,21 @@ def test_a_remote_runner_job_gets_the_time_limit_its_own_flags_need(monkeypatch,
     assert "op_args" not in seen[-1][1]  # the server's own default
 
 
+def test_a_remote_guard_job_gets_the_time_limit_its_minutes_need(monkeypatch):
+    """22 Nov audit (ops#5): the limit above was given to `oktech cycle` only. `remote run oktech guard --max-minutes
+    1440` got the server's 6 h, and at hour 6 the guard was killed with no report: its snipers ran on with no floor
+    and no reserve watch for the rest of the time the owner approved."""
+    from snipetech import cli
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    guard = ["oktech", "guard", "--id", "a", "--address", "W", "--floor", "5", "--max-minutes", "1440"]
+    assert cli._job_limit(guard, None) == 1440 * 60 + 600
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "run", *guard]) == 0
+    assert seen[-1][1]["op_args"] == {"timeout": 1440 * 60 + 600}
+    assert cli._job_limit(guard[:-2], None) == 60 * 60 + 600  # its default minutes
+
+
 def test_every_answer_and_every_redaction_hides_every_secret(env, monkeypatch, tmp_path):
     """22 Nov audit: the endpoint scrubbed its answers of 7 secrets only, read from its own environment. The wallet key
     (SNIPER_SECRET), the Telegram token and any key put in /etc/snipetech/env later went out as they were, and so did

@@ -1064,6 +1064,15 @@ class Service:
         if uncapped and not allow_uncapped:
             raise SystemExit(f"refusing to start {uncapped}: not capped (singleSnipe + totalSnipes) or not made by snipetech. "
                              "A capped sniper stops buying by itself; its last buy can be left with no exit, so watch it.")  # fmt: skip
+        import os
+
+        job_limit = os.environ.get("SNIPETECH_JOB_TIMEOUT")  # the server's job limit (ops.py), when run as a job
+        if job_limit and float(job_limit) < float(max_minutes) * 60:  # 22 Nov audit: 6 h against a 24 h guard
+            raise SystemExit(f"this job's time limit ({float(job_limit) / 60:.0f} min) is shorter than the guard's "
+                             f"{float(max_minutes):g} min: killed at its limit, the guard ends with no report and its "
+                             "snipers run on with no floor watch. Start it with a longer limit (`remote --timeout "
+                             "MINUTES run ...`; `remote run oktech guard` sets one from its --max-minutes); nothing "
+                             "started")  # fmt: skip
         client = self._oktech()
         events: list[str] = []
 
