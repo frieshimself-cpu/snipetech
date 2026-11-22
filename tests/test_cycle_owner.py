@@ -237,3 +237,16 @@ def test_the_runs_own_sale_sells_only_its_own_tokens_of_a_coin_the_owner_bought_
          payload=FEES, tape=[_copy(T0 + 100, sol=1.0), _hand(T0 + 110, mint=OURS, sol=1.0)], sweeps=sweeps,
          sold_amounts=sold, sweep_after=20, minutes=3)  # fmt: skip
     assert sold and sold[0] == (OURS, 1_000_000)
+
+
+def test_no_rearm_while_the_run_holds_tokens_of_a_coin_the_owner_holds_too(monkeypatch):
+    """Review of 22 Nov: a copy into a coin the owner already holds (paid from wrapped SOL: no fall of the plain SOL to
+    hold the re-arms back) left the coin the owner's, so the run held nothing by its count and re-armed the sniper that
+    had just bought into it. While the tape says the run still holds tokens of a coin in the wallet, nothing is
+    re-armed (a stopped sniper strands its coin)."""
+    both = {"mint": OWN, "amount": 2.0, "raw": 2_000_000, "value_sol": 6.0, "priced": True}
+    _rep, client = _run(monkeypatch, lambda now: 7.0,
+                        coins=lambda now: [both] if now >= T0 + 102 else [_coin(OWN, 3.0)], payload=FEES,
+                       tape=[_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(T0 + 100, mint=OWN, sol=3.0)], floor=None,
+                       max_loss=2.0, rearm_after=1800, minutes=4)  # fmt: skip
+    assert not [t for kind, _i, t in client.timed if kind in ("start", "stop") and T0 + 100 < t < T0 + 230]

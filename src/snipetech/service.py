@@ -89,6 +89,13 @@ OWNER_GONE_READINGS = 2
 # run's that no reading shows this long after its last buy, with no sale of the run's on the tape and no price on it,
 # counts as lost
 RUN_GONE_SECS = 60.0
+# and while the tape says the run still holds tokens of a coin the wallet holds (one the owner holds too counts as
+# theirs by its first buy), no sniper is re-armed, for this long after the run's last buy of it at most (an exit
+# whose sale the tape cannot tell as the run's never holds the re-arms back for good)
+RUN_HOLD_MAX_SECS = 300.0
+# At a run's end every copied wallet with a buy of a held coin this long before our buy of it may be the one that buy
+# copied: each of their snipers may hold it, and none is stopped (22 Nov review)
+LEAD_WINDOW_SECS = 10.0
 # and for this long after such a fall, with no coin seen yet, the buy is on its way: no floor reading counts, nothing is
 # re-armed, and an end of the run waits for the coin before it stops any sniper (a slow node shows it late)
 FRESH_HOLD_SECS = 30.0
@@ -1406,17 +1413,31 @@ class Service:
 
             try:
                 since = max(t0, sight.get(mint, time.time()) - WHOSE_MARGIN_SECS)
+                # and after the wallet's last sale of the coin: a buy before it was an earlier holding's (22 Nov review:
+                # a coin sold and bought again by the other sniper was placed by the old buy)
+                sold = self.store._q("SELECT slot, pos FROM trades WHERE user=? AND mint=? AND is_buy=0 "
+                                     "ORDER BY slot DESC, pos DESC LIMIT 1", (address, mint))  # fmt: skip
+                last_sale = (int(sold[0][0]), int(sold[0][1])) if sold else (-1, -1)
                 buys = [t for t in self.store.trades_for_user(address, int(since), fees=True)
-                        if t.is_buy and t.mint == mint and bot_tape_buy(t, run_marks)]  # fmt: skip
+                        if t.is_buy and t.mint == mint and bot_tape_buy(t, run_marks)
+                        and (int(t.slot), int(t.pos)) > last_sale]  # fmt: skip
                 if not buys or not copied:
                     return None
                 out: set[str] = set()
+                qs = ",".join("?" * len(copied))
                 for t in buys:
                     lead = classify_trade(self.store, t, set(copied), None, mates=mates).get("wallet_copied")
                     lead = lead or next((c.get("wallet") for c in copies if c.get("sig") == t.sig), None)
                     if not lead:
                         return None
                     out.add(str(lead))
+                    # every copied wallet that bought it just before our buy: the nearest one need not be the one it
+                    # copied (two copied wallets in the block before ours)
+                    near = self.store._q(f"SELECT DISTINCT user FROM trades WHERE mint=? AND is_buy=1 AND user IN ({qs}) "
+                                         "AND ts>=? AND (slot<? OR (slot=? AND pos<?))",
+                                         (mint, *copied, int(t.ts - LEAD_WINDOW_SECS), int(t.slot), int(t.slot),
+                                          int(t.pos)))  # fmt: skip
+                    out |= {str(r[0]) for r in near}
                 return out
             except Exception:  # noqa: BLE001 - not placed: the sniper that bought it cannot be told
                 return None
@@ -1431,8 +1452,15 @@ class Service:
             if not waiting:
                 return
             maybe: set[str] = set()  # the snipers that may hold a held coin
+            try:
+                mine = run_tokens()[0]
+            except Exception:  # noqa: BLE001 - the tape cannot say how much of a coin is the run's: stop nothing
+                return
             for h in held:
-                leads = leaders_of(str(h.get("mint") or ""))
+                m = str(h.get("mint") or "")
+                if int(h.get("raw") or 0) > mine.get(m, 0.0) + 1:
+                    return  # the wallet holds more of it than the run's buys on the tape explain: one is not there yet
+                leads = leaders_of(m)
                 if leads is None:
                     return
                 maybe |= {i for i in ids if leads & copies_of.get(i, set())}
@@ -1486,8 +1514,11 @@ class Service:
                     held, _, _ = await sort_coins(await open_positions(), time.time())
                 # a buy on its way (the SOL left, or the tape has the buy, its coin not shown yet) is a coin: wait for
                 # it before stopping any
+                # (and for PLACE_SETTLE_SECS at least: the recorder can write a buy a few seconds late, and one paid
+                # from wrapped SOL moves no plain SOL; 22 Nov review)
                 while not held and time.time() - end_t < FRESH_HOLD_SECS and (
-                        (fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS) or unseen_buy(time.time())):  # fmt: skip
+                        time.time() - end_t < PLACE_SETTLE_SECS
+                        or (fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS) or unseen_buy(time.time())):  # fmt: skip
                     await asyncio.sleep(3.0)
                     held, _, _ = await sort_coins(await open_positions(), time.time())
             except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
@@ -1777,6 +1808,17 @@ class Service:
                     total += (int(t.quote) - int(t.fee)) / 1e9 * take / float(t.base) - fees
                     left[t.mint] -= take
             return left, last_buy, total
+
+        def run_still_holds(held_all: list[dict], now: float) -> bool:
+            """Whether the tape says the run still holds tokens of a coin the wallet holds, bought RUN_HOLD_MAX_SECS
+            ago at most: a copy into a coin the owner holds is their coin by its first buy, and the run's count of
+            its own coins sees nothing (22 Nov review). False when the tape cannot say."""
+            try:
+                left, last_buy, _total = run_tokens()
+            except Exception:  # noqa: BLE001 - the tape cannot say: the run's count of its coins alone, as before
+                return False
+            shown = {str(h["mint"]) for h in held_all if h.get("mint")}
+            return any(n > 0 and m in shown and now - last_buy.get(m, now) < RUN_HOLD_MAX_SECS for m, n in left.items())
 
         def _run_result(held_all: list[dict], now: float) -> float | None:
             left, last_buy, total = run_tokens()
@@ -2319,6 +2361,8 @@ class Service:
                     # the tape has a buy of the run's whose coin no reading has shown yet (one paid from wrapped SOL
                     # moves no plain SOL): its sniper holds it, and a re-arm would stop it (22 Nov review)
                     continue
+                if run_still_holds(held_all, time.time()):
+                    continue  # the run's own tokens of a coin the wallet holds (one the owner holds too): never re-armed
                 if empty_n < 2:
                     continue  # one reading with nothing held is no proof: a node can leave a coin out of one reply
                 if keep_plain is not None and b < float(keep_plain):  # the next copy cannot be paid in plain SOL

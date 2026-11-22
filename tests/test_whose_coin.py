@@ -214,6 +214,20 @@ def test_a_newest_transaction_the_node_cannot_serve_yet_tells_nothing(monkeypatc
     assert _whose(coins, now=NOW + CHAIN_RETRY_SECS) is None
 
 
+def test_the_chain_read_looks_past_a_run_of_failed_sends(monkeypatch):
+    """Review of 22 Nov: five newer failed sells on the coin's account hid the buy that brought it in (the chain read
+    looked at five signatures), so the run never knew the coin was its own and never sold it."""
+
+    class Failing(_Rpc):
+        async def get_signatures(self, address, limit=1000, **_kw):
+            self.reads += 1
+            failed = [{"signature": f"fail{k}", "err": {"InstructionError": [3, "Custom"]}} for k in range(6)]
+            return (failed + [{"signature": s, "err": None} for s in self.txs])[:limit]
+
+    rpc = Failing({"ours": _tx("ours", W, 1_000_000, 0, 1_000_000)})
+    assert _whose(RunCoins(Store(":memory:"), rpc, W, RUN)) == "ours"
+
+
 def test_a_coin_with_no_token_account_known_waits_for_the_tape():
     store = Store(":memory:")
     coins = RunCoins(store, _Rpc({"buy": _tx("buy", W, 6121, 0, 1_000_000)}), W, RUN)

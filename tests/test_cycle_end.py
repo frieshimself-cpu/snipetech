@@ -394,7 +394,56 @@ def test_no_rearm_while_a_buy_of_the_runs_is_on_its_way(monkeypatch):
     def pay(i):
         return _payloads() | {"ctbotWallets": [{"address": LEAD_A if i == A else LEAD_B}]}
 
-    rep, client = _run(monkeypatch, lambda now: 10.0, coins=lambda now: _coin() if T0 + 140 <= now < T0 + 200 else [],
-                       payload=pay, tape=[_buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0),
-                                          _buy(T0 + 100, W6, 1.0, pos=1)], rearm_after=1800, minutes=5)  # fmt: skip
+    _rep, client = _run(monkeypatch, lambda now: 10.0, coins=lambda now: _coin() if T0 + 140 <= now < T0 + 200 else [],
+                        payload=pay, tape=[_buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0),
+                                           _buy(T0 + 100, W6, 1.0, pos=1)], rearm_after=1800, minutes=5)  # fmt: skip
     assert not [t for kind, _i, t in client.timed if kind in ("start", "stop") and T0 + 100 < t < T0 + 140]
+
+
+def test_a_coin_two_copied_wallets_bought_just_before_us_keeps_both_snipers(monkeypatch):
+    """Review of 22 Nov: the end placed our buy behind the nearest copied buy only. LEAD_A and LEAD_B both bought M1
+    in the block before our buy, and our buy was A's copy of LEAD_A: placed behind LEAD_B, it was put down to B, and A
+    was stopped holding it. Every copied wallet that bought the coin just before our buy counts."""
+    extra = [_buy(T0 + 99, LEAD_B, 3.0, priority=50_000, tip=0, pos=2)]  # LEAD_B after LEAD_A, before our buy
+    _rep, client = _two_leaders(monkeypatch, lambda now: _coin() if now >= T0 + 102 else [], stop_at=T0 + 110,
+                                spent=lambda i, now, last_start: False, extra=extra)  # fmt: skip
+    assert not _stops(client, A) and not _stops(client, B)
+
+
+def test_an_end_right_after_a_buy_the_tape_writes_late_stops_nothing(monkeypatch):
+    """Review of 22 Nov: the end read the wallet empty and asked the tape once; a buy paid from wrapped SOL (no fall
+    of the plain SOL) that the recorder wrote a few seconds late was not there yet, and the end stopped the sniper whose
+    coin was on its way. The end reads for PLACE_SETTLE_SECS at least before it calls the wallet empty."""
+    from tests.test_cycle_floor import _run
+
+    def pay(i):
+        return _payloads() | {"ctbotWallets": [{"address": LEAD_A if i == A else LEAD_B}]}
+
+    late = [(T0 + 108, _buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0)), (T0 + 108, _buy(T0 + 100, W6, 1.0, pos=1))]
+    rep, client = _run(monkeypatch, lambda now: 10.0, coins=lambda now: _coin() if T0 + 113 <= now < T0 + 400 else [],
+                       payload=pay, tape=late, stop_at=T0 + 101, minutes=5)  # fmt: skip
+    assert not _stops(client, A, since=T0 + 100) and "a coin is held" in rep["reason"]
+
+
+def test_a_coin_bought_again_by_the_other_sniper_is_not_placed_by_the_old_buy(monkeypatch):
+    """Review of 22 Nov: A copied LEAD_A into M1 at 150 s and sold it at 162 s; at 400 s B copied LEAD_B into M1
+    again, and the recorder wrote B's buy 9 s late. The end at 405 s placed M1 by A's old buy and stopped B, which held
+    it. Only buys since the wallet's last sale of the coin place it, and a holding the tape's buys do not explain yet
+    stops nobody."""
+    from tests.test_cycle_floor import _run
+
+    def pay(i):
+        return _payloads() | {"ctbotWallets": [{"address": LEAD_A if i == A else LEAD_B}]}
+
+    from dataclasses import replace
+
+    sale = replace(_buy(T0 + 162, W6, 1.0, pos=0), is_buy=False)
+    tape = [_buy(T0 + 149, LEAD_A, 3.0, priority=50_000, tip=0), _buy(T0 + 150, W6, 1.0, pos=1), sale,
+            _buy(T0 + 399, LEAD_B, 3.0, priority=50_000, tip=0), (T0 + 409, _buy(T0 + 400, W6, 1.0, pos=1))]  # fmt: skip
+
+    def coins(now):
+        return _coin() if (T0 + 152 <= now < T0 + 162) or now >= T0 + 402 else []
+
+    _rep, client = _run(monkeypatch, lambda now: 10.0, coins=coins, payload=pay, tape=tape, stop_at=T0 + 405,
+                        minutes=10)  # fmt: skip
+    assert not _stops(client, B, since=T0 + 400)

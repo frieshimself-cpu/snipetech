@@ -27,7 +27,8 @@ SWEEP_FEES = (1_000_000, 0)
 # A coin's chain read (RunCoins: the tape has no buy of it) is tried at most this often while it says nothing.
 CHAIN_RETRY_SECS = 30.0
 # how many of a token account's newest transactions the chain read looks through for the one that brought the coin in
-CHAIN_SIGS = 5
+# (failed ones are skipped unread: five newer failed sells hid the buy behind them, 22 Nov review)
+CHAIN_SIGS = 20
 # one chain read's limit: an RPC call retries for minutes on a refusal (solana/rpc.py), and the runner's whole reading
 # waited on it (22 Nov audit, finding 10). Past it nothing is told yet, and it is read again CHAIN_RETRY_SECS later.
 CHAIN_READ_SECS = 20.0
