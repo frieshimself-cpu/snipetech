@@ -635,7 +635,9 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             snap.bot_cash = round(sum(cash), 9)
             counted |= {f"{s}:{e}": int(ts) for s, e, ts, *_rest in new}
             counted |= {f"{f['sig']}:chain": int(f["ts"] or 0) for f in off}
-            snap.counted_from = max(start, now - FILLS_LOOKBACK_SECS)
+            # while the tape is behind the wallet the window stays: a recorder that stood still replays what it missed
+            # with its block time, hours back after a long stall, and a window moved on by the hour counted none of it
+            snap.counted_from = start if snap.tape_behind else max(start, now - FILLS_LOOKBACK_SECS)
             snap.counted = {k: ts for k, ts in counted.items() if ts > snap.counted_from}
         else:  # nothing read: the next round reads from the same place
             snap.counted, snap.counted_from = counted, start

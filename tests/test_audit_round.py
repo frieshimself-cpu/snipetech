@@ -765,3 +765,24 @@ def test_review_a_copy_the_tape_stopped_pricing_pages_no_whole_move(book):
     d = take(st, cfg, paths, c, 3700.0, 6.797, [])
     lines = equity_lines(paths, d, c, 3700.0)
     assert len(lines) == 1 and "-1.203 SOL of it by the bot's own" in lines[0], lines
+
+
+def test_review_a_tape_stall_longer_than_the_lookback_loses_no_trade(book):
+    """The window of the wallet's trades moved on by the hour whatever the tape had written: the recorder stood still
+    for two hours while the bot sold its copy, then replayed the sale with its block time, and no round read back that
+    far. The sale was counted by none and the coin's whole worth paged as the bot's loss. While the tape is behind the
+    wallet the window stays where it is."""
+    st, cfg, paths = book
+    trade(st, "buy1", 1000, COIN, True, 1.0, BOT_BUY_FEES)
+    tick(st, 1095)
+    a = take_rpc(st, cfg, paths, None, 1100.4, Rpc(4_000_000_000, {COIN: 1_000_000_000}, [sig("buy1", 1000)]))
+    sigs = [sig("sell1", 1500), sig("buy1", 1000)]
+    prev = a
+    for t in (2000.0, 2900.0, 3800.0, 4700.0, 5600.0, 6500.0, 7400.0, 8300.0):  # the recorder writes nothing
+        prev = take_rpc(st, cfg, paths, prev, t, Rpc(5_000_000_000, {}, sigs))
+        assert prev.tape_behind and not bot_lines(paths, prev, prev, t)
+    trade(st, "sell1", 1500, COIN, False, 1.0, BOT_SELL_FEES)  # replayed
+    tick(st, 9195)
+    z = take_rpc(st, cfg, paths, prev, 9200.0, Rpc(5_000_000_000, {}, sigs))
+    assert z.bot_cash == pytest.approx(0.996995) and not bot_lines(paths, z, prev, 9200.0)
+    assert z.counted_from == pytest.approx(9200.0 - 3600)  # with the tape current again the window moves on
