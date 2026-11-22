@@ -1,8 +1,8 @@
 # The live recipe (forward-tested on paper, 2026-11-05)
 
-All numbers are paper trades on market data recorded **after** each strategy was frozen, simulated at the
-landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
-0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
+The log of every live test, newest first: each entry's fills are live, with the place each copy stood and what it
+paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every
+number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
 ## The 1 SOL day behind Gake Side and Cooker: ENDED 22 Nov, nothing armed since 02:58 (runner 20261122-015426-5c79d7 and its restarts; written before it started)
 

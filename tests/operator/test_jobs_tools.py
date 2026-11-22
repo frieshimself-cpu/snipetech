@@ -1433,6 +1433,25 @@ def test_the_oktech_role_reads_the_oktech_documents_and_nothing_else_of_the_chec
     assert "docs/oktech-playbook.md" in _help(read) and "docs/oktech" not in _help(tools()["read_file"])
 
 
+def test_the_exit_analyst_reads_the_newest_entries_of_the_live_log_when_it_is_too_long(rolebox, tmp_path):
+    """docs/live-recipe.md is the log of every live test, newest first, and the exit analyst reads it for the live
+    exits. read_file keeps 200,000 characters of a longer file, the last ones: the audit of 22 Nov found the log at
+    187,643, so a few more live tests later the exit analyst would have read only the oldest entries. Of a log that is
+    newest first it keeps the start, and says where it was cut."""
+    tools, _, _ = rolebox
+    _checkout(tmp_path)
+    entry = "## A live test\n\n" + "fill " * 200 + "\n\n"
+    text = "# The live recipe\n\nNEWEST ENTRY\n\n" + entry * 400 + "OLDEST ENTRY\n"
+    assert len(text) > 200_000
+    (tmp_path / "docs" / "live-recipe.md").write_text(text)
+    out = _call(tools("exits")["read_file"], path="docs/live-recipe.md")
+    assert out.startswith("# The live recipe\n\nNEWEST ENTRY") and "OLDEST ENTRY" not in out
+    assert len(out) <= 200_400 and "newest first" in out.splitlines()[-1] and f"{len(text):,}" in out.splitlines()[-1]
+    small = "# The live recipe\n\nNEWEST ENTRY\n"
+    (tmp_path / "docs" / "live-recipe.md").write_text(small)
+    assert _call(tools("exits")["read_file"], path="docs/live-recipe.md") == small  # a short one is read whole
+
+
 def test_each_command_is_explained_to_the_roles_that_may_run_it_and_no_other(rolebox):
     """A role's start_job explains its own commands and no other role's: a shorter text is a cheaper turn, and a role
     that is not told about a lab does not ask for one."""

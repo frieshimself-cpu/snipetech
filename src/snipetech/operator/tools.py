@@ -40,6 +40,7 @@ NOTE_CHARS = 700
 # a role's turn open once when a write's answer holds them, so the model may shorten the text or let it stand.
 CUT_NOTE = "was cut at"
 RESEARCH_PREFIX = "docs/research/"  # how read_file names a report of the research rounds, in the checkout
+READ_FILE_CHARS = 200_000  # what read_file gives of a longer file: its end, or the start of one written newest first
 
 
 def _iso(ts: float) -> str:
@@ -1534,7 +1535,12 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         text = p.read_text(errors="replace")
         if int(tail or 0) > 0:
             text = "\n".join(text.splitlines()[-int(tail) :])
-        return redact(text if len(text) <= 200_000 else text[-200_000:])
+        if len(text) > READ_FILE_CHARS and str(path) in roles.NEWEST_FIRST:  # its newest entries, cut at a line's end
+            head = text[:READ_FILE_CHARS]
+            head = head[: head.rfind("\n") + 1] or head
+            return redact(f"{head}[cut here: the first {len(head):,} of {len(text):,} characters; the file is newest "
+                          "first, so what is left out is its oldest entries]")  # fmt: skip
+        return redact(text if len(text) <= READ_FILE_CHARS else text[-READ_FILE_CHARS:])
 
     @beta_async_tool(description=SQL_DESCRIPTION + sql_layout())
     async def sql(query: str) -> str:
