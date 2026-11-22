@@ -236,6 +236,9 @@ def _pick_bid(rows: list[dict], lo: float, hi: float, what: str) -> tuple[float,
     tested = [t for t in tests if t["n_high"] >= MIN_FILLS]
     if tested:
         t = tested[0]
+        if t["metric"] is None:  # no landing on record to compare (a sale's never is: only buys are placed)
+            return lo, (f"the minimum: {t['n_high']} fills at {t['tip']:g} and {t['n_low']} at {lo:g} carry no landing "
+                        "to compare"), ev  # fmt: skip
         return lo, (f"the minimum: {t['n_high']} fills at {t['tip']:g} landed no earlier than {t['n_low']} at {lo:g} "
                     f"({t['metric']} {t['mean_high']} vs {t['mean_low']}, z {t['z']})"), ev  # fmt: skip
     t = thin[0]

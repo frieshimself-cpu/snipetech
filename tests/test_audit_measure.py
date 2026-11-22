@@ -555,3 +555,30 @@ def test_measure_5_the_exit_that_ran_is_replayed_and_compared(tmp_path):
         assert st.fill(buy["sig"])["exit_name"] == "hold12" and st.fill(sale.sig)["exit_name"] == "hold12"
     finally:
         st.close()
+
+
+# -- measure#4: the fee policy survives a sell tip base of 0.001 -------------------------------------------------------
+
+
+def _fee_fills(tips):
+    rows = []
+    for k, tip in enumerate(tips):
+        rows.append({"sig": f"b{k}", "side": "buy", "wallet_copied": LEAD, "tip_lamports": 2_000_000,
+                     "trades_behind": 2, "price_gap_pct": 10.0})  # fmt: skip
+        rows.append({"sig": f"s{k}", "side": "sell", "buy_sig": f"b{k}", "tip_lamports": tip})
+    return rows
+
+
+def test_measure_4_the_sell_tip_choice_never_raises_on_sales_that_carry_no_landing():
+    """measure#4: with [oktech] sell_tip_sol at 0.001 (the post-mortem's own lever) and 10+ copy sales at each tip,
+    fees._pick_bid worded a tested band's mean_high / mean_low / z, which sales never carry (no landing is measured on
+    a sale): KeyError 'mean_high' in every copylist of that leader and in read_fee_policy."""
+    from snipetech.fees import choose, explain
+
+    cfg = Config()
+    cfg.oktech.sell_tip_sol = 0.001
+    fills = _fee_fills([0] * 5 + [1_000_000] * 5 + [2_000_000] * 10)
+    choice = choose(cfg, "copy", leader=LEAD, fills=fills)
+    assert choice.sell_tip == pytest.approx(0.001)
+    assert "no landing" in choice.why["sell_tip"]
+    assert explain(cfg, fills, [LEAD])["copy_leaders"][0]["sell_tip"] == pytest.approx(0.001)
