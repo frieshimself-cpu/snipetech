@@ -280,18 +280,54 @@ def trade_cash(is_buy, quote, fee, priority, tip) -> float:
     return (-(int(quote) + fees) if is_buy else int(quote) - fees) / 1e9
 
 
-def mark_ours(store, fills: list[dict]) -> list[dict]:
-    """Each of the wallet's trades with `ours`: whether the bot made it, by the fees our snipers and the run's own
-    sale pay (measure/ours.py); unknown fees, or no sniper on record, count as the bot's. The owner trades by hand in
-    this wallet too."""
+def _coin_whose(store, wallet: str, sale: dict, marks: dict[str, frozenset],
+                held_before: dict[str, dict]) -> str | None:  # fmt: skip
+    """Whose the coin a sale sells is: as the round before held it (its `whose`), else by the wallet's newest buy of it
+    before the sale, on the tape (its fees) or in the measure stage's fills (measure/ours.bot_buy); None when nothing
+    tells."""
+    from ..measure.ours import _paid, bot_buy
+
+    mint = str(sale.get("mint") or "")
+    h = held_before.get(mint) or {}
+    if h.get("whose") in ("ours", "owner"):
+        return h["whose"]
+    if "whose" not in h and h.get("ours") is False:  # marked before `whose`: the tape had said the owner's
+        return "owner"
+    try:
+        rows = store._q("SELECT priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND (slot<? OR (slot=? "
+                        "AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1",
+                        (wallet, mint, sale.get("slot", 0), sale.get("slot", 0), sale.get("pos", 0)))  # fmt: skip
+        if rows:
+            return "owner" if _paid(rows[0][0], rows[0][1], marks["buy"]) is False else "ours"
+        rows = store._q("SELECT sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills WHERE wallet=? "
+                        "AND mint=? AND side='buy' AND ts<=? ORDER BY ts DESC LIMIT 1",
+                        (wallet, mint, int(sale.get("ts") or 0)))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not readable now: the sale's own fees tell
+        return None
+    if rows:
+        row = dict(zip(("sniper_id", "priority_lamports", "tip_lamports", "wallet_copied"), rows[0], strict=True))
+        return "ours" if bot_buy(row, marks) else "owner"
+    return None
+
+
+def mark_ours(store, fills: list[dict], prev: Snapshot | None = None, wallet: str = "") -> list[dict]:
+    """Each of the wallet's trades with `ours`: whether the bot made it. A buy by its fees: those our snipers pay
+    (measure/ours.py); unknown fees, or no sniper on record, count as the bot's. A sale goes with the coin it sells
+    (`_coin_whose`: as the round before held it, else by the wallet's buy of it) and only when nothing tells by its own
+    fees (a sniper's, or the run's own sweep): the owner sells the bot's stuck coin by hand as the watch tells them to,
+    and /sell pays the sweep's fees on the owner's own coin (audit 22 Nov, round#2). The owner trades by hand in this
+    wallet too. `slot` and `pos` (where a sale is on the tape) are read here and not kept."""
     from ..measure.ours import _paid, fee_marks
 
     marks = fee_marks(store)
+    held_before = {str(h["mint"]): h for h in (prev.held if prev is not None else None) or [] if h.get("mint")}
     out = []
     for f in fills:
         side = "buy" if f.get("side") == "buy" else "sell"
         paid = _paid(f.get("priority"), f.get("tip"), marks[side]) if marks[side] else None
-        out.append({k: v for k, v in f.items() if k not in ("priority", "tip")} | {"ours": paid is not False})
+        whose = _coin_whose(store, wallet, f, marks, held_before) if side == "sell" and marks["buy"] else None
+        ours = whose == "ours" if whose is not None else paid is not False
+        out.append({k: v for k, v in f.items() if k not in ("priority", "tip", "slot", "pos")} | {"ours": ours})
     return out
 
 
@@ -438,12 +474,12 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
             snap.failed_tx_1h, snap.ok_tx_1h = await transaction_counts(svc, wallet, now)
         try:
-            rows = svc.store._q("select ts, mint, is_buy, quote, priority, tip, fee from trades where user=? and ts>? "
-                                "order by ts", (wallet, since))  # fmt: skip
+            rows = svc.store._q("select ts, mint, is_buy, quote, priority, tip, fee, slot, pos from trades where user=? "
+                                "and ts>? order by ts", (wallet, since))  # fmt: skip
             snap.fills = mark_ours(svc.store, [
                 {"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4), "priority": pr,
-                 "tip": tp} for ts, m, b, q, pr, tp, _fe in rows])  # fmt: skip
-            snap.bot_cash = round(sum(trade_cash(b, q, fe, pr, tp) for (_ts, _m, b, q, pr, tp, fe), f
+                 "tip": tp, "slot": sl, "pos": po} for ts, m, b, q, pr, tp, _fe, sl, po in rows], prev, wallet)  # fmt: skip
+            snap.bot_cash = round(sum(trade_cash(b, q, fe, pr, tp) for (_ts, _m, b, q, pr, tp, fe, _sl, _po), f
                                       in zip(rows, snap.fills, strict=True) if f.get("ours", True)), 9)  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")

@@ -353,3 +353,58 @@ def test_server1_a_stray_counts_as_unmanaged_only_with_a_buy_of_the_bots_on_reco
     copy = coin(SWAP, 0.05) | {"since": now - 600, "whose": "ours", "ours": True}  # its buy is in the fills
     s = _held_snap(now, [copy])
     assert _held_reasons(paths, s, s, now) == ["unmanaged: 1 coin(s) nobody is selling (operator/watch.json)"]
+
+
+# -- round#2: a sale is the bot's when the coin it sells is ------------------------------------------------------------
+
+SWEEP = (1_000_000, 0)  # what /sell (solana/sell.py) pays on any coin
+
+
+def test_round2_the_owner_selling_a_bot_coin_by_hand_is_no_bot_loss(book):
+    """The watch and /sell's reply tell the owner to sell a stuck coin of the bot's by hand. The owner's terminal pays its
+    own fees, so the sale read as the owner's: its SOL left out, the bot's coin gone, and the coin's whole worth paged as
+    the bot's loss. A sale goes with its coin."""
+    st, cfg, paths = book
+    trade(st, "buy", 1000, COIN, True, 2.0, BOT_BUY_FEES)
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 1.0, [coin(COIN, 2.0)])
+    trade(st, "hand", 1500, COIN, False, 2.0, (1_000_000, 22_000_000))
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, 3.0, [])
+    assert [f["ours"] for f in b.fills] == [True] and not bot_lines(paths, b, a, 2000.0)
+
+
+def test_round2_sell_on_the_owners_own_coin_is_no_bot_gain(book):
+    """/sell pays the sweep's fees on any coin, which are among the bot's sale fees: selling the owner's own coin with it
+    put its SOL in the bot's result and paged a gain of the coin's whole worth."""
+    st, cfg, paths = book
+    trade(st, "hbuy", 1000, HAND, True, 2.0, OWNER_FEES)
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 1.0, [coin(HAND, 2.0)])
+    trade(st, "sweep", 1500, HAND, False, 2.0, SWEEP)
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, 3.0, [])
+    assert [f["ours"] for f in b.fills] == [False] and not bot_lines(paths, b, a, 2000.0)
+
+
+def test_round2_a_coin_bought_and_sold_between_rounds_is_told_by_its_buy(book):
+    """A round trip no snapshot saw held: the sale goes with the wallet's own buy of the coin before it (its fees), and
+    only with no buy on record with the sale's own fees."""
+    st, cfg, paths = book
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.0, 10.0, [])
+    trade(st, "b1", 1200, COIN, True, 1.0, BOT_BUY_FEES)
+    trade(st, "s1", 1300, COIN, False, 1.0, (1_000_000, 22_000_000))  # the bot's coin, sold by hand
+    trade(st, "b2", 1400, HAND, True, 1.0, OWNER_FEES)
+    trade(st, "s2", 1500, HAND, False, 1.0, SWEEP)  # the owner's coin, sold with /sell
+    trade(st, "s3", 1600, "Gone111111111111111111111111111111111111pump", False, 0.5, SWEEP)  # no buy on record
+    tick(st, 1995)
+    b = take(st, cfg, paths, a, 2000.0, 9.8, [])
+    assert {f["side"] + "@" + str(f["ts"]): f["ours"] for f in b.fills} == {
+        "buy@1200": True,
+        "sell@1300": True,
+        "buy@1400": False,
+        "sell@1500": False,
+        "sell@1600": True,
+    }
+    assert set(b.fills[0]) == {"ts", "mint", "side", "sol", "ours"}  # the fills keep their shape
