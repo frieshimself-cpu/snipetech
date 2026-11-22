@@ -256,12 +256,19 @@ class OneActor:
         holds = status == "qualified" or (status == "candidate" and bool(v.get("forward")) and v.get("gate") != GATE)
         return 0 if holds or not over else self.store.review_now(over, now)
 
-    def order(self, chunk: list[dict], rows: Mapping[str, dict], need: int) -> list[dict]:
+    def order(self, chunk: list[dict], rows: Mapping[str, dict], need: int | Mapping[str, int]) -> list[dict]:
         """The wallets of one lab in the order to judge them: as they came, unless the rule needs another. Wallets
         that cannot pass the tape gate first (a candidate that stopped passing gives up its place before the others
         are judged), then the ones that can: each actor's leader ahead of its other wallets (actors.leader on the
-        lab's own lower bounds), and a wallet that yielded last time after everything else."""
-        hopeful = [c["wallet"] for c in chunk if _may_pass(rows.get(c["wallet"]), need)]
+        lab's own lower bounds), and a wallet that yielded last time after everything else. `need`: the copies a
+        wallet needs to pass, one number for all or each wallet's own (run.own_need: 20 without a strong history; by
+        the 10 a strong history needs, a place-holder without one that measured 10 to 19 was judged after its actor,
+        which yielded to it while it gave the place up: review of 22 Nov)."""
+
+        def bar(w: str) -> int:
+            return int(need[w]) if isinstance(need, Mapping) else int(need)
+
+        hopeful = [c["wallet"] for c in chunk if _may_pass(rows.get(c["wallet"]), bar(c["wallet"]))]
         if not hopeful:
             return chunk
         yielded = {w for w in hopeful if actor_block(self.store, w).get("same_as")}

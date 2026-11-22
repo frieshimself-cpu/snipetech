@@ -326,6 +326,13 @@ CHUNK = 50  # wallets one lab measures; their verdicts are written before the ne
 RUN_BUDGET_SECS = 100 * 60
 
 
+def own_need(stats: dict | None, q) -> int:
+    """The copies a wallet's verdict needs (gates.verdict_for): `min_n_tape_strong` with a strong history, else
+    `min_n_tape` (20 on 22 Nov, with no history source on). Its history is known before the lab."""
+    _, strong, _ = history_gate(normalise_history(stats), q)
+    return q.min_n_tape_strong if strong else q.min_n_tape
+
+
 def _lab_decides(candidate: dict) -> bool:
     """A wallet the count before the lab never decides for: one that is qualified, carries a forward check or was
     kept armed. Its review, its forward check and whether its sniper stays are the lab's to say."""
@@ -508,8 +515,7 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         """One measured wallet's verdict, written."""
         w = c["wallet"]
         hist = normalise_history(c["stats"])
-        _, strong, _ = history_gate(hist, q_eff)
-        want = q_eff.min_n_tape_strong if strong else q_eff.min_n_tape  # the copies this wallet needs (verdict_for)
+        want = own_need(c["stats"], q_eff)  # the copies this wallet needs (verdict_for)
         # The readings a verdict needs, made only where they can change it (11 Nov: all four ran for every wallet of a
         # run, the crowding read with one read per coin the wallet ever bought, which is where a run's two hours
         # went). With fewer copies than any wallet needs the sample gate decides alone; the crowding gate is only
@@ -611,7 +617,9 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
                 rows = {r["wallet"]: r for r in runner([c["wallet"] for c in chunk], landing) if r.get("wallet")}
                 t1 = time.monotonic()
                 one.lab_mates([c["wallet"] for c in chunk], getattr(runner, "mates", None))
-                for c in one.order(chunk, rows, need):  # as they came, unless two of them are one actor
+                # as they came, unless two of them are one actor; the ones that cannot pass by their own bar first
+                bars = {c["wallet"]: own_need(c["stats"], q_eff) for c in chunk}
+                for c in one.order(chunk, rows, bars):
                     judge(c, rows.get(c["wallet"]))
                 secs["lab"] += t1 - t0
                 secs["gates"] += time.monotonic() - t1

@@ -773,3 +773,33 @@ def test_a_banned_wallet_holds_no_place_for_its_actor(tmp_path):
         assert _latest(st)[LEAD]["computed_at"] == old  # the banned wallet's verdict is left as it was
     finally:
         st.close()
+
+
+def test_a_place_holder_short_of_its_own_bar_gives_its_place_up_before_its_actor_is_judged(tmp_path):
+    """Review of 22 Nov (qualify#3): the wallets of a lab that cannot pass are judged first, so a place-holder that
+    stops passing gives its place up before the other wallets of its actor are judged; and "cannot pass" counted the
+    10 copies a strong history needs for every wallet, while a wallet without one needs 20 (gates.verdict_for). LEAD,
+    under its forward test with no history, measures 15 copies: it cannot pass, but it was judged after TAIL, the
+    block's leader, and TAIL yielded to it ("the actor is already under test with it") for a day while LEAD gave the
+    place up. Judged by its own bar, LEAD goes first and TAIL starts its own forward check."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, pairs=((TAIL, LEAD),), solo=(), coins=20)  # TAIL is one place ahead in the block on 15 of 20 coins
+        record_copying(st, set(), NOW - 120)
+        picked = NOW - 30 * 3600
+        st.upsert_candidate(LEAD, "coinfirst", {}, picked - 3600)  # no history from any source: it needs 20 copies
+        st.put_verdict({"wallet": LEAD, "computed_at": picked, "landing_pos": "+3x", "n_tape": 30, "mean_sol": 0.02,
+                        "lower_sol": 0.006, "score": 0.006, "status": "candidate", "next_review": NOW - 60,
+                        "copy_plan": PLAN, "reasons": ["forward pending: 3 later copies"],
+                        "forward": {"picked_at": picked, "status": "pending", "n": 3, "mean": 0.01, "lower": -0.01,
+                                    "first_picked_at": picked, "tape_end": picked}})  # fmt: skip
+        st.upsert_candidate(TAIL, "coinfirst", {}, NOW - 3600)
+        rows = {LEAD: dict(_row(LEAD), n=15), TAIL: _row(TAIL)}
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda ws, pos: [rows[w] for w in ws])
+        by = _latest(st)
+        assert by[LEAD]["status"] == "candidate" and not by[LEAD]["forward"]  # its pick is over
+        assert "n 15 < 20 at +3x" in by[LEAD]["reasons"]
+        assert _same_as(by[TAIL]) is None, by[TAIL]["reasons"]
+        assert by[TAIL]["forward"]["status"] == "pending"  # its own forward check, from this look
+    finally:
+        st.close()
