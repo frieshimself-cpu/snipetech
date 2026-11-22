@@ -25,13 +25,15 @@ first on the server's recording and only then run live in capped batches.
   place means landing right behind many wallets at once, as 6Z91 does (+52 to +105 a day across hundreds). That needs
   a sender of our own; whether one reaches the next position, and at what fee, is not measured (OKTech never has). The
   decision to build one is the owner's; I605 is the next fact for it.
-- **Since 04:45.** Deployed 4881ff6 at 05:30 (everything of the list below, and the kinds of copy). Pushed after
-  green suites, waiting for a deploy: 067e563 (the runner survives a failed start, a lost answer, an unsent sale and a
+- **Since 04:45.** Deployed 4881ff6 at 05:30 (everything of the list below, and the kinds of copy), then 394a24a at
+  06:15 and 6d00b48 at 06:18, which carry: 067e563 (the runner survives a failed start, a lost answer, an unsent sale and a
   hung read; --sweep-after needs the selling key to be the run's wallet), 67ba989 (a run's end never stops a sniper
   that may hold a coin: OKTech reads a sniper that bought "running"), 02ff3c7 (whose a buy is: the chain read knows the
   learned tip accounts; a copied wallet on a fill counts only with our priority), 6c5bf34 (`paper freeze --exit`: a
-  forward record with the exit the live sniper runs; the tester's I597 freezes failed for want of it). The review of
-  c54388d..997a010 is still checking its findings, most of them about the floor while the owner trades by hand.
+  forward record with the exit the live sniper runs; the tester's I597 freezes failed for want of it; the tester is
+  told, I607) and 6d00b48 (a second stop signal no longer cancels the runner's stop on the way out: `remote kill`
+  sends two, and the snipers stayed armed). The review of c54388d..997a010 is still checking its findings, most of
+  them about the floor while the owner trades by hand.
 
 ## 22 Nov, 04:45 UTC: checked against all our data, 100 SOL a day is out of reach through OKTech
 
