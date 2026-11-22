@@ -1023,6 +1023,25 @@ def test_scout_cannot_start_a_lab_or_a_freeze(jobs):
     assert jobs.start(["place-bids", "--each", "--hours", "48", "--json"], role="scout", idea=idea)["id"]
 
 
+@pytest.mark.parametrize("role", ["tester", None])
+def test_no_agent_starts_a_freeze_that_drops_every_rule_under_forward_test(jobs, role):
+    """Audit of 22 Nov (agents#1): `paper freeze --replace` writes the new rules alone. Every rule under forward test
+    (132 on the server), its record and the refuted holds that keep a rule from being frozen again for 7 days were
+    gone, and not kept as superseded. No code path passes it; the tester, the analyst and the operator could. The
+    command line reads a flag before the action word too, so the refusal reads what it makes of the words, and a
+    `paper rescore` with its flags first is refused as one written the usual way always was."""
+    idea = _queue(jobs, "tester") if role else None
+    for argv in (["paper", "freeze", "--replace", "--trigger", KOL, "--hours", "24"],
+                 ["paper", "--replace", "freeze", "--trigger", KOL],
+                 ["paper", "freeze", "--trigger", KOL, "--replace"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="--replace"):
+            jobs.start(argv, role=role, idea=idea)
+    with pytest.raises(PermissionError, match="paper rescore is not an agent's job"):
+        jobs.start(["paper", "--min-buy", "0.5", "rescore"], role=role, idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["paper", "freeze", "--trigger", KOL, "--hours", "24"], role=role, idea=idea)["id"]  # beside them
+
+
 def test_tester_cannot_start_a_wallet_study(jobs):
     idea = _queue(jobs, "tester")
     for argv in (["winners", "--json"], ["follow", "--kols"], ["label", "W", "why", "--kind", "cand"],

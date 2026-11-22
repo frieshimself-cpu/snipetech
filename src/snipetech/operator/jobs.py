@@ -286,6 +286,27 @@ class OperatorJobs:
                 raise PermissionError(f"--trades refused, no job started: {exc}") from None
 
     @staticmethod
+    def _check_paper(argv: list[str]) -> None:
+        """What of the paper test is never an agent's, read the way the command line reads the words: a flag may come
+        before the action word (["paper", "--replace", "freeze", ...] is a freeze that replaces). `paper rescore`
+        rewrites the kept trades of frozen rules, run by hand after a model changed. `--replace` makes a freeze write
+        the rules it freezes alone: every rule under forward test was dropped, with its record and the 7-day hold of a
+        refuted one, and not kept as superseded (audit of 22 Nov: 132 rules on the server; no code path gives it)."""
+        if argv[:1] != ["paper"]:
+            return
+        words = [str(a).strip() for a in argv]
+        parsed = _parsed(tuple(words))
+        said = json.loads(parsed) if parsed else {}
+        if said.get("action") == "rescore" or words[:2] == ["paper", "rescore"]:
+            raise PermissionError("paper rescore is not an agent's job: it rewrites kept paper records. Say in an idea "
+                                  "which rule needs pricing again and why")  # fmt: skip
+        if said.get("replace") or any(w == "--replace" or w.startswith("--replace=") for w in words):
+            raise PermissionError("paper --replace is not an agent's: a freeze with it keeps only the rules it freezes "
+                                  "and drops every rule under forward test, its record and the 7-day hold of a refuted "
+                                  "rule, without keeping them as superseded. Freeze beside them: the same command "
+                                  "without --replace")  # fmt: skip
+
+    @staticmethod
     def _check_backfill(argv: list[str]) -> None:
         """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS, leaves out stretches above
         AGENT_BACKFILL_STRETCH_TXS at the most, and never lifts the month's limit (the owner's: `--month-credits`).
@@ -490,9 +511,7 @@ class OperatorJobs:
             self._check_role(argv, role, idea)
         if action:
             self._check_backfill(argv)
-        if argv[:2] == ["paper", "rescore"]:  # it rewrites the kept trades of frozen rules: run by hand after a model
-            raise PermissionError("paper rescore is not an agent's job: it rewrites kept paper records. Say in an idea "
-                                  "which rule needs pricing again and why")  # fmt: skip
+        self._check_paper(argv)
         self._check_paths(argv)
         self._check_triggers(argv)
         self._check_hunt_landing(argv)
