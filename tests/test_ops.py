@@ -234,6 +234,40 @@ def test_http_roundtrip(env):
         server.shutdown()
 
 
+def test_an_unsigned_or_stalled_post_holds_no_server_thread(env, monkeypatch):
+    """22 Nov audit (ops#10): before any signature was looked at, a POST's whole body (up to 6 MB) was read with no time
+    limit: an unsigned request that sent its body slowly held a server thread as long as it liked, and many of them
+    held memory in the ops service's cgroup, which the live runner jobs share. A request with no signature, or none
+    that could be one, is refused at once and its body never read; a body that does not come in time is cut off."""
+    import base64
+    import socket
+
+    ops, _key = env
+    monkeypatch.setattr(O, "BODY_SECS", 1.0)
+    server = O.make_server(ops, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6000000\r\n"
+    try:
+        for sig in (b"", b"X-Ops-Signature: not-a-signature\r\n"):
+            s = socket.create_connection(server.server_address)
+            s.sendall(head + sig + b"\r\n" + b"x" * 1000)  # and then nothing more
+            s.settimeout(3)
+            assert s.recv(200).split(b"\r\n")[0].endswith(b" 401 Unauthorized")
+            s.close()
+        s = socket.create_connection(server.server_address)  # one that could be signed: its body is waited for
+        s.sendall(head + b"X-Ops-Signature: " + base64.b64encode(b"\0" * 64) + b"\r\n\r\n" + b"x" * 1000)
+        s.settimeout(5)
+        t0 = time.monotonic()
+        assert s.recv(200) == b"" and time.monotonic() - t0 < 4  # cut off at BODY_SECS, not left to wait
+        s.close()
+        assert server.RequestHandlerClass.timeout == O.REQUEST_SECS
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        assert O.call(url, _key, "status")["branch"] == "main"
+        assert O.call(url, _key, "write", name="big.txt", content="x" * (4 << 20))["bytes"] == 4 << 20  # `remote put`
+    finally:
+        server.shutdown()
+
+
 def test_prune_clips_tape_spans(tmp_path):
     from snipetech.store import Store
 

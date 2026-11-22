@@ -44,6 +44,10 @@ SKEW_SECS = 300
 # (a dot-file): a request seen before is refused after a restart too (22 Nov audit: every deploy restarts this endpoint)
 NONCES = ".ops-nonces.json"
 MAX_BODY = 6 << 20
+# 22 Nov audit: a POST's whole body was read before any signature was looked at, with no time limit. Every read and
+# write of a request waits REQUEST_SECS at most, and a body (6 MB at the most) has BODY_SECS in all
+REQUEST_SECS = 30
+BODY_SECS = 120.0
 MAX_WRITE = 5 << 20
 # `remote sql` reads the live database, and a read holds its WAL back until it ends (no checkpoint passes it, the WAL
 # cannot start over): a query is cut at this many seconds, whatever a request asks for
@@ -1024,16 +1028,41 @@ def _mem_gb() -> float | None:
 
 def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
+        timeout = REQUEST_SECS  # each read and write of the connection (the request line and headers too)
+
         def log_message(self, fmt, *args):
             pass
 
-        def _send(self, code: int, data: dict) -> None:
+        def _send(self, code: int, data: dict, close: bool = False) -> None:
             raw = json.dumps(data, default=str).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
+            if close:  # a body left unread is never taken for the next request
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(raw)
+
+        def _body(self, n: int) -> bytes | None:
+            """The body's `n` bytes, read within BODY_SECS in all; None (the connection is dropped) when they do not
+            come in time: a client that sends slowly holds no thread for longer."""
+            deadline, chunks, got = time.monotonic() + BODY_SECS, [], 0
+            try:
+                while got < n:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        return None
+                    self.connection.settimeout(min(left, REQUEST_SECS))
+                    chunk = self.rfile.read1(min(1 << 16, n - got))
+                    if not chunk:
+                        return None
+                    chunks.append(chunk)
+                    got += len(chunk)
+            except OSError:  # TimeoutError among them
+                return None
+            finally:
+                self.connection.settimeout(REQUEST_SECS)
+            return b"".join(chunks)
 
         def _dash_auth(self) -> bool:
             """HTTP basic auth, password = DASH_TOKEN (any user name). No token configured → the routes do not exist."""
@@ -1092,8 +1121,17 @@ def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> Threadin
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             if n <= 0 or n > MAX_BODY:
-                return self._send(413, {"error": "body size"})
-            body = self.rfile.read(n)
+                return self._send(413, {"error": "body size"}, close=True)
+            try:  # no signature, or none that could be one: refused before the body is read (`handle` checks it)
+                signed = len(base64.b64decode(self.headers.get("X-Ops-Signature") or "", validate=True)) == 64
+            except (binascii.Error, ValueError):
+                signed = False
+            if not signed:
+                return self._send(401, {"error": "bad signature"}, close=True)
+            body = self._body(n)
+            if body is None:
+                self.close_connection = True
+                return None
             try:
                 self._send(200, ops.handle(body, self.headers.get("X-Ops-Signature")))
             except OpsError as exc:
