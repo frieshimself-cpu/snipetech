@@ -1984,8 +1984,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         charged 0.0085 to 0.0093 SOL a transaction, twice the low bid's real cost (about 0.0044): four buys of the tip
         test at 0.035 SOL and 50 failed sends of one USDC swap had been counted in it. That was about 0.009 SOL a round
         trip too much: a rule or a wallet that failed by less than that in those two days is NOT refuted, test it again;
-        a rule frozen on 14 Nov before 18:26 (per_tx_sol 0.008495 in its record) is charged too much forward, freeze it
-        again. The labs now charge 0.0045 and say per_tx_source "estimate" until the low bid has its 30 buys of a week
+        a rule frozen in those two days (per_tx_sol 0.0062 to 0.0093 in its record) is charged too much forward:
+        freeze it again, and the freeze makes a new record of it at today's cost (again 1, an id of its own, from zero
+        trades) while the old one keeps its trades and is named under not_as_live. The labs now charge 0.0045 and say per_tx_source "estimate" until the low bid has its 30 buys of a week
         again; a bid above the low bid is charged on top with "--buy-bid" as before. The hunt {"kind": "hunt", "sol": 5,
         "window": 1, "max_buyers": 2, "dev_max": 1} at this cost on every coin, 168 h to 14 Nov 05:01 UTC (labs 7299bb
         and 346941; each half on its own best exit, so rough): at 0.2 SOL -0.002 SOL a trade over 687 test trades; at 1

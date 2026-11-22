@@ -90,3 +90,65 @@ def test_a_lab_on_a_copy_taken_before_the_freeze_starts_the_record_at_the_freeze
     paper.run(store, Config(), now=FREEZE + 7200)
     forward = _forward(store, rule["id"])
     assert forward and not forward & seen["lab"]
+
+
+# -- paper#3: a rule frozen at the doubled cost of 12-14 Nov can be frozen again at today's cost ----------------------
+# From 12 Nov 17:24 to 14 Nov 18:26 UTC the measured cost of a transaction counted four tip-test buys and one
+# incident's failed sends: every freeze charged 0.0062 to 0.0093 SOL a transaction, where one costs about 0.0045. The
+# agents are told to freeze such a rule again, and the freeze found it "already in the paper test" (or said nothing,
+# with the same exit): its record went on paying the doubled cost for good (24 running records on 22 Nov).
+DOUBLED_AT = 1_794_603_688  # 13 Nov 21:01:28 UTC: three wallet rules frozen at 0.008495 SOL a transaction
+TODAY = 1_795_347_049  # 22 Nov 11:30 UTC
+
+
+def _doubled(monkeypatch, store, **kw):
+    from tests.test_paper_one_record import COPY30, COPY_AT, KOL, _coins, _data, _freeze, _row
+
+    data = _data({KOL: _coins("k", 57)})
+    return _freeze(monkeypatch, store, data, [_row(KOL, COPY30, 0.0013, COPY_AT)], **kw)
+
+
+def test_a_rule_frozen_at_the_doubled_cost_is_frozen_again_at_todays_cost(monkeypatch):
+    store = Store(":memory:")
+    (old,) = _doubled(monkeypatch, store, now=DOUBLED_AT, per_tx_sol=0.008495)["frozen"]
+    assert paper.overcharged(old)
+    again = _doubled(monkeypatch, store, now=TODAY, per_tx_sol=0.0045)  # the agents' "freeze it again"
+    (new,) = again["frozen"]
+    assert new["per_tx_sol"] == 0.0045 and new[paper.AGAIN] == 1 and new["id"] != old["id"] == paper.sid_of(old)
+    assert new["id"] == paper.sid_of(new) and paper.live_id(new) == paper.live_id(old)  # one sniper live
+    assert not paper.overcharged(new)
+    (stale,) = again["not_as_live"]  # the old record keeps its id and trades, and says what it was charged
+    assert stale["id"] == old["id"] and "0.008495 SOL a transaction" in stale["why"]
+    row = {r["id"]: r for r in paper.report(store, Config(), TODAY)["strategies"]}[old["id"]]
+    assert "0.008495 SOL a transaction" in row["exit_note"] and not row.get("research_only")
+    assert _doubled(monkeypatch, store, now=TODAY + 60, per_tx_sol=0.0045)["frozen"] == []  # its one record again
+    store.close()
+
+
+def test_a_refuted_doubled_cost_record_holds_its_rule_only_if_it_lost_more_than_it_was_overcharged(monkeypatch):
+    """A record refuted at the doubled cost that lost by more than a round trip was overcharged (each of the four on
+    the server: 0.025 to 0.059 SOL a trade, against 0.008 to 0.010) would be refuted at today's cost too and holds its
+    rule back for the seven days like any refuted rule; one that lost by less is no refutal of its rule."""
+    for mean, held in ((-0.0301, True), (-0.004, False)):
+        store = Store(":memory:")
+        (old,) = _doubled(monkeypatch, store, now=DOUBLED_AT, per_tx_sol=0.008495)["frozen"]
+        cov = store.coverage("paper_strategies")
+        cov["strategies"][0]["refuted"] = {"at": TODAY - 86400, "trades": 1246, "mean_sol": mean}
+        store.set_coverage("paper_strategies", cov)
+        out = _doubled(monkeypatch, store, now=TODAY, per_tx_sol=0.0045)
+        if held:
+            assert out["frozen"] == [] and "not frozen again for 7 days" in out["skipped"][0]["why"], out
+            assert old["id"] in out["skipped"][0]["why"]  # held by the refuted record itself
+        else:
+            (new,) = out["frozen"]
+            assert new[paper.AGAIN] == 1 and new["per_tx_sol"] == 0.0045
+        store.close()
+
+
+def test_only_a_record_frozen_in_those_two_days_at_that_cost_counts_as_overcharged():
+    rule = {"id": "x", "trigger": {"kind": "kol", "sol": 1.0}, "per_tx_sol": 0.008495, "from_ts": DOUBLED_AT}
+    assert paper.overcharged(rule)
+    assert not paper.overcharged(rule | {"per_tx_sol": 0.0045})  # today's cost in that window (none was)
+    assert not paper.overcharged(rule | {"from_ts": 1_794_192_400, "per_tx_sol": 0.01})  # 8 Nov, a cost given by hand
+    assert not paper.overcharged(rule | {"from_ts": TODAY})  # a measured cost of today, whatever it is
+    assert not paper.overcharged(rule | {paper.FED: "dev_forward"})  # a rule another job feeds keeps its record

@@ -509,9 +509,10 @@ def _crew_reason(strategy: dict) -> str:
 
 def row_note(strategy: dict) -> str | None:
     """What a row says of a record that is not what its sniper would trade: why its exit is not the sniper's
-    (`exit_not_as_live`), and in a few words which coins it was scored on (`crew_note`); both when both."""
-    exit_why, short = exit_not_as_live(strategy), crew_note(strategy)
-    return f"{exit_why}. Also {short}" if exit_why and short else exit_why or short
+    (`exit_not_as_live`), and in a few words which coins it was scored on (`crew_note`); both when both. And of a
+    record charged the doubled cost of 12-14 Nov (`cost_note`), which no longer stands for its rule."""
+    parts = [x for x in (exit_not_as_live(strategy), crew_note(strategy), cost_note(strategy)) if x]
+    return ". Also ".join(parts) or None
 
 
 def sid_of(strategy: dict, **over) -> str:
@@ -527,6 +528,56 @@ def rule_costs(strategy: dict) -> Costs:
     (`bid_of`, paid once on every buy: a recipe's, `freeze`), none on a rule frozen without one."""
     return Costs(per_tx_lamports=float(strategy["per_tx_sol"]) * LAMPORTS,
                  entry_bid_lamports=bid_of(strategy) * LAMPORTS)  # fmt: skip
+
+
+# -- the doubled cost of 12-14 Nov 2026 (audit of 22 Nov) ---------------------------------------------------------------
+# From 12 Nov 17:24 to 14 Nov 18:26 UTC the measured cost of a transaction counted four tip-test buys at 0.035 SOL and
+# 50 failed sends of one USDC swap (qualify.run.lab_tx_cost_info): every freeze then charged 0.0062 to 0.0093 SOL a
+# transaction, where one costs about 0.0045 (what the labs charge since, qualify.run.LIVE_TX_SOL). A record frozen
+# then is charged that forward for good, about 0.004 to 0.01 SOL a round trip too much (24 running records on 22 Nov).
+# Such a record no longer stands for its rule, like one a run of other code scored in part: the same rule frozen again
+# is a new making of it (AGAIN) under an id of its own, charged what a transaction costs now, and the old record keeps
+# its id, its trades and its place. The agents were told to freeze such a rule again, and until 22 Nov the freeze
+# found it "already in the paper test".
+OVERCHARGED_FROM, OVERCHARGED_UNTIL = 1_794_504_240, 1_794_680_760  # 12 Nov 17:24 and 14 Nov 18:26 UTC
+OVERCHARGED_SOL = 0.006  # a cost a transaction at or above this, in a record frozen then, is the doubled one
+
+
+def overcharged(strategy: dict) -> bool:
+    """Whether a stored rule was frozen while the measured cost of a transaction was doubled (OVERCHARGED_FROM to
+    OVERCHARGED_UNTIL) and is charged that cost (OVERCHARGED_SOL or more) on every forward trade. A rule another job
+    feeds is none: its feeder charges its trades."""
+    if fed(strategy):
+        return False
+    try:
+        at, cost = int(strategy.get("from_ts") or 0), float(strategy.get("per_tx_sol") or 0)
+    except (TypeError, ValueError):
+        return False
+    return OVERCHARGED_FROM <= at < OVERCHARGED_UNTIL and cost >= OVERCHARGED_SOL
+
+
+def overcharge_sol(strategy: dict) -> float:
+    """SOL a round trip of a record frozen at the doubled cost is charged too much: what it pays a transaction over
+    what one costs now, on its buy and on each of its sales; 0 for any other record."""
+    if not overcharged(strategy):
+        return 0.0
+    from ..qualify.run import LIVE_TX_SOL
+
+    try:
+        sales = max(1, int((strategy.get("exit") or {}).get("sell_parts") or 1))
+    except (TypeError, ValueError):
+        sales = 1
+    return max(0.0, float(strategy["per_tx_sol"]) - LIVE_TX_SOL) * (1 + sales)
+
+
+def cost_note(strategy: dict) -> str | None:
+    """Why a record frozen at the doubled cost is no longer its rule's record, in plain words; None for any other."""
+    if not overcharged(strategy):
+        return None
+    return (f"charged {float(strategy['per_tx_sol']):g} SOL a transaction: frozen while the measured cost was doubled "
+            f"(12 Nov 17:24 to 14 Nov 18:26 UTC), about {overcharge_sol(strategy):.4f} SOL a round trip more than a "
+            "trade costs now, so its record is harsher than live. The same rule frozen again is charged today's cost, "
+            "as a record of its own")  # fmt: skip
 
 
 def copy_landing(store: Store, cfg: Config, now: float) -> str:
@@ -1319,14 +1370,19 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     records: dict[str, list[dict]] = {}  # rule -> the strategies frozen on it, oldest first
     for s in old:
         # (a rule another job feeds carries no lab trigger; a record a run of other code scored in part, OLD_CODE,
-        # no longer stands for its rule: the same rule frozen again is a new making of it, below)
-        if not fed(s) and _sells_as_live(s) and not s.get(OLD_CODE):
+        # no longer stands for its rule, nor does one charged the doubled cost of 12-14 Nov: the same rule frozen
+        # again is a new making of it, below)
+        if not fed(s) and _sells_as_live(s) and not s.get(OLD_CODE) and not overcharged(s):
             records.setdefault(_rule_of(s), []).append(s)
     # ... but once such a record is refuted (on a record that was kinder than live) it holds its rule back like any
-    # refuted record: kept for the refuted hold alone
+    # refuted record: kept for the refuted hold alone. A record charged the doubled cost was harsher than live: it
+    # holds its rule back only when it lost by more than it was overcharged (it would be refuted at today's cost too)
     spoilt: dict[str, list[dict]] = {}
     for s in old:
-        if not fed(s) and _sells_as_live(s) and s.get(OLD_CODE) and s.get("refuted"):
+        if fed(s) or not _sells_as_live(s) or not s.get("refuted"):
+            continue
+        lost = float((s.get("refuted") or {}).get("mean_sol") or 0) + overcharge_sol(s) < 0
+        if s.get(OLD_CODE) or (overcharged(s) and lost):
             spoilt.setdefault(_rule_of(s), []).append(s)
     # the rules scored without serial crews' coins whose every record is refuted, the newest within the hold: each
     # holds back its default twin (`refuted_skip_twins`: among ALL records, whatever exit they were frozen with)
@@ -1445,12 +1501,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 "coins, which lost on the one rule measured: not frozen again for "
                                 f"{RETEST_AFTER_SECS // 86400} days"})  # fmt: skip
                 continue
-        # the very strategy is stored, but a run of other code scored its record in part (OLD_CODE): this is a new
-        # making of the same rule, under an id of its own (`strategy_id`: again), with a record that starts empty
+        # the very strategy is stored, but a run of other code scored its record in part (OLD_CODE), or it is charged
+        # the doubled cost of 12-14 Nov (`overcharged`): this is a new making of the same rule, under an id of its own
+        # (`strategy_id`: again), with a record that starts empty
         again = 0
         while sid in have:
             same = next((s for s in old + new if s["id"] == sid), None)
-            if same is None or not same.get(OLD_CODE):
+            if same is None or not (same.get(OLD_CODE) or overcharged(same)):
                 break
             again += 1
             sid = strategy_id(spec, r["exit_params"], pos, lat, buy_sol, bid, asked, again)
