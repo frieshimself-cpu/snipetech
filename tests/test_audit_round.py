@@ -408,3 +408,28 @@ def test_round2_a_coin_bought_and_sold_between_rounds_is_told_by_its_buy(book):
         "sell@1600": True,
     }
     assert set(b.fills[0]) == {"ts", "mint", "side", "sol", "ours"}  # the fills keep their shape
+
+
+# -- round#11: a refused Telegram send logs no token -------------------------------------------------------------------
+
+
+def test_round11_a_refused_send_logs_no_token():
+    """httpx's error for a 4xx or 5xx names the request's URL, /bot<token>/sendMessage, and the send logged it whole:
+    book run, the strategist and `operate oktech` print their log to the unit's journal. It logs the kind and the
+    status only."""
+    import httpx
+
+    token = "123456789:AAH-fake-token-for-the-test-0123456789"
+    lines: list[str] = []
+
+    def refused(url, data):
+        httpx.Response(429, request=httpx.Request("POST", url), json={"ok": False}).raise_for_status()
+
+    assert Notifier(token, 42, post=refused, log=lines.append).send("hello") is False
+    assert lines == ["[operator] telegram send failed: HTTPStatusError (HTTP 429)"]
+
+    def down(url, data):
+        raise httpx.ConnectError(f"cannot reach {url}")
+
+    assert Notifier(token, 42, post=down, log=lines.append).send("hello") is False
+    assert lines[-1] == "[operator] telegram send failed: ConnectError" and not any(token in x for x in lines)

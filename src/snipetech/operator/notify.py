@@ -49,7 +49,10 @@ class Notifier:
                       {"chat_id": self.chat_id, "text": str(text)[:MAX_TEXT], "disable_web_page_preview": True})  # fmt: skip
             return True
         except Exception as exc:  # noqa: BLE001 - a Telegram outage must never fail a round
-            self.log(f"[operator] telegram send failed: {type(exc).__name__}: {exc}")
+            # the kind and the HTTP status only: httpx's own words name the request's URL, /bot<token>/sendMessage, and
+            # the default log prints to the unit's journal (audit 22 Nov, round#11)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            self.log(f"[operator] telegram send failed: {type(exc).__name__}" + (f" (HTTP {status})" if status else ""))
             return False
 
 
