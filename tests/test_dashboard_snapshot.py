@@ -5,7 +5,9 @@ their first trades only (2 SOL rule: -0.997 SOL on the page, -5.829 in the recor
 the 500 rows `remote sql` returns, silently."""
 
 import importlib.util
+import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -114,3 +116,52 @@ def test_a_file_is_read_whole_not_from_its_last_200_000_bytes(monkeypatch):
     monkeypatch.setattr(mod, "call", call)
     assert mod.read_whole("operator/spend.jsonl") == body
     assert len(mod.read("operator/notes.md")) <= 200000  # the plain read keeps the tail: the newest notes are enough
+
+
+def _server(con: sqlite3.Connection):
+    """The ops endpoint over a local database with the tables the snapshot reads, and the files it reads, empty."""
+    for table in (("paper_trades (strategy TEXT, mint TEXT, trigger_ts INTEGER, entry_ts REAL, exit_ts REAL, "
+                   "pnl REAL, roi REAL, reason TEXT, data TEXT)"),
+                  ("fills (sig TEXT, ts INTEGER, wallet_copied TEXT, mint TEXT, pnl_sol REAL, exit_reason TEXT, "
+                   "trades_behind INTEGER, price_gap_pct REAL, side TEXT, buy_sig TEXT)"),
+                  "wallet_live (wallet TEXT, n INTEGER, mean_sol REAL, lower_sol REAL, last_fill INTEGER, status TEXT)",
+                  "trades (ts INTEGER)"):  # fmt: skip
+        con.execute(f"CREATE TABLE IF NOT EXISTS {table}")
+    con.execute("CREATE INDEX IF NOT EXISTS trades_ts ON trades(ts)")
+    sql = _ops(con)
+    files = {"operator/ideas.json": "[]", "operator/snapshot.json": json.dumps({"snipers": []})}
+
+    def call(url, key, action, **kw):
+        if action == "sql":
+            return sql(url, key, action, **kw)
+        if action == "read":
+            text = files.get(kw["path"], "")
+            return {"path": kw["path"], "bytes": len(text), "content": text, "text": text}
+        assert action == "jobs"
+        return {"jobs": []}
+
+    return call
+
+
+def _status(monkeypatch, tmp_path, con) -> dict:
+    mod = _load()
+    for name, value in (("URL", "u"), ("KEY", "k"), ("OUT", tmp_path), ("call", _server(con))):
+        monkeypatch.setattr(mod, name, value)
+    mod.main()
+    return json.loads((tmp_path / "status.json").read_text())[0]
+
+
+def test_a_tape_that_stopped_shows_how_long_ago_it_stopped(monkeypatch, tmp_path):
+    """Audit 22 Nov (tools#2): the lag was the age of the newest trade among the last 600 s, so a recorder silent for
+    ten minutes or more (Helius suspended the stream on 19 Nov, the network fell away on 12 Nov) read NULL, then 0:
+    the owner's page said the tape was 0 s behind exactly while it was down."""
+    con = sqlite3.connect(":memory:")
+    _server(con)
+    con.execute("INSERT INTO trades VALUES (?)", (int(time.time()) - 1200,))  # the recorder's newest: 20 minutes ago
+    lag = _status(monkeypatch, tmp_path, con)["tape_lag_s"]
+    assert lag is not None and 1190 <= lag <= 1300, lag
+
+
+def test_a_tape_with_no_trade_has_no_lag_to_show(monkeypatch, tmp_path):
+    """No trade at all is no lag of 0 s: the page gets nothing (null), as the server's own page does."""
+    assert _status(monkeypatch, tmp_path, sqlite3.connect(":memory:"))["tape_lag_s"] is None

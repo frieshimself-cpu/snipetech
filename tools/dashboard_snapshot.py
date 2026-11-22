@@ -180,7 +180,10 @@ def main() -> None:
             spend[k] = spend.get(k, 0.0) + float(d.get("usd", 0))
     dump("spend", [{"day": k, "usd": round(v, 2)} for k, v in sorted(spend.items())])
 
-    lag = max(0, sql(f"SELECT {now} - MAX(ts) AS lag FROM trades WHERE ts > {now - 600}")[0]["lag"] or 0)
+    # the age of the newest trade, however old: a filter on the last 600 s read NULL, then 0, while the recorder was
+    # down (audit 22 Nov); MAX(ts) over the whole table is one index lookup. No trade at all: nothing to show (null)
+    lag = sql(f"SELECT {now} - MAX(ts) AS lag FROM trades")[0]["lag"]
+    lag = None if lag is None else max(0, lag)
     jobs = call(URL, KEY, "jobs")
     jl = jobs.get("jobs", jobs) if isinstance(jobs, dict) else jobs
     running = [" ".join(j["argv"][:2]) for j in jl if j.get("running")]
