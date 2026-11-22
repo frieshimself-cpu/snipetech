@@ -14,8 +14,9 @@ many as fit in 2,500 characters (`operator/learning.py`, `research_record`). Eve
 report here whole with `read_file docs/research/<name>.md`. So every report keeps those two sections, each lesson one
 line with its numbers, and every report, a round or a dated study, gets one line below that links its file, the
 newest last. Until the audit of 22 Nov the record saw only files named `<date>-round-<N>.md`: it named round 7 the
-newest, left out rounds 8 and 9 (named `round-<N>-<topic>.md`) and carried nothing of the reports of 9-12 Nov. The agents mark an idea a round
-refuted as rejected, and leave a round's builds and its questions for the owner to the cloud session and the owner.
+newest, left out rounds 8 and 9 (named `round-<N>-<topic>.md`) and carried nothing of the reports of 9-12 Nov. The
+agents mark an idea a round refuted as rejected, and leave a round's builds and its questions for the owner to the
+cloud session and the owner.
 
 Round 1 is the edge hunt of 7 Nov 12:20 UTC (seven fixed angles); round 2 on choose their own.
 

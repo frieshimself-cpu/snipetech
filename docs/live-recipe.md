@@ -1,4 +1,4 @@
-# The live recipe (forward-tested on paper, 2026-11-05)
+# The live recipe (begun on 5 Nov as the recipe forward-tested on paper; the log of every live test since)
 
 The log of every live test, newest first: each entry's fills are live, with the place each copy stood and what it
 paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every

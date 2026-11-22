@@ -62,7 +62,7 @@ UNTESTED_IDEAS = 3
 UNTESTED_LINE = IDEA_TEXT["test"] + 160  # 810 since round 4 (560 for a test of 400)
 CONTEXT_MAX_CHARS = 4000 + UNTESTED_IDEAS * UNTESTED_LINE + 200
 # the research record every turn sees after the lessons and ideas, on its own cap so neither crowds out the other: the
-# newest round's outcome and lessons, then a line for each older round (research_record)
+# newest round's outcome and lessons, then the index line of every other report, newest first (research_record)
 RESEARCH_MAX_CHARS = 2500
 RESEARCH_INDEX = "README.md"
 DIGEST_LESSONS = 3
@@ -607,7 +607,7 @@ def _items(lines: list[str]) -> list[tuple[bool, str]]:
 
 
 def _rounds(directory: Path) -> list[tuple[int, str, Path]]:
-    """The round reports (<date>-round-<N>.md) as (N, file name, path)."""
+    """The round reports (<date>-round-<N>.md, or <date>-round-<N>-<topic>.md) as (N, file name, path)."""
     try:
         files = [p for p in directory.iterdir() if p.is_file()]
     except OSError:
