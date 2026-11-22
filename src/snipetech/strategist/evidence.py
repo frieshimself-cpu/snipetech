@@ -97,7 +97,9 @@ def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[
     wallet = cfg.operator.wallet
     fills = store.fills(wallet=wallet, since_ts=since, limit=100_000) if wallet else []
     live = sorted(store.wallet_live(), key=lambda r: -(r.get("mean_sol") or 0))
-    qualified = sorted(store.latest_verdicts("qualified"), key=lambda r: -(r.get("score") or 0))
+    banned = {r["wallet"] for r in store.candidates(status="banned", limit=1_000_000)}  # their last verdict stays
+    qualified = sorted((v for v in store.latest_verdicts("qualified") if v.get("wallet") not in banned),
+                       key=lambda r: -(r.get("score") or 0))  # fmt: skip
     arms = _arm_rows(fills)
     return {
         "now_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime(now)),

@@ -121,6 +121,26 @@ def test_state_uses_phase2_tables_when_present(ops):
     assert s["fills"][0]["mint"] == "M1" and s["fills"][0]["sol"] == 0.2
 
 
+def test_a_banned_wallet_is_not_in_the_qualified_top_list(ops):
+    """Audit of 22 Nov (qualify#1): 7aPo3n and AG89fn were banned with a kept "qualified" verdict, which qualify never
+    looks at again; the counts called them banned while the top list showed them as qualified, with their 12 Nov
+    numbers. The book copies no banned wallet, and the list leaves them out too."""
+    from snipetech.store import Store
+
+    st = Store(ops.db)
+    try:
+        for w, score in (("W1", 0.5), ("BANNED", 0.9)):
+            st.upsert_candidate(w, "solanatracker", {"trades": 100}, NOW - 100)
+            st.put_verdict({"wallet": w, "computed_at": NOW - 50, "status": "qualified", "score": score, "n_tape": 25,
+                            "mean_sol": 0.02, "lower_sol": 0.004, "next_review": NOW + 3600})  # fmt: skip
+        st.set_candidate_status("BANNED", "banned")
+    finally:
+        st.close()
+    s = dash_state(ops, now=NOW)
+    assert s["candidates"]["counts"] == {"banned": 1, "qualified": 1}
+    assert [c["wallet"] for c in s["candidates"]["top"]] == ["W1"]
+
+
 def _serve(ops):
     server = O.make_server(ops, "127.0.0.1", 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()

@@ -741,3 +741,35 @@ def test_a_wallet_the_candidate_was_chosen_over_stays_a_tie_of_two_in_its_record
         assert twin_links(block) == {yields} and actor_links(block) == set()
     finally:
         st.close()
+
+
+def test_a_banned_wallet_holds_no_place_for_its_actor(tmp_path):
+    """Audit of 22 Nov (qualify#1): qualify never looks at a banned wallet again, so its last verdict stays as it was.
+    7aPo3n and AG89fn were banned with a kept "qualified" verdict of 12 Nov, and that verdict held their actor's place:
+    BXZfyH and CjAJQL passed every in-sample gate and yielded to 7aPo3n ("the actor is already under test with it"),
+    with no forward check of their own, though nothing tested 7aPo3n. A banned wallet holds no place (as the book
+    copies none), unless a sniper of the book copies it now."""
+    from snipetech.qualify.one_actor import OneActor, standing_wallets
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st)
+        record_copying(st, set(), NOW - 120)  # the book read OKTech: nothing copies LEAD any more
+        old = NOW - 9 * 86400
+        st.upsert_candidate(LEAD, "early-leaders", {}, old - 3600)
+        # its last verdict: kept qualified under the old rules while a sniper copied it (as 7aPo3n's of 12 Nov)
+        st.put_verdict({"wallet": LEAD, "computed_at": old, "landing_pos": "+3x", "n_tape": 35, "mean_sol": 0.01,
+                        "lower_sol": -0.0015, "score": 0.004, "status": "qualified", "next_review": old + 86400,
+                        "copy_plan": PLAN, "kept_armed": {"armed_on": old - 86400, "armed_score": 0.004,
+                                                          "kept": True}})  # fmt: skip
+        st.set_candidate_status(LEAD, "banned")  # then banned: qualify never measures it again
+        assert LEAD not in standing_wallets(st)
+        assert not OneActor(st, st, NOW - 40 * 3600, set()).holds(LEAD)
+        assert OneActor(st, st, NOW - 40 * 3600, {LEAD[:6]}).holds(LEAD)  # one a book sniper copies still holds it
+        st.upsert_candidate(TAIL, "solanatracker", STRONG, NOW - 3600)
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=_runner())
+        tail = _latest(st)[TAIL]
+        assert _same_as(tail) is None and tail["forward"]["status"] == "pending"  # its own forward check
+        assert _latest(st)[LEAD]["computed_at"] == old  # the banned wallet's verdict is left as it was
+    finally:
+        st.close()
