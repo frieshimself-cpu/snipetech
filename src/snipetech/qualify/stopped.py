@@ -139,7 +139,7 @@ def stopped_wallets(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: La
                            "min_wallet_copies": MIN_WALLET_COPIES}  # fmt: skip
     if not asked:
         return out | {"groups": {}, "rows": []}
-    runner = lab_runner or default_lab_runner(svc, cfg)
+    runner = lab_runner or default_lab_runner(svc, cfg, with_size=False)  # it reads no size score
     spans = getattr(svc, "tape_store", store).tape_spans()
     moments: dict[str, list] = {}
     mates: dict[str, int] = {}  # how many companions each wallet's copies were scored behind (lab.copy_entry)

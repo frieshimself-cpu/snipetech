@@ -530,10 +530,11 @@ class QualifyConfig:
     max_wallets: int = 300  # due candidates measured per lab
     # The score at the size that pays, beside the verdict (21 Nov 2026): the verdict is scored at the book's 0.2 SOL
     # fill with no bid, where nothing can pay; the edge is at 5 SOL with a 0.2 bid, a market-cap ceiling, in the first
-    # two places (labs a5f6b5, 15062c). Each measured wallet's first buys of `size_floor_sol` or more, between the two
-    # market caps (in SOL, at the wallet's buy: the ceiling is where the profit is; no floor by default, since the 21
-    # Nov floor test showed OKTech's minMcapUsd does not stop a copy of a buy in a fresh coin), at `size_sol` with
-    # `size_bid_sol` at `size_position` on `size_exit`. Said, never a gate. size_sol 0: no size score
+    # two places (labs a5f6b5, 15062c). Each measured wallet's buys of `size_floor_sol` or more, its repeats in a coin
+    # too (what a copy sniper sent that minSol copies), between the two market caps (in SOL, at the wallet's buy: the
+    # ceiling is where the profit is; no floor by default, since the 21 Nov floor test showed OKTech's minMcapUsd does
+    # not stop a copy of a buy in a fresh coin), at `size_sol` with `size_bid_sol` at `size_position` on `size_exit`.
+    # Said, never a gate. size_sol 0: no size score
     size_sol: float = 5.0
     size_bid_sol: float = 0.2
     size_floor_sol: float = 0.95
