@@ -1,10 +1,14 @@
 """Backfill on-chain history into the store.
 
 Design notes
-* `getSignaturesForAddress` returns transactions in exact block order (newest first),
-  which is verified against reserve chaining in tests. A *mint's* signature list is the
-  authoritative intra-slot ordering for that mint's trades, so mint backfills always
-  (re)assign `pos` for every transaction they list.
+* A trade's `pos` is its transaction's index in the block (`transactionIndex` in the RPC's
+  answer), the number the tape's recorder writes. `getSignaturesForAddress` returns
+  transactions in exact block order (newest first, verified against reserve chaining in
+  tests): the listing's order inside a slot stands in only when an answer has no index.
+  A backfill never rewrites the place of a row it did not write (until 22 Nov a mint
+  backfill wrote its listing's ordinal over the recorder's block index: 902 became 1).
+* A transaction the tape already holds whole (`Store.held_whole`) is not fetched again:
+  the recorder writes no `seen_sigs`.
 * `before` cursors may be *any* signature in the ledger (the RPC looks up its slot), so
   we jump straight to a time window using any already-seen signature just after it,
   instead of paging through a token's entire later history.
@@ -40,12 +44,14 @@ class IngestResult:
     launches: int = 0
     trades: int = 0
     unresolved_pools: set[str] = field(default_factory=set)
+    held: int = 0  # listed transactions the tape already held whole: not fetched
 
     def add(self, other: IngestResult) -> None:
         self.fetched += other.fetched
         self.launches += other.launches
         self.trades += other.trades
         self.unresolved_pools |= other.unresolved_pools
+        self.held += other.held
 
 
 def assign_positions(infos: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
@@ -73,14 +79,16 @@ class Ingestor:
 
     # -- core ------------------------------------------------------------------
 
-    async def ingest(self, infos: list[dict[str, Any]], authoritative_order: bool = False) -> IngestResult:
-        """Fetch, decode and store the transactions in a newest-first signature listing."""
+    async def ingest(self, infos: list[dict[str, Any]]) -> IngestResult:
+        """Fetch, decode and store the transactions in a newest-first signature listing, but those already stored."""
         result = IngestResult()
         infos = [i for i in infos if i.get("err") is None]
         positions = assign_positions(infos)
-        if authoritative_order:
-            self._reposition(positions)
         todo = self.store.unseen([i["signature"] for i in infos])
+        held = self.store.held_whole(todo) if todo else set()
+        if held:
+            result.held = len(held)
+            todo = [s for s in todo if s not in held]
         if not todo:
             return result
         known_pools = self.store.pools()
@@ -97,7 +105,8 @@ class Ingestor:
                 if tx is None:
                     continue
                 events = extract_from_transaction(tx, sig, learned)
-                pos = positions.get(sig, (tx["slot"], 0))[1]
+                index = tx.get("transactionIndex")
+                pos = int(index) if index is not None else positions.get(sig, (tx["slot"], 0))[1]
                 norm = normalize(events, pos, known_pools, foreign=True)
                 missing_pools |= norm.unresolved_pools
                 pending.append((events, pos))
@@ -128,11 +137,6 @@ class Ingestor:
             result.fetched += len(chunk)
             self.progress(f"fetched {result.fetched}/{len(todo)} transactions")
         return result
-
-    def _reposition(self, positions: dict[str, tuple[int, int]]) -> None:
-        # through the store's write: batched, waits out a briefly locked database, rolls back what fails (until 7 Nov it
-        # wrote on the connection directly: no wait past sqlite's own 30 s, and a failure left its transaction open)
-        self.store.set_trade_positions([(pos, sig) for sig, (_slot, pos) in positions.items()])
 
     async def ensure_tx_meta(self, sigs: list[str], include_failed: bool = False) -> int:
         """Fingerprint already-ingested transactions that have no tx_meta yet (re-fetches them).
@@ -245,7 +249,7 @@ class Ingestor:
         listing = await self._collect_window(mint, start_ts, end_ts, cursor, max_sigs)
         if cursor and not listing:
             listing = await self._collect_window(mint, start_ts, end_ts, None, max_sigs)
-        result = await self.ingest(listing, authoritative_order=True)
+        result = await self.ingest(listing)
         cov["from_ts"] = min(cov.get("from_ts", start_ts), start_ts)
         cov["to_ts"] = max(cov.get("to_ts", 0), min(end_ts, now))
         self.store.set_coverage(key, cov)

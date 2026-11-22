@@ -174,16 +174,7 @@ def test_a_signal_waits_out_a_briefly_locked_database(tmp_path):
     st.close()
 
 
-def test_repositioning_trades_waits_out_a_briefly_locked_database(tmp_path):
-    from snipetech.ingest import Ingestor
-
-    st = _impatient(tmp_path / "t.db")
-    st.add_trades([_trade(1), _trade(2)])
-    _lock_for(tmp_path / "t.db", 1.0)
-    Ingestor(st, rpc=None)._reposition({"sig1": (101, 9), "sig2": (102, 8)})
-    assert sorted(st._q("SELECT sig, pos FROM trades")) == [("sig1", 9), ("sig2", 8)]
-    assert not st.conn.in_transaction
-    st.close()
+# (audit 22 Nov, tape#3: a backfill no longer rewrites trades' places, so the reposition write and its test are gone)
 
 
 def test_opening_a_database_that_needs_a_new_column_waits_out_a_briefly_locked_database(tmp_path, monkeypatch):

@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .models import Completion, Launch, Migration, Trade
+from .models import AMM, Completion, Launch, Migration, Trade
 from .solana.txmeta import TxMeta
 
 log = logging.getLogger(__name__)
@@ -756,10 +756,6 @@ class Store:
     def mark_seen(self, items: Iterable[tuple[str, int, int]]) -> None:
         self._many("INSERT OR IGNORE INTO seen_sigs (sig, slot, ts) VALUES (?,?,?)", list(items))
 
-    def set_trade_positions(self, rows: list[tuple[int, str]]) -> None:
-        """(pos, sig): each trade's place in its slot, from a listing that knows it (ingest's authoritative order)."""
-        self._many("UPDATE trades SET pos=? WHERE sig=?", rows)
-
     # -- reads -----------------------------------------------------------------
 
     def unseen(self, sigs: list[str]) -> list[str]:
@@ -771,6 +767,19 @@ class Store:
             rows = self._q(f"SELECT sig FROM seen_sigs WHERE sig IN ({','.join('?' * len(chunk))})", chunk)
             seen.update(r[0] for r in rows)
         return [s for s in sigs if s not in seen]
+
+    def held_whole(self, sigs: list[str]) -> set[str]:
+        """The signatures whose transaction the tape already holds whole: a curve or LaunchLab trade of it is stored.
+        Only the recorder and `ingest` write those, and both decode and store a transaction whole; the recorder writes
+        no seen_sigs. A PumpSwap row says nothing: the PumpSwap backfill (amm_backfill.py) stores some of a
+        transaction's PumpSwap trades only. A primary-key lookup a signature, 900 a read."""
+        held: set[str] = set()
+        for i in range(0, len(sigs), 900):
+            chunk = sigs[i : i + 900]
+            rows = self._q(f"SELECT DISTINCT sig FROM trades WHERE sig IN ({','.join('?' * len(chunk))}) AND venue!=?",
+                           [*chunk, AMM])  # fmt: skip
+            held.update(r[0] for r in rows)
+        return held
 
     def launch(self, mint: str) -> Launch | None:
         rows = self._q(f"SELECT {_LAUNCH_COLS} FROM launches WHERE mint=?", (mint,))
