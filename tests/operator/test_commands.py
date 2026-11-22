@@ -244,6 +244,63 @@ def test_stop_keeps_every_sniper_running_while_a_held_coin_may_be_ours(tmp_path,
     assert svc.calls == [] and "left running" in reply and "H8WT" in reply, reply
 
 
+class Hangs(FakeSvc):
+    """A wallet read or an OKTech call that never answers (an RPC call retries for minutes: 7 Nov, about 250 s)."""
+
+    def __init__(self, what, held=()):
+        super().__init__(list(held), [{"id": "s1", "name": "a", "status": "running"}])
+        self.what = what
+
+    async def open_positions(self, address, ignore=None, unknown=None):
+        if self.what == "wallet":
+            await asyncio.sleep(3600)
+        return await super().open_positions(address, ignore=ignore)
+
+    async def oktech_status(self):
+        if self.what == "oktech":
+            await asyncio.sleep(3600)
+        return await super().oktech_status()
+
+    async def oktech_task(self, action, task_id):
+        if self.what == "stop":
+            await asyncio.sleep(3600)
+        return await super().oktech_task(action, task_id)
+
+
+@pytest.mark.parametrize("what, words", [("wallet", "wallet did not answer"), ("oktech", "OKTech did not answer"),
+                                         ("stop", "failed: s1")])  # fmt: skip
+def test_stop_answers_within_its_own_time_limit_when_a_read_hangs(tmp_path, monkeypatch, what, words):
+    """Audit of 22 Nov (round#9): the one-minute pass is killed at 2 minutes (snipetech-commands.service) and its offset
+    has already moved past the /stop: a hanging read left the owner with no reply, and no sniper stopped."""
+    from snipetech.operator import commands
+
+    monkeypatch.setattr(commands, "READ_SECS", 0.2)
+    svc = Hangs(what)
+    ctx, sent = _ctx(tmp_path, svc)
+    reply = asyncio.run(asyncio.wait_for(handle_command(_cmd("stop"), **ctx), 5.0))
+    assert ctx["paths"].stop_flag.exists() and sent == [reply] and words in reply, reply
+    assert "send /stop again" in reply.lower() or what == "stop", reply
+
+
+def test_sell_answers_within_its_time_limits_when_the_wallet_or_the_sale_hangs(tmp_path, monkeypatch, sell_key):
+    from snipetech.operator import commands
+
+    monkeypatch.setattr(commands, "READ_SECS", 0.2)
+    monkeypatch.setattr(commands, "SELL_SECS", 0.2)
+    wallet, _secret = sell_key
+    ctx, sent = _ctx(tmp_path, Hangs("wallet"))
+    ctx["cfg"].operator.wallet = wallet
+    reply = asyncio.run(asyncio.wait_for(handle_command(_cmd("sell"), **ctx), 5.0))
+    assert "could not read" in reply and "nothing was sold" in reply and sent == [reply], reply
+
+    async def hangs(*a, **k):
+        await asyncio.sleep(3600)
+
+    _svc, ctx, sent = _sell_ctx(tmp_path, wallet, hangs)
+    reply = asyncio.run(asyncio.wait_for(handle_command(_cmd("sell", MINT), **ctx), 5.0))
+    assert reply.startswith("Not sure it sold") and "did not answer" in reply and sent == [reply], reply
+
+
 def test_stop_keeps_the_snipers_for_a_coin_of_ours_beside_the_owners_own(tmp_path):
     svc = StoreSvc(tmp_path, [_coin(HAND), _coin(MINE := "Mine1" + "1" * 39)])
     svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)

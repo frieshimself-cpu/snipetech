@@ -18,6 +18,7 @@ plan ran out unseen on 19 Nov)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -67,6 +68,16 @@ class Command:
 
 
 SELL_MAX_AGE_SECS = 300  # a /sell older than this (it waited out an outage) is refused: send it again
+# how long /stop and /sell wait for one wallet read or one OKTech call (READ_SECS) and for a whole sale (SELL_SECS): the
+# one-minute pass is killed at 2 minutes (snipetech-commands.service) once its Telegram offset has moved past the
+# command, and the RPC client retries one call for minutes (7 Nov: about 250 s). Past it the owner hears so and asks again
+READ_SECS = 20
+SELL_SECS = 60
+
+
+def _late(exc: BaseException, secs: float, what: str) -> str:
+    """An error in plain words for the owner: no answer within `secs`, or the error's kind."""
+    return f"{what} did not answer in {secs:g} s" if isinstance(exc, TimeoutError) else type(exc).__name__
 
 
 def parse_updates(updates: list[dict], owner_chat_id: int) -> tuple[list[Command], int | None]:
@@ -217,7 +228,14 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
     coin. The coins the owner ignores, the owner's own and strays (_not_ours) are no sniper's: beside only them every
     sniper is stopped (audit of 22 Nov: /stop stopped nothing while the owner's hand-bought coin sat in the wallet)."""
     try:  # the owner's ignored coins are left out, as the book, the watch and the runner leave them out
-        held = await svc.open_positions(cfg.operator.wallet, ignore=list(cfg.operator.ignore_mints or ()))
+        held = await asyncio.wait_for(
+            svc.open_positions(cfg.operator.wallet, ignore=list(cfg.operator.ignore_mints or ())), READ_SECS
+        )
+    except TimeoutError:  # the pass must still answer before it is killed (audit of 22 Nov, round#9)
+        notes.write(f"stopped by owner: flag set, but the wallet did not answer in {READ_SECS:g} s; no sniper stopped",
+                    "decision")  # fmt: skip
+        return (f"stop flag set (no new snipers expected), but the wallet did not answer in {READ_SECS:g} s, so no sniper "
+                "was stopped: send /stop again.")  # fmt: skip
     except Exception as exc:  # noqa: BLE001
         notes.write(
             f"stopped by owner: flag set, but holdings could not be read ({type(exc).__name__}); no sniper stopped",
@@ -225,10 +243,13 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
         )
         return "stop flag set (no new snipers expected), but I could not read the wallet's holdings, so no sniper was stopped. Try again in a minute."
     try:
-        st = await svc.oktech_status()
+        st = await asyncio.wait_for(svc.oktech_status(), READ_SECS)
         running = [s for s in st.get("snipers", []) if is_active(s.get("status"))]
     except Exception as exc:  # noqa: BLE001
-        notes.write(f"stopped by owner: flag set, but OKTech did not answer ({type(exc).__name__})", "decision")
+        why = _late(exc, READ_SECS, "OKTech")
+        notes.write(f"stopped by owner: flag set, but OKTech did not answer ({why})", "decision")
+        if isinstance(exc, TimeoutError):
+            return f"stop flag set, but {why}; nothing stopped: send /stop again."
         return "stop flag set, but OKTech did not answer; nothing stopped. Try again in a minute."
     if not running:
         notes.write("stopped by owner: flag set, no sniper was running", "decision")
@@ -246,10 +267,10 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
     stopped, failed = [], []
     for s in running:
         try:
-            await svc.oktech_task("stop", str(s.get("id")))
+            await asyncio.wait_for(svc.oktech_task("stop", str(s.get("id"))), READ_SECS)
             stopped.append(str(s.get("id")))
         except Exception as exc:  # noqa: BLE001
-            failed.append(f"{s.get('id')} ({type(exc).__name__})")
+            failed.append(f"{s.get('id')} ({_late(exc, READ_SECS, 'OKTech')})")
     beside = "; ".join(f"{m[:6]}… {why}" for m, why in list(theirs.items())[:5])
     beside = f" (the wallet holds only coins no sniper of ours holds: {beside})" if beside else ""
     notes.write(
@@ -305,6 +326,8 @@ def _why(exc: Exception) -> str:
     error's text carries the RPC address, and with it the provider's key)."""
     from ..solana.rpc import RpcError
 
+    if isinstance(exc, TimeoutError):  # the sale's own limit (SELL_SECS): it may have gone out all the same
+        return f"Solana did not answer in {SELL_SECS:g} s"
     if isinstance(exc, RpcError):
         said = (exc.error or {}).get("message") if isinstance(exc.error, dict) else None
         what = "Solana refused the sale" if exc.method == "sendTransaction" else "Solana did not answer"
@@ -341,9 +364,9 @@ async def _sell_list(svc, cfg: Config) -> str:
             + warn
         )
     try:
-        held = await svc.open_positions(wallet)
+        held = await asyncio.wait_for(svc.open_positions(wallet), READ_SECS)
     except Exception as exc:  # noqa: BLE001 - the owner hears it; the pass goes on
-        failed = f"I could not read the sniper wallet's coins ({type(exc).__name__}); nothing was sold."
+        failed = f"I could not read the sniper wallet's coins ({_late(exc, READ_SECS, 'it')}); nothing was sold."
         return f"{failed} Try /sell again in a minute.{warn}"
     coins: dict[str, float | None] = {}
     for h in held or []:
@@ -456,7 +479,7 @@ async def _sell(args: list[str], *, svc, cfg: Config, notes: NoteSink, sweep: Ca
     if sweep is None:
         from ..solana.sell import sweep
     try:  # the tape: a coin that left its curve is sold on the PumpSwap pool its migration record names
-        res = await sweep(svc.rpc, mints, SELL_SLIPPAGE, store=getattr(svc, "store", None))
+        res = await asyncio.wait_for(sweep(svc.rpc, mints, SELL_SLIPPAGE, store=getattr(svc, "store", None)), SELL_SECS)
     except Exception as exc:  # noqa: BLE001 - the owner hears what happened; the pass goes on
         why = _why(exc)
         notes.write(f"owner's {said} from Telegram stopped with an error ({why}); it may not have sold", "decision")
