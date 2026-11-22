@@ -12,6 +12,7 @@ only when the next reading agrees, an unpriced coin is no reading at all, and wr
 trade, and the run starts then, not when a session next looks."""
 
 import asyncio
+import itertools
 
 import pytest
 
@@ -25,12 +26,13 @@ def _coin(value=5.0):
 
 
 def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, sweeps=None,
-         **kw):  # fmt: skip
+         spent=None, sweep_fails=False, **kw):  # fmt: skip
     """The runner over two copy snipers on the fake clock, with `sol(now)` SOL in the wallet, the coins `coins(now)`
     lists (priced) and `unpriced(now)` lists (not on the tape), `wsol(now)` wrapped SOL, and the owner's /stop from
-    `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time)."""
+    `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time), and each fails when
+    `sweep_fails`. OKTech reads a sniper "finished" (and refuses to stop it) while `spent(i, now, last_start)`."""
     clock, flag = {"t": T0}, {"stop": False}
-    client = _SpentClient(clock, SNIPER_IDS, lambda i, now, last_start: False)
+    client = _SpentClient(clock, SNIPER_IDS, spent or (lambda i, now, last_start: False))
 
     def on_sleep(_secs):
         if stop_at is not None and clock["t"] >= stop_at:
@@ -49,6 +51,8 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     async def sweep(mint):
         if sweeps is not None:
             sweeps.append((mint, clock["t"]))
+        if sweep_fails:
+            raise RuntimeError("the sale failed: slippage")
         return {"sold": mint}
 
     monkeypatch.setattr(svc, "wsol_balance", wrapped)
@@ -266,6 +270,87 @@ def test_a_coin_bought_again_is_a_new_holding_for_the_sweep_and_the_rearm(monkey
     assert sweeps == []  # no holding lasted 45 s
     assert {i for kind, i, t in client.timed if kind == "start" and T0 + 412 <= t < T0 + 445} == set(client.ids)
     assert rep["fills"] == 2
+
+
+def _crash_at_100(sweeps):
+    """The 22 Nov 00:54 copy: 10 SOL, a 5.2 SOL buy at 100 s whose coin shows at 104 s worth 5 and is worth 0.1 from
+    110 s (the wallet then reads 4.9, under a floor of 5); its sniper never sells it, and it leaves the wallet only when
+    the run sells it itself (a sale in `sweeps`)."""
+
+    def sold(now):
+        return any(m == "M1" and t <= now for m, t in sweeps)
+
+    def coins(now):
+        if now < T0 + 104 or sold(now):
+            return []
+        return _coin(5.0 if now < T0 + 110 else 0.1)
+
+    def sol(now):
+        if now < T0 + 100:
+            return 10.0
+        return 4.9 if sold(now) else 4.8
+
+    return sol, coins
+
+
+def test_a_coin_its_sniper_never_sells_is_sold_by_the_run_after_the_floor_ends_it(monkeypatch):
+    """22 Nov 00:54: a 3.46 SOL copy fell 60 % in 36 s and the floor ended the run with the coin held; the sniper that
+    bought it read "finished" and never sold. The run ended there, its --sweep-after 45 not come yet, and the snipers
+    were left running with nobody selling the coin (sold by hand at 00:57, for less). An end with a coin held goes on
+    watching: the run sells each coin held past --sweep-after itself, then stops the snipers it armed once the wallet
+    holds nothing (OKTech refuses to stop a finished sniper: that one is stopped already)."""
+    sweeps: list = []
+    sol, coins = _crash_at_100(sweeps)
+    rep, client = _run(monkeypatch, sol, coins=coins, sweeps=sweeps, sweep_after=45, minutes=30,
+                       spent=lambda i, now, last: i == SNIPER_IDS[0] and now >= T0 + 100)  # fmt: skip
+    assert rep["reason"].startswith("EMERGENCY"), rep["reason"]
+    assert [m for m, _t in sweeps] == ["M1"] and sweeps[0][1] >= T0 + 104 + 45, sweeps
+    ev = rep["events"]
+    floor_at = next(k for k, e in enumerate(ev) if "under the floor" in e)
+    swept_at = next(k for k, e in enumerate(ev) if e.split(" ", 1)[1].startswith("swept M1"))
+    assert floor_at < swept_at  # the floor came first: the sale is the run's, after its end
+    assert [s["mint"] for s in rep["swept"]] == ["M1"] and rep["held"] == []
+    assert rep["left_running"] == [] and "except" not in rep["reason"], rep["reason"]
+    assert ("stop", SNIPER_IDS[1]) in [(k, i) for k, i, t in client.timed if t > sweeps[0][1]]
+    assert not [t for kind, _i, t in client.timed if kind == "start" and t >= T0 + 100]  # nothing armed again
+
+
+def test_a_coin_the_run_cannot_sell_after_its_end_is_left_to_the_snipers(monkeypatch):
+    """A sale that fails is tried again each minute, for END_WATCH_SECS after the end at most: then the run ends with
+    the coin held and the snipers running (a stopped sniper strands its coin), and says so."""
+    from snipetech.service import END_WATCH_SECS, SWEEP_RETRY_SECS
+
+    sweeps: list = []
+    sol, coins = _crash_at_100([])  # never sold
+    rep, client = _run(monkeypatch, sol, coins=coins, sweeps=sweeps, sweep_after=45, minutes=30, sweep_fails=True)
+    assert rep["reason"].startswith("EMERGENCY") and "coin is held" in rep["reason"], rep["reason"]
+    assert sorted(rep["left_running"]) == sorted(client.ids) and rep["held"]
+    times = [t for _m, t in sweeps]
+    assert len(times) >= END_WATCH_SECS // SWEEP_RETRY_SECS - 2, times
+    assert all(b - a >= SWEEP_RETRY_SECS for a, b in itertools.pairwise(times))
+    assert times[-1] <= T0 + 130 + END_WATCH_SECS  # bounded: the floor ended the run before 130 s
+    assert not [t for kind, _i, t in client.timed if kind == "stop" and t >= T0 + 100]
+
+
+def test_a_coin_its_sniper_sells_after_the_end_stops_the_snipers_then(monkeypatch):
+    """The owner's /stop came with a coin held; its sniper sold it 30 s later. Before, the run ended at once and left
+    both snipers armed (one still able to buy at the next copy, with nobody watching); now it watches the wallet and
+    stops them once it holds nothing."""
+
+    def coins(now):  # bought at 100 s, shown at 104 s, sold by its sniper at 135 s
+        return _coin() if T0 + 104 <= now < T0 + 135 else []
+
+    def sol(now):
+        if now < T0 + 100:
+            return 10.0
+        return 4.8 if now < T0 + 135 else 9.9
+
+    sweeps: list = []
+    rep, client = _run(monkeypatch, sol, coins=coins, sweeps=sweeps, sweep_after=45, minutes=30, stop_at=T0 + 110)
+    assert "/stop" in rep["reason"], rep["reason"]
+    assert sweeps == [] and rep["held"] == []
+    assert rep["left_running"] == []
+    assert {i for kind, i, t in client.timed if kind == "stop" and t >= T0 + 135} == set(client.ids)
 
 
 def test_the_owners_10_sol_night_end_to_end(monkeypatch):

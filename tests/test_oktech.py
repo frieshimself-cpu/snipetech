@@ -1001,7 +1001,8 @@ def test_a_coin_oktech_leaves_unsold_is_sold_by_the_cycler_after_sweep_after(mon
 
 def test_a_sweep_that_fails_is_said_and_tried_again_later_never_every_tick(monkeypatch):
     """A sale the chain refuses (or a wallet the seller cannot read) is said once in the log and tried again a minute
-    later; the run goes on, and the coin keeps the snipers running at the end (a stopped sniper strands its coin)."""
+    later; the run goes on, past its end too (END_WATCH_SECS), and a coin still held then keeps the snipers running (a
+    stopped sniper strands its coin)."""
     import snipetech.service as S
 
     t0 = 1_794_045_600.0
@@ -1018,7 +1019,9 @@ def test_a_sweep_that_fails_is_said_and_tried_again_later_never_every_tick(monke
 
     monkeypatch.setattr(svc, "sweep_coin", sweep_coin)
     rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800, sweep_after=45))
-    assert 2 <= len(tries) <= 5 and all(b - a >= 60 for a, b in itertools.pairwise(tries))
+    most = (6 * 60 + S.END_WATCH_SECS - 145) // 60 + 1  # one a minute from 145 s to the end of the watch
+    assert 2 <= len(tries) <= most and all(b - a >= 60 for a, b in itertools.pairwise(tries)), tries
+    assert max(tries) <= t0 + 6 * 60 + S.END_WATCH_SECS + 30
     assert any("sweep of M1" in e and "failed" in e for e in rep["events"])
     assert rep["swept"] == [] and "coin is held" in rep["reason"] and sorted(rep["left_running"]) == sorted(SNIPER_IDS)
     store.close()

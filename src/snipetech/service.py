@@ -40,6 +40,11 @@ TASKS_READ_SECS = 15.0
 SPENT_REARM_SECS = 30.0
 # `oktech cycle --sweep-after`: a sale of a coin OKTech left unsold that failed is tried again this many seconds later
 SWEEP_RETRY_SECS = 60.0
+# and after the run's end with a coin held (the floor, /stop, the time limit, the fills cap) the run goes on reading the
+# wallet this long at most, selling each coin held past --sweep-after itself, and stops the snipers it armed once the
+# wallet holds nothing (22 Nov 00:54: the floor ended a run 36 s after a copy whose sniper read "finished" and never
+# sold; the run left at once, 9 s before --sweep-after 45, and nobody sold the coin). Still held then: left to them.
+END_WATCH_SECS = 900.0
 # `oktech cycle --place-stop`: a buy of ours is placed this long after it ran (the recorder writes a block's trades in
 # batches; the buys between the copied one and ours ran before ours, so they are on the tape once ours is, and settled)
 PLACE_SETTLE_SECS = 10.0
@@ -1148,7 +1153,10 @@ class Service:
         run itself (`sweep_coin`), and said (`swept` in the report). 21 Nov 04:25: a one-shot copy sniper bought, read
         "finished" 13 s later and never sold (the buy that uses up a sniper's cap can be left with no exit), and the run,
         which never restarts while a coin is held, sat seven minutes with it. Set it above the snipers' longest exit (a
-        12 s timer: 45 s). A sale that fails is said and tried again a minute later.
+        12 s timer: 45 s). A sale that fails is said and tried again a minute later. It goes on past the run's end while
+        a coin is held (`watch_out`, END_WATCH_SECS at most; nothing is armed again), and the snipers are stopped once
+        the wallet holds nothing: 22 Nov 00:54 the floor ended a run 36 s after a copy whose sniper never sold, and the
+        run left at once, 9 s before its sweep, with both snipers running and nobody selling the coin.
 
         `place_stop` (N, M; None: off): each of our buys on the tape is placed behind the wallets these copy snipers
         copy, as the measure stage places it (`measure.classify.classify_trade`: the other wallets' buys between the
@@ -1283,7 +1291,9 @@ class Service:
         async def disarm(why: str) -> tuple[str, list[dict] | None]:
             """How every run ends: with nothing held the snipers this run armed are stopped (a stopped sniper with
             nothing held strands nothing, and one left armed can still buy once); a coin held or an unreadable wallet
-            keeps them running to sell. (The reason with what was done, the coins held or None when unreadable.)"""
+            keeps them running to sell. With `sweep_after` a coin held at the end is watched first (`watch_out`): sold
+            by its sniper or by the run, the snipers are stopped then. (The reason with what was done, the coins held
+            or None when unreadable.)"""
             try:
                 held = await open_positions()
                 # a buy on its way (the SOL left, its coin not shown yet) is a coin: wait for it before stopping any
@@ -1296,6 +1306,12 @@ class Service:
                     f"{why}; the wallet could not be read, so the snipers are left running (one may hold a coin)",
                     None,
                 )
+            if held and sweep_after is not None:
+                n0 = len(swept)
+                held = await watch_out(held)
+                why = (f"{why}; still held {END_WATCH_SECS / 60:g} min after the end" if held else
+                       f"{why}; the coin held at the end has left the wallet ({len(swept) - n0} sold by the run itself, "
+                       "--sweep-after)")  # fmt: skip
             if held:
                 return (
                     f"{why}; a coin is held, so the snipers keep running to sell it (a stopped sniper strands its coin)",
@@ -1306,6 +1322,12 @@ class Service:
                 try:
                     await client.stop(i)
                     armed.discard(i)
+                except OktechError as exc:
+                    if exc.code == "NOT_RUNNING":  # OKTech refuses to stop a finished sniper: it is stopped already
+                        armed.discard(i)
+                        continue
+                    failed.append(i)
+                    log(f"stop of {tag(i)} at the end failed: {exc}")
                 except Exception as exc:  # noqa: BLE001 - said in the reason: the owner stops it by hand
                     failed.append(i)
                     log(f"stop of {tag(i)} at the end failed: {exc}")
@@ -1354,6 +1376,48 @@ class Service:
                 swept.append({"mint": mint, "held_secs": round(age, 1), "result": result})
                 log(f"swept {mint}: held {age:.0f} s, past --sweep-after {sweep_after:g} s, so OKTech left it unsold: "
                     f"{result}")  # fmt: skip
+
+        async def watch_out(held: list[dict]) -> list[dict]:
+            """After the run's end with a coin held: read the wallet every 5 s and sell each coin held past
+            `sweep_after` (`sweep_stuck`: a failed sale is tried again each minute) until two readings in a row show
+            nothing held and no buy on its way, for END_WATCH_SECS at most. Nothing is armed again. A sniper left
+            running can still buy once: its coin is a new holding with its own timer. The coins of the last reading."""
+            nonlocal fresh_at, arrivals, last_arrival
+            end_t, unread, empty, prev = time.time(), False, 0, None
+            log("the run has ended with " + ", ".join(str(h.get("mint")) for h in held) + " held: it watches the "
+                f"wallet {END_WATCH_SECS / 60:g} min at most, sells a coin held {sweep_after:g} s itself "
+                "(--sweep-after) and stops the snipers once the wallet holds nothing")  # fmt: skip
+            await sweep_stuck(held, end_t)
+            while time.time() - end_t < END_WATCH_SECS:
+                await asyncio.sleep(5)
+                try:
+                    b = await balance()
+                    now_held = await open_positions()
+                except Exception as exc:  # noqa: BLE001 - unknown holdings stop nothing: read again in 5 s
+                    if not unread:
+                        log(f"rpc check after the end failed ({exc}); still watching")
+                    unread = True
+                    continue
+                unread, held, now = False, now_held, time.time()
+                mints_now = {str(h["mint"]) for h in held if h.get("mint")}
+                for m in mints_now:
+                    first_seen.setdefault(m, now)
+                    if m not in held_since:
+                        held_since[m] = now
+                        arrivals, last_arrival = arrivals + 1, now
+                for m in [m for m in held_since if m not in mints_now]:
+                    del held_since[m]
+                if held:
+                    fresh_at, empty = None, 0
+                    await sweep_stuck(held, now)
+                else:
+                    if prev is not None and b < prev - FRESH_BUY_SOL:
+                        fresh_at = now  # the SOL left and no coin shows: a buy on its way, wait for its coin
+                    empty += 1
+                    if empty >= 2 and (fresh_at is None or now - fresh_at >= FRESH_HOLD_SECS):
+                        return []
+                prev = b
+            return held
 
         def fills_now() -> int:
             return max(fills_since(t0), arrivals, len(first_seen))

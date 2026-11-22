@@ -826,7 +826,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--sweep-after", type=float, default=None, metavar="SECS",
                     help="cycle: sell a coin the wallet has held this long itself (the sweep sale), when OKTech left "
                          "it unsold: 21 Nov a one-shot copy sniper bought and never ran its 12 s exit. Above the "
-                         "snipers' longest exit (a 12 s timer: 45). Default: never")  # fmt: skip
+                         "snipers' longest exit (a 12 s timer: 45). It goes on after the run's end while a coin is "
+                         "held (the floor, /stop, the time limit), 15 min at most, and the snipers are stopped once "
+                         "the wallet holds nothing. Default: never")  # fmt: skip
     sp.add_argument("--place-stop", type=_place_rule, default=None, metavar="N/M",
                     help="cycle: no more re-arms once N of the last M of our copies stood out of place: more than "
                          "--place-max buyers between the copied wallet's buy and ours (its companions and pack left "
