@@ -1099,6 +1099,24 @@ def test_an_agents_launch_tools_reads_a_bounded_number_of_launches(jobs):
     assert jobs.start(["launch-tools", *many[:100], "--json"], role="tester", idea=idea)["id"]
 
 
+@pytest.mark.parametrize("role", ["scout", None])
+def test_an_agents_label_is_a_candidate_pick_only(jobs, role):
+    """Audit of 22 Nov (agents#4): a label of any kind but a pick replaces the wallet's label, whatever it was. The
+    scout's `label <Cupsey> "copied by 8r6N8w"` (the default kind, service) would take a named big wallet out of the
+    groups big and kol for every lab, freeze and forward rule, and `--kind own` would make any wallet one of ours,
+    which the landing measure never counts ahead of us. Only a pick (`--kind cand`) keeps the label a wallet has: an
+    agent's label is that and nothing else, a file of them too, read as the job reads its words."""
+    idea = _queue(jobs, "scout") if role else None
+    for argv in (["label", BOT, "copied by 8r6N8w"], ["label", BOT, "x", "--kind", "own"],
+                 ["label", BOT, "x", "--kind=kol"], ["label", BOT, "x", "--kind", "cand", "--kind", "service"],
+                 ["label", "--file", "inputs/kols.txt", "--kind", "kol"], ["label", BOT, " --kind"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="--kind cand"):
+            jobs.start(argv, role=role, idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["label", BOT, "x", "--kind=cand"], role=role, idea=idea)["id"]
+    assert jobs.start(["label", "--file", "inputs/picks.txt", "--kind", "cand"], role=role, idea=idea)["id"]
+
+
 def test_tester_cannot_start_a_wallet_study(jobs):
     idea = _queue(jobs, "tester")
     for argv in (["winners", "--json"], ["follow", "--kols"], ["label", "W", "why", "--kind", "cand"],
@@ -1764,7 +1782,8 @@ def test_a_labels_reason_may_hold_a_slash_and_only_its_file_is_read_as_a_path(jo
                  ["label", "--kind", "kol", "--file", "~/keys.txt"]):  # fmt: skip
         with pytest.raises(PermissionError, match="path not allowed"):
             jobs.start(argv)
-    assert jobs.start(["label", "--file", "inputs/kols.txt", "--kind", "kol"]).get("id")  # under the data directory
+    # under the data directory; a pick, since an agent's label of any other kind is refused (audit of 22 Nov, agents#4)
+    assert jobs.start(["label", "--file", "inputs/kols.txt", "--kind", "cand"]).get("id")
     with pytest.raises(PermissionError, match="path not allowed"):  # every other command keeps the whole check
         jobs.start(["winners", "--out", "/tmp/x.json"])
 

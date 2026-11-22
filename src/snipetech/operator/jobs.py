@@ -327,6 +327,24 @@ class OperatorJobs:
                                   "without --replace")  # fmt: skip
 
     @staticmethod
+    def _check_label(argv: list[str]) -> None:
+        """An agent's label is a pick (`--kind cand`), a file of them too: it queues the wallet for qualify and keeps
+        the label the wallet has (`Service._pick`). Any other kind replaces the label, whatever it was (audit of 22
+        Nov): a big wallet named "copied by ..." under the default kind left the groups big and kol for every lab and
+        forward rule, and kind own made a wallet one of ours, which the landing measure never counts ahead of us."""
+        if argv[:1] != ["label"]:
+            return
+        from ..service import PICKED_KIND
+
+        said = as_run(argv)
+        if said is not None and said.get("kind") != PICKED_KIND:
+            raise PermissionError(f"label refused, no job started: an agent's label is a pick (--kind {PICKED_KIND}), "
+                                  "which queues the wallet for qualify and keeps the label it has; kind "
+                                  f"{said.get('kind')} would replace its label (a big wallet would leave its groups, "
+                                  "kind own would make it one of ours). Any other label is the owner's: say so in an "
+                                  "idea with owner_needed")  # fmt: skip
+
+    @staticmethod
     def _check_backfill(argv: list[str]) -> None:
         """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS, leaves out stretches above
         AGENT_BACKFILL_STRETCH_TXS at the most, and never lifts the month's limit (the owner's: `--month-credits`).
@@ -571,6 +589,7 @@ class OperatorJobs:
             self._check_backfill(argv)
         self._check_paper(argv)
         self._check_paths(argv)
+        self._check_label(argv)  # after the paths: a file outside the data directory is refused as that
         self._check_triggers(argv)
         self._check_hunt_landing(argv)
         self._check_lab_window(argv)
