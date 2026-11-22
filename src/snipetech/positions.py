@@ -89,3 +89,25 @@ def buys_payable(native_sol: float | None, wsol: float | None, fill_sol: float |
     fees = int((float(native_sol) + eps) // BUY_NATIVE_SOL)
     return {"size_sol": size, "curve": int((float(native_sol) + eps) // (size + BUY_NATIVE_SOL)),
             "pumpswap": min(int((float(wsol) + eps) // size), fees)}  # fmt: skip
+
+
+# OKTech keeps the wallet's wrapped SOL at this many times the buy the whole time a sniper runs, whatever its platforms,
+# and wraps what is missing from plain SOL (the wrap test, 21 Nov 21:51-22:04, docs/live-recipe.md: turned back into
+# plain SOL, it was wrapped again within two seconds)
+WRAP_TOPUP = 1.1
+
+
+def curve_plain_need(wsol: float, fill_sol: float | None) -> float:
+    """The plain SOL a running sniper of this fill needs for one curve buy: the buy and its costs (BUY_NATIVE_SOL),
+    and what OKTech wraps from plain SOL to keep WRAP_TOPUP times the buy wrapped."""
+    size = float(fill_sol or BOOK_FILL_SOL)
+    return size + BUY_NATIVE_SOL + max(0.0, WRAP_TOPUP * size - float(wsol))
+
+
+def curve_buy_beside_topup(native_sol: float | None, wsol: float | None, fill_sol: float | None) -> bool | None:
+    """Whether a sniper of this fill, once running, can pay one curve buy (`curve_plain_need`); None when a balance was
+    not read. 22 Nov audit: with 0.30 plain SOL the book made a 0.2 SOL sniper, OKTech wrapped 0.22 and left 0.08, and
+    every curve copy failed and spent a shot."""
+    if native_sol is None or wsol is None:
+        return None
+    return float(native_sol) + 1e-9 >= curve_plain_need(wsol, fill_sol)

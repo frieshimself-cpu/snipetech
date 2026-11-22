@@ -18,7 +18,7 @@ from ..config import BookConfig
 from ..exits_menu import EXIT_MENU_VERSION, exit_family
 from ..fees import sent_bid
 from ..oktech import validate_exit
-from ..positions import SPENT_STATUSES, buys_payable, is_active
+from ..positions import SPENT_STATUSES, WRAP_TOPUP, curve_buy_beside_topup, curve_plain_need, is_active
 from ..qualify.non_coin import reason as non_coin_reason
 
 # the book creates its snipers through list_copy_sniper with label "book" and tag "arm:<arm>", so OKTech shows
@@ -201,11 +201,13 @@ SPENT_REASON = "spent; a new sniper replaces it"
 # 17-19 Nov: the wallet was empty and the owner's floor off. The book made a sniper for each ranked wallet about every
 # ten minutes; each ended within minutes without a buy (OKTech: "finished") and the next run made another: 165 snipers
 # in two days, two messages to the owner for each, until OKTech refused ("TASK_LIMIT: This key already has 200
-# snipers"). A sniper is made only while the wallet can pay one buy of its fill, by the rule the agents' snapshot reads
-# (positions.buys_payable): plain SOL for a curve buy, wrapped SOL for one on PumpSwap, and a buy's costs in plain SOL
-# beside either. The value of a coin pays nothing (the first version of this rule read the equity, and with the
-# wallet's worth in an unsold coin the loop went on: the review of 19 Nov). A balance that was not read says nothing,
-# and a sniper that exists is left as it is.
+# snipers"). A sniper is made only while the wallet, once the sniper runs, can pay one curve buy of its fill
+# (positions.curve_buy_beside_topup): a curve buy is paid in plain SOL with its costs beside it, and OKTech keeps 1.1
+# times the buy wrapped, from plain SOL, while a sniper runs (22 Nov audit: the agents' snapshot rule, which also
+# counted a PumpSwap buy from wrapped SOL, made a sniper whose every curve copy failed beside that top-up). The value
+# of a coin pays nothing (the first version of this rule read the equity, and with the wallet's worth in an unsold coin
+# the loop went on: the review of 19 Nov). A balance that was not read says nothing, and a sniper that exists is left
+# as it is.
 CANNOT_PAY = "the wallet cannot pay"
 WAITS_FOR_MONEY = "waits until the wallet can pay its buy"  # a wallet of the same actor as one that cannot be paid for
 
@@ -635,14 +637,16 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                                        f"{ONE_SNIPER}; no sniper is made in its stead"))  # fmt: skip
             continue
         fill = usable[arm]
-        can = buys_payable(inp.native_sol, inp.wsol, fill)
-        if can is not None and not (can["curve"] or can["pumpswap"]):
+        if curve_buy_beside_topup(inp.native_sol, inp.wsol, fill) is False:
             waiting_w6.add(w6)
             plan.actions.append(Action("skip", wallet, None, fill, None,
                                        f"{CANNOT_PAY} a {fill:g} SOL buy: no sniper is made until it can"))  # fmt: skip
             if not any(CANNOT_PAY in n for n in plan.notes):
+                need = curve_plain_need(float(inp.wsol or 0), fill)
                 plan.notes.append(f"{CANNOT_PAY} a {fill:g} SOL buy ({inp.native_sol:.4f} SOL and {inp.wsol:.4f} "
-                                  "wrapped SOL): no sniper is made until it can")  # fmt: skip
+                                  f"wrapped SOL): a curve copy is paid in plain SOL, and OKTech keeps "
+                                  f"{WRAP_TOPUP * fill:.3g} SOL wrapped from it while a sniper runs, so one copy needs "
+                                  f"{need:.4f} SOL of plain SOL here; no sniper is made until it can")  # fmt: skip
             continue
         added_w6.add(w6)
         # a new sniper gets the wallet's own floor and exit; a running one keeps those it was made with (no churn)

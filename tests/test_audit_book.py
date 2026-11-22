@@ -532,3 +532,32 @@ def test_book9_a_coin_on_the_owners_ignore_list_refuses_no_manual_stop_and_holds
     asyncio.run(svc.oktech_push({"_sync": SyncPlan()}))
     assert seen["held"] == []  # the ignored coin holds no retire back
     store.close()
+
+
+# -- book#6: the book's can-pay rule and OKTech's wrapped-SOL top-up ---------------------------------------------------
+
+
+def test_book6_no_sniper_is_made_whose_curve_copies_the_wrapped_sol_top_up_leaves_unpaid():
+    """The wrap test (21 Nov 21:51-22:04, docs/live-recipe.md): OKTech keeps the wallet's wrapped SOL at 1.1 times the
+    buy, taken from plain SOL, the whole time a sniper runs, whatever its platforms; a curve buy is paid in plain SOL
+    only. With 0.30 plain SOL and none wrapped the book made a 0.2 SOL sniper: OKTech wrapped 0.22 and left 0.08, every
+    curve copy failed and spent a shot, and the next run read the 0.22 wrapped as a PumpSwap buy and made another. A
+    sniper is made only while one curve copy can be paid beside the top-up."""
+    from snipetech.book.policy import BookInputs, plan_book
+    from snipetech.config import Config
+
+    def made(native, wsol, snipers=()):
+        inp = BookInputs(equity_sol=10, day_realised_sol=0, day_risk_used_sol=0,
+                         qualified=[{"wallet": L1, "score": 0.03, "copy_plan": {"min_leader_sol": 0.3}}], live={},
+                         bid_model={}, snipers=list(snipers), holdings=[], now=NOW, holdings_known=True,
+                         native_sol=native, wsol=wsol)  # fmt: skip
+        plan = plan_book(inp, Config().book)
+        return [a for a in plan.actions if a.kind == "create"], plan
+
+    creates, plan = made(0.30, 0.0)
+    assert not creates and any("cannot pay" in n and "wrapped" in n for n in plan.notes), plan.notes
+    assert not made(0.08, 0.22, [{"id": "k1", "name": K1, "status": "finished"}])[0]  # its replacement neither
+    assert not made(0.005, 0.5)[0]  # wrapped SOL pays a PumpSwap copy only: every curve copy would fail
+    assert made(0.425, 0.0)[0] and not made(0.424, 0.0)[0]  # 0.22 is wrapped from it, 0.205 pays a curve copy
+    assert made(0.205, 0.22)[0]  # the top-up is there already: the plain SOL pays the curve copy
+    assert made(None, 0.0)[0]  # a balance that was not read says nothing, as before
