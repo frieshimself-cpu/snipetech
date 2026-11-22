@@ -253,7 +253,9 @@ async def rpc_balances(svc, wallet: str, ignore: tuple[str, ...] = ()) -> tuple[
     from ..positions import filter_positions
     from ..solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 
-    native = (await svc.rpc.call("getBalance", [wallet]))["value"] / 1e9
+    # at the coins' commitment: the node's default (finalized) is about 13 s behind them, and for that long after a
+    # trade one side of it counted twice or not at all (audit 22 Nov, round#12)
+    native = (await svc.rpc.call("getBalance", [wallet, {"commitment": "confirmed"}]))["value"] / 1e9
     wsol, accounts = 0.0, []
     for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
         r = await svc.rpc.call("getTokenAccountsByOwner", [wallet, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}])

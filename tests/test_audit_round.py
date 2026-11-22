@@ -433,3 +433,19 @@ def test_round11_a_refused_send_logs_no_token():
 
     assert Notifier(token, 42, post=down, log=lines.append).send("hello") is False
     assert lines[-1] == "[operator] telegram send failed: ConnectError" and not any(token in x for x in lines)
+
+
+# -- round#12: plain SOL at the coins' commitment ----------------------------------------------------------------------
+
+
+def test_round12_plain_sol_is_read_at_the_coins_commitment(world):
+    """getBalance went without a commitment (the node's default, finalized, about 13 s behind) while the coins and the
+    wrapped SOL were read at 'confirmed': for 13 s after a trade one side of it counted twice or not at all."""
+    from snipetech.operator.snapshot import rpc_balances
+
+    st, _cfg, _paths = world
+    rpc = Rpc(1_000_000_000)
+    asyncio.run(rpc_balances(Svc(st, rpc), W))
+    commitments = {m: p[-1].get("commitment") if isinstance(p[-1], dict) else None
+                   for m, p in rpc.calls if m in ("getBalance", "getTokenAccountsByOwner")}  # fmt: skip
+    assert commitments == {"getBalance": "confirmed", "getTokenAccountsByOwner": "confirmed"}
