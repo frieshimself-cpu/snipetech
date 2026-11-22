@@ -69,8 +69,8 @@ from ..oktech import (
     _whole_hunt,
     _whole_secs,
 )
-from ..sim.exits import Costs, ExitParams, prepare, round_trip_pnl, run_exit
-from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, slot_secs_from
+from ..sim.exits import Costs, ExitParams, exits_reach, held_path, prepare, round_trip_pnl, run_exit
+from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, react_places, slot_secs_from
 from ..solana.programs import SOL_QUOTES
 from ..store import Store, file_identity
 from .bid_landing import FAST_TXS, NO_BIDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
@@ -441,6 +441,17 @@ REPEATS_ALSO, REPEATS_ONLY = "also", "only"
 REPEAT_CHOICES = ("", REPEATS_ALSO, REPEATS_ONLY)
 REPEATS_ONLY_WHY = ("it follows only a wallet's repeat buys in a coin, and no copy sniper can: OKTech copies every buy "
                     "of the wallet above its floor, its first in a coin included")  # fmt: skip
+# A rule that takes every buy of its wallet ("also", what a copy sniper copies) has that many moments in a coin only
+# where each followed wallet gives its own moments (`lab --each`: `collect` with groups, `_first_buys`). Anywhere else
+# a wallet rule fires once a coin (`_fire`), at the first buy at the size, and the repeats its label promises are never
+# scored (audit of 22 Nov: 17 forward records labelled "every buy" held one trade a coin). Refused in these words
+# (`check_repeats`, and a freeze: REPEATS_ALSO_FROZEN)
+REPEATS_ALSO_WHY = ('it takes every buy of its wallet at the size ("repeats": "also"), as a copy sniper copies them, '
+                    "and without --each a wallet rule fires once a coin, at the first of them: the repeats would never "
+                    "be scored. Score it with --each")  # fmt: skip
+REPEATS_ALSO_FROZEN = ("the forward test holds one trade a coin, the first buy at the size, and this rule takes every "
+                       'buy of its wallet ("repeats": "also"), as a copy sniper copies them: score it with lab '
+                       "--each")  # fmt: skip
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
@@ -765,6 +776,25 @@ def research_only_why(trig: Trigger | Mapping[str, Any]) -> str | None:
     if repeats == REPEATS_ONLY:
         return REPEATS_ONLY_WHY
     return MIG_ANY_AGE_WHY if _mig_window_of(trig) == 0 else None
+
+
+def takes_every_buy(trig: Trigger | Mapping[str, Any] | None) -> bool:
+    """Whether a wallet rule takes every buy of its wallet at the size, the repeats too ("repeats": "also"). `trig`: a
+    Trigger or a stored rule's trigger fields."""
+    if not trig:
+        return False
+    get = trig.get if isinstance(trig, Mapping) else (lambda name: getattr(trig, name, None))
+    return get("kind") == "kol" and get("repeats") == REPEATS_ALSO
+
+
+def check_repeats(triggers: Sequence[Trigger] | None, each: bool) -> None:
+    """Refuse in words, before any tape is read, a rule that takes every buy of its wallet where it would be scored
+    once a coin: in a lab or a place-bids table without --each (`each`), REPEATS_ALSO_WHY."""
+    if each:
+        return
+    every = [t for t in triggers or () if takes_every_buy(t)]
+    if every:
+        raise ValueError(f"{every[0].label()}: {REPEATS_ALSO_WHY}")
 
 
 def mig_window_fields(trig: Trigger | Mapping[str, Any]) -> dict[str, Any]:
@@ -1325,10 +1355,19 @@ def entry_at(kind: str, path: MarketPath, i: int, t_slot: int, latency: int, pos
     trade stood six of the pack's buys further on, on the curve, where the pack left the coin on PumpSwap). And no
     place stops inside a transaction or between transactions sent together, whoever sent them: where the last trade
     ahead of us is one of a pack, we stand behind that pack (`pack_end`). A place in a later block ("+3@1") counts
-    from that block's start as before, and stops behind a whole transaction too."""
+    from that block's start as before, and stops behind a whole transaction too.
+
+    "react:K" (22 Nov, the audit: a reacting sender's place is set by time, which in a block is how many places after
+    the trigger's own transaction it lands; `MarketPath.landing_index`): behind every trade of the coin up to K block
+    places after the trigger's transaction, counted from the trigger itself and not from its companions, never ahead
+    of its own entry (for a copy: its pack and its companions), and behind a whole transaction."""
     across = across_slots(position)
     if across is not None:
         return copy_entry(path, i, across, latency, mates if kind == "kol" else None)
+    if react_places(position) is not None:
+        floor = own_entry_end(path, i, mates) if kind == "kol" else pack_end(path, i)
+        e = pack_end(path, max(int(path.landing_index(t_slot + latency, position, i)), floor))
+        return create_block_entry(path, i, e, latency, position) if kind == "kol" else e
     # Counted from the end of the trigger's own entry: its pack, for a copy its companions too. Then behind the whole
     # transaction (and pack) of the last trade ahead of us: nobody buys inside one (`pack_end`).
     base = own_entry_end(path, i, mates) if kind == "kol" else pack_end(path, i)
@@ -1836,9 +1875,11 @@ def exit_scores(data: dict[str, Any], cfg: Config, ex: ExitParams, k: int | None
     k = data["exits"].index(ex) if k is None else int(k)
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
 
-    def stats(part: list[dict]) -> dict[str, Any]:
-        st = summarize([r["pnl"][k] for r in part if r["pnl"][k] is not None], conf, samples)
-        return {x: st[x] for x in ("n", "mean", "ev_lower", "win_rate", "total") if x in st}
+    def stats(part: list[dict]) -> dict[str, Any]:  # a coin's moments drawn together, and how many coins (`coins`)
+        part = [r for r in part if r["pnl"][k] is not None]
+        st = summarize([r["pnl"][k] for r in part], conf, samples, clusters=coin_keys(part))
+        return {x: st[x] for x in ("n", "mean", "ev_lower", "win_rate", "total") if x in st} | (
+            {"coins": st["clusters"]} if "clusters" in st else {})  # fmt: skip
 
     out = []
     for ti, trig in enumerate(data["triggers"]):
@@ -2335,6 +2376,9 @@ class _Run:
     # where in the slot after an exit fires its sale lands: "start" (EXIT_POSITION, ahead of that slot's trades) or
     # "end" (behind all of them: the crowd that sells with a followed wallet stands ahead of us, the agents' I219)
     exit_position: str = EXIT_POSITION
+    # how far past its buy any exit of the run can sell (`sim.exits.exits_reach`): a moment's exits are handed its
+    # path that far and a margin more (`held_path`), the same numbers at the cost of their own hold; 0 = the whole path
+    reach_secs: float = 0.0
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -2357,6 +2401,32 @@ def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, 
             mints = sorted(wanted)  # the store's order: by mint
         plan.append((a, b, slot_secs, mints))
     return plan
+
+
+def _event_plan(store: Store, spans, events_by_mint: Mapping[str, list[tuple]]) -> list[tuple]:
+    """`_plan` for a lab whose every rule is an event rule: span by span (a span under ten minutes skipped, as there),
+    the coins with an event of the rule's kinds inside it, in the store's order (by mint), and no other coin. A coin
+    with fewer than the lab's trades in the span gives no row when it is read, as one `active_mints` leaves out. An
+    event that names no coin (the table's `mint` may be empty) fires on none, and is no coin of the plan."""
+    spans = [(a, b) for a, b in spans if b - a >= 600]
+    starts = [a for a, _b in spans]
+    named: list[set[str]] = [set() for _ in spans]
+    for mint, events in events_by_mint.items():
+        if not mint:
+            continue
+        for _kind, ts, _slot, _q in events:
+            k = bisect.bisect_right(starts, ts) - 1
+            if k >= 0 and ts <= spans[k][1]:
+                named[k].add(mint)
+    return [(a, b, span_slot_secs(store, int(a), int(b)), sorted(mints))
+            for (a, b), mints in zip(spans, named) if mints]  # fmt: skip
+
+
+def _span_events(events: list[tuple] | None, a, b) -> list[tuple]:
+    """A coin's events (`collect`'s events_by_mint) inside the tape span [a, b]: an event fires only in its own
+    stretch of tape. Until 22 Nov every one was handed over, so an event of an earlier stretch, or of before the
+    tape, fired again at the coin's first trade of a later stretch, hours after it."""
+    return [e for e in events or () if e[1] is not None and a <= e[1] <= b]
 
 
 def _span_migration(store: Store, mint: str, a, b):
@@ -2444,6 +2514,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     wants_paid = mig is not None and any(t.kind in AMM_KINDS and t.dev_paid is not None for _, t in run.triggers)
     paid = dev_paid_earlier(store, in_span_launch) if wants_paid else None
     rows: list[dict] = []
+    events = _span_events(run.events_by_mint.get(mint), a, b)  # this stretch's own events
     by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
     recorded: tuple | None = None  # (the coin's migration as the tape recorded it), read once a wallet buys on PumpSwap
     for ti, trig in run.triggers:
@@ -2455,7 +2526,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             # for crew "only". A "skip" rule that fires on the coin says so, for the lab's count of what it left out
             # (`_crew_report`); the row is no moment
             if trig.crew == CREW_SKIP:
-                i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig, paid)
+                i = _fire(trig, path, in_span, run.kols, events, mig, paid)
                 if i is not None and fired_at(trig, path, i, mig)[1] <= b - 60:
                     rows.append({"mint": mint, "trigger": ti, "ts": int(fired_at(trig, path, i, mig)[1]),
                                  "skipped": CREW_LEFT})  # fmt: skip
@@ -2463,7 +2534,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)
         else:  # once per coin, the way one sniper takes one position per coin
-            i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig, paid)
+            i = _fire(trig, path, in_span, run.kols, events, mig, paid)
             fired = [] if i is None else [i]
         for i in fired:
             t_slot, t_ts = fired_at(trig, path, i, mig)
@@ -2512,7 +2583,11 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 by_user = _trades_by_user(path) if by_user is None else by_user
                 own = by_user[path.users[i]]
                 frac = leader_sell_fractions(path, path.users[i], own)
-            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, run.exit_position, leader_frac=frac,
+            # the path as far as its exits can sell, every index the same (audit of 22 Nov: every state to the
+            # coin's end of tape was built and read, 637 ms a moment at 200,000 later trades)
+            held = held_path(path, e, run.reach_secs)
+            prep = prepare(held, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, run.exit_position,
+                           leader_frac=None if frac is None else frac[: held.n],
                            migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
                 if gap is not None:  # left out, and said why, as before 8 Nov: no exit scores it
@@ -2784,11 +2859,12 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     wallet_runs = any(t.kind == "kol" for _, t in triggers)
     amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell or wallet_runs else {}
     events_by_mint: dict[str, list[tuple]] = {}
-    if event_kinds:
+    if event_kinds and spans:  # the events on the tape the lab reads: one fires only in its own stretch (`_coin_rows`)
         marks = ",".join("?" * len(event_kinds))
         for kind, ts, slot, mint, q_after in store._q(
-            f"SELECT kind, ts, slot, mint, json_extract(data, '$.q_after') FROM events WHERE kind IN ({marks})",
-            list(event_kinds),
+            f"SELECT kind, ts, slot, mint, json_extract(data, '$.q_after') FROM events WHERE kind IN ({marks}) "
+            "AND ts BETWEEN ? AND ?",
+            [*event_kinds, int(min(a for a, _b in spans)), int(max(b for _a, b in spans))],
         ):
             events_by_mint.setdefault(mint, []).append((kind, ts, slot, q_after))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
@@ -2810,7 +2886,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                amm_backfill=_backfill(store, until) if wallet_runs else {}, until=until,
                bid_sol=bid_sol if is_bid(position) else 0.0,
                own=frozenset(own_wallets(store, cfg, **upto)) if is_bid(position) else frozenset(),
-               same_sol=bool(same_sol), exit_how=bool(exit_how), exit_position=exit_position)  # fmt: skip
+               same_sol=bool(same_sol), exit_how=bool(exit_how), exit_position=exit_position,
+               reach_secs=exits_reach([*exits, *mig_exits, *(ex for xs in by_kind.values() for ex in xs)]))  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     named = any(t.kind == "kol" and t.only for _, t in triggers)  # a rule that names its wallets (`only`)
     if ((plan_wallets is None or named) and triggers and isinstance(kols, dict)
@@ -2821,7 +2898,12 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         # for 903 moments). A rule for one wallet reads that wallet's coins, in the qualify lab's form too
         plan_wallets = set().union(*(rule_wallets(t, kols) for _, t in triggers))
         floor = group_floor(triggers)
-    plan = _plan(store, spans, plan_wallets, min_trades, floor)
+    if triggers and all(t.kind == "event" for _, t in triggers):
+        # an event rule fires only on a coin with an event of its kind in the stretch read: the event edge read
+        # every coin of 14 days for the 46-52 % of busy coins that carry one (audit of 22 Nov)
+        plan = _event_plan(store, spans, events_by_mint)
+    else:
+        plan = _plan(store, spans, plan_wallets, min_trades, floor)
     # (a stablecoin or wrapped SOL is no coin: a wallet's swap into one is no signal, and since the first agent
     # backfill of 12 Nov USDC's own pool is on the tape; positions.NON_COIN_MINTS, read at the call)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints
@@ -2846,6 +2928,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     }
     out = {"rows": rows, "exits": exits, "kind_exits": by_kind, "exit_position": exit_position,
            "tape_hours": sum(b - a for a, b in spans) / 3600,
+           # the stretches of tape read, for the hours a rule's newer moments were read over (`rank`, `taped_secs`)
+           "tape_spans": [(int(a), int(b)) for a, b in spans],
            "window": window, "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored, "mig_exits": mig_exits,
@@ -2943,9 +3027,9 @@ def check_bid_landing(position: str, latency: int, bid_sol: float, triggers: Seq
 
 def each_groups(triggers: Sequence[Trigger] | None) -> tuple[str, ...]:
     """The label groups `lab --each` hands `collect` (its `groups`: every followed wallet gives its own moments, as
-    its own copy sniper copies them), refused in words before any tape is read where that would drop a rule without a
-    word: `collect` with groups runs wallet rules only, so --each takes named rules (--trigger) and wallet rules
-    alone."""
+    its own copy sniper copies them), refused in words before any tape is read where that would drop a rule, or a
+    gate of one, without a word: `collect` with groups runs wallet rules only, so --each takes named rules (--trigger)
+    and wallet rules alone, and none with a consensus gate (`check_each_gates`)."""
     if not triggers:
         raise ValueError("--each scores each followed wallet's own buys under the wallet rules named with --trigger: "
                          "name one")  # fmt: skip
@@ -2953,7 +3037,33 @@ def each_groups(triggers: Sequence[Trigger] | None) -> tuple[str, ...]:
     if other:
         raise ValueError(f"--each scores wallet rules (kol triggers) only; {', '.join(other)} would be left out: run "
                          "those without --each")  # fmt: skip
+    check_each_gates(triggers)
     return tuple(dict.fromkeys(t.group for t in triggers))
+
+
+# A wallet rule's consensus (`known` of 2 or more, `gap`, `teams`, `known_any`: `_kol_gates`) counts the other wallets
+# in the coin: one sniper over the group's wallets does that (OKTech ctbotMinWallets), and it buys once a coin. A copy
+# sniper of one wallet sees no other (ctbotWallets [w], ctbotMinWallets 1), so each wallet's own moments (--each,
+# `_first_buys`) have no consensus, and a rule that names one is refused rather than scored without it (audit of
+# 22 Nov: `place-bids --each` named ">= 2 known wallets in" over moments two thirds of which had one)
+EACH_CONSENSUS_WHY = ("--each scores each followed wallet's own buys, as its own copy sniper copies them, and a sniper "
+                      "of one wallet sees no other: {gates} counts the other wallets in the coin, which only one "
+                      "sniper over the group's wallets does, once a coin. Run this rule without --each")  # fmt: skip
+
+
+def consensus_gates(trig: Trigger) -> list[str]:
+    """The consensus gates a wallet rule sets, in words: known (2 or more), gap, teams, known_any."""
+    return ([f"known {trig.known}"] if trig.known > 1 else []) + ([f"gap {trig.gap:g} s"] if trig.gap else []) + (
+        ["teams"] if trig.teams else []) + (["known_any"] if trig.known_any else [])  # fmt: skip
+
+
+def check_each_gates(triggers: Sequence[Trigger] | None) -> None:
+    """Refuse in words, before any tape is read, a wallet rule with a consensus gate where each followed wallet gives
+    its own moments (`lab --each`, `place-bids --each`): EACH_CONSENSUS_WHY."""
+    for t in triggers or ():
+        gates = consensus_gates(t) if t.kind == "kol" else []
+        if gates:
+            raise ValueError(f"{t.label()}: " + EACH_CONSENSUS_WHY.format(gates=" and ".join(gates)))
 
 
 def bid_hours(store: Store, spans) -> tuple[int | None, float]:
@@ -3136,6 +3246,29 @@ def pnl_matrix(rows: Sequence[Mapping[str, Any]]) -> np.ndarray:
     return np.array([r["pnl"] for r in rows], dtype=np.float64)
 
 
+def coin_keys(rows: Sequence[Mapping[str, Any]]) -> list[Any]:
+    """Each moment's coin: what the lab's bounds draw whole (`stats.bootstrap_mean_bounds`' `clusters`). The moments of
+    one coin move together, seconds apart and sold by the same exit (with --each and "repeats": "also" a coin gives
+    several), so they are one draw, never several (audit of 22 Nov: 120 moments in 40 coins gave a bound twice too
+    tight). A rule that gives one moment a coin is drawn as before, to the last bit. A row that names no coin is a
+    draw of its own."""
+    return [r.get("mint") if r.get("mint") is not None else ("row", j) for j, r in enumerate(rows)]
+
+
+def taped_secs(data: Mapping[str, Any], since: float, last: float) -> float:
+    """The seconds of tape a rule's newer moments were read over: from the first of them (`since`) to the end of the
+    lab's window (`window.until_ts`), the stretches the tape holds only (`tape_spans`: an hour the recorder missed is
+    no hour the rule could fire in, as `per_hour` counts `tape_hours`). A lab without a window (one built by hand)
+    counts to its last moment (`last`), as every lab did until 22 Nov."""
+    end = (data.get("window") or {}).get("until_ts")
+    if end is None:
+        return float(last) - float(since)
+    spans = data.get("tape_spans")
+    if not spans:
+        return float(end) - float(since)
+    return float(sum(max(0.0, min(float(b), float(end)) - max(float(a), float(since))) for a, b in spans))
+
+
 def pick_exit(m: np.ndarray, cut: int, need: int) -> tuple[int | None, np.ndarray]:
     """The exit (column of `m`, moments x exits, oldest first) the older moments (rows before `cut`) pick, and each
     exit's mean on the older moments the pick was made on (-inf for one that does not compete). An exit competes when
@@ -3207,14 +3340,15 @@ def bands(rs: Sequence[Mapping[str, Any]], k: int, conf: float, samples: int) ->
         return None
 
     def split(names: Sequence[str], band_of, key: str) -> list[dict[str, Any]]:
-        pnl: list[list[float]] = [[] for _ in names]
+        moments: list[list[Mapping[str, Any]]] = [[] for _ in names]
         for r in scored:
-            pnl[band_of(float(r[key]))].append(float(r["pnl"][k]))
+            moments[band_of(float(r[key]))].append(r)
         out = []
-        for name, xs in zip(names, pnl):
+        for name, rows in zip(names, moments):
+            xs = [float(r["pnl"][k]) for r in rows]
             row: dict[str, Any] = {"band": name, "n": len(xs)}
             if len(xs) >= BAND_MIN_N:
-                st = summarize(xs, conf, samples)
+                st = summarize(xs, conf, samples, clusters=coin_keys(rows))  # a coin's moments drawn together
                 row |= {x: st[x] for x in ("mean", "ev_lower", "win_rate", "total")}
             out.append(row)
         return out
@@ -3270,10 +3404,13 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
         k, train_means = pick_exit(m, cut, min_train + 5)
         if k is None:  # no exit scored on enough of the trigger's moments, or a pick its newer moments cannot judge
             continue
-        test = m[cut:, k]
-        test = test[~np.isnan(test)]
-        span_h = max((rs[-1]["ts"] - rs[cut]["ts"]) / 3600, 1e-6)
-        st = summarize(test, conf, samples)
+        newer = ~np.isnan(m[cut:, k])  # the newer moments the exit was scored on
+        test = m[cut:, k][newer]
+        span_h = max(taped_secs(data, rs[cut]["ts"], rs[-1]["ts"]) / 3600, 1e-6)  # the newer moments' hours of tape
+        # a coin's newer moments are one draw of the bound (`coin_keys`), and `test.coins` says how many coins
+        st = summarize(test, conf, samples, clusters=coin_keys([r for r, ok in zip(rs[cut:], newer) if ok]))
+        judged = {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")}
+        judged["coins"] = st.get("clusters")
         ex = by_kind.get(trig.kind, exits)[k]
         left_out = sum((((data.get("size") or {}).get("triggers") or {}).get(trig.label()) or {})
                        .get("skipped", {}).values())  # fmt: skip
@@ -3281,12 +3418,16 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
         # SOL a day: the mean of the newer moments the exit was scored on, over every newer firing, since the rule trades
         # each one live. A firing it was left out on is a ride into a migration, for a hunt buy a big gain by then
         # (research round 3: riders reached 3.6-9x at the migration), so the mean it stretches leans low for a hunt.
+        # A day of what: of the tape the newer moments were read on, from the first of them to the end of the lab's
+        # window (`taped_secs`); until 22 Nov to the last of them, so a rule whose newer moments came in a burst, or
+        # whose wallet went quiet, read as keeping that pace (8 moments in an hour, then two quiet days: +9.19 SOL a
+        # day where the window made +0.16).
         out.append({
             "trigger": trig.label(), "trigger_spec": trig.__dict__, "exit": ex.label(), "exit_params": ex.to_dict(),
             "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs),
             "exit_moments": int((~np.isnan(m[:, k])).sum()), "per_hour": len(rs) / hours,
             "train_mean": float(train_means[k]), "train": {"n": int((~np.isnan(m[:cut, k])).sum())},
-            "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
+            "test": judged,
             "test_from_ts": int(rs[cut]["ts"]), "test_from_utc": utc(rs[cut]["ts"]),
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
             # our own buy against the pools it met and both ends of what the later buyers are worth (`_size_of`)
@@ -3372,7 +3513,7 @@ def _copy_plan_stats(moments: list[dict], min_leader_sol: float) -> dict[str, An
 
 
 def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST,
-                       conf: float = 0.8, samples: int = 2000) -> dict[str, Any]:  # fmt: skip
+                       conf: float = 0.8, samples: int = 2000, clusters=None) -> dict[str, Any]:  # fmt: skip
     """Which exit a wallet's sniper should run: a column of `pnl` (the wallet's moments, oldest first, x the exits of
     the menu). Column j replaces `gate` (lab) only when j has the best train mean on the wallet's older 60 % of moments,
     each train mean shrunk toward the group's (`group_train`: the same exits on every wallet's older moments; None = no
@@ -3380,7 +3521,7 @@ def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_
     mean paired difference and a positive bootstrap lower bound on it. Returns the column ("index"), "source" ("wallet"
     or "lab"), the column that did best on the older moments ("candidate", None when the gate did), and on the held-out
     moments: how many ("test_n") and the candidate's mean gain over the gate a trade ("gain", SOL) with its lower bound
-    ("lower")."""
+    ("lower"). `clusters`: each moment's coin (`coin_keys`), so the bound draws a coin's moments together."""
     pnl = np.asarray(pnl, dtype=np.float64)
     n = len(pnl)
     cut = int(n * EXIT_TRAIN_SHARE)
@@ -3394,7 +3535,8 @@ def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_
     j = int(np.argmax(shrunk))
     if j == gate or not shrunk[j] > shrunk[gate]:
         return out
-    st = summarize(pnl[cut:, j] - pnl[cut:, gate], conf, samples)
+    st = summarize(pnl[cut:, j] - pnl[cut:, gate], conf, samples,
+                   clusters=None if clusters is None else list(clusters)[cut:])  # fmt: skip
     out |= {"candidate": j, "gain": st["mean"], "lower": st["ev_lower"]}
     if st["mean"] > 0 and st["ev_lower"] > 0:
         out |= {"index": j, "source": "wallet"}
@@ -3492,7 +3634,8 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
             mine = [i for i in kept if scored[i]]  # the copies its gating exit was scored on
             if len(mine) < min_n or (w in best and best[w]["n"] >= len(mine)):
                 continue
-            st = summarize(m[np.array(mine, dtype=int), k], conf, samples)
+            # a coin's moments are one draw of the bound (`coin_keys`: with "repeats": "also" a coin gives several)
+            st = summarize(m[np.array(mine, dtype=int), k], conf, samples, clusters=coin_keys([rs[i] for i in mine]))
             row = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": used[k].label(),
                    "n": len(mine), "mean": st.get("mean"), "ev_lower": st.get("ev_lower"),
                    "win_rate": st.get("win_rate"), "total": st.get("total"),
@@ -3506,7 +3649,7 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                 fit = [i for i in mine if whole[i]] if choose else mine
                 group = group_before(fit) if choose else None
                 c = choose_wallet_exit(m[np.array(fit, dtype=int)][:, own], own.index(g), group, shrink_k, min_test,
-                                       conf, samples)  # fmt: skip
+                                       conf, samples, clusters=coin_keys([rs[i] for i in fit]))  # fmt: skip
                 ex = used[own[c["index"]]]
                 row |= {"exit_name": names.get(ex), "exit_params": ex.to_dict(), "exit_source": c["source"],
                         "exit_menu": EXIT_MENU_VERSION if choose else None,

@@ -43,6 +43,8 @@ from .lab import (
     _fire,
     _first_buys,
     _plan,
+    check_each_gates,
+    check_repeats,
     fired_at,
     implausible_coin,
     label_groups,
@@ -61,6 +63,9 @@ REGULAR_SHARE, REGULAR_MIN = 0.3, 3  # a wallet in the first places behind one w
 SPAN_TAIL_SECS = 60  # as the lab: a moment in the last minute of a stretch of tape is not scored
 # idea I51: the second known wallet into a coin, with a buy of 1 to 3 SOL
 DEFAULT_TRIGGER: dict[str, Any] = {"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}
+# with `each`, every wallet's own first buy of 1 to 3 SOL: a copy sniper of one wallet has no consensus gate
+# (`lab.check_each_gates`), and until 22 Nov the table's rule named ">= 2 known wallets in" over those moments
+EACH_DEFAULT_TRIGGER: dict[str, Any] = {k: v for k, v in DEFAULT_TRIGGER.items() if k != "known"}
 NO_FEES = "this copy of the tape holds no fee records (taken before 11 Nov): no bid is known"
 DUST_READING = (
     f"A buy under {DUST_SOL:g} SOL behind the followed wallet is left out as dust: it is no buyer, it holds no place "
@@ -103,6 +108,9 @@ def moments(store: Store, trig: Trigger, spans: Sequence[tuple[int, int]], *, ea
     if trig.kind != "kol":
         raise ValueError(f"place-bids reads the block behind a followed wallet: it takes a wallet rule (a kol "
                          f"trigger), not a {trig.kind} one")  # fmt: skip
+    check_repeats([trig], each)  # a rule that takes every buy would be read once a coin without `each`
+    if each:  # a wallet's own buys have no consensus: a rule with one is refused, never read without it
+        check_each_gates([trig])
     kols = label_groups(store) if kols is None else kols
     group = set(rule_wallets(trig, kols))
     keep = None if not wallets else set(wallets)
@@ -255,11 +263,12 @@ def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, A
                hours: float = 48.0, each: bool = False, wallets: Collection[str] | None = None, top: int = 20,
                min_trades: int = 5, kols: Any = None, labels: Mapping[str, str] | None = None,
                own: Collection[str] | None = None) -> dict[str, Any]:  # fmt: skip
-    """The table of place against bid for the wallet rule `trigger` (a lab kol trigger; default: idea I51's) over the
-    newest `hours` of tape. `kols` / `labels`: the wallet groups and names (default: this store's; a caller reading
-    the hourly copy hands the live ones). `own`: our wallets (default: the operator's and those with fills)."""
+    """The table of place against bid for the wallet rule `trigger` (a lab kol trigger; default: idea I51's, and with
+    `each` the same buys without its consensus gate, EACH_DEFAULT_TRIGGER) over the newest `hours` of tape. `kols` /
+    `labels`: the wallet groups and names (default: this store's; a caller reading the hourly copy hands the live
+    ones). `own`: our wallets (default: the operator's and those with fills)."""
     spec = (
-        dict(DEFAULT_TRIGGER)
+        dict(EACH_DEFAULT_TRIGGER if each else DEFAULT_TRIGGER)
         if trigger is None
         else (json.loads(trigger) if isinstance(trigger, str) else dict(trigger))
     )
