@@ -326,6 +326,17 @@ def test_resume_removes_flag_and_status_reports(tmp_path):
     assert "/status" in asyncio.run(handle_command(_cmd("bogus"), **ctx))
 
 
+def test_a_resume_with_no_stop_set_leaves_a_running_tests_expectation_alone(tmp_path):
+    """Audit of 22 Nov (livetest#5): /resume deleted operator/expected.json before it looked for the stop flag. With no
+    /stop set ("nothing to resume") a running test's own sniper and coin then read as deviations at every round's gate
+    until the test ended, and woke the agents with them."""
+    ctx, _sent = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    ctx["paths"].expected.write_text(json.dumps({"snipers_running": 1, "held": 1}))  # a live test runs
+    reply = asyncio.run(handle_command(_cmd("resume"), **ctx))
+    assert "nothing to resume" in reply
+    assert expected_state(ctx["paths"]) == {"snipers_running": 1, "held": 1}
+
+
 def test_stop_flag_makes_zero_snipers_expected(tmp_path):
     paths = OperatorPaths(tmp_path).ensure()
     paths.expected.write_text(json.dumps({"snipers_running": 2, "held": 1}))

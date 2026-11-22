@@ -529,11 +529,10 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
                  "again if you still mean it.")  # fmt: skip
     elif cmd.name == "resume":
         try:
-            paths.expected.unlink()  # whatever a live test expected before the stop no longer holds
-        except FileNotFoundError:
-            pass
-        try:
             paths.stop_flag.unlink()
+            # whatever a live test expected before the stop no longer holds; with no stop set, a running test's
+            # expectation is left as it is (audit of 22 Nov: it was deleted first, and its sniper woke the agents)
+            paths.expected.unlink(missing_ok=True)
             notes.write(
                 "resumed by owner: stop flag removed; expected state back to none running, none held", "decision"
             )
