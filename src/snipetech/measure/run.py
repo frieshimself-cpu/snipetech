@@ -616,6 +616,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                 tx = txs.get(sig)
                 fill = read_fill(tx, wallet, ctx["services"], ours=True) if tx else None
                 if fill is None or fill["side"] not in ("buy", "sell"):
+                    if fill is not None and fill["side"] == "transfer" and store.fill(sig):
+                        store.drop_fill(sig)  # written as a sale of 0 SOL before 22 Nov: a coin moved out is no trade
                     continue  # a transfer, a conversion of wrapped SOL: no trade
                 landing = await place(sig, float(fill["ts"] or 0), tx) if fill["side"] == "buy" else None
                 row = _chain_row(fill, landing, cfg.book.bid_arms)

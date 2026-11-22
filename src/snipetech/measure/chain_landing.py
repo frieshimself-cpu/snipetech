@@ -167,6 +167,9 @@ def pool_side(tx: dict, mint: str, bought: bool) -> dict[str, Any] | None:
     return {"owner": owner, "lamports": abs(sol), "tokens": abs(d)}
 
 
+MOVE_RENT_LAMPORTS = 2_100_000  # a token account's rent (2,039,280) and a little: what a coin's transfer may carry
+
+
 def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, *, ours: bool = False) -> dict | None:
     """One wallet's side of one transaction (a getTransaction answer, or a block's transaction with its slot added):
     the coin whose balance of the wallet changed the most, bought or sold; `tokens` (raw units) and `sol`: what the
@@ -175,8 +178,9 @@ def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, 
     tape's `sol` (the quote and the venue's fee) wherever the coin trades. `pool_sol`: the SOL at the pool
     (`pool_side`); `price`: SOL per coin (raw lamports per raw unit) at the pool, else from `sol` (`price_from`).
     `ours`: the wallet is ours, and a payment to an account nobody catalogued is a tip (`classify.fee_fields`); for
-    any other wallet it is `other_lamports`. A failed transaction is side "failed" with the coin it named.
-    None when the wallet traded no coin there."""
+    any other wallet it is `other_lamports`. A failed transaction is side "failed" with the coin it named; a coin
+    that moved to or from another wallet with no pool on the other side and no SOL across is side "transfer" (no
+    trade). None when the wallet's coins did not change there."""
     meta = extract_tx_meta(tx, services=dict(services or {}))
     accounts = _token_accounts(tx)
     mine = [r for r in accounts.values() if r["owner"] == wallet]
@@ -218,6 +222,9 @@ def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, 
         elif a_pre > 0 and a_post == 0:  # closed here: the rent came back
             net -= a_pre - (r["pre"] if wrapped else 0)
     sol_l = 0 if failed else abs(net)
+    # a coin moved to or from another wallet: no pool took or gave it and no SOL came across but, at most, the rent of
+    # the other side's token account (22 Nov 23:07:39: the owner moved a coin out, read as a sale of 0 SOL until then)
+    moved = not failed and pool is None and sol_l <= MOVE_RENT_LAMPORTS
     tokens = abs(change)
     price = price_from = None
     if pool and pool["tokens"]:
@@ -228,7 +235,8 @@ def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, 
     bid = int(fees["priority_lamports"]) + int(fees["tip_lamports"])
     return {
         "sig": meta.sig, "slot": int(meta.slot), "ts": meta.block_time, "wallet": wallet,
-        "side": "failed" if failed else ("buy" if bought else "sell"), "mint": mint, "tokens": tokens,
+        "side": "failed" if failed else "transfer" if moved else ("buy" if bought else "sell"), "mint": mint,
+        "tokens": tokens,
         "decimals": decimals, "sol": round(sol_l / LAMPORTS, 9), "failed": failed,
         "err": (tx.get("meta") or {}).get("err"), "priority_lamports": int(fees["priority_lamports"]),
         "tip_lamports": int(fees["tip_lamports"]), "other_lamports": other, "bid_sol": bid / LAMPORTS,

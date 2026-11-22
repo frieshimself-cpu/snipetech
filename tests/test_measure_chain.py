@@ -18,7 +18,7 @@ from snipetech.service import Service
 from snipetech.solana.txmeta import TxMeta
 from snipetech.store import Store
 
-from .chain import Chain, key, noise, sig, swap
+from .chain import Chain, key, noise, sig, swap, token_move
 from .synth import Market, addr
 from .test_chain_landing import COIN, FAST, LEAD, MATE, ME2, PACK_COIN, RICH, S, _busy_block, _pack_block
 
@@ -110,6 +110,23 @@ def test_a_backfill_writes_the_copy_of_a_coin_the_tape_does_not_hold(tmp_path):
         assert out2["from_chain"] == {"buys": 0, "sells": 0, "placed": 0} and len(st.fills()) == 3
         assert len([c for c in chain.calls if c[0] == "getBlock"]) == blocks
         assert st.fill(ours)["trades_behind"] == 2 and st.fill(sig("sell"))["pnl_sol"] == sell["pnl_sol"]
+    finally:
+        st.close()
+
+
+def test_a_coin_moved_out_is_no_sell_and_the_row_written_for_it_before_goes(tmp_path):
+    """22 Nov 23:07:39: a coin the owner moved out of the sniper wallet was written as a sale of 0 SOL, so the
+    post-mortem would have counted its whole buy as lost. Read again it is a transfer: no fill, and the row written
+    for it before is dropped."""
+    chain = Chain(t0=T0 + 240, slot0=S)
+    chain.put(S + 10, token_move("moved out", ME, COIN, tokens=38_000_000, to=key("the owner's other wallet")))
+    svc, st, cfg = _svc(tmp_path, chain)
+    try:
+        st.put_fill({"sig": sig("moved out"), "slot": S + 10, "ts": chain.ts(S + 10), "wallet": ME, "side": "sell",
+                     "mint": COIN, "sol": 0.0, "tokens": 38_000_000, "exit_reason": "manual"})  # fmt: skip
+        out = asyncio.run(backfill(svc, cfg, T0, T0 + 1200))
+        assert st.fill(sig("moved out")) is None
+        assert out["sells"] == 0 and out["from_chain"]["sells"] == 0
     finally:
         st.close()
 

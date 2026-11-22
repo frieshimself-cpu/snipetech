@@ -225,6 +225,42 @@ def noise(name: str, wallet: str) -> dict:
     }  # fmt: skip
 
 
+def token_move(name: str, sender: str, mint: str, *, tokens: int, to: str) -> dict:
+    """A coin sent from one wallet to another (SPL transferChecked): `tokens` raw units leave `sender`'s token account
+    for `to`'s, no pool on either side and no SOL across; the sender pays the fee. 22 Nov 23:07:39: the owner moved a
+    coin out of the sniper wallet this way."""
+    src, dst = key(f"ata {sender} {mint}"), key(f"ata {to} {mint}")
+    keys = [sender, src, dst, to, SPL_TOKEN, mint]
+    ix = {k: i for i, k in enumerate(keys)}
+    data = bytes([12]) + int(tokens).to_bytes(8, "little") + bytes([6])
+    pre = {k: 1_000_000 for k in keys}
+    pre.update({sender: 2 * LAMPORTS, src: RENT, dst: RENT})
+    post = dict(pre)
+    post[sender] -= 5000
+
+    def bal(account: str, owner: str, raw: int) -> dict:
+        return {"accountIndex": ix[account], "mint": mint, "owner": owner, "programId": SPL_TOKEN,
+                "uiTokenAmount": _amount(raw)}  # fmt: skip
+
+    return {
+        "transaction": {"signatures": [sig(name)],
+                        "message": {"accountKeys": keys, "header": {"numRequiredSignatures": 1,
+                                                                     "numReadonlySignedAccounts": 0,
+                                                                     "numReadonlyUnsignedAccounts": 3},
+                                    "instructions": [{"programIdIndex": ix[SPL_TOKEN],
+                                                      "accounts": [ix[src], ix[mint], ix[dst], ix[sender]],
+                                                      "data": b58encode(data), "stackHeight": None}],
+                                    "recentBlockhash": key(f"blockhash {name}")}},
+        "meta": {"err": None, "status": {"Ok": None}, "fee": 5000, "preBalances": [pre[k] for k in keys],
+                 "postBalances": [post[k] for k in keys],
+                 "preTokenBalances": [bal(src, sender, tokens), bal(dst, to, 0)],
+                 "postTokenBalances": [bal(src, sender, 0), bal(dst, to, tokens)], "innerInstructions": [],
+                 "logMessages": [], "loadedAddresses": {"writable": [], "readonly": []},
+                 "computeUnitsConsumed": 6_000, "rewards": []},
+        "version": 0,
+    }  # fmt: skip
+
+
 class Chain:
     """Blocks of transactions and the RPC that serves them. `put(slot, tx, ...)` appends to a block in the order the
     block ran them. The RPC half has the methods `SolanaRpc` has and counts its calls."""

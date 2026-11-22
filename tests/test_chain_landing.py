@@ -16,7 +16,7 @@ import pytest
 from snipetech.measure import chain_landing as CL
 from snipetech.solana.programs import PUMP_AMM_PROGRAM, PUMP_PROGRAM
 
-from .chain import NOZOMI, Chain, key, noise, pack, sig, swap
+from .chain import NOZOMI, Chain, key, noise, pack, sig, swap, token_move
 
 FIX = Path(__file__).parent / "fixtures"
 ME, ME2, LEAD, MATE = key("our wallet"), key("our second wallet"), key("the copied wallet"), key("its companion")
@@ -209,6 +209,24 @@ def test_one_wallets_side_of_a_transaction_another_wallet_paid_for():
     assert fill["side"] == "buy" and fill["sol"] == pytest.approx(0.5) and fill["tokens"] == 400_000_000
     assert CL.read_fill(tx, key("a gas wallet")) is None  # it traded nothing
     assert CL.buyers(tx, COIN) == [FAST]
+
+
+def test_a_coin_sent_to_another_wallet_is_no_sale_and_one_received_is_no_buy():
+    """22 Nov 23:07:39: the owner moved a coin out of the sniper wallet (a token transfer: no pool, no SOL back). The
+    reader took it for a sale of 0 SOL, and the post-mortem would have counted the whole buy as lost. A coin that
+    leaves or arrives with no pool on the other side and no SOL across is a transfer: no trade."""
+    out = token_move("out", ME, COIN, tokens=289_527_971_424, to=key("the owner's other wallet")) | {"slot": S,
+                                                                                                    "blockTime": 1}
+    moved = CL.read_fill(out, ME)
+    assert moved is not None and moved["side"] == "transfer" and moved["sol"] == 0.0
+    assert moved["mint"] == COIN and moved["tokens"] == 289_527_971_424
+    inc = token_move("in", key("somebody"), COIN, tokens=5_000_000, to=ME) | {"slot": S, "blockTime": 1}
+    assert CL.read_fill(inc, ME)["side"] == "transfer"
+    # a sale and a buy still read as they did
+    sale = swap("sale", ME, COIN, tokens=-38_000_000, sol=0.06, held=38_000_000) | {"slot": S, "blockTime": 1}
+    assert CL.read_fill(sale, ME)["side"] == "sell"
+    buy = swap("a buy", ME, COIN, tokens=38_000_000, sol=0.05) | {"slot": S, "blockTime": 1}
+    assert CL.read_fill(buy, ME)["side"] == "buy"
 
 
 def test_our_real_pumpswap_buy_of_10_nov_reads_as_the_tape_recorded_it():
