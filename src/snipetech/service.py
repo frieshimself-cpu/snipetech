@@ -1999,23 +1999,26 @@ class Service:
                 log(f"the snipers' rests could not be saved ({type(exc).__name__}): they hold for this run only")
 
         def kind_of(t) -> tuple[str, str | None]:
-            """What kind of buy the run's buy `t` copied, and the copied wallet it concerns: "own launch" (the wallet
-            signed the coin's create, or is named its creator and bought in it), "bait" (a create naming the wallet,
-            signed by someone else, no buy of its), "repeat" (the wallet had bought the coin before the buy we
-            followed), "unseen" (no buy of a copied wallet before ours on the tape), or "first"."""
+            """What kind of buy the run's buy `t` copied, and the copied wallet it concerns, by the copied buy ours
+            followed (the nearest before it): "own launch" (by the wallet that signed the coin's create, or is named
+            its creator; or no copied buy before ours in a coin a copied wallet signed for), "bait" (a create naming
+            the wallet, signed by someone else, and no copied buy before ours), "repeat" (the wallet had bought the
+            coin before the buy we followed), "unseen" (no buy of a copied wallet before ours on the tape), or
+            "first". 22 Nov audit, runner finding 6: a copy of another copied wallet's first buy in a launcher's coin
+            was taken for a copy of the launch, sold at once and rested the launcher's sniper."""
             rows = self.store._q("SELECT user, creator FROM launches WHERE mint=?", (t.mint,))
             signer, creator = (str(rows[0][0]), str(rows[0][1])) if rows else ("", "")
             qs = ",".join("?" * len(copied))
             leaders = [str(r[0]) for r in self.store._q(
                 f"SELECT user FROM trades WHERE mint=? AND is_buy=1 AND user IN ({qs}) AND (slot<? OR (slot=? AND pos<?)) "
                 "ORDER BY slot, pos", (t.mint, *copied, int(t.slot), int(t.slot), int(t.pos)))]  # fmt: skip
-            if signer in copied:
+            lead = leaders[-1] if leaders else None
+            if signer in copied and lead in (None, signer):
                 return "own launch", signer
-            if creator in copied:
-                return ("own launch" if creator in leaders else "bait"), creator
-            if not leaders:
+            if creator in copied and lead in (None, creator):
+                return ("own launch" if lead == creator else "bait"), creator
+            if lead is None:
                 return "unseen", None
-            lead = leaders[-1]
             return ("repeat" if leaders.count(lead) > 1 else "first"), lead
 
         def kinds_new(now: float) -> None:
