@@ -443,3 +443,39 @@ def test_book5_a_guard_told_to_stop_stops_its_snipers_on_its_way_out_unless_a_co
             asyncio.run(svc.oktech_guard(["a"], W, 0.5, 60))
         assert (("stop", "a") in client.calls) is not held, (held, client.calls)
         store.close()
+
+
+def test_book3_the_floor_holds_beside_an_airdrop_the_tape_never_prices_and_reads_the_owners_ignore_list(monkeypatch):
+    """22 Nov 03:58 to ~09:00: 1,000 tokens of an airdrop the tape never priced sat in the wallet. The guard waited for
+    the tape to price any unpriced coin before it called its floor, for as long as the coin stayed, and did not read the
+    owner's ignore_mints. Now an unpriced coin holds the floor back GUARD_UNPRICED_WAIT_SECS after the guard first saw
+    it, then counts as worth 0 SOL; a coin on the ignore list is no coin at all."""
+    from snipetech.book.run import STRAY_AFTER_SECS
+    from snipetech.service import Service
+
+    loss = NOW + 10  # the SOL falls from 2.9 to 0.5: a real loss, nothing bought
+
+    def sol(t):
+        return 2.9 if t < loss else 0.5
+
+    svc, store, client, _ = _guard(monkeypatch, sol=sol, coin=lambda t: 1_000_000_000)  # never priced
+    svc.cfg.operator.ignore_mints = [MINT]
+    rep = asyncio.run(svc.oktech_guard(["a"], W, 1.2, 30))
+    assert "EMERGENCY" in rep["reason"] and rep["stopped"], rep["reason"]
+    assert not any("not priced" in e or "unpriced" in e for e in rep["events"][:-2])  # never waited on
+    store.close()
+    svc, store, client, clock = _guard(monkeypatch, sol=sol, coin=lambda t: 1_000_000_000)
+    stopped_at = []
+    stop = client.stop
+
+    async def timed_stop(i):
+        stopped_at.append(clock["t"])
+        return await stop(i)
+
+    client.stop = timed_stop
+    rep = asyncio.run(svc.oktech_guard(["a"], W, 1.2, 30))
+    assert "EMERGENCY" in rep["reason"] and "not priced" in rep["reason"], rep["reason"]
+    # the floor fired once the wait was over, not at once and not never; the airdrop no buy of ours explains kept the
+    # sniper running only until it was a stray, as for the book
+    assert rep["stopped"] and NOW + STRAY_AFTER_SECS <= stopped_at[0] <= NOW + Service.GUARD_UNPRICED_WAIT_SECS + 900
+    store.close()

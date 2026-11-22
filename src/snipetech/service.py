@@ -1049,13 +1049,19 @@ class Service:
     # `oktech guard`: every end reads the wallet this often (END_WATCH_SECS at most) until it holds nothing its snipers
     # may manage, then stops them
     GUARD_POLL_SECS = 5.0
+    # and a coin the tape has not priced holds its floor back this long after the guard first saw it (the tape prices a
+    # fresh buy within seconds), then counts as worth 0 SOL: 22 Nov an airdrop the tape never priced sat in the wallet
+    # for five hours, and the floor waited on it for as long as it stayed (22 Nov audit)
+    GUARD_UNPRICED_WAIT_SECS = 120.0
 
     async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True,
                            allow_uncapped: bool = False, native_reserve_sol: float = 0.005) -> dict:  # fmt: skip
         """Start capped snipers and watch the wallet. A running sniper is the only thing that sells its positions, so
         this never stops one that may hold a coin (CLAUDE.md rule 1), and lists what is left. The emergency is *equity*
-        (SOL + the tape value of the coins held) below `floor_sol`: buying coins moves SOL into positions, only losing
-        money moves equity. The SOL balance under `native_reserve_sol` (about what a sale costs) is said once, never an
+        (SOL + the tape value of the coins held, the owner's [operator] ignore_mints left out everywhere) below
+        `floor_sol`: buying coins moves SOL into positions, only losing money moves equity. A coin the tape has not
+        priced holds the emergency back GUARD_UNPRICED_WAIT_SECS after the guard first saw it, then counts as worth
+        0 SOL. The SOL balance under `native_reserve_sol` (about what a sale costs) is said once, never an
         emergency: a curve buy is paid in plain SOL, and the old 0.05 SOL reserve called one buy from a small wallet an
         emergency and stopped the sniper that held its coin (22 Nov audit).
 
@@ -1077,6 +1083,7 @@ class Service:
         if uncapped and not allow_uncapped:
             raise SystemExit(f"refusing to start {uncapped}: not capped (singleSnipe + totalSnipes) or not made by snipetech. "
                              "A capped sniper stops buying by itself; its last buy can be left with no exit, so watch it.")  # fmt: skip
+        ignore = list(self.cfg.operator.ignore_mints or ())  # the owner's coins no sniper manages (an airdrop)
         client = self._oktech()
         events: list[str] = []
 
@@ -1108,7 +1115,7 @@ class Service:
             """What keeps the snipers running at an end: the coins they may manage, or a buy of ours on the tape that the
             wallet read does not show yet; None when the wallet cannot be read."""
             try:
-                held = await self.open_positions(address)
+                held = await self.open_positions(address, ignore=ignore)
             except Exception:  # noqa: BLE001 - unknown holdings never stop a sniper
                 return None
             sight(held)
@@ -1167,10 +1174,10 @@ class Service:
                 caught.append(sig)
             except (NotImplementedError, RuntimeError, ValueError):  # no signals here (not the main thread)
                 pass
-        reason, said_low = "time limit", False
+        reason, said_low, said_unpriced = "time limit", False, set()
         try:
             b0 = await balance()
-            eq0, _, held0 = await self.equity(address)
+            eq0, _, held0 = await self.equity(address, ignore=ignore)
             sight(held0)
             log(f"wallet {address[:6]}… holds {b0:.4f} SOL, equity {eq0:.4f} SOL ({len(held0)} coin(s)); emergency floor "
                 f"{floor_sol} SOL equity; watching {max_minutes:g} min")  # fmt: skip
@@ -1201,18 +1208,26 @@ class Service:
                 if b < floor_sol:
                     # the SOL balance alone says nothing while coins are held: value them
                     try:
-                        eq, _, held = await self.equity(address)
+                        eq, _, held = await self.equity(address, ignore=ignore)
                     except Exception as exc:
                         log(f"equity check failed ({exc}); still watching")
                         continue
                     sight(held)
-                    unpriced = [h for h in held if not h.get("priced", True)]
-                    if unpriced:
-                        log(f"balance {b:.4f} SOL below the floor but {len(unpriced)} unpriced coin(s) held "
-                            f"({', '.join(str(h['mint'])[:8] for h in unpriced)}): waiting for the tape to price them, no emergency")  # fmt: skip
+                    now = time.time()
+                    unpriced = [str(h["mint"]) for h in held if not h.get("priced", True) and h.get("mint")]
+                    waiting = [m for m in unpriced if now - seen.get(m, now) < self.GUARD_UNPRICED_WAIT_SECS]
+                    if waiting:  # a fresh buy the tape has not priced yet: no emergency on it, for a while
+                        if set(waiting) - said_unpriced:
+                            said_unpriced |= set(waiting)
+                            log(f"balance {b:.4f} SOL below the floor but {len(waiting)} coin(s) the tape has not "
+                                f"priced yet ({', '.join(m[:8] for m in waiting)}): waiting up to "
+                                f"{self.GUARD_UNPRICED_WAIT_SECS:g} s for its price, no emergency yet")  # fmt: skip
                         continue
                     if eq < floor_sol:
                         why = f"EMERGENCY: equity {eq:.4f} SOL (balance {b:.4f}) below the floor {floor_sol}"
+                        if unpriced:
+                            why += (f" ({len(unpriced)} coin(s) the tape has not priced in "
+                                    f"{self.GUARD_UNPRICED_WAIT_SECS:g} s counted at 0 SOL)")  # fmt: skip
                         reason, ended = await disarm(why), True
                         break
                 if int(time.time() - t0) % 20 < 2:
@@ -1229,7 +1244,7 @@ class Service:
             log(reason)
             b1 = await balance()
             try:
-                eq1, _, held = await self.equity(address)
+                eq1, _, held = await self.equity(address, ignore=ignore)
             except Exception as exc:
                 eq1, held = b1, []
                 log(f"final holdings check failed ({exc}): list them with `oktech holdings`")
