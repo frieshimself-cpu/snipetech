@@ -1029,6 +1029,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "trip, the last one measured after a week without enough fills, 0.0045 until one is measured; "
                          "a strategy scored below it never goes live)")  # fmt: skip
     sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
+    sp.add_argument("--exit", action="append", dest="exit_labels", metavar="LABEL",
+                    help="freeze, with --trigger: score exactly this exit and no other, named in the words a lab gives "
+                         "an exit (as `lab --exit`: \"hold12s\", \"SL-15%% hold300s\"; a wallet rule's exit carries the "
+                         "copy exit and the watch delay), so a rule is frozen with the exit its live sniper runs. "
+                         "Repeatable. The names are part of the rule: it runs forward beside the same trigger frozen "
+                         "with the lab's pick. Not with --recipe")  # fmt: skip
     sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
                     help="freeze: the lab runs only this trigger (repeatable; a JSON object, as for `lab --trigger`), "
                          "scored where it trades live: --latency / --position do not apply to it. A launch-type rule "
@@ -2182,7 +2188,7 @@ async def _run(args, cfg: Config) -> int:
                         hours=args.hours, lock_dir=Path(cfg.storage.db_path).resolve().parent,
                         per_tx_source=cost["per_tx_source"], tape=lambda: svc.tape_store,
                         copy_position=args.copy_position, buy_bid_sol=args.buy_bid, sell_parts=parts,
-                        recipe=rec, hunt_landing=args.hunt_landing)  # fmt: skip
+                        recipe=rec, hunt_landing=args.hunt_landing, named_exits=args.exit_labels)  # fmt: skip
                 except ValueError as exc:
                     print(f"paper freeze: {exc}", file=sys.stderr)
                     return 2

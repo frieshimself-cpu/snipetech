@@ -1919,6 +1919,12 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         the newer 40 % the ranking judges, whichever the ranking picks. A wallet rule's exits carry the copy exit and
         the watch delay every copy sniper has (the name ends "copy50% watch1.3s"); "--no-copy-exit" scores them
         without it, to see what the copy exit adds (research only: every live copy sniper is sent one).
+        A FORWARD RECORD WITH THE LIVE EXIT (22 Nov, your I597): "paper freeze" takes "--exit" too, with "--trigger":
+        the rule is frozen with the exit named (the one its live sniper runs, "hold12s" for the copy snipers), never
+        the lab's pick of the day, and it runs forward beside the same trigger frozen with the pick. Example:
+        ["paper", "freeze", "--trigger", '{"kind": "kol", "group": "big", "only":
+        "8deJ9xeUvXSJwicYptA9mHsU2rN2pDx37KWzkDkEXhU6", "sol": 2}', "--copy-position", "+2x", "--buy", "5",
+        "--buy-bid", "0.05", "--exit", "hold12s", "--hours", "168"] (Cooker).
         SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at

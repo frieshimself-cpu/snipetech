@@ -933,7 +933,7 @@ def sold_in_parts(exit_params: dict | None) -> bool:
 
 
 def rule_key(trigger: dict, position: str, latency: int, buy_sol: float, buy_bid_sol: float = 0.0,
-             asked: bool = False, parts: bool = False, recipe: str | None = None) -> str:  # fmt: skip
+             asked: bool = False, parts: bool = False, recipe: str | None = None, named: str | None = None) -> str:  # fmt: skip
     """A frozen strategy's rule: its trigger at a landing and size, whatever exit it sells with. A trigger stored
     before a field existed is read with that field's default, so it is the same rule as today's. A rule frozen with a
     bid, or at a landing asked for, is a rule of its own (`pinned`). So is a rule sold in parts (`parts`:
@@ -946,14 +946,26 @@ def rule_key(trigger: dict, position: str, latency: int, buy_sol: float, buy_bid
     until 13 Nov the second one frozen found every rule "already in the paper test" under the first one's exit. The
     same trigger under another recipe is a rule of its own. The name enters the key only when one is set: a rule
     frozen without a recipe has the key it always had, and a strategy's id (`strategy_id`, what `paper_trades` is
-    keyed by) never held this key."""
+    keyed by) never held this key.
+
+    `named`: the exits the rule was frozen with by name (`paper freeze --exit`, a stored rule's `exit_named`, joined
+    by "|"), the same way: the live exit named is a rule of its own beside the lab's pick of the day (22 Nov: the
+    tester's Decu rule was frozen with hold5s beside the live hold12s, and the live one could not be frozen)."""
     try:
         trig = Trigger(**trigger).__dict__
     except TypeError:  # no lab trigger (a rule another job feeds), or a field this code no longer has
         trig = dict(trigger)
     key = [trig, str(position), int(latency), float(buy_sol), float(buy_bid_sol or 0), bool(asked)]
-    key += (["parts"] if parts else []) + ([f"recipe:{recipe}"] if recipe else [])
+    key += ["parts"] if parts else []
+    key += ([f"recipe:{recipe}"] if recipe else []) + ([f"exit:{named}"] if named else [])
     return json.dumps(key, sort_keys=True, default=str)
+
+
+def named_of(s: dict) -> str | None:
+    """The exits a stored rule was frozen with by name (`exit_named`), as `rule_key` takes them; None for the lab's
+    pick."""
+    names = s.get("exit_named")
+    return "|".join(str(x) for x in names) if names else None
 
 
 def refuted_skip_twins(strategies: Sequence[dict], now: float) -> dict[str, list[dict]]:
@@ -999,7 +1011,7 @@ def _closed(strategies: Sequence[dict]) -> list[str]:
 def _rule_of(s: dict) -> str:
     s = as_frozen(s)  # (a rule frozen before 14 Nov is the rule without serial crews' coins, never today's default)
     return rule_key(s["trigger"], s["position"], s["latency"], s["buy_sol"], bid_of(s), bool(s.get("landing_asked")),
-                    sold_in_parts(s.get("exit")), s.get("recipe"))  # fmt: skip
+                    sold_in_parts(s.get("exit")), s.get("recipe"), named_of(s))  # fmt: skip
 
 
 def _spec_key(spec: dict) -> str:
@@ -1139,7 +1151,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
            tape: Callable[[], Store] | None = None, copy_position: str | None = None,
            buy_bid_sol: float | None = None, sell_parts: tuple[int, float] | None = None,
            recipe: Recipe | None = None, hunt_landing: tuple[int, str] | None = None,
-           stored_at: float | None = None) -> dict[str, Any]:  # fmt: skip
+           stored_at: float | None = None, named_exits: Sequence[str] | None = None) -> dict[str, Any]:  # fmt: skip
     """Run the lab now (at `latency`/`position`; a launch, hunt, whale or burst trigger where its OKTech hunt buy lands,
     LAUNCH_LANDINGS) and freeze its `top` strategies with a positive lower bound for forward testing, each stored at the
     live landing for its trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no
@@ -1207,17 +1219,34 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
 
     A rule whose trigger no sniper can be sent (`lab.research_only_why`: a MIG buy at any age, `window` 0) is never
     frozen: among `triggers` it is refused with its reason before any tape is read (ValueError), and in a lab handed
-    over (`data`) its row is left out and named in `skipped`."""
+    over (`data`) its row is left out and named in `skipped`.
+
+    `named_exits` (`--exit LABEL`, with `triggers` only, never with a recipe; 22 Nov, the tester's I597): the lab scores
+    these exits and no other, read from the words a lab gives an exit (`sim.exits.exit_from_label`; a wallet rule's
+    exit carries the copy exit and the watch delay, as in `lab --exit`), so a rule can be frozen with the exit its live
+    sniper runs. Each record keeps the names (`exit_named`), and the names are part of its rule (`rule_key`): it runs
+    forward beside the same trigger frozen with the lab's pick. A word that is no exit is refused before any tape is
+    read."""
     now = now or time.time()
     began = time.monotonic()  # (what this call takes, lab and all, is added to `now` for the records' STORED_AT)
     migrate_crew(store, now)  # the rules frozen before 14 Nov say crew "skip" before anything here reads them
     copy_pos = copy_landing(store, cfg, now)
     exits = None
+    if named_exits and recipe is not None:
+        raise ValueError("--exit names the exits typed triggers are frozen with, and a recipe brings its own exit: "
+                         "give one of the two")  # fmt: skip
+    if named_exits and not triggers:
+        raise ValueError("--exit goes with --trigger: the grid's rules are frozen with the lab's pick")
     if recipe is not None:
         if triggers:
             raise ValueError("a recipe brings its own triggers: freeze typed triggers in a command of their own")
         triggers, exits = list(recipe.triggers), [recipe.exit]
         top = max(top, len(triggers))  # a recipe names its rules: each has a place (as `lab` gives every hypothesis)
+    if named_exits:  # read back from their words before any tape is read (ValueError naming the word)
+        from ..sim.exits import exit_from_label
+
+        exits = [exit_from_label(x) for x in named_exits]
+    nm = "|".join(str(x) for x in named_exits) if named_exits else None  # the names, as part of each rule's key
     for t in triggers or ():  # refused in words before any tape is read
         why = research_only_why(t)
         if why is not None:
@@ -1307,7 +1336,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                 seen = set()
             at = ((under.get("trigger") or {}).get("kind"), str(under["position"]), int(under["latency"]),
                   float(under["buy_sol"]), bid_of(under), bool(under.get("landing_asked")),
-                  sold_in_parts(under.get("exit")), under.get("recipe") or None,
+                  sold_in_parts(under.get("exit")), under.get("recipe") or None, named_of(under),
                   crew_of(under.get("trigger")))  # fmt: skip
             taken.append((f"{under.get('label', under['id'])} ({under['id']})", seen, at))
     new: list[dict] = []
@@ -1356,7 +1385,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         label = f"{r['trigger']} | {r['exit']}"
         mine = fired.get(_spec_key(spec), set())
         parts = sold_in_parts(r["exit_params"])  # a sale in parts is a rule of its own (`rule_key`)
-        rs = records.get(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of), [])
+        rs = records.get(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of, nm), [])
         under = next((s for s in rs if not s.get("refuted")), None)
         if under is not None:  # its forward record runs, with the exit it was frozen with
             places += 1
@@ -1378,13 +1407,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             continue
         # (with the rule's crew choice: every coin, without serial crews' coins and those alone are three rules,
         # never one rule under another setting, however many moments they share)
-        at = (spec.get("kind"), str(pos), int(lat), float(buy_sol), bid, asked, parts, of, crew_of(spec))
+        at = (spec.get("kind"), str(pos), int(lat), float(buy_sol), bid, asked, parts, of, nm, crew_of(spec))
         twin = next((name for name, theirs, where in taken if where == at and _twins(mine, theirs)), None)
         if twin is not None:
             skipped.append({"label": label, "why": f"fires on the same moments as {twin}: the same rule under another "
                             "setting"})  # fmt: skip
             continue
-        gone = [*rs, *spoilt.get(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of), [])]
+        gone = [*rs, *spoilt.get(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of, nm), [])]
         if gone:  # every record of this rule was refuted forward (one a run of other code scored in part among them)
             last = max(gone, key=lambda s: int((s.get("refuted") or {}).get("at") or 0))
             mark = last.get("refuted") or {}
@@ -1398,7 +1427,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         # records). A rule's key holds its crew choice, so the hold above does not reach it. A "skip" rule with a
         # record that is not refuted holds nothing back: the default record is the one that is wanted
         if spec.get("kind") in LAUNCH_KINDS and crew_of(spec) == "" and not spec.get("bots"):
-            twin = held_twins.get(rule_key(spec | {"crew": CREW_SKIP}, pos, lat, buy_sol, bid, asked, parts, of))
+            twin = held_twins.get(rule_key(spec | {"crew": CREW_SKIP}, pos, lat, buy_sol, bid, asked, parts, of, nm))
             if twin:
                 last = twin[-1]
                 mark = last.get("refuted") or {}
@@ -1421,7 +1450,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             # ... or it is another recipe's rule, exit and all (a recipe told another one's size and bid, or the
             # same trigger typed by hand): the one strategy has its one record, and the freeze says where it is
             same = next((s for s in old + new if s["id"] == sid), None)
-            if same is not None and (same.get("recipe") or None) != of:
+            if same is not None and ((same.get("recipe") or None), named_of(same)) != (of, nm):
                 gone = bool(same.get("refuted"))
                 places += 0 if gone else 1
                 skipped.append({"label": label, "why": "this rule with this very exit "
@@ -1456,11 +1485,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             new[-1]["buy_bid_sol"] = bid
         if recipe is not None:  # the winning bot's recipe the rule is of
             new[-1]["recipe"] = recipe.name
+        if named_exits:  # the exits it was frozen with by name: part of its rule (`rule_key`)
+            new[-1]["exit_named"] = [str(x) for x in named_exits]
         if asked:  # the landing it was asked to be frozen at: the run keeps it there (`pinned`)
             new[-1]["landing_asked"] = True
         if pinned(new[-1]):  # the landing and the bid in words, as the report names them
             new[-1]["landing_words"] = landing_text(lat, pos, spec.get("kind"), bid, asked)
-        records.setdefault(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of), []).append(new[-1])
+        records.setdefault(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of, nm), []).append(new[-1])
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
     out = {"frozen": new, "kept": old, "skipped": skipped, "tape_hours": data["tape_hours"],
            "landing": landings(copy_pos)}  # fmt: skip
@@ -1493,6 +1524,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         out["bid_landing"] = data["bid_landing"]
     if recipe is not None:
         out |= {"recipe": recipe.name, "buy_sol": buy_sol, "buy_bid_sol": bid}
+    if named_exits:
+        out["exits_named"] = [str(x) for x in named_exits]
     return out
 
 
