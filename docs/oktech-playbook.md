@@ -581,7 +581,21 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     was sold by the copy exit (dead exit 2, stop-loss 1, unknown 1); all 19 copy-exit sells on record are of 6 to
     8 Nov.
 
-Questions 1, 2, 3, 4 and 5 decide the real-size copy. The rest can wait a day.
+20. (22 Nov plan, new) Can copy mode skip the copied wallet's own launch transactions (the create plus its own buy
+    inside it) and its buys into coins it already holds, so that it copies first buys only? (38 of Cooker's 73 buys
+    of 2 SOL or more on 15-21 Nov were inside his own launches; 4 of 4 fills behind 7AUb9n on 21 Nov were its own
+    creates; a 1 SOL copy of one loses 0.11-0.23 SOL.)
+21. (22 Nov plan, new) Does `migrationSell` fire on a coin bought on the curve, and sell it on PumpSwap at once? (On
+    the one fill sold after a migration, 20 Nov 18:05, OKTech first sent nine sells to the finished curve and the
+    PumpSwap sale came about 6 s late.)
+22. (22 Nov plan, new) Can the 1.1x wrapped-SOL top-up be switched off for snipers that buy only on pump.fun's curve?
+    (Beside a 5 SOL sniper OKTech keeps 5.5 SOL wrapped, which a curve buy cannot use, and wraps it again within 2 s
+    of an unwrap: a 5 SOL copy needs about 10.8 SOL in the wallet.)
+23. (22 Nov, with 9) Why do copy sales come at 6-9 s when neither the 12 s timer nor the copy exit is due? (3 of 7
+    sales on 21-22 Nov.)
+
+Questions 1, 2, 3, 4 and 5 decide the real-size copy. **The 22 Nov plan's six, in its order: 6 (the signer check),
+20, 10, 21, 22, and 9 with 23.** The rest can wait a day.
 
 ---
 
