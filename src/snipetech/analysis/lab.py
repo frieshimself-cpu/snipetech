@@ -69,7 +69,7 @@ from ..oktech import (
     _whole_hunt,
     _whole_secs,
 )
-from ..sim.exits import Costs, ExitParams, prepare, round_trip_pnl, run_exit
+from ..sim.exits import Costs, ExitParams, exits_reach, held_path, prepare, round_trip_pnl, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, react_places, slot_secs_from
 from ..solana.programs import SOL_QUOTES
 from ..store import Store, file_identity
@@ -2376,6 +2376,9 @@ class _Run:
     # where in the slot after an exit fires its sale lands: "start" (EXIT_POSITION, ahead of that slot's trades) or
     # "end" (behind all of them: the crowd that sells with a followed wallet stands ahead of us, the agents' I219)
     exit_position: str = EXIT_POSITION
+    # how far past its buy any exit of the run can sell (`sim.exits.exits_reach`): a moment's exits are handed its
+    # path that far and a margin more (`held_path`), the same numbers at the cost of their own hold; 0 = the whole path
+    reach_secs: float = 0.0
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -2577,7 +2580,11 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 by_user = _trades_by_user(path) if by_user is None else by_user
                 own = by_user[path.users[i]]
                 frac = leader_sell_fractions(path, path.users[i], own)
-            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, run.exit_position, leader_frac=frac,
+            # the path as far as its exits can sell, every index the same (audit of 22 Nov: every state to the
+            # coin's end of tape was built and read, 637 ms a moment at 200,000 later trades)
+            held = held_path(path, e, run.reach_secs)
+            prep = prepare(held, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, run.exit_position,
+                           leader_frac=None if frac is None else frac[: held.n],
                            migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
                 if gap is not None:  # left out, and said why, as before 8 Nov: no exit scores it
@@ -2876,7 +2883,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                amm_backfill=_backfill(store, until) if wallet_runs else {}, until=until,
                bid_sol=bid_sol if is_bid(position) else 0.0,
                own=frozenset(own_wallets(store, cfg, **upto)) if is_bid(position) else frozenset(),
-               same_sol=bool(same_sol), exit_how=bool(exit_how), exit_position=exit_position)  # fmt: skip
+               same_sol=bool(same_sol), exit_how=bool(exit_how), exit_position=exit_position,
+               reach_secs=exits_reach([*exits, *mig_exits, *(ex for xs in by_kind.values() for ex in xs)]))  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     named = any(t.kind == "kol" and t.only for _, t in triggers)  # a rule that names its wallets (`only`)
     if ((plan_wallets is None or named) and triggers and isinstance(kols, dict)

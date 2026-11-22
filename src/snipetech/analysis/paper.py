@@ -46,7 +46,7 @@ from .. import positions
 from ..amm_tape import AMM_RECENT_KEY, NO_BACKFILL, backfill_spans
 from ..config import Config
 from ..models import PUMPFUN
-from ..sim.exits import Costs, ExitParams, prepare, run_exit
+from ..sim.exits import Costs, ExitParams, exits_reach, held_path, prepare, run_exit
 from ..sim.market import FILL_MODEL, MarketPath, _fix_slot_order, react_places
 from ..store import Store
 from .bid_landing import CAUTIOUS_WORDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
@@ -1605,8 +1605,11 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
     gap = migration_sell_gap(amm_cov, path, e, mig, exits_horizon([ex])) if gated else None
     res = None
     if gap is None or trig.kind in LAUNCH_KINDS:
-        frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
-        prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+        # the path as far as its exit can sell, every index the same: the same numbers at the cost of its own hold
+        # (`sim.exits.held_path`; until 22 Nov every state to the end of the run's tape was built and read)
+        held = held_path(path, e, exits_reach([ex]))
+        frac = leader_sell_fractions(held, held.users[i]) if trig.kind == "kol" else None
+        prep = prepare(held, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
                        migration_slot=None if mig is None else mig.slot)  # fmt: skip
         if prep is not None:
             sized = size_gap(prep)  # a buy this size against this pool: left out and counted, as in the lab

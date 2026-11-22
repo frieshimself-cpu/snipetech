@@ -482,3 +482,134 @@ def test_a_lab_scores_copies_at_react_k():
                    mates={}, workers=1)  # fmt: skip
     st.close()
     assert len(data["rows"]) == 12 and {r["landing"] for r in data["rows"]} == {"react:15@0"}
+
+
+# -- lab#5: a position's exits read the path only as far as they can sell -------------------------------------------
+# prepare() built every per-state array from the entry to the end of the coin's path and every exit compared and
+# accumulated over all of it, though no exit holds past its timer: 637 ms a moment at 200,000 later trades against
+# 11 ms at 2,000. The exits are handed the path cut a margin past the latest state they can sell at, every index the
+# same (`sim.exits.held_path`); every result must be the very number the whole path gives.
+
+LONG_EXITS = [
+    ExitParams(take_profit=0.1, stop_loss=0.2, max_hold_secs=60, momentum_hold=2.0, momentum_lookback=3.0,
+               momentum_max_secs=30.0, sell_on_dev_sell=False),
+    ExitParams(take_profit=0, stop_loss=0.25, max_hold_secs=30, ext_velocity=0.5, ext_step=5.0, ext_max=30.0,
+               ext_lookback=3.0, ext_cancel=0.1, sell_on_dev_sell=False),
+    ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=120, sell_parts=4, sell_part_secs=15.0,
+               sell_on_dev_sell=False),
+    ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, sell_parts=3, sell_part_secs=20.0, first_part=0.5,
+               flat_below=0.95, sell_on_dev_sell=False),
+    ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, tp_stages=((0.2, 0.25), (0.5, 0.25)),
+               sl_stages=((0.1, 0.3),), trailing_stop=0.2, sell_on_dev_sell=False),
+    ExitParams(take_profit=0, stop_loss=0, max_hold_secs=290, stale_secs=5.0, sell_on_dev_sell=False),
+]  # fmt: skip
+
+
+def _long_tail(st: Store, k: int, migrate: bool = False, quiet: bool = False) -> tuple[str, object]:
+    """A coin the followed wallet buys, then trades for an hour: buys of an exact amount of SOL (which the replay walks
+    beside a position) and of tokens, sales by those buyers, the followed wallet selling half; with `quiet` nothing
+    trades for eight minutes from just before the longest exit's timer; with `migrate` the curve completes and the
+    coin trades on PumpSwap from four minutes in."""
+    rnd = random.Random(100 + k)
+    mint = addr(f"lt-coin-{k}")
+    m = Market(st, mint, addr(f"lt-dev-{k}"), NOW - 40000 + k * 5000, 30_000_000 + k * 100_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for j in range(6):
+        m.buy(addr(f"lt-early-{k}-{j}"), 0.4, 2 + j)
+    m.buy(LEAD, 1.5, 20)
+    slot, held = 21, []
+
+    def busy(until: int, step: int) -> None:
+        nonlocal slot
+        while slot < until:
+            if rnd.random() < 0.6 or not held:
+                who = addr(f"lt-{k}-{slot}")
+                m.buy(who, rnd.uniform(0.05, 0.6), slot, ix="buy_exact_sol_in" if rnd.random() < 0.5 else None)
+                held.append(who)
+            else:
+                m.sell(rnd.choice(held), rnd.choice((0.5, 1.0)), slot)
+            slot += rnd.randint(1, step)
+
+    busy(120, 3)
+    m.sell(LEAD, 0.5, slot)
+    slot += 2
+    busy(600, 4)
+    if migrate:
+        m.complete(addr(f"lt-done-{k}"), slot)
+        m.migrate(slot + 3)
+        slot += 5
+    if quiet:
+        slot += 1200
+    busy(slot + 9000, 3)
+    m.commit()
+    return mint, m.migration
+
+
+def test_the_exits_read_the_path_only_as_far_as_they_can_sell_and_score_the_same():
+    from snipetech.analysis.lab import leader_sell_fractions
+    from snipetech.sim.exits import Costs, exits_reach, held_path, prepare, run_exit
+    from snipetech.sim.market import MarketPath
+
+    st = Store(":memory:")
+    coins = [_long_tail(st, 0), _long_tail(st, 1, quiet=True), _long_tail(st, 2, migrate=True),
+             _long_tail(st, 3, migrate=True, quiet=True)]  # fmt: skip
+    exits = [*exit_set_and_copy(), *LONG_EXITS]
+    reach = exits_reach(exits)
+    costs = Costs(per_tx_lamports=0.0045e9, entry_bid_lamports=0.01e9)
+    checked = cut = 0
+    for mint, mig in coins:
+        path = MarketPath.build(st.trades_for_mint(mint), st.launch(mint))
+        frac = leader_sell_fractions(path, LEAD)
+        lead = path.users.index(LEAD)
+        for e in (lead + 2, lead + 40, path.n // 3):  # behind the leader, later on, deep in the hour
+            held = held_path(path, e, reach)
+            cut += held.n < path.n
+            for sol in (0.2, 5.0):
+                kw = {"leader_frac": frac, "migration_slot": None if mig is None else mig.slot}
+                whole = prepare(path, e, sol, costs, 1, "start", **kw)
+                part = prepare(held, e, sol, costs, 1, "start", **kw | {"leader_frac": frac[: held.n]})
+                for ex in exits:
+                    a, b = run_exit(whole, ex, costs), run_exit(part, ex, costs)
+                    assert (a.pnl_sol, a.exit_reason, a.exit_idx, a.hold_secs, a.sells, a.sold_on_curve, a.fallback,
+                            a.past_curve, a.peak_multiple, a.trough_multiple) == (
+                        b.pnl_sol, b.exit_reason, b.exit_idx, b.hold_secs, b.sells, b.sold_on_curve, b.fallback,
+                        b.past_curve, b.peak_multiple, b.trough_multiple), (mint, e, sol, ex.label())  # fmt: skip
+                    checked += 1
+    st.close()
+    assert cut == 12 and checked == 12 * 2 * len(exits)  # every position was handed a shorter path
+
+
+def exit_set_and_copy():
+    """The lab's search set, and the same with OKTech's watch delay and the copy exit, as a wallet rule scores it."""
+    from snipetech.analysis.lab import exit_set, kind_exits
+
+    exits = exit_set()
+    return [*exits, *kind_exits(exits, Config())["kol"]]
+
+
+def test_a_lab_on_long_tailed_coins_is_the_same_with_the_cut(monkeypatch):
+    from snipetech.analysis import lab as L
+
+    st = Store(":memory:")
+    for k, (mig, quiet) in enumerate(((False, False), (False, True), (True, False))):
+        _long_tail(st, k, migrate=mig, quiet=quiet)
+    st.set_label(LEAD, "tracked one", "wallet", "file")
+    st.set_coverage("tape", {"spans": [[NOW - 50000, NOW]]})
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    trig = parse_trigger({"kind": "kol", "group": "wallet", "sol": 1, "only": LEAD})
+
+    def lab():
+        return collect(st, cfg, 2.0, 0, "+0", 0.0045, triggers=[trig], kols={"wallet": {LEAD}}, mates={}, workers=1)
+
+    sizes = []
+    real = L.held_path
+    monkeypatch.setattr(L, "held_path", lambda path, e, secs: sizes.append(real(path, e, secs).n - path.n) or real(
+        path, e, secs))  # fmt: skip
+    cut = lab()
+    monkeypatch.setattr(L, "held_path", lambda path, e, secs: path)
+    whole = lab()
+    st.close()
+    # (the migrated coin's moment is left out whole: this store has no PumpSwap tape of its migration)
+    assert len(cut["rows"]) == 2 and sizes and all(d < 0 for d in sizes)  # each moment had a shorter path
+    assert cut["rows"] == whole["rows"]

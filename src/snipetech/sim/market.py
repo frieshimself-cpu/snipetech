@@ -41,7 +41,7 @@ the code instead of priced in silence:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -203,6 +203,25 @@ class MarketPath:
             exact_in=np.array(exact, dtype=bool),
             pos=np.array([-1] * (1 if genesis else 0) + [int(t.pos) for t in trades], dtype=np.int64),
         )
+
+    def head(self, c: int) -> MarketPath:
+        """The path's first `c` states, every index the same: all a position needs whose sales all come before them
+        (`sim.exits.held_path`). The replay's lists are this path's own, cut (`_walk_lists`, made once for the whole
+        path): a sale by a wallet whose buy of exact SOL comes only later stops the walk to no effect, as that wallet
+        owes nothing back before its buy. The path itself when it has no more states than that."""
+        c = int(c)
+        if c >= self.n:
+            return self
+        q, b, quote, exact, share, uid, stops, exact_at = self._walk_lists()
+        walk = (q[:c], b[:c], quote[:c], exact[:c], share[:c], uid[:c], stops[stops < c], exact_at[exact_at < c])
+
+        def cut(a):
+            return None if a is None else a[:c]
+
+        return replace(self, n=c, slot=self.slot[:c], ts=self.ts[:c], q=self.q[:c], b=self.b[:c],
+                       fee_bps=self.fee_bps[:c], is_buy=self.is_buy[:c], quote=self.quote[:c], base=self.base[:c],
+                       amm=self.amm[:c], users=self.users[:c], sigs=self.sigs[:c], off_curve=cut(self.off_curve),
+                       exact_in=cut(self.exact_in), pos=cut(self.pos), _walk=walk)  # fmt: skip
 
     def same_sol(self) -> MarketPath:
         """This path with every buy replayed as one that spends the SOL it spent on the tape (all of them `exact_in`),

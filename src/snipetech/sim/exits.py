@@ -488,6 +488,39 @@ def prepare(
     )
 
 
+# How far past the latest moment its exits can sell at a position is handed the path (`held_path`): every sale lands a
+# slot after it fires, a stale exit reads the gap to the trade after the timer, and a slot's clock and its block times
+# drift apart by a few seconds an hour, all far inside this
+HELD_MARGIN_SECS = 120.0
+
+
+def exits_reach(exits) -> float:
+    """Seconds after a buy at which these exits can still sell, at the latest: the longest timer, moved on by its
+    timer extension (`ext_max`) and followed by its parts. Every other exit sells before its timer (a momentum hold,
+    a migration sell and a stale exit are read up to the timer's state)."""
+    def reach(ex: ExitParams) -> float:
+        ext = ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0
+        return (float(ex.max_hold_secs) + (float(ex.ext_max) if ext else 0.0)
+                + (max(1, int(ex.sell_parts)) - 1) * max(0.0, float(ex.sell_part_secs)))  # fmt: skip
+
+    return max((reach(ex) for ex in exits), default=0.0)
+
+
+def held_path(path: MarketPath, e: int, reach_secs: float) -> MarketPath:
+    """The part of `path` a position bought at state `e` is sold on when its exits sell within `reach_secs` of the buy
+    (`exits_reach`): every state up to the first one more than HELD_MARGIN_SECS past that, and the rest of that one's
+    slot, every index the same (`MarketPath.head`). Every exit then scores the very numbers it scores on the whole path
+    (tests/test_audit_lab.py), and costs what its own hold costs: until 22 Nov `prepare` built and `run_exit` read
+    every state to the coin's end of tape (637 ms a moment at 200,000 later trades, 11 ms at 2,000). The whole path
+    for a reach of 0 or less, and when the path ends before that."""
+    if reach_secs <= 0 or not 0 <= e < path.n:
+        return path
+    j = int(np.searchsorted(path.ts, float(path.ts[e]) + float(reach_secs) + HELD_MARGIN_SECS, side="right"))
+    if j >= path.n:
+        return path
+    return path.head(int(np.searchsorted(path.slot, path.slot[j], side="right")))
+
+
 def round_trip_pnl(p: Prepared, costs: Costs) -> float:
     """What the position makes, in SOL, sold whole into the pool right after its own buy: the result with nothing a
     later buyer adds. The pool pays back the SOL that went in (constant product), so this is minus the venue's two
