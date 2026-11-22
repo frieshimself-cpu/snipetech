@@ -1065,9 +1065,10 @@ async def _advance(r: _Round, seq: dict) -> dict:
             error = str(t.get("error") or "no reason known").removeprefix("not started: ")
             hold = seq.get("hold") or {}
             # a start that left its sniper idle on OKTech counts toward the back-off (review of 7 Nov: a cycler that
-            # could not start made a new idle sniper every round); a create that failed left nothing behind
+            # could not start made a new idle sniper every round), in one streak with the cycler deaths before it; a
+            # create that failed left nothing behind, and keeps the streak as it was (audit of 22 Nov)
             idle = bool(t.get("oktech_id"))
-            faults = int(hold.get("deaths") or 0) + 1 if hold.get("kind") == "start" and idle else int(idle)
+            faults = _streak(hold) + int(idle)
             _hold(r, seq, "start", f"block {cur['n']} did not start: {error}",
                   extra={"deaths": faults, "last": int(r.now), "code": CODE_ID})  # fmt: skip
         else:
@@ -1081,7 +1082,7 @@ async def _advance(r: _Round, seq: dict) -> dict:
         cur["outcome"] = {"kind": kind, "why": why}
         hold = seq.get("hold")
         if kind == "died":  # its sniper stayed armed until this round closed the block: never a block in this round
-            deaths = int(hold.get("deaths") or 1) + 1 if hold and hold.get("kind") == "cycler" else 1
+            deaths = _streak(hold) + 1
             again = f": {deaths} times in a row" if deaths > 1 else ""
             _hold(r, seq, "cycler", f"block {cur['n']}'s cycler died ({why}){again}",
                   extra={"deaths": deaths, "last": int(r.now), "code": CODE_ID})  # fmt: skip
@@ -1097,6 +1098,16 @@ async def _advance(r: _Round, seq: dict) -> dict:
     if verdict is not None:
         return verdict
     return await _next_block(r, seq)
+
+
+def _streak(hold: dict | None) -> int:
+    """The execution faults in a row so far that each left a sniper behind: a cycler that died (its sniper armed, nobody
+    watching) and a start that left its sniper idle count in one streak, whichever came first (audit of 22 Nov: the
+    count restarted at each change of kind, and a deploy failing both ways in turn never reached the back-off)."""
+    if not hold or hold.get("kind") not in ("cycler", "start"):
+        return 0
+    deaths = int(hold.get("deaths") or 0)
+    return max(deaths, 1) if hold["kind"] == "cycler" else deaths
 
 
 def _live(r: _Round, t: dict) -> dict:
@@ -1448,8 +1459,10 @@ def _wait(r: _Round, seq: dict, why: str) -> dict:
 def _hold(r: _Round, seq: dict, kind: str, why: str, *, daily: bool = False, coins: list[str] | None = None,
           extra: dict | None = None) -> dict:  # fmt: skip
     """An execution fault (or a wallet with no room) holds new blocks: the owner hears it once when it starts (`daily`:
-    once a day), and once when it clears (_clear); the strategy is not dropped and keeps its record. `extra`: what the
-    hold keeps besides (a dead cycler's deaths in a row, when the last was, the code it ran)."""
+    once a day), and once when it clears (_clear); the strategy is not dropped and keeps its record. A fault that fails
+    another way from round to round (FAULTS: the balance unreadable, then the coins, then OKTech) is the same hold, said
+    again at most once a day (audit of 22 Nov: a line every round). `extra`: what the hold keeps besides (a dead
+    cycler's deaths in a row, when the last was, the code it ran)."""
     day = _day(r.now)
     hold = seq.get("hold")
     if hold and hold.get("kind") == kind:
@@ -1457,6 +1470,11 @@ def _hold(r: _Round, seq: dict, kind: str, why: str, *, daily: bool = False, coi
             hold["why"] = why
         hold.update(extra or {})
         if daily and hold.get("told_day") != day:
+            hold["told_day"] = day
+            r.say(_hold_words(seq, hold))
+    elif hold and hold.get("kind") in FAULTS and kind in FAULTS:
+        hold.update({"kind": kind, "why": why} | (extra or {}))
+        if hold.get("told_day") != day:
             hold["told_day"] = day
             r.say(_hold_words(seq, hold))
     else:
@@ -1477,8 +1495,9 @@ def _hold_words(seq: dict, hold: dict) -> str:
     if hold["kind"] == "cycler":
         return (f"{what} An execution fault, not the strategy's: its trades count (a buy its sniper made after the "
                 "cycler died too) and it is not dropped. One more block is tried at the next round; if its cycler dies "
-                f"as well, no block starts for {CYCLER_BACKOFF_SECS // 3600} hours, then for twice as long after each "
-                "death in a row (a day at most), and a deploy, or your /stop then /resume, tries again at once. You "
+                "as well, or it cannot start and leaves its sniper idle, no block starts for "
+                f"{CYCLER_BACKOFF_SECS // 3600} hours, then for twice as long after each fault in a row (a day at most), "
+                "and a deploy, or your /stop then /resume, tries again at once. You "
                 "hear again once a block runs to its end.")  # fmt: skip
     tail = ", said once a day" if hold["kind"] == "room" else ""
     sell = "".join(f" /sell {m} sells {m[:6]}… now." for m in hold.get("coins") or [])

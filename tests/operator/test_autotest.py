@@ -1321,6 +1321,53 @@ def test_a_cycler_that_cannot_start_leaves_an_idle_sniper_a_round_at_most_and_ba
     assert len(env.svc.created) == 4 and len(_said(env, "Automatic live test holds")) == 1
 
 
+def test_a_dead_cycler_then_a_start_that_left_a_sniper_idle_back_off_like_two_deaths(env):
+    """Audit of 22 Nov (livetest#7): a bad deploy that fails one way, then the other (a cycler that dies, then a start
+    that leaves its sniper idle) restarted the count of faults in a row at each change of kind and never reached the
+    4-hour back-off: every other round made a new sniper, and each dead cycler left its own armed, nobody watching."""
+    _start(env)
+    real = env.jobs.ops.op_run
+
+    def cannot_start(argv, timeout=0):
+        raise RuntimeError("ImportError after a deploy")
+
+    t = LT.load(env.paths)
+    LTT._armed(env)
+    at = NOW + 60 + 900
+    _cycler_ended(env, t, None, at - 600, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+    _round(env, at)  # block 1's cycler died: no block in this round
+    env.jobs.ops.op_run = cannot_start
+    _round(env, at + 900)  # the one try: block 2's sniper is made, and its cycler cannot start
+    env.jobs.ops.op_run = real
+    for k in range(2, 16):  # three and a half hours on: two faults in a row, nothing more is made
+        _round(env, at + 900 * k)
+    assert len(env.svc.created) == 2
+    seq = _seq(env)
+    assert seq["hold"]["kind"] == "start" and seq["hold"]["deaths"] == 2 and "tried at" in seq["waiting"]["why"]
+
+
+def test_a_fault_that_fails_another_way_each_round_is_said_once(env):
+    """Audit of 22 Nov (livetest#7): "the owner hears it once when it starts holding and once when it clears". One RPC
+    and OKTech wobble that failed another way each round (the balance unreadable, then the coins, then OKTech) replaced
+    the hold with one of another kind and said it again: a line every 15 minutes."""
+    _start(env)
+    _play(env, [0.02] * 10)
+    env.store.set_coverage("measure:last_ts", {"ts": NOW + 60 + 100})
+    at = NOW + 60 + 2 * HOUR
+    _round(env, at, measure=False)  # closes block 1, which waits for the measure stage
+    env.sent.clear()
+    for what in ["balance", "coins", "oktech", "balance", "coins", "oktech"]:
+        at += 900
+        env.svc.unreadable, env.svc.oktech_down = what == "coins", what == "oktech"
+        _round(env, at, readable=what != "balance")
+    assert len(_said(env, "Automatic live test holds")) == 1 and _seq(env)["hold"]["kind"] == "oktech"
+    env.svc.unreadable = env.svc.oktech_down = False
+    _round(env, at + 900)  # it clears: block 2 starts
+    _round(env, at + 1800)
+    assert LT.load(env.paths)["sequence"]["block"] == 2 and len(_said(env, "Automatic live test goes on")) == 1
+    assert len(_said(env, "Automatic live test holds")) == 1
+
+
 def test_an_oktech_create_that_fails_leaves_nothing_idle_and_is_tried_each_round(env):
     """A create OKTech refuses leaves no sniper behind, so it holds without the back-off: every round tries again,
     whatever the number in a row."""
