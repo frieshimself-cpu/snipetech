@@ -198,7 +198,7 @@ class RunCoins:
         if ans is None and account and self.rpc is not None and due:
             self._chain_at[mint] = now
             try:
-                ans = await asyncio.wait_for(self._chain(mint, str(account)), CHAIN_READ_SECS)
+                ans = await asyncio.wait_for(self._chain(mint, str(account), since_ts), CHAIN_READ_SECS)
             except Exception:  # noqa: BLE001 - nothing told (no answer in time too): read again in CHAIN_RETRY_SECS
                 ans = None
         if ans is not None:
@@ -221,15 +221,25 @@ class RunCoins:
         except Exception:  # noqa: BLE001 - none readable: the fixed list alone, as before
             return {}
 
-    async def _chain(self, mint: str, account: str) -> str | None:
+    async def _chain(self, mint: str, account: str, since_ts: float = 0.0) -> str | None:
+        """The newest of the token account's transactions since `since_ts` that raised the wallet's balance of the
+        coin says whose it is. One the node cannot serve yet tells nothing (None: read again CHAIN_RETRY_SECS later):
+        skipped, an older holding's buy decided the new one (22 Nov review: the owner's new buy read as the run's after
+        an old copy of the same coin, and was swept). One from before `since_ts` belongs to an earlier holding."""
         from ..solana.txmeta import extract_tx_meta
 
         learned = self._learned()
         for s in await self.rpc.get_signatures(account, limit=CHAIN_SIGS):
             if s.get("err"):
                 continue
+            if s.get("blockTime") is not None and int(s["blockTime"]) < since_ts:
+                return None  # older than this holding, and so is every one after it
             tx = await self.rpc.get_transaction(s["signature"])
-            if not tx or not _brought_in(tx, self.wallet, mint):
+            if not tx:
+                return None
+            if tx.get("blockTime") is not None and int(tx["blockTime"]) < since_ts:
+                return None
+            if not _brought_in(tx, self.wallet, mint):
                 continue
             m = extract_tx_meta(tx, s["signature"], services=learned)
             if m.fee_payer != self.wallet:

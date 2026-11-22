@@ -97,7 +97,9 @@ def test_a_run_starts_beside_the_owners_coin_and_their_sale_of_it_moves_nothing(
                        tape=[_hand(T0 - 3600, sol=3.0)], floor=None, max_loss=2.0, minutes=5)  # fmt: skip
     assert ("start", SNIPER_IDS[0]) in client.calls
     assert rep["reason"].startswith("time limit") and rep["owner_coins"] == [OWN]
-    assert rep["floor_moves"] == [-3.0, 1.0]  # the coin left the floor's count; the SOL of its sale came in
+    # the coin left the floor's count and the SOL of its sale came in (the coin is gone once two readings agree, so
+    # its sale's SOL is read first)
+    assert sorted(rep["floor_moves"]) == [-3.0, 1.0]
 
 
 def test_a_coin_of_the_runs_held_at_the_start_still_refuses_the_run(monkeypatch):
@@ -170,3 +172,21 @@ def test_the_owners_buy_while_a_coin_of_the_runs_is_held_takes_nothing_back(monk
     rep, _client = _run(monkeypatch, sol, coins=coins, payload=FEES, tape=[_copy(T0 + 100), _hand(T0 + 120)],
                         floor=None, max_loss=2.0, minutes=5)  # fmt: skip
     assert rep["floor_moves"] == [-2.0] and rep["reason"].startswith("time limit")
+
+
+def test_one_reply_that_leaves_the_owners_coin_out_moves_no_floor(monkeypatch):
+    """Review of 22 Nov: a node's reply that left the owner's 3 SOL coin out (the runner treats one such reply as
+    routine) moved the floor down by its whole worth, and when the coin came back it was counted again: a 2.5 SOL loss
+    under a 2 SOL max loss ran to the time limit. An owner's coin is gone only when two readings in a row agree."""
+
+    def coins(now):
+        out = [] if T0 + 100 <= now < T0 + 105 else [_coin(OWN, 3.0)]  # one reply leaves the owner's coin out
+        if T0 + 152 <= now < T0 + 400:
+            out.append(_coin(OURS, 0.6))  # a copy of 3 SOL, worth 0.6 now
+        return out
+
+    rep, _client = _run(monkeypatch, lambda now: 7.0 if now < T0 + 150 else 4.0, coins=coins, payload=FEES,
+                        tape=[_hand(T0 - 3600, sol=3.0), _copy(T0 + 150, sol=3.0)], floor=None, max_loss=2.0,
+                        minutes=10)  # fmt: skip
+    assert rep["reason"].startswith("EMERGENCY"), rep["reason"]
+    assert rep["floor_moves"] == []

@@ -83,6 +83,8 @@ PLACE_MATES_DAYS = 7
 # then either (a sniper stopped in that second strands the coin it just bought)
 FLOOR_READINGS = 2
 FRESH_BUY_SOL = 0.05
+# and an owner's own coin is gone from the wallet only when this many readings in a row leave it out (one reply can)
+OWNER_GONE_READINGS = 2
 # and for this long after such a fall, with no coin seen yet, the buy is on its way: no floor reading counts, nothing is
 # re-armed, and an end of the run waits for the coin before it stops any sniper (a slow node shows it late)
 FRESH_HOLD_SECS = 30.0
@@ -1549,6 +1551,9 @@ class Service:
         owner_val: dict[str, float] = {}  # the owner's own coins held now, at their value when first known as theirs
         owner_coins: list[str] = []  # each coin of the owner's the run has left alone, in the order first known
         unsure_said: set[str] = set()  # the coins said to be nobody's known yet, once each holding
+        # the owner's own coins missing from the readings in a row: one is gone only when two agree (a node can leave a
+        # coin out of one reply: 22 Nov review, a 3 SOL coin left out once moved the floor down by 3 for the whole run)
+        owner_miss: dict[str, int] = {}
 
         async def sort_coins(held_all: list[dict], now: float, since: float | None = None):
             """(the run's coins among `held_all`: bought by its snipers, or not known yet; the owner's own coins first
@@ -1558,8 +1563,15 @@ class Service:
             sells and sends coins by hand in this wallet while a run is on; the run sold, counted and waited on them."""
             nonlocal arrivals
             mints = {str(h["mint"]) for h in held_all if h.get("mint")}
-            gone = [(m, owner_val.pop(m)) for m in list(owner_val) if m not in mints]
-            for m in [m for m in sight if m not in mints]:
+            for m in [m for m in owner_miss if m in mints]:  # back: one reply had left it out
+                del owner_miss[m]
+            for m in [m for m in owner_val if m not in mints]:
+                owner_miss[m] = owner_miss.get(m, 0) + 1
+            # an owner's coin missing from one reading keeps its sight, its verdict and its counted value
+            gone = [(m, owner_val.pop(m)) for m in list(owner_val) if owner_miss.get(m, 0) >= OWNER_GONE_READINGS]
+            for m, _v in gone:
+                del owner_miss[m]
+            for m in [m for m in sight if m not in mints and m not in owner_val]:
                 del sight[m]
                 coins.forget(m)
                 unsure_said.discard(m)

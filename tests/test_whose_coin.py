@@ -199,6 +199,21 @@ def test_the_chain_read_counts_a_tip_paid_to_a_learned_account(monkeypatch):
     assert _whose(RunCoins(store, _Rpc(ours), W, RUN)) == "ours"
 
 
+def test_a_newest_transaction_the_node_cannot_serve_yet_tells_nothing(monkeypatch):
+    """Review of 22 Nov: the chain read skipped a transaction whose answer was null (the node had not served it yet)
+    as if it brought nothing in, and took an older holding's buy: the owner's new buy read as the run's after an old
+    copy, and the run swept it. Nothing is told until the newest one can be read; older ones before the holding are
+    never read as its buy."""
+    store = Store(":memory:")
+    old = _tx("old", W, 1_000_000, 0, 1_000_000)  # the run's copy of the same coin an hour before
+    old["blockTime"] = int(NOW) - 3600
+    rpc = _Rpc({"new": None, "old": old})
+    coins = RunCoins(store, rpc, W, RUN)
+    assert _whose(coins) is None
+    rpc.txs = {"old": old}  # the newest is gone from the list: what is left is from before the holding began
+    assert _whose(coins, now=NOW + CHAIN_RETRY_SECS) is None
+
+
 def test_a_coin_with_no_token_account_known_waits_for_the_tape():
     store = Store(":memory:")
     coins = RunCoins(store, _Rpc({"buy": _tx("buy", W, 6121, 0, 1_000_000)}), W, RUN)
