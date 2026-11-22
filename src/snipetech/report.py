@@ -1048,6 +1048,9 @@ def _by_note(rows: list[dict], key: str) -> list[tuple[str, list[str]]]:
     return list(out.items())
 
 
+FREEZE_LEFT_SHOWN = 20  # rows a freeze's text says it left out, each with why (the strategy search's grid has 50)
+
+
 def render_paper(action: str, r: dict) -> str:
     import time as _t
 
@@ -1057,13 +1060,15 @@ def render_paper(action: str, r: dict) -> str:
             n, of = lab.get("exit_moments"), lab.get("moments")
             return f"; its exit scored on {n} of {of} moments" if n is not None and of is not None and n < of else ""
 
-        out = [f"Frozen for forward testing ({r['tape_hours']:.1f} h of tape behind the pick):"]
-        out += [
-            f"  {s['id']}  {s['label']}  (lab: {s['lab'].get('mean') or 0:+.4f}/trade, bound {s['lab'].get('ev_lower') or 0:+.4f}"
-            f"{scored_on(s['lab'])})" + (f"\n      at {s['landing_words']}" if s.get("landing_words") else "")
-            for s in r["frozen"]
-        ] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
-        out += [f"  still running: {s['id']}  {s['label']}" for s in r["kept"]]
+        # What the freeze found, why it left each row out, then what it froze: last, where an agent's first read of
+        # the log (its newest lines) finds it. Until the audit of 22 Nov each stored rule had a "still running" line
+        # after it, the refuted ones too: 132 lines, the whole of that first read, and no row said why it was left out
+        out = []
+        kept = r.get("kept") or []
+        if kept:
+            gone = sum(1 for s in kept if s.get("refuted"))
+            out.append(f"{len(kept)} rule{'' if len(kept) == 1 else 's'} already in the paper test ({gone} refuted, "
+                       "scored no more): `paper report` lists them")  # fmt: skip
         # the records whose exit is not their sniper's (paper.not_as_live): kept, and no longer their rule's record
         stale = r.get("not_as_live") or []
         out += [f"  no longer the record of its rule: {', '.join(ids)}: {why}"
@@ -1074,6 +1079,16 @@ def render_paper(action: str, r: dict) -> str:
         out += [f"    {why}." for why in (r.get("research_only_why") or {}).values()]  # the reason, once
         if r.get("bid_landing"):
             out += _bid_landing_lines(r["bid_landing"])
+        left = r.get("skipped") or []
+        out += [f"  left out: {x.get('label')}: {x.get('why')}" for x in left[:FREEZE_LEFT_SHOWN]]
+        if len(left) > FREEZE_LEFT_SHOWN:
+            out.append(f"  and {len(left) - FREEZE_LEFT_SHOWN} more left out (--json lists them)")
+        out.append(f"Frozen for forward testing ({r['tape_hours']:.1f} h of tape behind the pick):")
+        out += [
+            f"  {s['id']}  {s['label']}  (lab: {s['lab'].get('mean') or 0:+.4f}/trade, bound {s['lab'].get('ev_lower') or 0:+.4f}"
+            f"{scored_on(s['lab'])})" + (f"\n      at {s['landing_words']}" if s.get("landing_words") else "")
+            for s in r["frozen"]
+        ] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
         return "\n".join(out)
     if action == "rescore":
         if r.get("note"):

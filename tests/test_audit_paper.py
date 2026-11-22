@@ -200,3 +200,47 @@ def test_a_trade_written_before_the_mark_existed_is_counted_as_not_known():
     (row,) = paper.report(store, Config(), 100)["strategies"]
     assert row["outside_model"] == {"trades": 0, "sol": 0.0, "of": 0}
     store.close()
+
+
+# -- paper#6: a freeze's text calls no refuted rule "still running", and its first read shows what it froze -----------
+# Every `paper freeze` log ended with one "still running" line a stored rule, the refuted ones too: 132 lines (45 of
+# them refuted) in the 22 Kb log of 11:01 on 22 Nov, and an agent's first read of it (the newest lines that fit 12,000
+# characters) held no line of what was frozen. Nor did the text say why a row was left out (the tester's note of 07:01).
+LONG = " x" * 20
+
+
+def _freeze_answer(n_kept: int, n_refuted: int, skipped: int = 0) -> dict:
+    gone = {"at": 1794326892, "trades": 400, "mean_sol": -0.01}
+    kept = [{"id": f"{k:010x}", "label": f"a KOL makes its first buy in the coin, >= 1 SOL | SL-15% hold300s{LONG}",
+             **({"refuted": gone} if k < n_refuted else {})} for k in range(n_kept)]  # fmt: skip
+    frozen = [{"id": "77c52b46f1", "label": "the wallet CyaE1V buys in the coin, >= 0.95 SOL | hold12s copy50%",
+               "lab": {"mean": 0.1665, "ev_lower": 0.1078}, "landing_words": "bid- with a 0.05 SOL bid"}]  # fmt: skip
+    left = [{"label": f"rule {k} | hold{k}s{LONG}", "why": "its lower bound in the lab is not positive (-0.0012 SOL a "
+             f"trade on {k + 9} newer moments): nothing to test forward"} for k in range(skipped)]  # fmt: skip
+    return {"frozen": frozen, "kept": kept, "skipped": left, "tape_hours": 168.0}
+
+
+def test_a_freeze_calls_no_rule_still_running_and_counts_the_refuted_apart():
+    from snipetech.report import render_paper
+
+    text = render_paper("freeze", _freeze_answer(3, 1))
+    assert "still running" not in text and "0000000000" not in text
+    assert "3 rules already in the paper test (1 refuted, scored no more)" in text
+
+
+def test_a_freeze_says_why_it_left_each_row_out():
+    from snipetech.report import render_paper
+
+    text = render_paper("freeze", _freeze_answer(0, 0, skipped=2))
+    assert "left out: rule 1 | hold1s" in text and "its lower bound in the lab is not positive" in text
+    many = render_paper("freeze", _freeze_answer(0, 0, skipped=45))
+    assert many.count("left out: rule") == 20 and "and 25 more left out (--json lists them)" in many
+
+
+def test_the_first_read_of_a_freeze_log_shows_what_was_frozen():
+    from snipetech.operator.tools import read_job_output
+    from snipetech.report import render_paper
+
+    text = render_paper("freeze", _freeze_answer(132, 45, skipped=45))
+    first = read_job_output(text)
+    assert "77c52b46f1" in first and "Frozen for forward testing" in first, first.splitlines()[0]
