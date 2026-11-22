@@ -46,7 +46,8 @@ def test_digest_text_mentions_equity_change_spend_and_crit_resources(tmp_path):
             {"name": "sol_float", "status": "ok", "message": "fine"},
         ]
         text = digest_text(snap, resources, led, st, now, paths=paths)
-        assert "2026-11-06" in text and "1.250 SOL" in text and "+0.250" in text
+        # no change since the last digest: it is mostly the owner's own moves (audit 22 Nov, round#13)
+        assert "2026-11-06" in text and "1.250 SOL" in text and "+0.250" not in text
         assert "0.45 $" in text and "0.90 $" in text
         assert "disk" in text and "fine" not in text
         assert "2 note(s)" in text and "resource disk" in text and "1 running" in text

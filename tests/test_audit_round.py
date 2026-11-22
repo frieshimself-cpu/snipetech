@@ -449,3 +449,21 @@ def test_round12_plain_sol_is_read_at_the_coins_commitment(world):
     commitments = {m: p[-1].get("commitment") if isinstance(p[-1], dict) else None
                    for m, p in rpc.calls if m in ("getBalance", "getTokenAccountsByOwner")}  # fmt: skip
     assert commitments == {"getBalance": "confirmed", "getTokenAccountsByOwner": "confirmed"}
+
+
+# -- round#13: the digest reports no wallet move the owner made --------------------------------------------------------
+
+
+def test_round13_the_digest_reports_no_wallet_change_the_owner_made(world):
+    """'wallet: X SOL (-12.143 since the last digest)' was the whole wallet's move, mostly the owner's own deposits and
+    withdrawals (22 Nov 07:00, after the owner took the wallet's SOL out). The owner's rule: never report a balance change
+    no trade of ours explains. The line keeps the balance and the coins held."""
+    from snipetech.operator.budget import Ledger
+    from snipetech.operator.digest import digest_text
+    from snipetech.operator.snapshot import Snapshot
+
+    st, _cfg, paths = world
+    st.set_coverage("digest:last", {"ts": NOW - 86400, "equity": 12.2})
+    snap = Snapshot(ts=NOW, native_sol=0.0027, wsol=0.0538, snipers=[], held=[])
+    text = digest_text(snap, [], Ledger(paths.spend, {}), st, NOW, paths=paths)
+    assert "since the last digest" not in text and "wallet: 0.057 SOL, 0 coin(s) held" in text, text
