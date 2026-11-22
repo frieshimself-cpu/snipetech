@@ -2131,7 +2131,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         and per copied leader: buy priority, buy tip, sell tip and sell priority in SOL, why each tip is where it is
         (the fills compared), the bounds in force and the owner's outer ones. The rule: a tip is raised above the
         minimum only where 10+ fills at the higher tip landed measurably earlier than 10+ at the lower one; priorities
-        are never raised (the buy priority is charged again on every exit, the sell priority on every failed twin).
+        are never raised (the buy priority is charged again on every sale and on each of its failed twins; the sell
+        priority we send is not used under it).
         Read it before saying a fee should change; the strategist may narrow a kind's bounds, the owner sets the outer
         ones. Nothing here trades or changes a setting.
         """

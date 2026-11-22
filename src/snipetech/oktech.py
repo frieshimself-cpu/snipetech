@@ -374,10 +374,10 @@ def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0
     an exit with momentum hold (research only: scored on our own reading of OKTech's clock) raises instead of going
     out as an exit nobody scored.
 
-    The sell bid is the tip (`sell_tip_sol`, refunded when a send fails); the priority (`sell_priority_sol`) is what
-    each of OKTech's failed twin sends pays, so it is near zero by default (8 Nov: 0.008 SOL of twins on a 0.119 SOL
-    gross at 0.002). `sell_fee_sol` is the deprecated one-number form: it sets the bid (the tip) only, never the
-    twins' priority."""
+    The sell bid is the tip (`sell_tip_sol`, refunded when a send fails). The priority (`sell_priority_sol`, near zero
+    by default) is sent but not used under the sniper's buy priority, which the sale and its failed twins pay instead
+    (docs/oktech-playbook.md, 1d: 18 of 19 landed sells and 25 of 28 failed twins of 8-12 Nov). `sell_fee_sol` is the
+    deprecated one-number form: it sets the bid (the tip) only, never the sell priority."""
     if sell_fee_sol is not None:
         sell_tip_sol = float(sell_fee_sol)
     e = exit_params or {}

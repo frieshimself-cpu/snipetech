@@ -527,9 +527,11 @@ fee and gets its tip back. `sellPriorityFeeSol` therefore prices only the untipp
 **Corrected the same day, from every send of a sell on `fills` since 8 Nov 13:00 UTC** (docs/oktech-playbook.md, 1d):
 `sellPriorityFeeSol` at 0.0001 priced one send in 47. Of 19 landed sells 18 paid their sniper's buy priority. Of 28
 failed duplicates 25 paid the buy priority and 3 an older sniper's 0.002; not one paid 0.0001. So a sell priority set
-under the buy's is not used, and the duplicate sells were never made free. The same claim still stands in the code's
-own texts (`fees.py`, `config.py`, `playbook.py`, `oktech.autosell`, the agents' prompts) and is not corrected there
-yet.
+under the buy's is not used, and the duplicate sells were never made free. The same claim stood in the code's own
+texts: `config.py` and `fees.py`'s module text were corrected on 12 Nov; `fees.RULE` and the sell priority's reason,
+`playbook.py` (item 4, which every deciding agent reads), `oktech.autosell`, `read_fee_policy` and the strategist's
+prompt by the audit of 22 Nov. Every sell (23) and failed send (48) on `fills` since 20 Nov paid 1,000,000 lamports of
+priority, the buy's.
 
 **What it costs the ladder.** At a buy priority of 0.005 SOL every landed sell pays 0.005 again, and every tipped
 duplicate that fails pays 0.005005 for nothing. At the 0.001 minimum the same two cost 0.001 and 0.001005. A bid
