@@ -338,9 +338,10 @@ def test_the_owners_hand_buys_on_the_tape_are_no_result_of_the_bot_either(env):
     assert day["total_sol"] == pytest.approx(-(1.05 + 0.0035), abs=1e-6)
 
 
-def test_a_copy_buy_is_the_bots_whatever_its_fees(env):
-    """22 Nov 00:19:12 a copy of Cented went out with no tip, and the 21 Nov copies paid 0.199: the copied wallet on the
-    fill says it is ours, and a sniper's own priority with no tip is one of its sends too."""
+def test_a_copy_buy_is_the_bots_tipped_or_not(env):
+    """22 Nov 00:19:12 a copy of Cented went out with no tip, and the 21 Nov copies paid 0.199: a sniper's own priority
+    with no tip is one of its sends too, so the untipped copy is the bot's by that fee pair (the copied wallet on the
+    fill says nothing alone since runner#4 of the 22 Nov audit: the owner's tool pays the snipers' priority too)."""
     _paths, store, _cfg = env
     _sniper(store)
     store.put_fill({"sig": "copy", "ts": NOW - 900, "wallet": W, "mint": M1, "side": "buy", "sol": 3.5,

@@ -484,8 +484,9 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     """A block's live result from the measure stage's fills, read two ways, for the worse of the two to be judged:
     `own`, the buys the fills do not mark as copying a leader, and `all`, every buy of the wallet while the cycler ran.
     The book trades from the same wallet, and the fills name a copied leader on any buy of ours in a coin one of the
-    book's leaders bought earlier, with no time bound and no word of which sniper bought (a hunt buy right behind a
-    launch-sniping leader reads as a copy), so neither reading alone can be trusted to be the test's own.
+    book's leaders bought in the minute before (measure/classify.LEADER_WINDOW_SLOTS), with no word of which sniper
+    bought (a hunt buy right behind a launch-sniping leader reads as a copy), so neither reading alone can be trusted
+    to be the test's own.
 
     Each buy's result is that of the sales that closed it (the measure stage's own result for each sale, real fees and
     its failed duplicate sends included), shared out first in first out by tokens as the measure stage pairs them. A buy
