@@ -24,6 +24,7 @@ DECISION_LOG_LINES = 40  # operator/log.txt: why each round called an agent, or 
 JOB_LOG_CHARS = 2500  # the tail of a job's own log, shown under it
 REPORT_CHARS = 6000  # the end of today's analyst report
 PAPER_RECENT = 25
+CANDIDATES_SECS = 120  # the wallets part is read again at most this often: its counts cost 2 to 3 s (audit 22 Nov)
 
 
 def _read_json(path: Path, default):
@@ -244,6 +245,23 @@ def _candidates(con: sqlite3.Connection | None, tables: set[str], paths: Operato
     }
 
 
+_KEPT: dict[str, tuple[float, dict]] = {}  # database -> (when read, the wallets part as `_candidates` read it then)
+
+
+def _candidates_kept(db, con: sqlite3.Connection | None, tables: set[str], paths: OperatorPaths, now: float) -> dict:
+    """`_candidates`, read off the tables again once the last read is CANDIDATES_SECS old: its counts walk every
+    candidate against its latest verdict (131,000 and 445,000 rows on 22 Nov, 2 to 3 s of the server's database, with
+    a read snapshot held all along) and the page asks every 10 s while it is open. A new verdict or a ban shows within
+    that time; an answer that fell back to the operator's file is never kept."""
+    kept = _KEPT.get(str(db))
+    if kept is not None and 0 <= now - kept[0] < CANDIDATES_SECS:
+        return kept[1]
+    out = _candidates(con, tables, paths)
+    if out.get("source") == "table":
+        _KEPT[str(db)] = (now, out)
+    return out
+
+
 def _fills(con: sqlite3.Connection | None, tables: set[str]) -> list[dict]:
     if con is None or "fills" not in tables:
         return []
@@ -328,7 +346,7 @@ def dash_state(ops, now: float | None = None) -> dict[str, Any]:
             },  # fmt: skip
             "resources": list(snap.get("resources") or []),
             "snapshot": _snapshot_view(snap, now),
-            "candidates": _candidates(con, tables, paths),
+            "candidates": _candidates_kept(ops.db, con, tables, paths, now),
             "fills": _fills(con, tables),
             "book": {
                 "enabled": bool(cfg_book.get("enabled", False)) or book_flag(paths).exists(),
