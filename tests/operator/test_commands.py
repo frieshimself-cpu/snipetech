@@ -134,7 +134,7 @@ def test_stop_treats_a_starting_sniper_as_running(tmp_path):
 
 def test_stop_when_holdings_cannot_be_read_stops_nothing(tmp_path):
     class Broken(FakeSvc):
-        async def open_positions(self, address):
+        async def open_positions(self, address, ignore=None, unknown=None):  # /stop passes ignore: the read itself fails
             raise RuntimeError("rpc down")
 
     svc = Broken(held=[], snipers=[{"id": "s1", "name": "a", "status": "running"}])
@@ -321,6 +321,18 @@ def test_stop_keeps_the_snipers_for_a_coin_of_ours_beside_the_owners_own(tmp_pat
     svc.tape(MINE, True, OUR_PRIO, OUR_TIP)
     reply, _ = _stop(tmp_path, svc)
     assert svc.calls == [] and "Mine" in reply and "H8WT" not in reply, reply
+
+
+def test_stop_leaves_a_sniper_whose_fees_are_not_on_record_running_beside_the_owners_coin(tmp_path):
+    """Review of 22 Nov (livetest#0): the owner's coin is told by the fees of the snipers on record. One OKTech runs that
+    the bot has no payload of (made in OKTech's app) pays fees of its own, so that coin may be its own: it keeps running
+    (a stopped sniper strands its coin). The snipers on record are stopped: none of them bought it."""
+    svc = StoreSvc(tmp_path, [_coin(HAND)], snipers=[{"id": "s1", "name": "snipetech copy x", "status": "running"},
+                                                     {"id": "app1", "name": "made in the app", "status": "running"}])  # fmt: skip
+    svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)
+    reply, ctx = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "s1")] and "stopped 1 sniper" in reply and "app1" in reply, reply
+    assert "app1" in ctx["paths"].notes.read_text()
 
 
 def test_resume_removes_flag_and_status_reports(tmp_path):

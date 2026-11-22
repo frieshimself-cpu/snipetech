@@ -217,6 +217,9 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
     return "\n".join(x for x in (reply, test, auto) if x)
 
 
+HAND_BOUGHT = "your own (bought by hand)"  # why a coin of the owner's keeps no sniper of ours running (_not_ours)
+
+
 def _not_ours(svc, wallet: str, held: list[dict], paths: OperatorPaths, now: float) -> dict[str, str]:
     """The held coins no sniper of ours holds, each with why in the owner's words: the owner's own (every buy of it
     since its last sale paid fees none of our snipers pays: measure/ours.owner_coins; 22 Nov 02:40 the owner bought a
@@ -234,15 +237,28 @@ def _not_ours(svc, wallet: str, held: list[dict], paths: OperatorPaths, now: flo
         strays = _strays(store, wallet, held, paths, now)
     except Exception:  # noqa: BLE001 - not known: each coin may be ours
         return {}
-    return dict.fromkeys(owners, "your own (bought by hand)") | {
-        m: "no buy of ours explains it" for m in strays if m not in owners
-    }
+    return dict.fromkeys(owners, HAND_BOUGHT) | {m: "no buy of ours explains it" for m in strays if m not in owners}
+
+
+def _unrecorded(svc, running: list[dict]) -> set[str]:
+    """The running snipers whose fees the bot has no record of (no payload of theirs on record names a priority: one made
+    in OKTech's app). The owner's coins are told by the fees of the snipers on record, so one of these may have bought
+    one (review of 22 Nov). Every one when the record cannot be read."""
+    from ..measure.ours import sniper_marks
+
+    ids = {str(s.get("id")) for s in running}
+    try:
+        payloads = {str(r["id"]): r.get("payload") for r in svc.store.oktech_snipers(active=False)}
+    except Exception:  # noqa: BLE001 - not known: each may have bought it
+        return ids
+    return {i for i in ids if not sniper_marks([payloads.get(i)])["buy"]}
 
 
 async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths, now: float) -> str:
     """Stop every sniper OKTech runs, unless the wallet holds a coin one of ours may hold: a stopped sniper strands its
     coin. The coins the owner ignores, the owner's own and strays (_not_ours) are no sniper's: beside only them every
-    sniper is stopped (audit of 22 Nov: /stop stopped nothing while the owner's hand-bought coin sat in the wallet)."""
+    sniper is stopped (audit of 22 Nov: /stop stopped nothing while the owner's hand-bought coin sat in the wallet), but
+    one whose fees the bot has no record of (_unrecorded), which may have bought the owner's coin."""
     try:  # the owner's ignored coins are left out, as the book, the watch and the runner leave them out
         held = await asyncio.wait_for(
             svc.open_positions(cfg.operator.wallet, ignore=list(cfg.operator.ignore_mints or ())), READ_SECS
@@ -280,6 +296,13 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
             "decision",
         )
         return f"stop flag set, but {len(running)} sniper(s) left running ({ids}) because coins are held: {coins}. A stopped sniper strands its coin; stop again once they are sold."
+    # an owner's coin is told by the fees of the snipers on record: one the bot has no record of may have bought it
+    own = [m for m, why in theirs.items() if why == HAND_BOUGHT]
+    unknown = _unrecorded(svc, running) if own else set()
+    kept = [str(s.get("id")) for s in running if str(s.get("id")) in unknown]
+    running = [s for s in running if str(s.get("id")) not in unknown]
+    still = (f"; left running: {', '.join(kept)} (no record here of the fees it pays, so {', '.join(m[:6] + '…' for m in own[:5])} "
+             "may be its own: a stopped sniper strands its coin; stop it in OKTech once that is sold)" if kept else "")  # fmt: skip
     stopped, failed = [], []
     loop = asyncio.get_running_loop()
     until = loop.time() + STOPS_SECS
@@ -298,13 +321,14 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
     notes.write(
         f"stopped by owner: stopped {', '.join(stopped) or 'none'}"
         + (f"; failed {', '.join(failed)}" if failed else "")
-        + beside,
+        + beside
+        + still,
         "decision",
     )
     return (
         f"stopped {len(stopped)} sniper(s): {', '.join(stopped) or 'none'}"
         + (f"; failed: {', '.join(failed)}" if failed else "")
-        + f"{beside}. No new snipers are expected until /resume."
+        + f"{beside}{still}. No new snipers are expected until /resume."
     )
 
 
