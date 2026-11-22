@@ -325,10 +325,17 @@ def kinds_of_fills(fills: list[dict], snipers: list[dict]) -> dict[str, str]:
 
 
 def evidence_fills(store, wallet: str | None, now: float, days: float = 30.0) -> list[dict]:
-    """The measure stage's fills of the last `days` for the policy: buys and sells of the operator wallet."""
+    """The measure stage's fills of the last `days` for the policy: the bot's own buys and sells of the operator
+    wallet (measure/ours.py). The owner trades by hand in it, and a hand buy is no evidence of what a sniper's bid
+    buys (22 Nov audit)."""
+    from .measure.ours import bot_buy, bot_sells, fee_marks
+
     since = int(now - days * 86400)
     rows = store.fills(wallet=wallet or None, since_ts=since, limit=100_000)
-    return [r for r in rows if r.get("side") in ("buy", "sell")]
+    marks = fee_marks(store)
+    sold = {r.get("sig") for r in bot_sells(store, rows, marks)}
+    return [r for r in rows if (r.get("side") == "buy" and bot_buy(r, marks))
+            or (r.get("side") == "sell" and r.get("sig") in sold)]  # fmt: skip
 
 
 def explain(cfg: Config, fills: list[dict] | None = None, leaders: list[str] | tuple[str, ...] = (),

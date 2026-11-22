@@ -290,3 +290,26 @@ def test_server_0_the_owners_hand_trip_shapes_none_of_measures_outputs(tmp_path)
         assert hb.sig not in shadowed and len(shadowed) == 3
     finally:
         st.close()
+
+
+def test_measure_2_the_fee_policys_evidence_is_the_bots_own_fills():
+    """measure#2: fees.evidence_fills gave the fee policy every buy and sale of the wallet; an owner's hand buy right
+    after a copied wallet's (wallet_copied on it) was evidence for that wallet's copy sniper's tip. Only the bot's buys
+    and sales are (measure/ours.py)."""
+    from snipetech import fees
+
+    st = Store(":memory:")
+    try:
+        _sniper(st, tip=0.002)
+        base = {"wallet": W, "mint": "M", "tokens": 1_000_000}
+        st.put_fill(base | {"sig": "bot-b", "ts": NOW - 900, "side": "buy", "sol": 0.2, "wallet_copied": LEAD,
+                            "trades_behind": 2, "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
+        st.put_fill(base | {"sig": "bot-s", "ts": NOW - 888, "side": "sell", "sol": 0.19, "buy_sig": "bot-b",
+                            "pnl_sol": -0.01, "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
+        st.put_fill(base | {"sig": "hand-b", "ts": NOW - 600, "side": "buy", "sol": 2.5, "wallet_copied": LEAD,
+                            "trades_behind": 0, "priority_lamports": HAND_FEES[0], "tip_lamports": HAND_FEES[1]})  # fmt: skip
+        st.put_fill(base | {"sig": "hand-s", "ts": NOW - 500, "side": "sell", "sol": 2.4, "buy_sig": "hand-b",
+                            "pnl_sol": -0.1, "priority_lamports": HAND_FEES[0], "tip_lamports": 0})  # fmt: skip
+        assert sorted(r["sig"] for r in fees.evidence_fills(st, W, NOW)) == ["bot-b", "bot-s"]
+    finally:
+        st.close()
