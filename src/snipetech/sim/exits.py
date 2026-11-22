@@ -17,7 +17,8 @@ from .market import DEFAULT_SLOT_SECS, MarketPath
 LAMPORTS = 1e9
 # When two exits fire on the same trade: a take-profit first (it may sell only a part), then the copied wallet's sale,
 # the stop-loss, the trailing stop, the dev's sale, and a pause last (it fires a while after that trade).
-_FIRST = {"take_profit": 0, "copy_exit": 1, "stop_loss": 2, "trailing_stop": 3, "dev_sell": 4, "stale": 5}
+_FIRST = {"take_profit": 0, "copy_exit": 1, "stop_loss": 2, "trailing_stop": 3, "dev_sell": 4, "stale": 5,
+          "extension_drop": 6}  # fmt: skip
 
 
 # How far past its entry a position's displacement is walked when it is prepared (`MarketPath.displacement`: a loop
@@ -102,6 +103,18 @@ class ExitParams:
     momentum_lookback: float = 3.0
     momentum_max_secs: float = 30.0
     momentum_peak_drop: float = 0.0
+    # OKTech's timer extension (timerExtension {minGainVelocity, lookbackMs, extensionMs, maxExtensionMs,
+    # cancelDropPercent}; the owner, 21 Nov: "if it's only upping we can hold a bit too but if it's js a crash we get
+    # out asap"): when the sell-all timer fires while the position's value has risen at least `ext_velocity` PERCENT A
+    # SECOND over the last `ext_lookback` seconds, the timer moves `ext_step` seconds on and asks again there, at most
+    # `ext_max` seconds past the first timer; once it has moved, a value `ext_cancel` (a fraction, 0 = off) under its
+    # high since the first timer sells at once. The other exits keep working while it waits (`_timer_end`). 0 = off.
+    # Research only: how OKTech times it is not known, and no live sniper is sent it.
+    ext_velocity: float = 0.0
+    ext_lookback: float = 3.0
+    ext_step: float = 5.0
+    ext_max: float = 30.0
+    ext_cancel: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tp_stages", stage_pairs(self.tp_stages, "tp_stages"))
@@ -166,6 +179,12 @@ class ExitParams:
             # MOM2%/s@3s<30s-10%: waits while up 2 % a second over 3 s, 30 s at most, or until 10 % under the high
             drop = f"-{self.momentum_peak_drop:.0%}" if self.momentum_peak_drop > 0 else ""
             parts.append(f"MOM{self.momentum_hold:g}%/s@{self.momentum_lookback:g}s<{self.momentum_max_secs:g}s{drop}")
+        if self.ext_velocity > 0:
+            # EXT2%/s@3s+5s<30s-10%: at the timer, 5 s more while up 2 % a second over 3 s, 30 s more at most, and sold
+            # at once 10 % under the high since the first timer
+            drop = f"-{self.ext_cancel:.0%}" if self.ext_cancel > 0 else ""
+            parts.append(f"EXT{self.ext_velocity:g}%/s@{self.ext_lookback:g}s+{self.ext_step:g}s<"
+                         f"{self.ext_max:g}s{drop}")
         return " ".join(parts)
 
     def to_dict(self) -> dict:
@@ -191,6 +210,7 @@ _EXIT_WORDS = (
     ("first", re.compile(rf"first{_NUM}%")),
     ("flat", re.compile(rf"flat<{_NUM}x")),
     ("mom", re.compile(rf"MOM{_NUM}%/s@{_NUM}s<{_NUM}s(?:-{_NUM}%)?")),
+    ("ext", re.compile(rf"EXT{_NUM}%/s@{_NUM}s\+{_NUM}s<{_NUM}s(?:-{_NUM}%)?")),
 )
 
 
@@ -271,6 +291,10 @@ def exit_from_label(text: str) -> ExitParams:
             kw["momentum_hold"], kw["momentum_lookback"], kw["momentum_max_secs"] = (float(m[1]), float(m[2]),
                                                                                     float(m[3]))  # fmt: skip
             kw["momentum_peak_drop"] = float(m[4]) / 100 if m[4] else 0.0
+        elif kind == "ext":
+            kw["ext_velocity"], kw["ext_lookback"] = float(m[1]), float(m[2])
+            kw["ext_step"], kw["ext_max"] = float(m[3]), float(m[4])
+            kw["ext_cancel"] = float(m[5]) / 100 if m[5] else 0.0
     if "hold" not in seen:
         raise ValueError(f"{text!r} names no timer: every exit a lab scores ends on one, e.g. hold300s")
     return ExitParams(**kw)
@@ -589,6 +613,46 @@ def _release(
     return None
 
 
+def _timer_end(
+    ex: ExitParams, v: np.ndarray, rt: np.ndarray, base_end: float, base_last: int, full_last: int, cap: float
+) -> tuple[float, int, int | None]:
+    """OKTech's timer extension on the value series `v` (`ExitParams.ext_velocity`): (when the sell-all timer fires,
+    in seconds after the entry; the state in effect then; the first state the drop rule sells at, or None). Without
+    the extension, or with no room past the first timer (the tape ends there), it is the first timer as it was.
+
+    At each timer the rise of what is held over the last `ext_lookback` seconds (the state then against the state in
+    effect a lookback earlier, on the slots' clock, as the momentum hold reads it) must be at least `ext_velocity`
+    percent a second; while it is, the timer moves `ext_step` seconds on, never past `cap` (the first timer plus
+    `ext_max`). Once it has moved, the first state `ext_cancel` under the high since the first timer sells (OKTech's
+    cancelDropPercent: a drop of that much snaps the timer back). What is assumed about OKTech's clock is the
+    momentum hold's (`_release`): none of it measured on a live trade yet."""
+    if not (ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0) or cap <= base_end:
+        return base_end, base_last, None
+    look = max(float(ex.ext_lookback), 1e-9)
+    need = float(ex.ext_velocity) * look / 100.0
+
+    def state_at(secs: float) -> int:  # the state in effect `secs` after the entry
+        return max(0, min(int(np.searchsorted(rt, secs + 1e-9, side="right")) - 1, full_last))
+
+    t = float(base_end)
+    while t < cap:
+        j, b = state_at(t), state_at(t - look)
+        if v[b] <= 0 or float(v[j]) / float(v[b]) - 1.0 < need:
+            break
+        t = min(t + float(ex.ext_step), float(cap))
+    if t <= base_end:
+        return base_end, base_last, None  # not extended: the first timer, exactly as without the rule
+    last = state_at(t)
+    drop = None
+    if ex.ext_cancel > 0:
+        first = state_at(base_end)
+        seg = v[first : last + 1]
+        hit = np.nonzero(seg <= np.maximum.accumulate(seg) * (1.0 - float(ex.ext_cancel)))[0]
+        if len(hit):
+            drop = first + int(hit[0])
+    return t, last, drop
+
+
 def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = None) -> SimResult:
     """Simulate holding the prepared position under exit rules `ex`.
 
@@ -614,25 +678,35 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
     path = p.path
     basis = p.spent
     n_rel = len(p.v)
+    ext_on = ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0
     deadline = p.entry_ts + ex.max_hold_secs
+    timer_cap = deadline + (float(ex.ext_max) if ext_on else 0.0)  # the furthest an extended timer can move
     if end_ts is not None:
-        deadline = min(deadline, end_ts)
+        deadline, timer_cap = min(deadline, end_ts), min(timer_cap, end_ts)
     last_rel = int(np.searchsorted(p.ts, deadline, side="right")) - 1
     last_rel = max(0, min(last_rel, n_rel - 1))
-    reach = min(max(p.e + last_rel, int(p.exec_idx[last_rel])), path.n - 1)  # no sale is priced past this state
+    base_last, full_last = last_rel, last_rel
+    if timer_cap > deadline:
+        full_last = max(0, min(int(np.searchsorted(p.ts, timer_cap, side="right")) - 1, n_rel - 1))
+    reach = min(max(p.e + full_last, int(p.exec_idx[full_last])), path.n - 1)  # no sale is priced past this state
     _reach(p, reach)
     rt = _rel_secs(p)
     watch = max(0.0, float(ex.watch_secs))
     lo = max(1, int(np.searchsorted(rt, watch, side="right")) - 1) if watch > 0 else 1
     peak = p.peak if lo <= 1 else np.maximum.accumulate(np.where(np.arange(n_rel) >= lo, p.v, 0.0))
-    stale_ok = None
-    if ex.stale_secs > 0:
+
+    def stale_rule(until: float) -> np.ndarray:
         # quiet for stale_secs after state j: nothing traded in between, so state j's price is the fill
-        stale_ok = _quiet_secs(p, deadline) >= ex.stale_secs
+        ok = _quiet_secs(p, until) >= ex.stale_secs
         if watch > 0:
-            stale_ok &= rt + ex.stale_secs >= watch
+            ok &= rt + ex.stale_secs >= watch
+        return ok
+
+    stale_ok = stale_rule(deadline) if ex.stale_secs > 0 else None
     entry_slot = int(path.slot[p.e])
-    end_rel = deadline - p.entry_ts  # when the timer fires, in seconds after the entry
+    base_end = deadline - p.entry_ts  # when the first timer fires, in seconds after the entry
+    cap_rel = timer_cap - p.entry_ts
+    end_rel = base_end
 
     def lands(fires_at: float) -> int:
         """The slot a sell lands in when its exit fires `fires_at` s after the entry."""
@@ -683,6 +757,11 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         cost = basis * (rest / p.held)
         found: dict[str, int] = {}
         fired = release = None
+        drop_at = None
+        if ext_on:  # the timer of this phase, on what is held now: it may move on while the price climbs
+            end_rel, last_rel, drop_at = _timer_end(ex, v, rt, base_end, base_last, full_last, cap_rel)
+            if ex.stale_secs > 0:
+                stale_ok = stale_rule(p.entry_ts + end_rel)
         if tp_left:
             fired = t = _first(v >= cost * (1 + tp_left[0][0]), lo_v, last_rel)
             if t is not None and ex.momentum_hold > 0:  # it waits while the price still runs
@@ -713,6 +792,8 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
             t = _first(stale_ok, lo_stale, last_rel)
             if t is not None:
                 found["stale"] = t
+        if drop_at is not None and drop_at >= lo_v:  # the extended timer snaps back on a drop from its high
+            found["extension_drop"] = drop_at
         if not found:
             if at is None:
                 sales.append(("time", end_rel, p.e + last_rel, lands(end_rel), 1.0))

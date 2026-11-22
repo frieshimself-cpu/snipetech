@@ -42,7 +42,9 @@ def test_the_exit_analyst_scores_named_exits_at_a_named_place_and_freezes_nothin
     assert {"read_fills", "read_round_trips"} <= R.ROLE_TOOLS["exits"]
     assert "set_candidates" not in R.ROLE_TOOLS["exits"] and "read_fee_policy" not in R.ROLE_TOOLS["exits"]
     assert R.TABLES["exits"] == "exits-best"
-    assert R.ROLE_DOCS["exits"] == ("docs/oktech-features.md", "docs/live-recipe.md")
+    # every OKTech sell setting, one by one (the owner, 22 Nov: "make sure that agent goes through all the oktech
+    # settings"), and the live runs' exits
+    assert R.ROLE_DOCS["exits"] == ("docs/oktech-settings.md", "docs/oktech-features.md", "docs/live-recipe.md")
     assert "exits" not in R.TABLE_DEAF  # the tester's rules and the fee analyst's places are its subject too
 
 

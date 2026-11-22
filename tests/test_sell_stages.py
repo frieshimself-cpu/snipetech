@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from snipetech.oktech import UNREACHABLE_STAGE, autosell, validate_exit
-from snipetech.sim.exits import Costs, ExitParams, prepare, run_exit
+from snipetech.sim.exits import Costs, ExitParams, exit_from_label, prepare, run_exit
 from snipetech.sim.market import MarketPath
 from tests.test_fill_model import FEE_BPS, NET, SOL, _market, _with_us
 
@@ -356,6 +356,111 @@ def test_a_stop_is_not_held_and_ends_a_wait():
 # --- 4. the label, the record, a frozen rule's id -----------------------------------------------------------------
 
 
+# --- OKTech's timer extension (timerExtension): the sell timer moves on while the price still climbs ---------------
+# The owner, 21 Nov 2026: "if it's only upping we can hold a bit too but if it's js a crash we get out asap". OKTech's
+# timerExtension {minGainVelocity, lookbackMs, extensionMs, maxExtensionMs, cancelDropPercent}, as the lab reads it:
+# when the sell-all timer fires while the position's value has risen at least ext_velocity % a second over the last
+# ext_lookback seconds, the timer moves ext_step seconds on, and again at each new timer, ext_max seconds past the
+# first timer at most; once extended, a value ext_cancel under its high since the first timer sells at once. The
+# other exits keep working while it waits. How OKTech times it is not known: research only, never sent live.
+
+
+def _timer(**kw) -> ExitParams:
+    return ExitParams(take_profit=0, stop_loss=0, max_hold_secs=12.0, sell_on_dev_sell=False, **kw)
+
+
+def test_the_timer_moves_on_while_the_price_climbs_and_stops_at_the_longest_extension():
+    """The price only climbs. At the 12 s timer it is still up: the timer moves 5 s on, again and again, to 30 s past
+    the first timer at most, and the sale goes out there, at a higher price."""
+    world = _world(UP)
+    p = world[3]
+    plain, ext = _timer(), _timer(ext_velocity=0.01, ext_lookback=3.0, ext_step=5.0, ext_max=30.0)
+    a, b = run_exit(p, plain, FREE), run_exit(p, ext, FREE)
+    assert a.exit_reason == b.exit_reason == "time"
+    assert (a.exit_idx, b.exit_idx) == (p.e + 12, p.e + 42) and b.proceeds_sol > a.proceeds_sol
+    assert b.exit_slot == b.entry_slot + 42
+    assert b.proceeds_sol * SOL == pytest.approx(_paid(world, {p.e + 42: p.held}), rel=1e-8)
+
+
+def test_a_timer_reached_while_the_price_is_not_climbing_fast_enough_sells_as_it_was():
+    p = _world(UP)[3]
+    slow = _timer(ext_velocity=50.0, ext_lookback=3.0, ext_step=5.0, ext_max=30.0)  # never that fast
+    assert run_exit(p, slow, FREE) == run_exit(p, _timer(), FREE)
+    assert ExitParams().ext_velocity == 0.0  # off unless asked for
+
+
+def test_an_extended_timer_stops_moving_once_the_rise_fades():
+    """Each new timer asks again: the first one at which the price has not risen fast enough over the lookback sells."""
+    world = _world(UP_DOWN)
+    p = world[3]
+    need = 0.01 * 3.0  # 1 % a second over 3 s
+
+    def rising(t):
+        return p.v[t] / p.v[t - 3] - 1 >= need
+
+    t = 12
+    while rising(t) and t < 12 + 60:
+        t = min(t + 4, 12 + 60)
+    assert t > 12  # it was extended at least once
+    res = run_exit(p, _timer(ext_velocity=1.0, ext_lookback=3.0, ext_step=4.0, ext_max=60.0), FREE)
+    assert res.exit_reason == "time" and res.exit_idx == p.e + t
+    assert res.proceeds_sol * SOL == pytest.approx(_paid(world, {p.e + t: p.held}), rel=1e-8)
+
+
+def test_an_extended_timer_sells_at_once_on_a_drop_from_its_high():
+    """The price climbs, then turns. The 12 s timer moves on (the price still climbs); the first trade 5 % under the
+    high since the first timer sells at once, long before the extension would end."""
+    world = _world(UP_DOWN)
+    p = world[3]
+    ext = _timer(ext_velocity=0.01, ext_lookback=3.0, ext_step=60.0, ext_max=60.0, ext_cancel=0.05)
+    drops = next(j for j in range(13, len(p.v)) if p.v[j] <= p.v[12 : j + 1].max() * 0.95)
+    assert 12 < drops < 72
+    res = run_exit(p, ext, FREE)
+    assert res.exit_reason == "extension_drop" and res.exit_idx == p.e + drops
+    assert res.proceeds_sol * SOL == pytest.approx(_paid(world, {p.e + drops: p.held}), rel=1e-8)
+
+
+def test_the_drop_rule_is_off_until_the_timer_is_extended():
+    """Before the first timer the drop from the high sells nothing: that is the stop's and the trail's job."""
+    p = _world(UP_DOWN)[3]
+    early = next(j for j in range(1, 12) if p.v[j] <= p.v[: j + 1].max() * 0.99) if any(
+        p.v[j] <= p.v[: j + 1].max() * 0.99 for j in range(1, 12)) else None  # fmt: skip
+    res = run_exit(p, _timer(ext_velocity=50.0, ext_lookback=3.0, ext_step=5.0, ext_max=30.0, ext_cancel=0.01), FREE)
+    assert res.exit_reason == "time" and res.exit_idx == p.e + 12, early
+
+
+def test_the_other_exits_keep_working_while_the_timer_is_extended():
+    """A stop that the price reaches only after the first timer still sells, inside the extension."""
+    world = _world(UP_DOWN)
+    p = world[3]
+    top = int(np.argmax(p.v))
+    low = next(j for j in range(top, len(p.v)) if p.v[j] <= p.spent * 1.5)
+    assert 12 < top < low < 12 + 120
+    ex = _timer(ext_velocity=0.01, ext_lookback=3.0, ext_step=120.0, ext_max=120.0)
+    trail = run_exit(p, replace(ex, trailing_stop=0.25), FREE)
+    hit = next(j for j in range(1, len(p.v)) if p.v[j] <= p.v[: j + 1].max() * 0.75)
+    assert trail.exit_reason == "trailing_stop" and trail.exit_idx == p.e + hit and hit > 12
+
+
+def test_the_timer_extension_has_its_name_and_reads_back():
+    ex = _timer(ext_velocity=2.0, ext_lookback=3.0, ext_step=5.0, ext_max=30.0, ext_cancel=0.10)
+    assert ex.label() == "hold12s EXT2%/s@3s+5s<30s-10%"
+    assert exit_from_label(ex.label()) == ex
+    assert exit_from_label("hold12s EXT1%/s@2s+4s<20s") == _timer(ext_velocity=1.0, ext_lookback=2.0, ext_step=4.0,
+                                                                ext_max=20.0)  # fmt: skip
+    assert ExitParams(**json.loads(json.dumps(ex.to_dict()))) == ex
+
+
+def test_no_sniper_is_sent_a_timer_extension():
+    """Scored on our own reading of OKTech's clock: sent without it the exit is another exit, and sent with it
+    nobody knows yet what OKTech would do."""
+    ex = _timer(ext_velocity=2.0, ext_lookback=3.0, ext_step=5.0, ext_max=30.0)
+    with pytest.raises(ValueError, match="research only"):
+        autosell(replace(ex, stop_loss=0.2).to_dict(), [])
+    said = validate_exit({"stop_loss": 0.2, "max_hold_secs": 12, "ext_velocity": 2.0})
+    assert len(said) == 1 and "timer extension" in said[0] and "research only" in said[0]
+
+
 def test_the_label_names_every_stage_and_the_hold():
     ex = ExitParams(tp_stages=((0.2, 0.25), (0.5, 0.25), (1.0, 0.25)), trailing_stop=0.18, max_hold_secs=300.0, **OFF)
     assert ex.label() == "TP+20%@25%/+50%@25%/+100%@25% TRAIL18% hold300s"
@@ -412,7 +517,8 @@ def test_rules_frozen_before_the_ladders_keep_their_ids():
     from snipetech.analysis import paper
     from snipetech.analysis.lab import Trigger
 
-    new = ("tp_stages", "sl_stages", "momentum_hold", "momentum_lookback", "momentum_max_secs", "momentum_peak_drop")
+    new = ("tp_stages", "sl_stages", "momentum_hold", "momentum_lookback", "momentum_max_secs", "momentum_peak_drop",
+           "ext_velocity", "ext_lookback", "ext_step", "ext_max", "ext_cancel")
     trig = dict(Trigger("kol", sol=1, group="wallet", known=2).__dict__)
     ex = ExitParams(max_hold_secs=60.0, **OFF).to_dict()
     assert set(new) <= set(ex)
@@ -425,6 +531,7 @@ def test_rules_frozen_before_the_ladders_keep_their_ids():
         trig, ladder, "+0", 0, 1.0)  # fmt: skip
     assert paper.strategy_id(trig, ex | {"sl_stages": ((0.1, 0.5),)}, "+0", 0, 1.0) != was
     assert paper.strategy_id(trig, ex | {"momentum_hold": 2.0}, "+0", 0, 1.0) != was
+    assert paper.strategy_id(trig, ex | {"ext_velocity": 2.0}, "+0", 0, 1.0) != was  # a timer extension is another rule
     # the rule of 5 Nov the other builds pin
     from snipetech.analysis.lab import exit_set
 

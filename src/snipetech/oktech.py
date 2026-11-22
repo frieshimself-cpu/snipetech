@@ -394,6 +394,10 @@ def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0
         raise ValueError("an exit with momentum hold is research only: it was scored on our own reading of OKTech's "
                          "clock, which no live trade has shown yet, and sent without the hold it is another "
                          "exit")  # fmt: skip
+    if float(e.get("ext_velocity") or 0) > 0:
+        raise ValueError("an exit with a timer extension is research only: it was scored on our own reading of "
+                         "OKTech's timerExtension, which no live trade has shown yet, and sent without it it is "
+                         "another exit")  # fmt: skip
     # an exit that sells out in parts (`sell_parts`, with `first_part` / `flat_below`): no OKTech setting sends it,
     # and without its parts it is another exit (a 3 s timer in six parts would go out as everything sold at 3 s).
     # Since 12 Nov every lab scores one (the 6Z91 recipe's), so a rule frozen with it must never become a sniper
@@ -678,6 +682,11 @@ def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
     if not mom <= 0:  # 0 or missing: no hold
         out.append(f"momentum hold ({mom:g} % a second): research only, scored on our own reading of OKTech's clock; "
                    "no live sniper is sent it until a tiny live test shows how OKTech times it")  # fmt: skip
+    ext = num("ext_velocity")
+    if not ext <= 0:  # 0 or missing: the timer as it is
+        out.append(f"timer extension ({ext:g} % a second): research only, scored on our own reading of OKTech's "
+                   "timerExtension; no live sniper is sent it until a tiny live test shows how OKTech times "
+                   "it")  # fmt: skip
     parts = num("sell_parts")
     if not parts <= 1:  # 0 or missing: one sale
         out.append(f"sells out in {parts:g} parts: research only, no OKTech setting sends that yet (its stages are "

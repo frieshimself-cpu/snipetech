@@ -108,7 +108,7 @@ TABLE_CHARS = 2000  # what a turn carries of each other role's table
 ROLE_DOCS: dict[str, tuple[str, ...]] = {
     "oktech": ("docs/oktech-playbook.md", "docs/oktech-features.md", "docs/oktech-settings.md"),
     # what OKTech can sell with (its auto-sell, and the unknowns a tiny live test settles), and the live runs' exits
-    "exits": ("docs/oktech-features.md", "docs/live-recipe.md"),
+    "exits": ("docs/oktech-settings.md", "docs/oktech-features.md", "docs/live-recipe.md"),
 }
 # Whose queue a role's findings usually become work for (an idea added there; only the queue's own role moves or
 # closes it). Any role may add to any queue: this is what its instructions name.

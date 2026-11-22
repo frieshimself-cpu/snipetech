@@ -57,6 +57,23 @@ def test_the_exit_analyst_is_told_its_question_its_bar_and_what_it_never_does():
     assert "a fill of ours" in text  # every live sale is evidence: its exit against what every other exit made
 
 
+def test_the_exit_analyst_goes_through_every_oktech_sell_setting():
+    """The owner, 22 Nov 2026: "make sure that agent goes through all the oktech settings yk". Every setting of
+    OKTech's auto-sell (docs/oktech-settings.md) is named with the lab word that scores it, or as not in the lab yet,
+    and the table keeps one row a setting."""
+    text = _flat(P.EXITS_SYSTEM)
+    for setting, word in (("sellAfterSeconds", "hold12s"), ("stages", "TP+20%@50%/+50%"), ("stopLoss", "SL-25%"),
+                          ("trailingStopLoss", "TRAIL15%>10%"), ("deadExit", "STALE2s"),
+                          ("migrationSell", "MIGSELL50%+5s"), ("momentumHold", "MOM2%/s@3s<30s-10%"),
+                          ("timerExtension", "EXT2%/s@3s+5s<30s-10%"), ("ctbotCopyExit", "copy50% watch1.3s"),
+                          ("sellTipAmount", '"--per-tx"')):  # fmt: skip
+        assert setting in text and word in text, setting
+    for setting in ("stageAcceleration", "wickServer", "autoStop", "confirmMs", "sellAfterMs", "sellPriorityFeeSol"):
+        assert setting in text, setting
+    assert "not in the lab yet" in text and "one row a setting" in text
+    assert "docs/oktech-settings.md" in text
+
+
 def test_every_role_is_told_it_never_trades():
     for role in ROLES:
         text = _flat(P.ROLE_SYSTEM[role])

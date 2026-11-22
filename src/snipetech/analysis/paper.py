@@ -182,11 +182,13 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
     # sell (7 Nov), selling out in parts (12 Nov: one part, one sale), OKTech's ladders and momentum hold (12 Nov: no
     # stages, no hold; the hold's lookback, longest wait and peak drop at ExitParams' defaults), the first part's own
-    # size and the flat line of a sale in parts (12 Nov, the 6Z91 recipe: equal parts, no flat line)
+    # size and the flat line of a sale in parts (12 Nov, the 6Z91 recipe: equal parts, no flat line), and OKTech's timer
+    # extension (22 Nov: off; its lookback, step, longest extension and drop at ExitParams' defaults)
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0,
              "sell_parts": 1, "sell_part_secs": 0.0, "tp_stages": [], "sl_stages": [], "momentum_hold": 0.0,
              "momentum_lookback": 3.0, "momentum_max_secs": 30.0, "momentum_peak_drop": 0.0,
-             "first_part": 0.0, "flat_below": 0.0}  # fmt: skip
+             "first_part": 0.0, "flat_below": 0.0, "ext_velocity": 0.0, "ext_lookback": 3.0, "ext_step": 5.0,
+             "ext_max": 30.0, "ext_cancel": 0.0}  # fmt: skip
 
     def unset(k: str, v) -> bool:
         # a ladder is a tuple in the lab's exit and a list in a rule's record: the one value
