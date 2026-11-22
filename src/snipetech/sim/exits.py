@@ -496,12 +496,15 @@ HELD_MARGIN_SECS = 120.0
 
 def exits_reach(exits) -> float:
     """Seconds after a buy at which these exits can still sell, at the latest: the longest timer, moved on by its
-    timer extension (`ext_max`) and followed by its parts. Every other exit sells before its timer (a momentum hold,
-    a migration sell and a stale exit are read up to the timer's state)."""
+    timer extension (`ext_max`), its dead exit's pause (`stale_secs`) and its parts after them. A dead exit fires on a
+    trade up to its timer once nothing traded for its pause, so its sale lands that long after the timer's last trade
+    (review of 22 Nov: "STALE158s hold10s" landed past the cut, and its sale's place against the curve was read on a
+    path that stopped before it). Every other exit sells before its timer (a momentum hold and a migration sell are
+    read up to the timer's state)."""
 
     def reach(ex: ExitParams) -> float:
         ext = ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0
-        return (float(ex.max_hold_secs) + (float(ex.ext_max) if ext else 0.0)
+        return (float(ex.max_hold_secs) + (float(ex.ext_max) if ext else 0.0) + max(0.0, float(ex.stale_secs))
                 + (max(1, int(ex.sell_parts)) - 1) * max(0.0, float(ex.sell_part_secs)))  # fmt: skip
 
     return max((reach(ex) for ex in exits), default=0.0)

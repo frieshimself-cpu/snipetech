@@ -613,3 +613,39 @@ def test_a_lab_on_long_tailed_coins_is_the_same_with_the_cut(monkeypatch):
     # (the migrated coin's moment is left out whole: this store has no PumpSwap tape of its migration)
     assert len(cut["rows"]) == 2 and sizes and all(d < 0 for d in sizes)  # each moment had a shorter path
     assert cut["rows"] == whole["rows"]
+
+
+def test_a_dead_exit_is_handed_the_path_its_sale_lands_on():
+    """A dead exit fires on the last trade before its timer once nothing trades for its pause, and its sale lands that
+    long after that trade: "STALE158s hold10s" sells 158 s after its timer's last trade, past the timer and the margin
+    the cut kept (review of 22 Nov). Read on the cut path, the sale's landing against the curve missed the coin's
+    completion two slots after the quiet stretch. The measured slot time here is 2.5 % short of the 0.4 s these blocks
+    ran at: the pause is read on the block clock, its sale's slot on the slot clock."""
+    from snipetech.sim.exits import Costs, exits_reach, held_path, prepare, run_exit
+    from snipetech.sim.market import MarketPath
+
+    st = Store(":memory:")
+    mint = addr("dead-exit-coin")
+    m = Market(st, mint, addr("dead-exit-dev"), NOW - 9000, 41_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(LEAD, 1.5, 20)
+    for s in range(22, 42, 2):  # a buy every 0.8 s until 8 s after the copy
+        m.buy(addr(f"dead-exit-{s}"), 0.3, s)
+    m.buy(addr("dead-exit-wake"), 0.3, 441)  # 160 s of nothing, then the coin wakes up
+    m.complete(addr("dead-exit-done"), 443)  # and completes its curve two slots later
+    m.migrate(445, on_tape=False)  # (no migration on the tape: the sale is placed by the curve's end alone)
+    for s in range(446, 2400, 4):
+        m.buy(addr(f"dead-exit-late-{s}"), 0.2, s)
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(mint), st.launch(mint), slot_secs=0.39)
+    st.close()
+    e = path.users.index(LEAD) + 1
+    ex = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=10.0, stale_secs=158.0, sell_on_dev_sell=False)
+    costs = Costs(per_tx_lamports=0.0045e9)
+    held = held_path(path, e, exits_reach([ex]))
+    a = run_exit(prepare(path, e, 0.2, costs, 1, "start"), ex, costs)
+    b = run_exit(prepare(held, e, 0.2, costs, 1, "start"), ex, costs)
+    assert a.exit_reason == "stale" and a.sold_on_curve is False  # it landed after the curve completed
+    assert held.n < path.n  # still a cut: the hour after it is not read
+    assert (b.pnl_sol, b.exit_reason, b.exit_idx, b.exit_slot, b.sold_on_curve) == (
+        a.pnl_sol, a.exit_reason, a.exit_idx, a.exit_slot, a.sold_on_curve)  # fmt: skip
