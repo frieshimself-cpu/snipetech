@@ -1209,8 +1209,9 @@ class Service:
         the start and before each re-arm; a guard that cannot tell holds that re-arm back, never the run).
         Every end leaves nothing armed: the snipers this run armed are stopped when the wallet holds nothing (one left
         armed buys once more at the next launch that qualifies, past the time limit or under the floor, with nobody
-        watching); a coin held, or a wallet that cannot be read, keeps them running to sell it (a stopped sniper strands
-        its coin). The report's `held` is the wallet's coins by the shared rule (positions.py), and `left_running` the
+        watching); a coin held, or a wallet that cannot be read for END_WATCH_SECS after the end (read again every 5 s;
+        on the way out every 3 s for LAST_STOP_SECS), keeps them running to sell it (a stopped sniper strands its
+        coin). The report's `held` is the wallet's coins by the shared rule (positions.py), and `left_running` the
         snipers this run armed and did not stop.
 
         `sweep_after` (seconds; None: never): a coin the wallet has held that long since it was first seen is sold by the
@@ -1519,34 +1520,45 @@ class Service:
             keeps them running to sell. A coin held at the end is watched first (`watch_out`, with or without
             `sweep_after`: the review of 22 Nov found a fills-cap end whose coin's buy was not on the tape yet, and the
             spare sniper left armed with nobody watching): sold by its sniper or by the run, the snipers are stopped
-            then. (The reason with what was done, the coins held or None when unreadable.)"""
-            try:  # the run's coins (and its tokens in the owner's: `run_parts`) only: one of the owner's own keeps no
-                # sniper of the run's running
-                end_t = time.time()
-                held = await run_held(end_t)
-                if not held:  # one empty reply is no proof: a node can leave a coin out of one (a second must agree)
+            then. A read that fails is tried again every 5 s, END_WATCH_SECS after the end at most, the watch included
+            (22 Nov audit, runner finding 2: one failed read left every sniper armed with nobody watching). (The reason
+            with what was done, the coins held or None when unreadable.)"""
+            end_t, unread = time.time(), False
+            while True:
+                try:  # the run's coins (and its tokens in the owner's: `run_parts`) only: one of the owner's own keeps
+                    # no sniper of the run's running
+                    held = await run_held(time.time())
+                    # one empty reply is no proof: a node can leave a coin out of one (a second must agree)
+                    if not held:
+                        await asyncio.sleep(5.0)
+                        held = await run_held(time.time())
+                    # a buy on its way (the SOL left, or the tape has the buy, its coin not shown yet) is a coin: wait
+                    # for it before stopping any
+                    # (and for PLACE_SETTLE_SECS at least: the recorder can write a buy a few seconds late, and one paid
+                    # from wrapped SOL moves no plain SOL; 22 Nov review)
+                    while not held and time.time() - end_t < FRESH_HOLD_SECS and (
+                            time.time() - end_t < PLACE_SETTLE_SECS
+                            or (fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS) or unseen_buy(time.time())):  # fmt: skip
+                        await asyncio.sleep(3.0)
+                        held = await run_held(time.time())
+                    break
+                except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper: read again in 5 s
+                    if time.time() - end_t >= END_WATCH_SECS:
+                        log(f"holdings check at the end failed ({failed(exc)}) for {END_WATCH_SECS / 60:g} min")
+                        return (
+                            f"{why}; the wallet could not be read, so the snipers are left running (one may hold a coin)",
+                            None,
+                        )
+                    if not unread:
+                        log(f"holdings check at the end failed ({failed(exc)}): no sniper is stopped until a reading "
+                            f"says what is held; read again every 5 s, {END_WATCH_SECS / 60:g} min at most")  # fmt: skip
+                    unread = True
                     await asyncio.sleep(5.0)
-                    held = await run_held(time.time())
-                # a buy on its way (the SOL left, or the tape has the buy, its coin not shown yet) is a coin: wait for
-                # it before stopping any
-                # (and for PLACE_SETTLE_SECS at least: the recorder can write a buy a few seconds late, and one paid
-                # from wrapped SOL moves no plain SOL; 22 Nov review)
-                while not held and time.time() - end_t < FRESH_HOLD_SECS and (
-                        time.time() - end_t < PLACE_SETTLE_SECS
-                        or (fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS) or unseen_buy(time.time())):  # fmt: skip
-                    await asyncio.sleep(3.0)
-                    held = await run_held(time.time())
-            except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
-                log(f"holdings check at the end failed ({exc})")
-                return (
-                    f"{why}; the wallet could not be read, so the snipers are left running (one may hold a coin)",
-                    None,
-                )
             if held:  # the snipers that hold none of it are stopped now, not when it is gone
                 await stop_spare(held, time.time())
             if held:  # with or without --sweep-after: a coin its buy is not on the tape yet cannot be placed now
                 n0 = len(swept)
-                held = await watch_out(held)
+                held = await watch_out(held, end_t)
                 why = (f"{why}; still held {END_WATCH_SECS / 60:g} min after the end" if held else
                        f"{why}; the coin held at the end has left the wallet "
                        + (f"({len(swept) - n0} sold by the run itself, --sweep-after)" if sweep_after is not None
@@ -1801,20 +1813,20 @@ class Service:
                 log(f"swept {what}: held {age:.0f} s, past --sweep-after {sweep_after:g} s, so OKTech left it unsold: "
                     f"{result}")  # fmt: skip
 
-        async def watch_out(held: list[dict]) -> list[dict]:
-            """After the run's end with a coin held: read the wallet every 5 s, stop each sniper that holds none of it
-            once its buys can be placed (`stop_spare`), and with `sweep_after` sell each coin held that long
+        async def watch_out(held: list[dict], end_t: float) -> list[dict]:
+            """After the run's end (at `end_t`) with a coin held: read the wallet every 5 s, stop each sniper that holds
+            none of it once its buys can be placed (`stop_spare`), and with `sweep_after` sell each coin held that long
             (`sweep_stuck`: a failed sale is tried again each minute), until two readings in a row show nothing held
-            and no buy on its way, for END_WATCH_SECS at most. Nothing is armed again. A sniper left running can still
-            buy once: its coin is a new holding with its own timer. The coins of the last reading."""
+            and no buy on its way, until END_WATCH_SECS after the end at most. Nothing is armed again. A sniper left
+            running can still buy once: its coin is a new holding with its own timer. The coins of the last reading."""
             nonlocal fresh_at, arrivals, last_arrival
-            end_t, unread, empty, prev = time.time(), False, 0, None
+            unread, empty, prev = False, 0, None
             log("the run has ended with " + ", ".join(str(h.get("mint")) for h in held) + " held: it watches the "
                 f"wallet {END_WATCH_SECS / 60:g} min at most, "
                 + (f"sells a coin held {sweep_after:g} s itself (--sweep-after) " if sweep_after is not None
                    else "sells nothing itself (no --sweep-after), ")
                 + "stops each sniper that holds none of it, and the rest once the wallet holds nothing")  # fmt: skip
-            await sweep_stuck(held, end_t)
+            await sweep_stuck(held, time.time())
             while time.time() - end_t < END_WATCH_SECS:
                 await asyncio.sleep(5)
                 try:
@@ -2165,16 +2177,22 @@ class Service:
             armed; with a coin held, those that hold none of it (`stop_spare`), tried again every 3 s for
             LAST_STOP_SECS: until the recorder writes a buy (about 10 s late at times) its coin cannot be placed
             (review of 22 Nov: told to stop 2 s after a copy, the spare sniper was left armed); the rest stay (a stopped
-            sniper strands its coin)."""
-            began, empty = time.time(), 0
+            sniper strands its coin). A read that fails is tried again the same way (22 Nov audit, runner finding 2:
+            one failed read left every sniper armed)."""
+            began, empty, unread = time.time(), 0, False
             while True:
                 try:
                     held = await run_held(time.time())
-                except Exception as exc:  # noqa: BLE001 - unknown holdings stop nothing
-                    log(
-                        f"the wallet could not be read on the way out ({type(exc).__name__}): every sniper left running"
-                    )
-                    break
+                except Exception as exc:  # noqa: BLE001 - unknown holdings stop nothing: read again in 3 s
+                    if not unread:
+                        log(f"the wallet could not be read on the way out ({type(exc).__name__}): no sniper is "
+                            f"stopped until a reading says what is held; read again every 3 s, {LAST_STOP_SECS:g} s "
+                            "at most")  # fmt: skip
+                    unread, empty = True, 0
+                    if time.time() - began >= LAST_STOP_SECS:
+                        break
+                    await asyncio.sleep(3.0)
+                    continue
                 if held:
                     empty = 0
                     await stop_spare(held, time.time())
