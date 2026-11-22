@@ -1836,9 +1836,11 @@ def exit_scores(data: dict[str, Any], cfg: Config, ex: ExitParams, k: int | None
     k = data["exits"].index(ex) if k is None else int(k)
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
 
-    def stats(part: list[dict]) -> dict[str, Any]:
-        st = summarize([r["pnl"][k] for r in part if r["pnl"][k] is not None], conf, samples)
-        return {x: st[x] for x in ("n", "mean", "ev_lower", "win_rate", "total") if x in st}
+    def stats(part: list[dict]) -> dict[str, Any]:  # a coin's moments drawn together, and how many coins (`coins`)
+        part = [r for r in part if r["pnl"][k] is not None]
+        st = summarize([r["pnl"][k] for r in part], conf, samples, clusters=coin_keys(part))
+        return {x: st[x] for x in ("n", "mean", "ev_lower", "win_rate", "total") if x in st} | (
+            {"coins": st["clusters"]} if "clusters" in st else {})  # fmt: skip
 
     out = []
     for ti, trig in enumerate(data["triggers"]):
@@ -3136,6 +3138,15 @@ def pnl_matrix(rows: Sequence[Mapping[str, Any]]) -> np.ndarray:
     return np.array([r["pnl"] for r in rows], dtype=np.float64)
 
 
+def coin_keys(rows: Sequence[Mapping[str, Any]]) -> list[Any]:
+    """Each moment's coin: what the lab's bounds draw whole (`stats.bootstrap_mean_bounds`' `clusters`). The moments of
+    one coin move together, seconds apart and sold by the same exit (with --each and "repeats": "also" a coin gives
+    several), so they are one draw, never several (audit of 22 Nov: 120 moments in 40 coins gave a bound twice too
+    tight). A rule that gives one moment a coin is drawn as before, to the last bit. A row that names no coin is a
+    draw of its own."""
+    return [r.get("mint") if r.get("mint") is not None else ("row", j) for j, r in enumerate(rows)]
+
+
 def pick_exit(m: np.ndarray, cut: int, need: int) -> tuple[int | None, np.ndarray]:
     """The exit (column of `m`, moments x exits, oldest first) the older moments (rows before `cut`) pick, and each
     exit's mean on the older moments the pick was made on (-inf for one that does not compete). An exit competes when
@@ -3207,14 +3218,15 @@ def bands(rs: Sequence[Mapping[str, Any]], k: int, conf: float, samples: int) ->
         return None
 
     def split(names: Sequence[str], band_of, key: str) -> list[dict[str, Any]]:
-        pnl: list[list[float]] = [[] for _ in names]
+        moments: list[list[Mapping[str, Any]]] = [[] for _ in names]
         for r in scored:
-            pnl[band_of(float(r[key]))].append(float(r["pnl"][k]))
+            moments[band_of(float(r[key]))].append(r)
         out = []
-        for name, xs in zip(names, pnl):
+        for name, rows in zip(names, moments):
+            xs = [float(r["pnl"][k]) for r in rows]
             row: dict[str, Any] = {"band": name, "n": len(xs)}
             if len(xs) >= BAND_MIN_N:
-                st = summarize(xs, conf, samples)
+                st = summarize(xs, conf, samples, clusters=coin_keys(rows))  # a coin's moments drawn together
                 row |= {x: st[x] for x in ("mean", "ev_lower", "win_rate", "total")}
             out.append(row)
         return out
@@ -3270,10 +3282,13 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
         k, train_means = pick_exit(m, cut, min_train + 5)
         if k is None:  # no exit scored on enough of the trigger's moments, or a pick its newer moments cannot judge
             continue
-        test = m[cut:, k]
-        test = test[~np.isnan(test)]
+        newer = ~np.isnan(m[cut:, k])  # the newer moments the exit was scored on
+        test = m[cut:, k][newer]
         span_h = max((rs[-1]["ts"] - rs[cut]["ts"]) / 3600, 1e-6)
-        st = summarize(test, conf, samples)
+        # a coin's newer moments are one draw of the bound (`coin_keys`), and `test.coins` says how many coins
+        st = summarize(test, conf, samples, clusters=coin_keys([r for r, ok in zip(rs[cut:], newer) if ok]))
+        judged = {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")}
+        judged["coins"] = st.get("clusters")
         ex = by_kind.get(trig.kind, exits)[k]
         left_out = sum((((data.get("size") or {}).get("triggers") or {}).get(trig.label()) or {})
                        .get("skipped", {}).values())  # fmt: skip
@@ -3286,7 +3301,7 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
             "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs),
             "exit_moments": int((~np.isnan(m[:, k])).sum()), "per_hour": len(rs) / hours,
             "train_mean": float(train_means[k]), "train": {"n": int((~np.isnan(m[:cut, k])).sum())},
-            "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
+            "test": judged,
             "test_from_ts": int(rs[cut]["ts"]), "test_from_utc": utc(rs[cut]["ts"]),
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
             # our own buy against the pools it met and both ends of what the later buyers are worth (`_size_of`)
@@ -3372,7 +3387,7 @@ def _copy_plan_stats(moments: list[dict], min_leader_sol: float) -> dict[str, An
 
 
 def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST,
-                       conf: float = 0.8, samples: int = 2000) -> dict[str, Any]:  # fmt: skip
+                       conf: float = 0.8, samples: int = 2000, clusters=None) -> dict[str, Any]:  # fmt: skip
     """Which exit a wallet's sniper should run: a column of `pnl` (the wallet's moments, oldest first, x the exits of
     the menu). Column j replaces `gate` (lab) only when j has the best train mean on the wallet's older 60 % of moments,
     each train mean shrunk toward the group's (`group_train`: the same exits on every wallet's older moments; None = no
@@ -3380,7 +3395,7 @@ def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_
     mean paired difference and a positive bootstrap lower bound on it. Returns the column ("index"), "source" ("wallet"
     or "lab"), the column that did best on the older moments ("candidate", None when the gate did), and on the held-out
     moments: how many ("test_n") and the candidate's mean gain over the gate a trade ("gain", SOL) with its lower bound
-    ("lower")."""
+    ("lower"). `clusters`: each moment's coin (`coin_keys`), so the bound draws a coin's moments together."""
     pnl = np.asarray(pnl, dtype=np.float64)
     n = len(pnl)
     cut = int(n * EXIT_TRAIN_SHARE)
@@ -3394,7 +3409,8 @@ def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_
     j = int(np.argmax(shrunk))
     if j == gate or not shrunk[j] > shrunk[gate]:
         return out
-    st = summarize(pnl[cut:, j] - pnl[cut:, gate], conf, samples)
+    st = summarize(pnl[cut:, j] - pnl[cut:, gate], conf, samples,
+                   clusters=None if clusters is None else list(clusters)[cut:])  # fmt: skip
     out |= {"candidate": j, "gain": st["mean"], "lower": st["ev_lower"]}
     if st["mean"] > 0 and st["ev_lower"] > 0:
         out |= {"index": j, "source": "wallet"}
@@ -3492,7 +3508,8 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
             mine = [i for i in kept if scored[i]]  # the copies its gating exit was scored on
             if len(mine) < min_n or (w in best and best[w]["n"] >= len(mine)):
                 continue
-            st = summarize(m[np.array(mine, dtype=int), k], conf, samples)
+            # a coin's moments are one draw of the bound (`coin_keys`: with "repeats": "also" a coin gives several)
+            st = summarize(m[np.array(mine, dtype=int), k], conf, samples, clusters=coin_keys([rs[i] for i in mine]))
             row = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": used[k].label(),
                    "n": len(mine), "mean": st.get("mean"), "ev_lower": st.get("ev_lower"),
                    "win_rate": st.get("win_rate"), "total": st.get("total"),
@@ -3506,7 +3523,7 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                 fit = [i for i in mine if whole[i]] if choose else mine
                 group = group_before(fit) if choose else None
                 c = choose_wallet_exit(m[np.array(fit, dtype=int)][:, own], own.index(g), group, shrink_k, min_test,
-                                       conf, samples)  # fmt: skip
+                                       conf, samples, clusters=coin_keys([rs[i] for i in fit]))  # fmt: skip
                 ex = used[own[c["index"]]]
                 row |= {"exit_name": names.get(ex), "exit_params": ex.to_dict(), "exit_source": c["source"],
                         "exit_menu": EXIT_MENU_VERSION if choose else None,

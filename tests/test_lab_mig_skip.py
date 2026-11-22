@@ -282,7 +282,8 @@ def test_rank_on_rows_scored_on_every_exit_is_what_it_always_was():
     st = summarize(m[cut:, k], _cfg().verdict.confidence, _cfg().verdict.bootstrap_samples)
     assert r["exit"] == (T20, HOLD300, MIGSELL, TP300)[k].label() and r["exit_moments"] == 37
     assert r["train_mean"] == float(means[k])
-    assert r["test"] == {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")}
+    # audit 22 Nov lab#0: the block also says how many coins its moments are; one a coin, the numbers are as ever
+    assert r["test"] == {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")} | {"coins": 37 - cut}
 
 
 # -- rank_wallets: a copy's exit read on the copies it was scored on --------------------------------------------------
