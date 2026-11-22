@@ -255,6 +255,28 @@ def test_the_live_page_shows_the_agents_thinking_ideas_paper_tests_job_logs_and_
     json.dumps(s)
 
 
+def test_a_job_tail_that_cuts_into_a_key_hands_out_no_part_of_it(ops, monkeypatch):
+    """22 Nov audit (ops#6): a job's tail on the page was its log's last 2,500 characters, cut anywhere: a cut that fell
+    two characters into a key handed out the other 34, which the scrub (whole values) lets through. The endpoint's own
+    reads start at a whole line since 22 Nov (ops._tail); the page's tails do the same."""
+    from snipetech import dash
+
+    secret = "3f6c2b1e-9a4d-4c7e-8b21-5d0e7f9a1c42"  # a Helius key's shape
+    monkeypatch.setenv("HELIUS_API_KEY", secret)
+    jid = "20261122-101010-abcdef"
+    rest = "&commitment=processed' failed: 429 Too Many Requests\n"
+    after = dash.JOB_LOG_CHARS - len(secret[2:]) - len(rest)
+    (ops.data / "jobs" / f"{jid}.log").write_text("an earlier line\nbalance check failed (Client error for url "
+                                                  "'https://mainnet.helius-rpc.com/?api-key=" + secret + rest
+                                                  + "y" * (after - 1) + "\n")  # fmt: skip
+    (ops.data / "jobs" / f"{jid}.json").write_text(json.dumps({"id": jid, "argv": ["oktech", "cycle"], "started": 1,
+                                                               "ended": 2, "exit_code": 0, "running": False}))  # fmt: skip
+    (ops.data / "jobs" / f"{jid}.exit").write_text("0\n")
+    s = dash_state(ops, now=NOW)
+    assert secret[2:] not in json.dumps(s) and secret[-8:] not in json.dumps(s)
+    assert next(j for j in s["jobs"] if j["id"] == jid)["log_tail"] == "y" * (after - 1) + "\n"  # the next whole line
+
+
 def test_the_page_password_is_scrubbed_like_every_other_secret(monkeypatch):
     monkeypatch.setenv("DASH_TOKEN", "pagepassword12345")
     assert "pagepassword12345" not in O.redact("the password is pagepassword12345")

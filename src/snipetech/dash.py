@@ -60,14 +60,20 @@ def _notes(paths: OperatorPaths) -> tuple[list[str], list[str]]:
 
 
 def _tail(path: Path, chars: int) -> str:
+    """A file's end, `chars` characters at most, from the first whole line in them: a cut inside a line would hand out
+    the rest of it, a key's rest too, which the scrub (whole values) lets through (22 Nov audit; ops._tail)."""
     try:
         with path.open("rb") as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - chars * 4))
-            return f.read().decode("utf-8", "replace")[-chars:]
+            text = f.read().decode("utf-8", "replace")
     except OSError:
         return ""
+    if size > chars * 4 or len(text) > chars:
+        text = text[-chars:]
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    return text
 
 
 IDEA_FIELDS = (
