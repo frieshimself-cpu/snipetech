@@ -1691,3 +1691,18 @@ def test_a_labels_reason_may_hold_a_slash_and_only_its_file_is_read_as_a_path(jo
     assert jobs.start(["label", "--file", "inputs/kols.txt", "--kind", "kol"]).get("id")  # under the data directory
     with pytest.raises(PermissionError, match="path not allowed"):  # every other command keeps the whole check
         jobs.start(["winners", "--out", "/tmp/x.json"])
+
+
+def test_an_exit_word_with_a_slash_starts_a_lab_and_a_paper_freeze(jobs):
+    """22 Nov 01:31: the exit analyst's lab with OKTech's momentum hold (MOM2%/s@3s<30s-10%) and timer extension
+    (EXT2%/s@3s+5s<30s-10%) was refused as "path not allowed": the "%/s" of a rise a second read as a path, so the
+    momentum exits the owner asked for ("if it's only upping we can hold a bit too") were never scored. The lab and the
+    paper test open no file through their arguments (triggers are JSON, exits are words, recipes are names): all of
+    theirs are text, and the other commands keep the whole check."""
+    trigger = '{"kind": "kol", "group": "cand", "sol": 0.95}'
+    for argv in (["lab", "--trigger", trigger, "--exit", "TP+10% MOM2%/s@3s<30s-10% hold30s",
+                  "--exit", "EXT2%/s@3s+5s<30s-10% hold12s", "--copy-position", "+2x"],
+                 ["paper", "freeze", "--trigger", trigger, "--exit", "MOM2%/s@3s<30s-10% hold12s"]):  # fmt: skip
+        jobs._check_paths(argv)  # refused before 22 Nov: "path not allowed: TP+10% MOM2%/s@3s<30s-10% hold30s"
+    with pytest.raises(PermissionError, match="path not allowed"):
+        jobs._check_paths(["copy", "--out", "/etc/snipetech/env"])

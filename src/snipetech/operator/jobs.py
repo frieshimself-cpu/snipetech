@@ -46,8 +46,10 @@ RESEARCH_COMMANDS = frozenset(
         "tips",
     }
 )
-# the commands that open a file only through these flags: every other argument of theirs is text (`_check_paths`)
-FILE_FLAGS = {"label": frozenset({"--file"})}
+# the commands that open a file only through these flags: every other argument of theirs is text (`_check_paths`).
+# The lab and the paper test open none (a trigger is JSON, an exit is words, a recipe a name): 22 Nov 01:31 the "%/s"
+# of OKTech's momentum hold (MOM2%/s@3s<30s-10%) and timer extension was refused as a path, and no lab scored them
+FILE_FLAGS = {"label": frozenset({"--file"}), "lab": frozenset(), "paper": frozenset()}
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget
 # (operator/BUDGET, the owner's /budget), oktech and sweep trade, book switches the live book, strategist and config
 # change settings. Named here so the refusal says whose they are and the model does not try variants
