@@ -603,7 +603,9 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             chain = off_tape_fills(svc.store, wallet, start, counted)  # the measure stage's, from the chain (round#4)
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
-            snap.fills_unread, snap.bot_cash = True, None
+            # the tape's trades without the fills' would be half a result: nothing is counted, the next round reads the
+            # same window (review of round#4)
+            snap.fills_unread, snap.bot_cash, rows = True, None, None
         # the wallet's newest transaction (a trade, a deposit) no older than the newest trade on the tape: what the
         # balances show may not be on the tape yet, so this round cannot tell the bot's result and carries its baselines
         snap.tape_behind = (held is not None and rows is not None and newest is not None

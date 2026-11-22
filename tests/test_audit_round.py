@@ -825,3 +825,28 @@ def test_review_the_restart_notice_claims_no_quiet_it_could_not_read(tmp_path):
     text = outage.words(gone, {"snipetech-tape": "active"}, None)
     assert "nothing was traded" not in text and "could not be read" in text, text
     assert "nothing was traded and nothing was checked" in outage.words(gone, {"snipetech-tape": "active"})
+
+
+def test_review_a_round_that_read_half_the_trades_reads_none(book, monkeypatch):
+    """round#4 read the measure stage's fills in the same step as the tape's trades: when the fills failed after the
+    tape was read, the round was marked unread and still set the bot's cash from the tape alone, so a PumpSwap sale it
+    missed paged as the bot's loss. Such a round counts nothing, and the next one reads the same window."""
+    from snipetech.operator import snapshot as S
+
+    st, cfg, paths = book
+    tick(st, 995)
+    a = take(st, cfg, paths, None, 1000.0, 10.0, [])
+    trade(st, "tb", 1200, COIN, True, 1.0, BOT_BUY_FEES)
+    put_fill(st, "ps", 1300, SWAP, "sell", 2.5, BOT_SELL_FEES)
+    tick(st, 1895)
+
+    def broken(*a, **k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(S, "off_tape_fills", broken)
+    b = take(st, cfg, paths, a, 1900.0, 11.3, [coin(COIN, 1.0)])
+    assert b.fills_unread and b.bot_cash is None and (b.counted, b.counted_from) == (a.counted, a.counted_from)
+    monkeypatch.undo()
+    tick(st, 2795)
+    c = take(st, cfg, paths, b, 2800.0, 11.3, [coin(COIN, 1.0)])
+    assert c.bot_cash == pytest.approx(-1.200005 + 2.496995) and not c.fills_unread
