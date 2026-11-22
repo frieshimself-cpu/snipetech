@@ -640,8 +640,9 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         else:  # nothing read: the next round reads from the same place
             snap.counted, snap.counted_from = counted, start
         # the gate measures the move from equity_ref, which a round with an unpriced coin carries from an older round:
-        # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed
-        valued = snap.total_equity is not None and not snap.tape_behind
+        # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed.
+        # A coin of the bot's the tape stopped pricing is no value either (`bot_valued`: its price can be hours old)
+        valued = snap.total_equity is not None and snap.bot_valued
         snap.equity_ref = snap.total_equity if valued else getattr(prev, "equity_ref", None)
         ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
         snap.bot_since_ref = not valued and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)

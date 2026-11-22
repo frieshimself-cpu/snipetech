@@ -735,3 +735,33 @@ def test_review_a_copy_partly_sold_before_the_round_saw_it_is_the_bots(book):
     tick(st, 3995)
     c = take(st, cfg, paths, b, 4000.0, 6.09398, [coin(COIN, 1.75), coin(SWAP, 1.75)])
     assert "coin(s) held over 30 min: 2" in _held_reasons(paths, c, b, 4000.0)
+
+
+def equity_lines(paths, snap, prev, now):
+    return [r for r in decide_in(paths, snap, prev, now).reasons if r.startswith("equity moved")]
+
+
+def test_review_a_copy_the_tape_stopped_pricing_pages_no_whole_move(book):
+    """round#4 leaves the bot's result unknown while such a copy is held, and the gate then fell back to the wallet's
+    whole move: 'equity moved +5.300 SOL' at the hours-old price, and each deposit or withdrawal of the owner's while
+    the copy was held. A round that cannot value the bot's coins tells nothing and carries its baselines, as for a coin
+    of the bot's with no price; the sale tells the bot's result."""
+    from snipetech.models import Migration
+
+    st, cfg, paths = book
+    trade(st, "old", 100, SWAP, True, 0.5, (0, 0), user="someone")
+    st.add_migrations([Migration(SWAP, "pool", 90, 90, "mig")])
+    tick(st, 995)
+    a = take(st, cfg, paths, None, 1000.0, 10.0, [])
+    put_fill(st, "pb", 1200, SWAP, "buy", 3.5, BOT_BUY_FEES)
+    tick(st, 1895)
+    b = take(st, cfg, paths, a, 1900.0, 6.3, [coin(SWAP, 9.0)])  # 9.0: the tape's price of hours ago
+    assert b.held[0]["stale_price"] is True and equity_lines(paths, b, a, 1900.0) == []
+    tick(st, 2795)
+    c = take(st, cfg, paths, b, 2800.0, 4.3, [coin(SWAP, 9.0)])  # the owner takes 2 SOL out meanwhile
+    assert equity_lines(paths, c, b, 2800.0) == [] and c.equity_ref == a.equity_ref
+    put_fill(st, "ps", 2900, SWAP, "sell", 2.5, BOT_SELL_FEES)
+    tick(st, 3695)
+    d = take(st, cfg, paths, c, 3700.0, 6.797, [])
+    lines = equity_lines(paths, d, c, 3700.0)
+    assert len(lines) == 1 and "-1.203 SOL of it by the bot's own" in lines[0], lines

@@ -345,8 +345,11 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
                      else "(the whole move is not known: a coin that is not the bot's has no price)")  # fmt: skip
             rest = " (the rest is the owner's)" if total is not None and ref is not None else ""
             events.append(f"equity moved {whole}, {own:+.3f} SOL of it by the bot's own trades and coins{rest}")
-    elif total is not None and ref is not None and not getattr(snap, "tape_behind", False):
-        # (a round whose tape is behind the wallet tells nothing: what its balances show may not be on the tape yet)
+    elif total is not None and ref is not None and snap.bot_valued:
+        # (a round that cannot value the bot's coins tells nothing: one whose tape is behind the wallet, where what the
+        # balances show may not be on the tape yet, and one holding a coin of the bot's the tape stopped pricing, whose
+        # last price can be hours old: it paged the wallet's whole move, the owner's withdrawals in it; review of
+        # round#4)
         move = total - ref
         # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the whole
         # move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;
