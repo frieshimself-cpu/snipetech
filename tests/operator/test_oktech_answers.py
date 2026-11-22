@@ -36,7 +36,8 @@ NO_LIMIT = "8 Nov 14:00, OKTech support: maxDevBuySol 0 means no limit"  # the a
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(LT, "SECOND_READ_SECS", 0.0)  # the close reads an empty wallet again: no wait in a test
     e = LTT.make_env(tmp_path)
     e.sol = 11.8  # the wallet's SOL as each automatic round's snapshot reads it (test_autotest._round)
     e.k = 0

@@ -32,7 +32,8 @@ HOUR = 3600
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(LT, "SECOND_READ_SECS", 0.0)  # the close reads an empty wallet again: no wait in a test
     e = LTT.make_env(tmp_path)
     e.sol = 11.8  # the wallet's SOL as each round's snapshot reads it (plus 0.1 wrapped)
     e.k = 0  # trades put on the tape so far

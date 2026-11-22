@@ -63,6 +63,11 @@ JOB_MARGIN_SECS = 30 * 60  # the cycler's own time limit past its minutes (its l
 # how long a check waits for the wallet's coins: the one-minute pass also carries /stop, and one hanging holdings read
 # retried for about 250 s (operator/run.py WATCH_TIMEOUT_SECS); past it the owner asks again, the round tries again
 WALLET_READ_SECS = 20
+# one empty wallet reply is no proof (the runner's rule since d1f39c6: a node can leave a coin out of one, and a coin shows
+# a second or so after its buy): before a test's sniper is stopped the wallet is read again this much later, and a buy of
+# that sniper's this recent on the tape whose coin no reply showed keeps it running (service.oktech_cycle's unseen_buy)
+SECOND_READ_SECS = 5.0
+UNSEEN_BUY_SECS = 120
 SHOWN = 3  # strategies /test lists
 # closing: the cycler has ended, and the test's sniper still runs (it sells the coin the wallet holds, or it could not
 # be stopped yet); each round looks again, and the test is done once nothing of it is left armed
@@ -478,6 +483,25 @@ def _bought(store, t: dict, now: float, marks: dict[str, frozenset] | None = Non
                 if tr.is_buy and tr.ts <= float(end) and bot_tape_buy(tr, marks)}  # fmt: skip
     except Exception:  # noqa: BLE001 - every coin then counts as possibly the test's, as before
         return None
+
+
+def _unseen_buy(store, t: dict, marks: dict[str, frozenset], now: float, seen: set[str]) -> str | None:
+    """The coin of a buy of the test's own sniper on the tape in the last UNSEEN_BUY_SECS, since the test began, that
+    no later sale of it followed and no wallet reply showed (`seen`): on its way, or left out of the replies. None when
+    there is none, or the tape cannot say (the two readings then decide alone, as in the runner)."""
+    from ..measure.ours import bot_tape_buy
+
+    since = max(float(t.get("started_at") or now) - TEST_GRACE_SECS, float(now) - UNSEEN_BUY_SECS)
+    try:
+        trades = store.trades_for_user(t["wallet"], int(since), fees=True)
+    except Exception:  # noqa: BLE001
+        return None
+    for tr in trades:
+        if not tr.is_buy or tr.mint in seen or not bot_tape_buy(tr, marks):
+            continue
+        if not any(not u.is_buy and u.mint == tr.mint and (u.slot, u.pos) > (tr.slot, tr.pos) for u in trades):
+            return str(tr.mint)
+    return None
 
 
 # -- the words the owner reads ---------------------------------------------------------------------------------------
@@ -1138,6 +1162,23 @@ async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, no
     mints = list(dict.fromkeys(str(h.get("mint")) for h in held))
     theirs = owner_coins(store, t["wallet"], held, marks) if store is not None else set()
     mine = [m for m in mints if m not in theirs]
+    if not mine and not unread and is_active(status):  # its sniper would be stopped: one empty reply is no proof
+        try:
+            await asyncio.sleep(SECOND_READ_SECS)
+            again = await _held(svc, cfg, t["wallet"])
+        except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
+            return _closing(paths, t, now, notes, notifier, log, "wallet", f"the wallet's coins could not be read again "
+                            f"({type(exc).__name__}), so its sniper {oid} is not stopped yet and may still be armed")  # fmt: skip
+        held = [*held, *(h for h in again if str(h.get("mint")) not in mints)]
+        mints = list(dict.fromkeys(str(h.get("mint")) for h in held))
+        theirs = owner_coins(store, t["wallet"], held, marks) if store is not None else set()
+        mine = [m for m in mints if m not in theirs]
+        coming = _unseen_buy(store, t, marks, now, set(mints)) if not mine and store is not None else None
+        if coming:
+            return _closing(paths, t, now, notes, notifier, log, "held",
+                            f"its sniper bought {coming} moments ago and the coin has not shown in the wallet yet: its "
+                            "sniper keeps running until the wallet holds nothing of it (a stopped sniper strands its "
+                            "coin)")  # fmt: skip
     if mine and (unread or is_active(status)):
         return _closing(paths, t, now, notes, notifier, log, "held",
                         f"the wallet still holds {', '.join(mine)}: its sniper keeps running until the wallet holds "

@@ -168,7 +168,8 @@ def make_env(tmp_path):
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(LT, "SECOND_READ_SECS", 0.0)  # the close reads an empty wallet again: no wait in a test
     e = make_env(tmp_path)
     yield e
     e.store.close()
@@ -922,6 +923,46 @@ def test_a_closing_test_keeps_its_sniper_for_a_coin_its_sniper_bought(env):
     _cycler_ends(env, TIME_UP)
     _round(env, NOW + 7300)
     assert LT.load(env.paths)["state"] == "closing" and env.svc.stops == []
+
+
+def test_one_wallet_reply_that_leaves_the_coin_out_never_stops_the_sniper_that_holds_it(env):
+    """Audit of 22 Nov (livetest#1): a node can leave a coin out of one reply (the runner's rule since d1f39c6: a second
+    must agree), and the round's close stopped the test's sniper on one empty reply: a stopped sniper strands its coin.
+    The close reads the wallet again before it stops anything."""
+    coin = {"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 0.07, "priced": True}
+    _started(env)
+    _cycler_ends(env, TIME_UP | {"reason": "time limit; still held 15 min after the end", "held": [coin]})
+    env.svc.held = [coin]
+    _round(env, NOW + 3600)
+    assert LT.load(env.paths)["state"] == "closing"
+    replies = [[]]  # the next round's first reply leaves the coin out; the wallet still holds it
+    real = env.svc.open_positions
+
+    async def flaky(address, ignore=None, unknown=None):
+        return replies.pop(0) if replies else await real(address, ignore=ignore)
+
+    async def stop(action, task_id):  # OKTech takes the stop, whatever the wallet holds
+        env.svc.stops.append(task_id)
+        _armed(env, status="idle")
+        return {"success": True}
+
+    env.svc.open_positions, env.svc.oktech_task = flaky, stop
+    _round(env, NOW + 4500)
+    assert env.svc.stops == [] and LT.load(env.paths)["state"] == "closing"
+
+
+def test_a_buy_of_the_tests_sniper_on_its_way_keeps_it_running_until_its_coin_shows(env):
+    """The coin shows in the wallet a second or so after its buy (21 Nov): a buy of the sniper's on the tape whose coin
+    no reply showed yet, and that no sale followed, keeps the sniper running; the round looks again."""
+    _started(env)
+    _sniper_on_record(env)
+    _cycler_ends(env, TIME_UP)  # its sniper left running
+    _buy_at(env, "fresh", NOW + 7300 - 3, 1_000_000, 0)  # 3 s before the round's read
+    _round(env, NOW + 7300)
+    t = LT.load(env.paths)
+    assert env.svc.stops == [] and t["state"] == "closing" and MINT in t["closing_why"], t
+    _round(env, NOW + 8200)  # 15 minutes on, the coin never showed: no buy on its way, nothing held
+    assert env.svc.stops == [OK_ID] and LT.load(env.paths)["state"] == "done"
 
 
 def test_a_test_whose_sniper_cannot_be_stopped_yet_stays_closing_and_says_so(env):
