@@ -126,10 +126,14 @@ def bot_send(row: dict, marks: dict[str, frozenset]) -> bool:
 
 
 def bot_fill(row: dict, marks: dict[str, frozenset]) -> bool:
-    """Whether a buy or a sale in `fills` is the bot's by its own record, before any pairing: a buy by `bot_buy`, a
-    sale by its own fees (`bot_sale_fees`). What the measure stage pairs each sale's lots by
-    (classify.pair_round_trips: a sale closes the lots of its own maker first)."""
-    return bot_buy(row, marks) if row.get("side") == "buy" else bot_sale_fees(row, marks)
+    """Whether a buy, a sale or a failed send in `fills` is the bot's by its own record, before any pairing: a buy by
+    `bot_buy`, a sale by its own fees (`bot_sale_fees`), a failed send by `bot_send`. What the measure stage pairs each
+    sale's lots by (classify.pair_round_trips: a sale closes the lots of its own maker first), and ties a sale's failed
+    tries by (run.twin_sells: only the same hand's as the buy the sale closes)."""
+    side = row.get("side")
+    if side == "buy":
+        return bot_buy(row, marks)
+    return bot_send(row, marks) if side == "failed" else bot_sale_fees(row, marks)
 
 
 def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None) -> list[dict]:

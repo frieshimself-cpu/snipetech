@@ -275,7 +275,7 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     dups: dict[str, list[dict]] = {}
     flagged = [f | {"is_sell": failed_is_sell(f, metas.get(f["sig"])), "sells_ix": _sells_a_coin(metas.get(f["sig"]))}
                for f in failed]  # fmt: skip
-    for fsig, ssig in twin_sells(flagged, landed, bought=bought).items():
+    for fsig, ssig in twin_sells(flagged, landed, bought=bought, whose=lambda r: bot_fill(r, marks)).items():
         dups.setdefault(ssig, []).append(by_sig[fsig])
     replays: dict[str, dict[str, float]] = {}
     buy_sigs = sorted({s["buy_sig"] for s in todo if s.get("buy_sig")})

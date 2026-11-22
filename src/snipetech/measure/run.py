@@ -234,7 +234,8 @@ def _landed_before(sell: dict, failed: dict) -> bool:
 
 
 def twin_sells(failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS,
-               bought: dict[str, dict] | None = None) -> dict[str, str]:  # fmt: skip
+               bought: dict[str, dict] | None = None, whose: Callable[[dict], Any] | None = None
+               ) -> dict[str, str]:  # fmt: skip
     """Which landed sell each failed send is a twin of (failed sig -> sell sig). OKTech sends every exit as one tipped
     and up to two untipped variants, and the losers fail on chain. A failed send carrying a sell instruction (`is_sell`)
     on the same coin within `window_s` seconds after a landed sell is that sell's twin; with several landed sells in
@@ -244,7 +245,9 @@ def twin_sells(failed_rows: list[dict], sells: list[dict], window_s: float = TWI
     `bought`: the buy each landed sell closes (sell sig -> its fills row: slot, ts). A failed send that is no twin,
     carries a pump.fun sale of the coin (`sells_ix`) and lands after that buy and before the sell is one of the sell's
     failed tries, charged to it the same way; with several sells in reach, the first after it. 22 Nov audit: 8MTKG4's
-    curve sales failed nine times in the slots before its PumpSwap sale landed, charged to no trip and no day."""
+    curve sales failed nine times in the slots before its PumpSwap sale landed, charged to no trip and no day.
+    `whose` (measure/ours.bot_fill): a try is the sale's only when the same hand made it as the buy the sale closes, so
+    the owner's failed hand sale of a coin the bot holds too is never the bot's cost (review of the 22 Nov fixes)."""
     by_mint: dict[str, list[dict]] = {}
     for s in sells:
         if s.get("mint"):
@@ -266,21 +269,23 @@ def twin_sells(failed_rows: list[dict], sells: list[dict], window_s: float = TWI
         if f["sig"] in out or not f.get("sells_ix") or not f.get("mint") or f.get("priority_lamports") is None:
             continue
         tried = [s for s in by_mint.get(f["mint"], []) if s["sig"] in bought
-                 and _landed_before(bought[s["sig"]], f) and not _landed_before(s, f)]  # fmt: skip
+                 and _landed_before(bought[s["sig"]], f) and not _landed_before(s, f)
+                 and (whose is None or whose(f) == whose(bought[s["sig"]]))]  # fmt: skip
         if tried:
             out[f["sig"]] = min(tried, key=lambda s: (float(s["ts"]), int(s.get("slot") or 0), s["sig"]))["sig"]
     return out
 
 
 def twin_fees_by_sell(failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS,
-                      bought: dict[str, dict] | None = None) -> dict[str, float]:  # fmt: skip
+                      bought: dict[str, dict] | None = None, whose: Callable[[dict], Any] | None = None
+                      ) -> dict[str, float]:  # fmt: skip
     """What each landed sell's failed twins cost, in SOL (twin_sells says which are twins, and with `bought` which are
-    its failed tries before it landed): each pays its priority fee and the 5,000-lamport base fee (a failed send's tip
-    is rolled back)."""
+    its failed tries before it landed, by `whose` hand): each pays its priority fee and the 5,000-lamport base fee (a
+    failed send's tip is rolled back)."""
     fee = {f["sig"]: (int(f["priority_lamports"]) + BASE_FEE_LAMPORTS) / 1e9 for f in failed_rows
            if f.get("priority_lamports") is not None}  # fmt: skip
     out: dict[str, float] = {}
-    for fsig, ssig in twin_sells(failed_rows, sells, window_s, bought).items():
+    for fsig, ssig in twin_sells(failed_rows, sells, window_s, bought, whose).items():
         out[ssig] = out.get(ssig, 0.0) + fee[fsig]
     return out
 
@@ -828,9 +833,10 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     first_buy_for_sell: dict[str, str] = {}
     for t in paired["trips"]:
         first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
-    # and the sale's tries that failed before it landed, after the buy it closes (twin_sells, `bought`)
+    # and the sale's tries that failed before it landed, after the buy it closes, by the hand that made that buy
+    # (twin_sells, `bought`, `whose`)
     bought = {s: buy_by_sig[b] for s, b in first_buy_for_sell.items() if b in buy_by_sig}
-    twins = twin_fees_by_sell(failed_flagged, all_sells, bought=bought)
+    twins = twin_fees_by_sell(failed_flagged, all_sells, bought=bought, whose=lambda r: bot_fill(r, marks))
     closed: dict[str, float] = {}
     for t in paired["trips"]:
         closed[t["sell_sig"]] = closed.get(t["sell_sig"], 0.0) + float(t["tokens"])

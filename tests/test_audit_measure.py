@@ -785,3 +785,51 @@ def test_measure_7_the_failed_tries_reach_the_trip_the_day_and_the_breakdown(tmp
         assert trip["dups"] == 4 and trip["dup_fee_sol"] == pytest.approx(4 * 0.001005)
     finally:
         st.close()
+
+
+# -- review of the measure fixes: the owner's SOL stays the owner's, and each cost counts once -------------------------
+
+
+def test_measure_7_an_owners_failed_hand_sale_is_no_try_of_the_bots_sale(tmp_path):
+    """measure#7, review: the tries reach back to the buy a sale closes, so a failed hand sale of the owner's in the
+    same coin (Axiom's 4,500 lamports, no tip), between the bot's buy and the sniper's sale, was charged to the bot's
+    trip, the day stop and the breakdown: the owner's SOL as the bot's cost. A failed try is its sale's only when the
+    same hand made it as the buy the sale closes (measure/ours.bot_fill)."""
+    from snipetech.measure.attribution import break_down
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _sniper(st, tip=0.002)
+        m = Market(st, addr("audit-hand-try"), D, NOW - 3000, SLOT)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 1.0, 10)
+        buy = m.buy(W, 0.5, 11)
+        sale = m.sell(W, 1.0, 40)
+        m.commit()
+        metas = {buy.sig: _meta(buy.sig, (1_000_000, 2_000_000)), sale.sig: _meta(sale.sig, BOT_SALE_FEES)}
+        sends = []
+        tries = (("try0", 30, (1_000_000, 0)), ("owner-try", 33, (4500, 0)), ("try1", 36, (1_000_000, 0)))
+        for name, slot, fees in tries:  # the sniper's two tries, and the owner's failed hand sale between them
+            meta = _meta(name, fees)
+            meta.pump_ixs = [PumpIx("pump", "sell", W, {}, None, m.mint)]
+            metas[name] = meta
+            sends.append({"signature": name, "blockTime": m._ts(SLOT + slot), "slot": SLOT + slot,
+                          "err": {"InstructionError": [2, {"Custom": 6001}]}})  # fmt: skip
+
+        async def ensure(sigs):
+            st.add_tx_meta([metas[s] for s in sigs if s in metas])
+            return len(sigs)
+
+        async def failed(wallet, since):
+            return sends
+
+        asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=ensure, failed_sigs=failed))
+        row = st.fill(sale.sig)
+        assert row["twin_fee_sol"] == pytest.approx(2 * 0.001005)  # the sniper's two tries, not the owner's
+        assert realised_today(st, W, NOW) == pytest.approx(row["pnl_sol"] - 2 * 0.001005)
+        trip = break_down(st, W, [row], per_tx_sol=0.0035)[sale.sig]
+        assert trip["dups"] == 2
+    finally:
+        st.close()
+
