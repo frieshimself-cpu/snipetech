@@ -36,7 +36,7 @@ def test_owner_bounds_default_to_todays_values_with_the_tip_cap_the_autotune_bou
         assert b["buy_tip"] == {"min": 0.002, "max": 0.005}
         # the sell tip at what each kind paid before the split: copies 0.002, every other builder 0.001
         assert b["sell_tip"] == {"min": 0.002 if kind == "copy" else 0.001, "max": 0.005}
-        assert b["sell_priority"] == {"min": 0.0001, "max": 0.002}  # what each failed twin pays
+        assert b["sell_priority"] == {"min": 0.0001, "max": 0.002}  # sent with every sell, not used under the buy's
     assert cfg.fees.tune == cfg.fees.bounds and cfg.fees.tune is not cfg.fees.bounds
 
 

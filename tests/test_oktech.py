@@ -1958,7 +1958,8 @@ def test_copylist_sends_an_exit_given_as_parameters():
 
 def test_autosell_sends_the_sell_tip_and_a_near_zero_sell_priority_by_default():
     """8 Nov: every landed sell left 1-2 failed twins at priority 2,000,000 lamports (0.008 SOL of a 0.119 gross). The
-    bid is the tip (refunded when a send fails); the priority is what each failed twin pays, so it is near zero."""
+    bid is the tip (refunded when a send fails); the priority was meant as what each failed twin pays, so it is near
+    zero (12 Nov: OKTech does not use it under the buy priority, which the sale and its twins pay)."""
     from snipetech.oktech import autosell
 
     s = autosell({"stop_loss": 0.3, "max_hold_secs": 300}, [])
@@ -1971,7 +1972,8 @@ def test_autosell_sends_the_sell_tip_and_a_near_zero_sell_priority_by_default():
 
 
 def test_every_builder_sells_at_the_split_fee_and_keeps_its_old_sell_tip():
-    """The split changes one number: what each failed twin pays. Each builder's sell tip stays what it bid before the
+    """The split changes one number: the sell priority, meant as what each failed twin pays (12 Nov: not used under the
+    buy priority, which the twins pay). Each builder's sell tip stays what it bid before the
     split: the copy builders and the verdict's dev sniper 0.002 ([oktech] sell_tip_sol), the strategy, replica and
     speed-test snipers 0.001 (their kinds' [fees] minimum); nothing was raised on no evidence."""
     for name, p in _every_builder().items():

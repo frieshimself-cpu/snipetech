@@ -74,6 +74,24 @@ def test_no_agent_text_says_the_failed_twins_pay_the_sell_priority():
         assert "buy priority" in _flat(texts[who]) and "not used" in _flat(texts[who]), who
 
 
+def test_the_old_sell_fee_key_logs_no_twin_paying_the_sell_priority(tmp_path, caplog):
+    """Review of 22 Nov (docs#3): a config that still carries the deprecated `sell_fee_sol` logs a line (for whoever
+    runs with --verbose), and the line still called the sell priority "what each failed twin pays"."""
+    import logging
+
+    from snipetech.config import Config
+
+    p = tmp_path / "snipetech.toml"
+    p.write_text("[oktech]\nsell_fee_sol = 0.002\n")
+    with caplog.at_level(logging.INFO, logger="snipetech.config"):
+        Config.load(p)
+    said = " ".join(r.getMessage() for r in caplog.records if "sell_fee_sol" in r.getMessage())
+    assert "deprecated" in said
+    for words in STALE_SELL_PRIORITY:
+        assert words not in said, words
+    assert "not used under the buy priority" in said
+
+
 def test_the_snapshot_the_operator_and_the_analyst_read_carries_the_resource_rows_that_need_a_look():
     """docs#6: their rules say "the snapshot's `resources` rows are the result" of the code's checks, and run.py fills
     snap.resources before the turn, but the snapshot the model is sent left them out: a credit, budget, disk or SOL
