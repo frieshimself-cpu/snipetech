@@ -49,18 +49,25 @@ def _realised(fills: list[dict]) -> float:
 def realised_today(store: Store, wallet: str, now: float) -> float:
     """The round trips closed since 00:00 UTC, in SOL: each sell's result from `fills` (the measure stage pairs it with
     the buys it closed, whenever they were made, real fees included) less its failed duplicate sends; a sell with no
-    buy on record counts its failed duplicate sends alone. Only our own trades are in it, so a deposit or a withdrawal
-    never moves it (the wallet-wide guard's day stop rests on it)."""
-    return _realised(store.fills(wallet=wallet, since_ts=int(now // 86400) * 86400, side="sell", limit=100_000))
+    buy on record counts its failed duplicate sends alone. Only the bot's own trades are in it (measure/ours.py: the
+    owner's hand trades in the same wallet are not; 22 Nov 02:45 they tripped the day stop), so a deposit or a
+    withdrawal never moves it either (the wallet-wide guard's day stop rests on it)."""
+    from ..measure.ours import bot_sells
+
+    rows = store.fills(wallet=wallet, since_ts=int(now // 86400) * 86400, side="sell", limit=100_000)
+    return _realised(bot_sells(store, rows))
 
 
 def day_accounting(store: Store, wallet: str, now: float, equity_now: float | None = None) -> dict[str, Any]:
     """Realised result and risk used since 00:00 UTC from `fills`; the day's starting equity is fixed on the first call."""
+    from ..measure.ours import bot_buy, bot_sells, fee_marks
+
     day = time.strftime("%Y-%m-%d", time.gmtime(now))
     day_start = int(now // 86400) * 86400
     fills = store.fills(wallet=wallet, since_ts=day_start, limit=100_000)
-    realised = _realised(fills)
-    risk = round(sum(float(f.get("sol") or 0.0) for f in fills if f.get("side") == "buy"), 6)
+    marks = fee_marks(store)  # the bot's own trades only (measure/ours.py), never the owner's hand trades
+    realised = _realised(bot_sells(store, fills, marks))
+    risk = round(sum(float(f.get("sol") or 0.0) for f in fills if f.get("side") == "buy" and bot_buy(f, marks)), 6)
     rec = store.coverage(DAY_KEY)
     if rec.get("day") != day:
         rec = {"day": day, "equity_at_day_start": equity_now}

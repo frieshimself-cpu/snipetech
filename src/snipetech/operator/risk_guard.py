@@ -187,12 +187,16 @@ def _lots(store, wallet: str, now: float, per_tx_sol: float, lookback_days: floa
     cost], paired first in first out as measure pairs its round trips (the buy's SOL and its share of the buy's fees);
     the wallet's trades on the tape that the fills do not have yet, oldest first)."""
     from ..measure.classify import _fill_fee_sol, pair_round_trips
+    from ..measure.ours import bot_buy, bot_sells, bot_tape_buy, fee_marks
 
     since = int(now - lookback_days * 86400)
     rows = store.fills(wallet=wallet, since_ts=since, limit=100_000)
     measured = {str(r.get("sig")) for r in rows if r.get("sig")}
-    buys = _usable([r for r in rows if r.get("side") == "buy"])
-    sells = _usable([r for r in rows if r.get("side") == "sell"])
+    # the bot's own trades only (measure/ours.py): the owner's hand trades in the wallet, and the coins they send away,
+    # are no result of the bot's (22 Nov 02:45: three hand buys read as -10.51 tripped the day stop)
+    marks = fee_marks(store)
+    buys = _usable([r for r in rows if r.get("side") == "buy" and bot_buy(r, marks)])
+    sells = _usable(bot_sells(store, rows, marks))
     by_sig = {b["sig"]: b for b in buys}
     lots: dict[str, list[list[float]]] = {}
     for lot in pair_round_trips(buys, sells, per_tx_sol)["open"]:
@@ -201,7 +205,8 @@ def _lots(store, wallet: str, now: float, per_tx_sol: float, lookback_days: floa
         fee = _fill_fee_sol(b)
         cost = (float(b["sol"]) + (per_tx_sol if fee is None else fee)) * share
         lots.setdefault(str(lot["mint"]), []).append([float(b["ts"]), float(lot["tokens_left"]), cost])
-    unread = sorted((t for t in store.trades_for_user(wallet, since) if t.sig not in measured and t.mint),
+    unread = sorted((t for t in store.trades_for_user(wallet, since, fees=True)
+                     if t.sig not in measured and t.mint and (not t.is_buy or bot_tape_buy(t, marks))),
                     key=lambda t: (t.ts, t.slot, t.pos))  # fmt: skip
     return lots, unread
 

@@ -46,14 +46,22 @@ def _sell(store, sig, ts, mint, pnl, tokens=1_000_000, twin=0.0, buy_sig=None):
                     "pnl_sol": pnl, "twin_fee_sol": twin, "buy_sig": buy_sig})  # fmt: skip
 
 
-def _tape(store, sig, ts, mint, buy, sol, tokens=1_000_000, user=W, slot=None):
+def _tape(store, sig, ts, mint, buy, sol, tokens=1_000_000, user=W, slot=None, priority=None, tip=None):
     """One trade of ours on the tape (our own recorder, seconds behind the chain): `sol` paid on a buy (fee included) or
-    received on a sell (fee taken), as the measure stage would write it into `fills` at its next run."""
+    received on a sell (fee taken), as the measure stage would write it into `fills` at its next run; `priority` and
+    `tip` its transaction's fees in lamports, as the recorder writes them."""
     fee = 2_000_000
     quote = round(sol * 1e9) - fee if buy else round(sol * 1e9) + fee
     store.add_trades([Trade(sig=sig, ev=0, slot=slot or int(ts) - DAY0, pos=0, ts=int(ts), mint=mint, venue="curve",
                             user=user, is_buy=buy, quote=quote, base=int(tokens), fee=fee, fee_bps=100, q_after=1,
-                            b_after=1)])  # fmt: skip
+                            b_after=1, priority=priority, tip=tip)])  # fmt: skip
+
+
+def _sniper(store, sid="s1", prio=0.001, tip=0.049, sell_prio=0.0001, sell_tip=0.002):
+    """One of our snipers on record, with the fees its payload pays on a buy and on a sale (OKTech's fields)."""
+    store.add_oktech_sniper({"id": sid, "kind": "copy", "source": "x",
+                             "payload": {"priorityFee": prio, "tipAmount": tip,
+                                         "autoSell": {"sellPriorityFeeSol": sell_prio, "sellTipAmount": sell_tip}}})  # fmt: skip
 
 
 def _measured(store, ts):
@@ -298,6 +306,64 @@ def test_a_coin_gone_from_the_wallet_with_no_sale_seen_counts_its_whole_cost(env
     assert day["total_sol"] == pytest.approx(-0.203005, abs=1e-6)
     snap_at = NOW - 900  # the last round read the wallet before b1 was bought: b1 is not judged on that read
     assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035, held_ts=snap_at)["total_sol"] == 0.0
+
+
+def test_the_owners_hand_trades_are_no_result_of_the_bot(env):
+    """22 Nov 02:45:59 the day stop tripped at -14.48 SOL: -10.51 of it was the owner's own buys of one coin (H8WTvo:
+    4.95, 2.475 and 2.97 SOL, priority 0 and a 0.027-0.052 tip, no wallet copied) whose coin went to another wallet and
+    was read as lost; the bot's own day was -3.97. A buy is the bot's when a copied wallet is on it or it paid a sniper's
+    fees; the owner's hand trades and their coins are no result of the bot's, closed, held or gone."""
+    _paths, store, _cfg = env
+    _measured(store, NOW - 60)
+    _sniper(store)
+    _buy(store, "bot-b", NOW - 3000, M1, sol=1.0, fee_lamports=(1_000_000, 49_000_000))
+    _sell(store, "bot-s", NOW - 2988, M1, pnl=-0.3, buy_sig="bot-b")
+    for i, (sol, tip) in enumerate(((4.95, 52_000_000), (2.475, 27_000_000), (2.97, 32_000_000))):
+        _buy(store, f"hand-{i}", NOW - 600 + i, M2, sol=sol, fee_lamports=(0, tip))  # sent away: not held, no sale
+    day = RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)
+    assert day["total_sol"] == pytest.approx(-0.3)
+    held = RG.day_result(store, W, NOW, [_coin(M2, 9.0)], per_tx_sol=0.0035)  # still in the wallet: not ours either
+    assert held["total_sol"] == pytest.approx(-0.3) and held["coins"] == 0
+
+
+def test_the_owners_hand_buys_on_the_tape_are_no_result_of_the_bot_either(env):
+    """The trip came before the measure stage had written the hand buys (they were on the tape alone): the tape's own
+    fee record tells them apart the same way."""
+    _paths, store, _cfg = env
+    _measured(store, NOW - 300)
+    _sniper(store)
+    _tape(store, "hand", NOW - 200, M2, buy=True, sol=4.95, priority=0, tip=52_000_000)
+    _tape(store, "bot", NOW - 100, M1, buy=True, sol=1.05, priority=1_000_000, tip=49_000_000)
+    day = RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)  # both gone with no sale seen: only the bot's counts
+    assert day["total_sol"] == pytest.approx(-(1.05 + 0.0035), abs=1e-6)
+
+
+def test_a_copy_buy_is_the_bots_whatever_its_fees(env):
+    """22 Nov 00:19:12 a copy of Cented went out with no tip, and the 21 Nov copies paid 0.199: the copied wallet on the
+    fill says it is ours, and a sniper's own priority with no tip is one of its sends too."""
+    _paths, store, _cfg = env
+    _sniper(store)
+    store.put_fill({"sig": "copy", "ts": NOW - 900, "wallet": W, "mint": M1, "side": "buy", "sol": 3.5,
+                    "tokens": 1_000_000, "priority_lamports": 1_000_000, "tip_lamports": 0,
+                    "wallet_copied": "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"})  # fmt: skip
+    _sell(store, "copy-s", NOW - 888, M1, pnl=-0.065, buy_sig="copy")
+    _buy(store, "untipped", NOW - 600, M2, sol=1.0, fee_lamports=(1_000_000, 0))
+    _sell(store, "untipped-s", NOW - 588, M2, pnl=0.04, buy_sig="untipped")
+    assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)["realised_sol"] == pytest.approx(-0.025)
+
+
+def test_the_book_day_leaves_out_the_owners_own_sales(env):
+    """The book's day (book/state.realised_today, the day stop's closed part) counted every sale in the wallet: a coin
+    the owner bought and sold by hand at a loss is no loss of the bot's."""
+    from snipetech.book.state import realised_today
+
+    _paths, store, _cfg = env
+    _sniper(store)
+    _buy(store, "hand-b", NOW - 900, M2, sol=2.0, fee_lamports=(0, 30_000_000))
+    _sell(store, "hand-s", NOW - 800, M2, pnl=-0.5, buy_sig="hand-b")
+    _buy(store, "bot-b", NOW - 700, M1, sol=1.0, fee_lamports=(1_000_000, 49_000_000))
+    _sell(store, "bot-s", NOW - 688, M1, pnl=0.2, buy_sig="bot-b")
+    assert realised_today(store, W, NOW) == pytest.approx(0.2)
 
 
 def test_a_round_trip_the_measure_stage_has_not_read_yet_counts_from_the_tape(env):

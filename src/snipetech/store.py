@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -923,11 +924,20 @@ class Store:
             return float(q_after) / float(b_after)
         return float(quote) / float(base) if base else None
 
-    def trades_for_user(self, user: str, since_ts: int = 0) -> list[Trade]:
+    def trades_for_user(self, user: str, since_ts: int = 0, fees: bool = False) -> list[Trade]:
+        """A wallet's trades on the tape since `since_ts`, in block order; with `fees` each carries its transaction's
+        priority fee and tip as the recorder wrote them (None where it wrote none): whose trade it was, the bot's or the
+        owner's own, is told by them (measure/ours.py)."""
+        if not fees:
+            rows = self._q(
+                f"SELECT {_TRADE_COLS} FROM trades WHERE user=? AND ts>=? ORDER BY slot, pos, ev", (user, since_ts)
+            )
+            return [_trade(r) for r in rows]
         rows = self._q(
-            f"SELECT {_TRADE_COLS} FROM trades WHERE user=? AND ts>=? ORDER BY slot, pos, ev", (user, since_ts)
+            f"SELECT {_TRADE_COLS}, priority, tip FROM trades WHERE user=? AND ts>=? ORDER BY slot, pos, ev",
+            (user, since_ts),
         )
-        return [_trade(r) for r in rows]
+        return [replace(_trade(r[:17]), priority=r[17], tip=r[18]) for r in rows]
 
     def trade_count(self, mint: str) -> int:
         return self._q("SELECT COUNT(*) FROM trades WHERE mint=?", (mint,))[0][0]
