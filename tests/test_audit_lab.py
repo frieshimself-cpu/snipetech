@@ -235,3 +235,45 @@ def test_a_record_frozen_with_repeats_is_research_only():
     assert "every buy" in rep["research_only_why"][paper.REPEATS_NOTE]
     assert dash._research_only([every, first]) == {"rep1"}
     st.close()
+
+
+# -- lab#2: SOL a day over the newer moments' whole window, the taped hours of it -------------------------------------
+
+DAY = 86400
+
+
+def _spd_coin(st: Store, k: int, ts: int) -> None:
+    m = Market(st, addr(f"spd-coin-{k}"), addr(f"spd-dev-{k}"), ts, 90_000_000 + k * 1000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(LEAD, 2.0, 20)
+    for j in range(8):
+        m.buy(addr(f"spd-fan-{k}-{j}"), 0.5, 40 + 3 * j)
+    m.commit()
+
+
+def test_sol_a_day_counts_the_test_window_to_its_end_not_to_the_last_moment():
+    """12 older moments over five days, then 8 newer ones within an hour, then quiet to the end of the tape, with half
+    a day the tape did not record. Divided by the time to the last moment, the 8 trades read as a pace kept for days
+    (59 times the window's own rate on the auditor's probe)."""
+    st = Store(":memory:")
+    st.set_label(LEAD, "tracked one", "wallet", "file")
+    start = NOW - 7 * DAY
+    for k in range(12):
+        _spd_coin(st, k, start + 3600 + k * int(5 * DAY / 12))
+    burst = start + 5 * DAY + 7200
+    for k in range(12, 20):
+        _spd_coin(st, k, burst + (k - 12) * 400)
+    gap = (burst + 6 * 3600, burst + 18 * 3600)  # twelve hours the recorder was down
+    st.set_coverage("tape", {"spans": [[start, gap[0]], [gap[1], NOW]]})
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    trig = parse_trigger({"kind": "kol", "group": "wallet", "sol": 1, "only": LEAD})
+    data = collect(st, cfg, 0.2, 0, "+0", 0.0045, triggers=[trig], kols={"wallet": {LEAD}}, exits=[HOLD], mates={},
+                   workers=1)  # fmt: skip
+    st.close()
+    (r,) = rank(data, cfg, top=5, min_train=5)
+    assert r["test"]["n"] == 8 and data["window"]["until_ts"] == NOW
+    taped = (gap[0] - r["test_from_ts"]) + (NOW - gap[1])  # seconds of tape from the first newer moment to the end
+    assert r["test_sol_per_day"] == pytest.approx(r["test"]["total"] / (taped / DAY), rel=1e-9)
+    burst_rate = r["test"]["total"] / ((data["rows"][-1]["ts"] - r["test_from_ts"]) / DAY)
+    assert abs(burst_rate) > 20 * abs(r["test_sol_per_day"])  # what it read before: the burst's pace, kept all along

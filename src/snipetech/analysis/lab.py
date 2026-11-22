@@ -2878,6 +2878,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     }
     out = {"rows": rows, "exits": exits, "kind_exits": by_kind, "exit_position": exit_position,
            "tape_hours": sum(b - a for a, b in spans) / 3600,
+           # the stretches of tape read, for the hours a rule's newer moments were read over (`rank`, `taped_secs`)
+           "tape_spans": [(int(a), int(b)) for a, b in spans],
            "window": window, "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored, "mig_exits": mig_exits,
@@ -3177,6 +3179,20 @@ def coin_keys(rows: Sequence[Mapping[str, Any]]) -> list[Any]:
     return [r.get("mint") if r.get("mint") is not None else ("row", j) for j, r in enumerate(rows)]
 
 
+def taped_secs(data: Mapping[str, Any], since: float, last: float) -> float:
+    """The seconds of tape a rule's newer moments were read over: from the first of them (`since`) to the end of the
+    lab's window (`window.until_ts`), the stretches the tape holds only (`tape_spans`: an hour the recorder missed is
+    no hour the rule could fire in, as `per_hour` counts `tape_hours`). A lab without a window (one built by hand)
+    counts to its last moment (`last`), as every lab did until 22 Nov."""
+    end = (data.get("window") or {}).get("until_ts")
+    if end is None:
+        return float(last) - float(since)
+    spans = data.get("tape_spans")
+    if not spans:
+        return float(end) - float(since)
+    return float(sum(max(0.0, min(float(b), float(end)) - max(float(a), float(since))) for a, b in spans))
+
+
 def pick_exit(m: np.ndarray, cut: int, need: int) -> tuple[int | None, np.ndarray]:
     """The exit (column of `m`, moments x exits, oldest first) the older moments (rows before `cut`) pick, and each
     exit's mean on the older moments the pick was made on (-inf for one that does not compete). An exit competes when
@@ -3314,7 +3330,7 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
             continue
         newer = ~np.isnan(m[cut:, k])  # the newer moments the exit was scored on
         test = m[cut:, k][newer]
-        span_h = max((rs[-1]["ts"] - rs[cut]["ts"]) / 3600, 1e-6)
+        span_h = max(taped_secs(data, rs[cut]["ts"], rs[-1]["ts"]) / 3600, 1e-6)  # the newer moments' hours of tape
         # a coin's newer moments are one draw of the bound (`coin_keys`), and `test.coins` says how many coins
         st = summarize(test, conf, samples, clusters=coin_keys([r for r, ok in zip(rs[cut:], newer) if ok]))
         judged = {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")}
@@ -3326,6 +3342,10 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
         # SOL a day: the mean of the newer moments the exit was scored on, over every newer firing, since the rule trades
         # each one live. A firing it was left out on is a ride into a migration, for a hunt buy a big gain by then
         # (research round 3: riders reached 3.6-9x at the migration), so the mean it stretches leans low for a hunt.
+        # A day of what: of the tape the newer moments were read on, from the first of them to the end of the lab's
+        # window (`taped_secs`); until 22 Nov to the last of them, so a rule whose newer moments came in a burst, or
+        # whose wallet went quiet, read as keeping that pace (8 moments in an hour, then two quiet days: +9.19 SOL a
+        # day where the window made +0.16).
         out.append({
             "trigger": trig.label(), "trigger_spec": trig.__dict__, "exit": ex.label(), "exit_params": ex.to_dict(),
             "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs),
