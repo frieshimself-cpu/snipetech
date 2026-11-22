@@ -163,6 +163,38 @@ def test_held_coins_say_whose_they_are_by_the_buy_that_brought_them_in(tmp_path,
     assert {h["mint"]: h["ours"] for h in snap.held} == {"H": False, "B": True, "U": True}  # U: no buy read: the bot's
 
 
+def test_a_bot_trade_is_carried_until_a_round_values_the_wallet(tmp_path, fake_service, monkeypatch):
+    """While a round cannot value the wallet (an unpriced coin) the baseline equity is carried, and so is whether the
+    bot traded since it: the next valued round's move is measured from that baseline (22 Nov review)."""
+    cfg = Config()
+    cfg.operator.wallet = W
+    paths = OperatorPaths(tmp_path).ensure()
+    unpriced = [{"mint": "M1", "amount": 1.0, "priced": False, "value_sol": None}]
+
+    def take(prev, now, held):
+        return asyncio.run(take_snapshot(fake_service, paths, cfg, prev=prev, now=now,
+                                         services=lambda: {"snipetech-tape": "active"},
+                                         balances=lambda w: (1.0, 0.0, held)))  # fmt: skip
+
+    valued = Snapshot(ts=1_750, wallet=W, native_sol=1.0, wsol=0.0, equity_ref=1.0)
+    blind = take(valued, 1_850, unpriced)  # the bot's buy of M1 at 1800
+    assert blind.equity_ref == 1.0 and blind.bot_since_ref is True
+    quiet = take(Snapshot(ts=1_950, wallet=W, equity_ref=1.0, bot_since_ref=True, held=unpriced), 2_000, unpriced)
+    assert quiet.fills == [] and quiet.equity_ref == 1.0 and quiet.bot_since_ref is True  # no trade, still carried
+    again = take(quiet, 2_100, [])
+    assert again.equity_ref == 1.0 and again.bot_since_ref is False  # valued: the baseline is this round
+    real_q = fake_service.store._q
+
+    def q(sql, *a):
+        if "user=?" in sql:
+            raise RuntimeError("database is locked")
+        return real_q(sql, *a)
+
+    monkeypatch.setattr(fake_service.store, "_q", q)
+    unread = take(valued, 1_850, [])
+    assert unread.fills_unread is True and any("fills" in e for e in unread.errors)
+
+
 def test_snapshot_records_whether_the_book_is_live(tmp_path, fake_service):
     from snipetech.book.switch import book_switch
 

@@ -100,6 +100,16 @@ def test_a_fall_of_a_coin_the_bot_holds_wakes_the_round_with_no_trade(paths):
     assert not decide(snap(held=[coin(0.5, False)]), owners, NOW, CFG, paths).call
 
 
+def test_a_bot_trade_in_a_round_that_could_not_value_the_wallet_still_counts(paths):
+    """Review of 22 Nov: the move is measured from the last equity a round could value, but the bot's trades were read
+    since the last round only. A bot trade in a round with an unpriced coin, then a loss read in the next valued round
+    with no trade in it, woke nobody. The bot's trades since that baseline count (`bot_since_ref`), and a round whose
+    trades could not be read counts as one of the bot's."""
+    before = snap(native_sol=12.23, equity_ref=12.33, bot_since_ref=True)  # a bot trade since the baseline
+    assert decide(snap(native_sol=10.23), before, NOW, CFG, paths).call
+    assert decide(snap(native_sol=10.23, fills_unread=True), snap(native_sol=12.23), NOW, CFG, paths).call
+
+
 def test_small_equity_move_is_quiet(paths):
     assert not decide(snap(native_sol=1.0), snap(native_sol=1.05), NOW, CFG, paths).call
 

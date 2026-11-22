@@ -62,6 +62,8 @@ class Snapshot:
     book_fill_sol: float | None = None  # what one copy of the book buys: the size buys_payable counts at
     equity_ref: float | None = None  # the last total equity a round could value (carried while a coin is unpriced)
     ok_tx_1h: int | None = None  # landed transactions by the wallet in the last hour (None = could not read)
+    fills_unread: bool = False  # the wallet's trades could not be read this round: the gate counts them as the bot's
+    bot_since_ref: bool = False  # the bot traded since the round that set equity_ref (carried with it)
 
     @property
     def equity(self) -> float | None:
@@ -353,6 +355,11 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
                  "tip": tp} for ts, m, b, q, pr, tp in rows])  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
+            snap.fills_unread = True
+        # the gate measures the move from equity_ref, which a round with an unpriced coin carries from an older round:
+        # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed
+        ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
+        snap.bot_since_ref = snap.total_equity is None and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)
     try:
         st = await svc.oktech_status()
         snap.snipers = [
