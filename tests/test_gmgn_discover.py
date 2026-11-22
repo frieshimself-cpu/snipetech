@@ -231,6 +231,24 @@ def test_a_rate_limit_ends_the_asking_and_keeps_what_was_found(tmp_path):
         st.close()
 
 
+def test_a_list_that_fails_inside_the_source_is_said_in_the_runs_log(tmp_path):
+    """Audit of 22 Nov (qualify#6): a GMGN read that fails inside the source (one of its lists, the hottest coins, the
+    profit list, a rate limit) was said to the Service's progress sink, which `discover run` never sets: its wallets
+    were missing, the run's errors {} and nothing anywhere said so. It goes to the run's own log (stderr, the
+    journal); the rest of the source's rows are kept, as before."""
+    said: list[str] = []
+    down = {"/v1/user/smartmoney": refused(502, "INTERNAL_API_UNAVAILABLE", "down")}
+    ctx, st = _ctx(tmp_path, gmgn=_gmgn(routes=down))  # the Service as `discover run` makes it: no progress sink
+    ctx.log = said.append
+    try:
+        out = run_discover(ctx, [GmgnSource()])
+        assert out["by_source"] == {"gmgn": 4} and out["errors"] == {}  # the smart-money-only wallet is missing
+        assert S2 not in {c["wallet"] for c in st.candidates()}
+        assert any("smartmoney" in m and "502" in m for m in said), said
+    finally:
+        st.close()
+
+
 # -- on GMGN's real lists (12 Nov 2026) --------------------------------------------------------------------------------
 
 

@@ -2851,18 +2851,20 @@ class Service:
             c["cu_used"] = cu
         return cands
 
-    def discover_gmgn(self, client, now: float | None = None) -> list[dict]:
+    def discover_gmgn(self, client, now: float | None = None, log=None) -> list[dict]:
         """Copy candidates from GMGN: the wallets on its KOL and smart-money lists and the winners of its hottest
         pump.fun coins, minus the platform wallets we know, each with GMGN's name for it and its profit and win rate
         over `[gmgn] period`. The wallets GMGN names are named in our labels too (kind `kol` or `wallet`, never over a
-        label somebody else wrote; `[gmgn] label = false` leaves the labels alone). The lab at our landing decides."""
+        label somebody else wrote; `[gmgn] label = false` leaves the labels alone). The lab at our landing decides.
+        `log`: where a read that fails on the way is said (the discover run's log), else this Service's progress."""
         from . import gmgn
 
         gc = self.cfg.gmgn
         exclude = {a for kind in ("service", "platform", "router") for a in self.store.labels(kind)}
         rows = gmgn.candidates(client, feed_limit=gc.feed_limit, period=gc.period, stats_top=gc.stats_top,
                                trending_coins=gc.trending_coins, traders_per_coin=gc.traders_per_coin,
-                               max_wallets=gc.max_wallets, exclude=exclude, now=now, log=self.progress)  # fmt: skip
+                               max_wallets=gc.max_wallets, exclude=exclude, now=now,
+                               log=log or self.progress)  # fmt: skip
         if gc.label:
             gmgn.label_people(self.store, rows)
         for row in rows:  # how followed each asked wallet is and who funded it: kept for the verdict's note
