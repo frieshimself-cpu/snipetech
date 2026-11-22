@@ -193,6 +193,7 @@ class OperatorJobs:
 
         from ..analysis.lab import (
             REPEATS_ALSO_FROZEN,
+            check_each_gates,
             check_repeats,
             parse_trigger,
             recipe,
@@ -220,10 +221,13 @@ class OperatorJobs:
                                       f"({REPEATS_ALSO_FROZEN})")  # fmt: skip
             triggers.append(trig)
         # a rule that takes every buy of its wallet, in a lab or a place-bids table without --each: once a coin, so
-        # the repeats it names would never be scored (`lab.check_repeats`)
+        # the repeats it names would never be scored (`lab.check_repeats`); and with --each, a rule with a consensus
+        # gate, which a wallet's own buys never have (`lab.check_each_gates`)
         if argv[:1] in (["lab"], ["place-bids"]):
             try:
                 check_repeats(triggers, "--each" in argv)
+                if "--each" in argv:
+                    check_each_gates(triggers)
             except ValueError as exc:
                 raise PermissionError(f"--trigger refused, no job started: {exc}") from None
         # a bot's recipe by name (`lab --recipe`, `paper freeze --recipe`): one the table does not hold is refused

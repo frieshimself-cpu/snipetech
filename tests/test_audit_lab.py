@@ -277,3 +277,64 @@ def test_sol_a_day_counts_the_test_window_to_its_end_not_to_the_last_moment():
     assert r["test_sol_per_day"] == pytest.approx(r["test"]["total"] / (taped / DAY), rel=1e-9)
     burst_rate = r["test"]["total"] / ((data["rows"][-1]["ts"] - r["test_from_ts"]) / DAY)
     assert abs(burst_rate) > 20 * abs(r["test_sol_per_day"])  # what it read before: the burst's pace, kept all along
+
+
+# -- lab#1: --each and a consensus gate ------------------------------------------------------------------------------
+# --each gives every followed wallet's own buys, as its own copy sniper copies them (ctbotWallets [w], ctbotMinWallets
+# 1); a consensus gate counts the other wallets in the coin, which only a sniper over many wallets does, once a coin.
+# `_first_buys` applies no such gate (as documented), so the rule's label named a gate its moments never had.
+
+W1, W2 = addr("al-w1"), addr("al-w2")
+CONSENSUS = ({"known": 2}, {"gap": 5}, {"teams": True}, {"known": 2, "known_any": True})
+
+
+def _two_wallets(st: Store, coins: int = 12) -> None:
+    """W1 buys every coin first; W2 follows on half of them: the second known wallet in."""
+    st.set_label(W1, "tracked one", "wallet", "file")
+    st.set_label(W2, "tracked two", "wallet", "file")
+    for k in range(coins):
+        m = Market(st, addr(f"al2-coin-{k}"), addr(f"al2-dev-{k}"), NOW - 6000 + k * 200, 80_000_000 + k * 1000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        m.buy(W1, 2.0, 20)
+        if k % 2 == 0:
+            m.buy(W2, 2.0, 40)
+        for j in range(6):
+            m.buy(addr(f"al2-fan-{k}-{j}"), 0.5, 60 + 3 * j)
+        m.commit()
+    st.set_coverage("tape", {"spans": [[NOW - 7000, NOW]]})
+
+
+def test_each_refuses_a_rule_with_a_consensus_gate():
+    for gate in CONSENSUS:
+        trig = parse_trigger({"kind": "kol", "group": "wallet", "sol": 1} | gate)
+        with pytest.raises(ValueError, match="--each") as exc:
+            each_groups([trig])
+        assert next(iter(gate)) in str(exc.value)  # the gate it would have dropped, by name
+    assert each_groups([parse_trigger({"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3})]) == ("wallet",)
+
+
+def test_place_bids_each_reads_every_first_buy_and_says_so():
+    from snipetech.analysis.place_bids import DEFAULT_TRIGGER, place_bids
+
+    st = Store(":memory:")
+    _two_wallets(st)
+    kw = {"hours": 48, "kols": {"wallet": {W1, W2}}, "labels": {}, "own": ()}
+    each = place_bids(st, Config(), NOW, each=True, **kw)
+    assert each["moments"] == 18 and "known" not in each["trigger"]  # every wallet's own first buy: 12 + 6
+    assert "known wallets in" not in each["rule"] and "<= 3 SOL" in each["rule"]
+    once = place_bids(st, Config(), NOW, **kw)  # the one-a-coin table keeps its rule: the second known wallet in
+    assert once["trigger"] == DEFAULT_TRIGGER and once["moments"] == 6 and "known wallets in" in once["rule"]
+    with pytest.raises(ValueError, match="--each"):
+        place_bids(st, Config(), NOW, trigger=DEFAULT_TRIGGER, each=True, **kw)
+    st.close()
+
+
+def test_the_job_runner_refuses_each_with_a_consensus_gate():
+    from snipetech.operator.jobs import OperatorJobs
+
+    known = json.dumps({"kind": "kol", "group": "wallet", "sol": 1, "known": 2})
+    for argv in (["lab", "--each", "--trigger", known], ["place-bids", "--each", "--trigger", known]):
+        with pytest.raises(PermissionError, match="no job started.*--each"):
+            OperatorJobs._check_triggers(argv)
+    OperatorJobs._check_triggers(["lab", "--trigger", known])  # one sniper over the group: once a coin, as ever
+    OperatorJobs._check_triggers(["place-bids", "--each"])  # the default rule, read wallet by wallet

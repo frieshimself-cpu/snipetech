@@ -2977,9 +2977,9 @@ def check_bid_landing(position: str, latency: int, bid_sol: float, triggers: Seq
 
 def each_groups(triggers: Sequence[Trigger] | None) -> tuple[str, ...]:
     """The label groups `lab --each` hands `collect` (its `groups`: every followed wallet gives its own moments, as
-    its own copy sniper copies them), refused in words before any tape is read where that would drop a rule without a
-    word: `collect` with groups runs wallet rules only, so --each takes named rules (--trigger) and wallet rules
-    alone."""
+    its own copy sniper copies them), refused in words before any tape is read where that would drop a rule, or a
+    gate of one, without a word: `collect` with groups runs wallet rules only, so --each takes named rules (--trigger)
+    and wallet rules alone, and none with a consensus gate (`check_each_gates`)."""
     if not triggers:
         raise ValueError("--each scores each followed wallet's own buys under the wallet rules named with --trigger: "
                          "name one")  # fmt: skip
@@ -2987,7 +2987,33 @@ def each_groups(triggers: Sequence[Trigger] | None) -> tuple[str, ...]:
     if other:
         raise ValueError(f"--each scores wallet rules (kol triggers) only; {', '.join(other)} would be left out: run "
                          "those without --each")  # fmt: skip
+    check_each_gates(triggers)
     return tuple(dict.fromkeys(t.group for t in triggers))
+
+
+# A wallet rule's consensus (`known` of 2 or more, `gap`, `teams`, `known_any`: `_kol_gates`) counts the other wallets
+# in the coin: one sniper over the group's wallets does that (OKTech ctbotMinWallets), and it buys once a coin. A copy
+# sniper of one wallet sees no other (ctbotWallets [w], ctbotMinWallets 1), so each wallet's own moments (--each,
+# `_first_buys`) have no consensus, and a rule that names one is refused rather than scored without it (audit of
+# 22 Nov: `place-bids --each` named ">= 2 known wallets in" over moments two thirds of which had one)
+EACH_CONSENSUS_WHY = ("--each scores each followed wallet's own buys, as its own copy sniper copies them, and a sniper "
+                      "of one wallet sees no other: {gates} counts the other wallets in the coin, which only one "
+                      "sniper over the group's wallets does, once a coin. Run this rule without --each")  # fmt: skip
+
+
+def consensus_gates(trig: Trigger) -> list[str]:
+    """The consensus gates a wallet rule sets, in words: known (2 or more), gap, teams, known_any."""
+    return ([f"known {trig.known}"] if trig.known > 1 else []) + ([f"gap {trig.gap:g} s"] if trig.gap else []) + (
+        ["teams"] if trig.teams else []) + (["known_any"] if trig.known_any else [])  # fmt: skip
+
+
+def check_each_gates(triggers: Sequence[Trigger] | None) -> None:
+    """Refuse in words, before any tape is read, a wallet rule with a consensus gate where each followed wallet gives
+    its own moments (`lab --each`, `place-bids --each`): EACH_CONSENSUS_WHY."""
+    for t in triggers or ():
+        gates = consensus_gates(t) if t.kind == "kol" else []
+        if gates:
+            raise ValueError(f"{t.label()}: " + EACH_CONSENSUS_WHY.format(gates=" and ".join(gates)))
 
 
 def bid_hours(store: Store, spans) -> tuple[int | None, float]:
