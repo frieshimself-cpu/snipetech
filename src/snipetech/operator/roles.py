@@ -373,6 +373,12 @@ PAPER_READING = 30  # forward trades a paper rule's reading takes: 30, then 30 m
 PAPER_READINGS = 2  # the readings that are the tester's news: the first two; later ones are the paper report's rows
 SCOUT_NEWS = ("qualified", "banned")  # the verdict counts that are the scout's news: the others move every hour
 IDLE_WHY = "waits 45 minutes after two turns without a test, a closed idea, a lesson or a hand-on"
+# Another role's table calls a role whose queue holds no open idea and whose last turn did no work only once this long
+# has passed since its last turn (22 Nov audit: the scout rewrites its table every turn and called the fee analyst,
+# its queue empty, every quarter hour; 33 of 50 such wakes in 39 hours started no job, 18 $). An hour from a turn's
+# start is less than one from its last request, so the hour's cache is still there.
+TABLE_QUIET_SECS = 3600
+TABLE_QUIET_WHY = "a table changed, but its queue is empty and its last turn did no work: it looks once an hour"
 ASKER_FILE = "agents-asker.json"  # operator/: while the account is empty, who asks this round (`credit_asker`)
 ROUND_SECS = 15 * 60  # the operator's round, which starts each role's turn (standin.ROLE_EVERY_SECS)
 READ_FILE = "agents-read.json"  # operator/: per role, the finished jobs it has read and when (`note_job_read`)
@@ -628,8 +634,9 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     job it started (or waits for: `join_test`) has ended since its last turn and it has not read it since
     (`note_job_read`; a `label` job that ended well is never news); it was handed an idea since then; none of its jobs
     runs and its queue holds an idea nobody tested, or an idea in testing (`STALLED`: told twice, an idle wait apart);
-    another role's table changed since then (only while `wake_on_table`: the owner's switch, `start_rules`); its own
-    news arrived
+    another role's table changed since then (only while `wake_on_table`: the owner's switch, `start_rules`; and once
+    TABLE_QUIET_SECS have passed since its last turn when its queue holds no open idea and that turn did no work); its
+    own news arrived
     (`_news`); or three hours have passed. After IDLE_TURNS turns in a row that did no work (`_idle_after`) it waits
     IDLE_WAIT_SECS from its last turn's start, less the round's slack, unless a job of its own has ended or an idea
     was handed to it.
@@ -675,21 +682,25 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     again = int(state.get("stalled_n") or 0) < STALLED_TELLS
     if testing and not job_runs and (told is None or (again and now - told >= IDLE_WAIT_SECS - SLACK_SECS)):
         return True, f"{STALLED} {testing[0].get('id')} is in testing and no job of yours runs: {STALLED_DO}"
+    # an empty queue and a last turn that did no work: another role's table calls it once an hour (TABLE_QUIET_SECS)
+    quiet = not queue and int(state.get("idle") or 0) >= 1 and now - last < TABLE_QUIET_SECS - SLACK_SECS
+    tables = False
     for other in ROLES if wake_on_table and role not in TABLE_DEAF else ():
         if other != role:
             try:
                 changed = (paths.root / f"{TABLES[other]}.md").stat().st_mtime > last
             except OSError:
                 changed = False
-            if changed:
+            if changed and not quiet:
                 return True, f"the {other} table changed (operator/{TABLES[other]}.md)"
+            tables = tables or changed
     if store is not None:
         news = _news(role, store, state, float(last), metas)
         if news:
             return True, news
     if now - last >= QUIET_MAX_SECS - SLACK_SECS:
         return True, "three quiet hours since its last turn"
-    return False, "nothing new"
+    return False, TABLE_QUIET_WHY if tables else "nothing new"
 
 
 # An idea in testing whose job the role read inside the turn that started it calls nobody: the job is read, the idea is
