@@ -85,6 +85,10 @@ FLOOR_READINGS = 2
 FRESH_BUY_SOL = 0.05
 # and an owner's own coin is gone from the wallet only when this many readings in a row leave it out (one reply can)
 OWNER_GONE_READINGS = 2
+# The run's own result by its trades on the tape (`run_result`, beside the floor on the wallet's equity): a coin of the
+# run's that no reading shows this long after its last buy, with no sale of the run's on the tape and no price on it,
+# counts as lost
+RUN_GONE_SECS = 60.0
 # and for this long after such a fall, with no coin seen yet, the buy is on its way: no floor reading counts, nothing is
 # re-armed, and an end of the run waits for the coin before it stops any sniper (a slow node shows it late)
 FRESH_HOLD_SECS = 30.0
@@ -1225,6 +1229,11 @@ class Service:
         owner took 2 SOL out and the run ended on its floor with no fill. A coin the tape has not priced yet is no reading (positions.py), and a
         reading under the floor holds the re-arms back and ends the run only when the next one agrees (FLOOR_READINGS:
         21 Nov, a 5 SOL copy from 10 SOL read as a loss in the second its SOL had left and its coin did not show).
+        Beside the floor, the run's own result by its trades on the tape (`run_result`: what its buys paid, what its
+        sales brought back, what its own tokens are worth) ends it the same way, after FLOOR_READINGS readings, once
+        it passes the max loss (or the wallet at the start less the floor): the owner's SOL moves and hand trades are
+        in none of it (22 Nov review: a deposit while a copy was held, the owner's sale of their own coin, a copy
+        into a coin of theirs each loosened the floor on the wallet's equity).
         `wait_for_sol`: nothing is armed until the wallet holds that much plain SOL (read every WAIT_POLL_SECS), for at
         most `wait_minutes`; the run's minutes, its fills and its floor count from then (the owner funds the wallet when
         the copied wallets trade).
@@ -1722,6 +1731,59 @@ class Service:
         def fills_now() -> int:
             return max(fills_since(t0), arrivals, len(first_seen))
 
+        def run_result(held_all: list[dict], now: float) -> float | None:
+            """The run's own result in SOL since its start by its trades on the tape: what its buys paid (the quote,
+            pump's fee, the priority fee and tip each recorded, a signature's fee), what its sales brought back, and
+            what its own tokens still held are worth (at `held_all`'s price for the coin, the tape's for one no reading
+            shows yet). The owner's SOL moves and hand trades are in none of it (22 Nov review: a deposit while a copy
+            was held, the owner's sale of their own coin, a copy into a coin of theirs each loosened the floor on the
+            wallet's equity). None when the tape cannot be read or a coin of the run's has no price."""
+            try:  # never a reason for the run to fail: no reading, and the floor on the wallet's equity alone
+                return _run_result(held_all, now)
+            except Exception:  # noqa: BLE001 - no reading: the equity floor holds as before
+                return None
+
+        def _run_result(held_all: list[dict], now: float) -> float | None:
+            from .measure.ours import _paid
+
+            trades = self.store.trades_for_user(address, int(t0), fees=True)
+            left: dict[str, float] = {}  # the run's tokens of each coin by its own buys and sales
+            last_buy: dict[str, float] = {}
+            total = 0.0
+            for t in trades:
+                prio, tip = getattr(t, "priority", None), getattr(t, "tip", None)
+                fees = (int(prio or 0) + int(tip or 0) + 5000) / 1e9
+                if t.is_buy:
+                    if not bot_tape_buy(t, run_marks):
+                        continue
+                    left[t.mint] = left.get(t.mint, 0.0) + float(t.base)
+                    last_buy[t.mint] = float(t.ts)
+                    total -= (int(t.quote) + int(t.fee)) / 1e9 + fees
+                elif left.get(t.mint, 0.0) > 0 and float(t.base) > 0:
+                    if run_marks["sell"] and _paid(prio, tip, run_marks["sell"]) is False:
+                        continue  # the owner's own sale of their part of the coin
+                    take = min(float(t.base), left[t.mint])
+                    total += (int(t.quote) - int(t.fee)) / 1e9 * take / float(t.base) - fees
+                    left[t.mint] -= take
+            shown = {str(h["mint"]): h for h in held_all if h.get("mint")}
+            for m, n in left.items():
+                if n <= 0:
+                    continue
+                h = shown.get(m)
+                if h is not None and h.get("value_sol") is not None:
+                    raw = float(h.get("raw") or 0)  # a holding without its raw amount is the run's, all of it
+                    total += float(h["value_sol"]) * (min(n, raw) / raw if raw > 0 else 1.0)
+                    continue
+                # a coin no reading shows: on its way (its buy's price), or left the wallet with no sale of the run's
+                # on the tape (a hole the recorder replays later, the owner's own move): at the tape's last price
+                price = self.store.last_price(m)  # lamports per raw unit
+                if price is None:
+                    if h is None and now - last_buy.get(m, now) >= RUN_GONE_SECS:
+                        continue  # gone, and the tape has no price: counted as lost
+                    return None
+                total += n * price / 1e9
+            return total
+
         # the kinds of copy (22 Nov plan, step 3): each buy of the run's on the tape, tagged as it lands (`kinds_new`)
         copies: list[dict] = []
         kinded: set[str] = set()  # their signatures, each read once
@@ -2031,6 +2093,10 @@ class Service:
                 + f"; floor {floor_sol}{how}; cap {max_fills} fills; {max_minutes:g} min")  # fmt: skip
             if b0 + w0 + owner0 <= floor_sol:
                 raise SystemExit(f"balance {b0 + w0 + owner0:.4f} is at or below the floor {floor_sol}")
+            # what the run may lose by its own trades (`run_result`): the max loss, or the wallet at the start less the
+            # floor; it moves with nothing the owner does
+            loss_cap = float(max_loss) if max_loss is not None else round(b0 + w0 + owner0 - floor_sol, 4)
+            tape_under_n = 0
             lag = tape_lag()
             if lag:  # the fills cap is counted on the tape: a run that cannot count them does not start
                 raise SystemExit(f"{lag} (more than {TAPE_STALE_SECS} s): not cycling, its fills are counted there")
@@ -2192,6 +2258,19 @@ class Service:
                 if not fresh and not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
                     eq += await wrapped_sol()
                     under = eq < floor_sol
+                # the run's own trades on the tape, beside the wallet's equity: the owner's moves are in none of it
+                res = run_result(held_all, now_t)
+                if res is not None and res < -loss_cap:
+                    tape_under_n += 1
+                    if tape_under_n >= FLOOR_READINGS:
+                        reason = (f"EMERGENCY: the run's own trades on the tape come to {res:+.4f} SOL, past the "
+                                  f"{loss_cap:g} SOL it may lose (the owner's own moves are in none of it); stopped "
+                                  "re-arming")  # fmt: skip
+                        break
+                    log(f"the run's own trades on the tape come to {res:+.4f} SOL, past the {loss_cap:g} SOL it may "
+                        "lose: no re-arm; the run ends if the next reading agrees")  # fmt: skip
+                    continue
+                tape_under_n = 0
                 if under:
                     under_n += 1
                     if under_n >= FLOOR_READINGS:

@@ -190,3 +190,32 @@ def test_one_reply_that_leaves_the_owners_coin_out_moves_no_floor(monkeypatch):
                         minutes=10)  # fmt: skip
     assert rep["reason"].startswith("EMERGENCY"), rep["reason"]
     assert rep["floor_moves"] == []
+
+
+def test_a_deposit_while_a_copy_is_held_never_hides_the_runs_loss(monkeypatch):
+    """Review of 22 Nov: SOL the owner puts in while a copy is held is taken for that copy's sale, so it raised the
+    run's equity: a 3 SOL copy worth 0.6 under a 2 SOL max loss ran on. The run's own trades as the tape records them
+    (what its buys paid, what its sales brought, what its own tokens are worth) end it, whatever the owner moves."""
+
+    def sol(now):
+        return 10.0 if now < T0 + 100 else (7.0 if now < T0 + 103 else 10.0)  # the owner puts 3 SOL in at 103 s
+
+    rep, _client = _run(monkeypatch, sol, coins=lambda now: [_coin(OURS, 0.6)] if now >= T0 + 102 else [],
+                        payload=FEES, tape=[_copy(T0 + 100, sol=3.0)], floor=None, max_loss=2.0,
+                        minutes=10)  # fmt: skip
+    assert rep["reason"].startswith("EMERGENCY") and "own trades" in rep["reason"], rep["reason"]
+
+
+def test_a_copy_into_a_coin_the_owner_holds_still_counts_its_loss(monkeypatch):
+    """Review of 22 Nov: the run's copy of a coin the owner already held stayed the owner's coin, so the floor moved
+    the copy's SOL as the owner's own: its loss never reached the floor. The run's own tokens of it are counted at their
+    worth: the owner's 1,000,000 and the copy's 1,000,000 are worth 0.6 SOL together now, the copy paid 3 SOL."""
+
+    def coins(now):
+        both = {"mint": OWN, "amount": 2.0, "raw": 2_000_000, "value_sol": 0.6, "priced": True}
+        return [both] if now >= T0 + 102 else [_coin(OWN, 3.0)]
+
+    rep, _client = _run(monkeypatch, lambda now: 7.0 if now < T0 + 100 else 4.0, coins=coins, payload=FEES,
+                        tape=[_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(T0 + 100, mint=OWN, sol=3.0)], floor=None,
+                        max_loss=2.0, minutes=10)  # fmt: skip
+    assert rep["reason"].startswith("EMERGENCY"), rep["reason"]

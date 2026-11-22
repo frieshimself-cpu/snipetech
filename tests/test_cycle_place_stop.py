@@ -8,6 +8,7 @@ places it (`measure.classify.classify_trade`: the copied wallet's companions and
 and a buy with no buy of a copied wallet before it (create-bait, 21 Nov 04:07 and 04:25) is out of place too."""
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -25,7 +26,7 @@ def _buy(sig, slot, pos, ts, mint, user, sol=1.0):
                  b_after=900 * 10**15)  # fmt: skip
 
 
-def _place_run(monkeypatch, fills, *, copies=True, mates=None, **kw):
+def _place_run(monkeypatch, fills, *, copies=True, mates=None, coin_value=5.0, **kw):
     """The cycler over two copy snipers of LEAD on the fake clock. Each fill (at secs after the start, the buyers
     between LEAD's buy and ours, whether LEAD bought at all, the companions among those buyers) puts its block on the
     tape when the clock reaches it, and the coin is held 12 s (its timer exit) from then."""
@@ -40,6 +41,9 @@ def _place_run(monkeypatch, fills, *, copies=True, mates=None, **kw):
             rows.append(_buy(f"ahead{k}x{j}", slot, 1 + j, T0 + at, mint, who))
         rows.append(_buy(f"ours{k}", slot, 1 + ahead, T0 + at, mint, W6, sol=5.0))
         sched.append((T0 + at, rows))
+        # its timer's sale 12 s on, on the tape as the recorder writes it (the run's own trades count it)
+        sale = replace(_buy(f"sold{k}", slot + 30, 0, T0 + at + 12, mint, W6, sol=5.0), is_buy=False)
+        sched.append((T0 + at + 12, [sale]))
     box: dict = {}
 
     def on_sleep(_secs):
@@ -48,7 +52,7 @@ def _place_run(monkeypatch, fills, *, copies=True, mates=None, **kw):
             box["store"].add_trades(item[1])
 
     def coins(now):
-        return [{"mint": f"M{k}", "amount": 1.0, "value_sol": 5.0, "priced": True}
+        return [{"mint": f"M{k}", "amount": 1.0, "value_sol": coin_value, "priced": True}
                 for k, (at, *_rest) in enumerate(fills) if T0 + at <= now < T0 + at + 12]  # fmt: skip
 
     client = _SpentClient(clock, SNIPER_IDS, lambda i, now, last_start: False)
@@ -166,7 +170,8 @@ def test_a_duplicate_buy_in_the_same_block_is_placed_once(monkeypatch):
         return svc, store
 
     monkeypatch.setitem(_place_run.__globals__, "_cycle_svc", wrapped)
-    rep, _client, store = _place_run(monkeypatch, fills, place_stop=(2, 3), place_max=1, minutes=4)
+    # both buys landed: the wallet holds both buys' tokens, worth twice one copy
+    rep, _client, store = _place_run(monkeypatch, fills, place_stop=(2, 3), place_max=1, minutes=4, coin_value=10.0)
     assert len(rep["places"]) == 1 and rep["places"][0]["trades_behind"] == 3
     assert rep["reason"].startswith("time limit")  # one miss, not two: the rule has not tripped
     store.close()
