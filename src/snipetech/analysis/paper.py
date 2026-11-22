@@ -583,6 +583,16 @@ def cost_note(strategy: dict) -> str | None:
             "as a record of its own")  # fmt: skip
 
 
+def refuted_at_cost(strategy: dict) -> bool:
+    """Whether a stored record is refuted and would be at today's cost too: one charged the doubled cost of 12-14 Nov
+    (`overcharged`) only when it lost by more than it was overcharged a round trip (`overcharge_sol`). What a refuted
+    record holds back in a freeze asks here: its own rule (`freeze`) and its default twin (`refuted_skip_twins`)."""
+    gone = strategy.get("refuted")
+    if not gone:
+        return False
+    return not overcharged(strategy) or float((gone or {}).get("mean_sol") or 0) + overcharge_sol(strategy) < 0
+
+
 def copy_landing(store: Store, cfg: Config, now: float) -> str:
     """Where a copy lands: the qualify lab's landing ([qualify] landing_pos, +6), or the measured one when the measure
     stage found it further back (never closer: paper at a better landing than we get is not evidence)."""
@@ -1034,7 +1044,9 @@ def refuted_skip_twins(strategies: Sequence[dict], now: float) -> dict[str, list
     held none of their default twins; so it was before 14 Nov too, when the search was free to freeze them again
     with the watch delay. Looked up this way, the server's rules of 14 Nov hold ten default rules back. Why hold:
     a rule refuted forward without crews' coins is not made better by also buying them, and they lost on the one
-    rule where it was measured (lab.CREW_SHARE_WORDS); that is one rule, and the words of the hold say so."""
+    rule where it was measured (lab.CREW_SHARE_WORDS); that is one rule, and the words of the hold say so. A record
+    refuted at the doubled cost of 12-14 Nov counts only when it lost by more than it was overcharged
+    (`refuted_at_cost`, as for the rule itself in `freeze`; review of 22 Nov)."""
     by: dict[str, list[dict]] = {}
     for s in strategies:
         if not isinstance(s, dict) or fed(s):
@@ -1047,7 +1059,7 @@ def refuted_skip_twins(strategies: Sequence[dict], now: float) -> dict[str, list
         return int((s.get("refuted") or {}).get("at") or 0)
 
     return {key: sorted(rs, key=at) for key, rs in by.items()
-            if all(s.get("refuted") for s in rs) and now - max(at(s) for s in rs) < RETEST_AFTER_SECS}  # fmt: skip
+            if all(refuted_at_cost(s) for s in rs) and now - max(at(s) for s in rs) < RETEST_AFTER_SECS}  # fmt: skip
 
 
 def _closed(strategies: Sequence[dict]) -> list[str]:
@@ -1379,13 +1391,12 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             records.setdefault(_rule_of(s), []).append(s)
     # ... but once such a record is refuted (on a record that was kinder than live) it holds its rule back like any
     # refuted record: kept for the refuted hold alone. A record charged the doubled cost was harsher than live: it
-    # holds its rule back only when it lost by more than it was overcharged (it would be refuted at today's cost too)
+    # holds its rule back only when it lost by more than it was overcharged (`refuted_at_cost`: so at today's cost)
     spoilt: dict[str, list[dict]] = {}
     for s in old:
         if fed(s) or not _sells_as_live(s) or not s.get("refuted"):
             continue
-        lost = float((s.get("refuted") or {}).get("mean_sol") or 0) + overcharge_sol(s) < 0
-        if s.get(OLD_CODE) or (overcharged(s) and lost):
+        if s.get(OLD_CODE) or (overcharged(s) and refuted_at_cost(s)):
             spoilt.setdefault(_rule_of(s), []).append(s)
     # the rules scored without serial crews' coins whose every record is refuted, the newest within the hold: each
     # holds back its default twin (`refuted_skip_twins`: among ALL records, whatever exit they were frozen with)

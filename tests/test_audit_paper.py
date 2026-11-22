@@ -145,6 +145,25 @@ def test_a_refuted_doubled_cost_record_holds_its_rule_only_if_it_lost_more_than_
         store.close()
 
 
+def test_a_skip_rule_refuted_at_the_doubled_cost_holds_its_default_twin_only_if_it_lost_more_than_it_was_overcharged():
+    """Review of paper#3: a rule refuted forward without serial crews' coins holds back the same trigger on every coin
+    for seven days (`refuted_skip_twins`), and that hold did not ask what the rule itself is now asked: whether it
+    lost by more than it was overcharged. A skip record refuted at the doubled cost that lost less (here -0.004 SOL a
+    trade, charged 0.008 too much a round trip) could be frozen again itself, while its default twin was held for a
+    refutal that today's cost would not make. Every launch-type rule frozen in those two days is such a skip record
+    (on the server six hunts, four refuted, each by more than it was overcharged: they hold as before)."""
+    hunt = {"id": "h0d0000000", "label": "a hunt | hold60s", "trigger": {"kind": "hunt", "sol": 5.0, "window": 1.0},
+            "exit": {"max_hold_secs": 60.0, "watch_secs": 1.3}, "position": "+3", "latency": 1, "buy_sol": 1.0,
+            "per_tx_sol": 0.008495, "from_ts": DOUBLED_AT, "lab": {}}  # fmt: skip
+    assert paper.overcharged(hunt) and paper.crew_note(hunt)  # frozen before 14 Nov: scored without crews' coins
+    for mean, held in ((-0.0301, True), (-0.004, False)):
+        rule = hunt | {"refuted": {"at": TODAY - 86400, "trades": 400, "mean_sol": mean}}
+        assert bool(paper.refuted_skip_twins([rule], TODAY)) is held, mean
+    # a record charged what a transaction costs is held by any refutal, as before
+    plain = hunt | {"per_tx_sol": 0.0045, "refuted": {"at": TODAY - 86400, "trades": 400, "mean_sol": -0.004}}
+    assert paper.refuted_skip_twins([plain], TODAY)
+
+
 def test_only_a_record_frozen_in_those_two_days_at_that_cost_counts_as_overcharged():
     rule = {"id": "x", "trigger": {"kind": "kol", "sol": 1.0}, "per_tx_sol": 0.008495, "from_ts": DOUBLED_AT}
     assert paper.overcharged(rule)
