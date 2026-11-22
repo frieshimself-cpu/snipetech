@@ -1162,6 +1162,37 @@ def test_the_count_before_the_lab_takes_only_coins_a_copy_sniper_would_buy(tmp_p
         st.close()
 
 
+def test_a_wallet_whose_trades_are_all_newer_than_the_tape_copy_is_looked_at_again_at_the_next_lab(tmp_path):
+    """Audit of 22 Nov (qualify#5): the count before the lab reads the hourly copy of the tape, up to 5 h old, and
+    GMGN lists wallets trading right now. HuvepLQ4 (found 09:07) bought 12 coins at the floor from 08:41 to 09:28, all
+    after the copy's end (07:31): "no tape data", looked at again in 72 h, long after the streak that listed it. A
+    wallet the copy has no trade of but the live tape has is looked at again at the next lab, and the verdict says
+    why; one that trades nowhere is "no tape data" as before."""
+    svc, st, data = _svc(tmp_path)
+    copy = Store(tmp_path / "copy.db")  # the hourly copy, taken three hours ago, before FRESH's trades
+    try:
+        copy.set_coverage("tape", {"spans": [[NOW - 3 * 86400, NOW - 3 * 3600]]})
+        svc._tape_store = copy
+        _tape(st, ["FRESH"], coins=12)  # 12 coins at 0.5 SOL on the curve, in the live database only
+        st.upsert_candidate("FRESH", "gmgn", {}, NOW - 600)
+        st.upsert_candidate("NOWHERE", "gmgn", {}, NOW - 500)
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda ws, pos: sent.extend(ws) or [])
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert sent == [] and by["FRESH"]["status"] == "candidate"
+        assert by["FRESH"]["next_review"] == NOW + 2 * 3600  # the next lab ([qualify] lab_interval_h), not 72 h
+        said = (
+            "no trade on the tape the lab reads (the hourly copy, to 05 Nov 21:00 UTC), though the live tape has "
+            "some: its trades are newer; not measured, looked at again in 2.0 h"
+        )
+        assert by["FRESH"]["reasons"] == [said]
+        assert by["NOWHERE"]["reasons"] == ["no tape data"] and by["NOWHERE"]["next_review"] == NOW + 72 * 3600
+        assert out["newer_than_copy"] == 1 and out["no_tape"] == 1 and out["too_few"] == 0 and out["evaluated"] == 2
+    finally:
+        copy.close()
+        st.close()
+
+
 def test_a_run_screens_ten_times_the_wallets_it_can_measure(tmp_path):
     """The lab measures [qualify] max_wallets; the count before it is cheap, so a run takes ten times as many due
     wallets, gives the ones that cannot pass their verdict and measures the first max_wallets of the rest (the others

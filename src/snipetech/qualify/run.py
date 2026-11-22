@@ -432,6 +432,9 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
             continue
         v = verdict_for(c["wallet"], normalise_history(c["stats"]), None, None, dict(EMPTY_CROWD), True, [], q, now)
         first_ts = tape.first_trade_ts(c["wallet"])
+        # none on the copy, some on the live tape: its trades came after the copy was taken (audit of 22 Nov: GMGN
+        # lists wallets trading right now, and one was parked 72 h for trades the next copy held)
+        newer = first_ts is None and tape is not store and store.first_trade_ts(c["wallet"]) is not None
         if first_ts is not None:  # it trades on the tape: what it lacks is said, and when it is looked at again
             hours = sample_review_hours(coins, need, first_ts, screen_spans, q, now)
             if coins:
@@ -443,8 +446,19 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
                        f"again in {hours:.1f} h")  # fmt: skip
             v["reasons"] = [why]
             v["next_review"] = int(now + hours * 3600)
+        elif newer:  # looked at again at the next lab, by when a newer copy holds them
+            hours = float(q.lab_interval_h)
+            end = max((float(b) for _, b in screen_spans or []), default=float(now))
+            why = (f"no trade on the tape the lab reads (the hourly copy, to "
+                   f"{time.strftime('%d %b %H:%M UTC', time.gmtime(end))}), though the live tape has some: its trades "
+                   f"are newer; not measured, looked at again in {hours:.1f} h")  # fmt: skip
+            v["reasons"] = [why]
+            v["next_review"] = int(now + hours * 3600)
         store.put_verdict(with_followed_note(v, _followed(store, c)))
-        out["too_few" if first_ts is not None else "no_tape"] += 1
+        if newer:
+            out["newer_than_copy"] = out.get("newer_than_copy", 0) + 1
+        else:
+            out["too_few" if first_ts is not None else "no_tape"] += 1
         out["evaluated"] += 1
         out[v["status"]] += 1
     measurable = measurable[:max_wallets]  # the rest stay due: the next lab's
