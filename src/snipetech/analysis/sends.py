@@ -24,8 +24,9 @@ who stands there and how. Every moment is listed (`moments_list`) with its outco
 the first other buyer of NEAR_MIN_SOL or more within NEAR_PLACES block places after the leader, from the tape; `near`
 counts such buyers after the leader and before it (22 Nov: after on 65 % of 386 moments, before on 1, so they had the
 leader's transaction before it ran). With `validators` it also reads each moment's block leader (getSlotLeaders, one
-request for up to LEADERS_PER_CALL slots, LEADERS_CREDITS a request: assumed, not checked) and splits the moments by
-validator (`by_validator`): places sold by some validators show there, a private route does not. What sits at the
+request for up to LEADERS_PER_CALL slots, LEADERS_CREDITS a request: assumed, not checked), before the failed sends so
+that a credit limit cuts those and not the split, and splits the moments by validator (`by_validator`): places sold by
+some validators show there, a private route does not. What sits at the
 leader's place +1 to +3 when it is no pump.fun trade, and where the bot's failed sends stand in the block, needs the
 blocks themselves (getBlock): not read here yet."""
 
@@ -161,6 +162,10 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
             if len(kept) < len(page) or len(page) < PAGE:
                 break
             cursor = page[-1]["signature"]
+        # the leaders before the failed sends: a few requests (about 130 for 72 hours) where the sends can take the
+        # whole limit (22 Nov: 4,907 of 5,000), so the limit cuts the sends, which are said to be counted in part
+        if validators and moments:
+            leaders_of, validators_error = await _slot_leaders(rpc, sorted({m["slot"] for m in moments}), meter)
         failed_sigs = [str(e["signature"]) for e in listed if e.get("err") is not None]
         txs: dict[str, dict] = {}
         if stopped is None:
@@ -171,8 +176,6 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
                 got = await rpc.get_transactions(chunk)
                 meter.add(TX, len(chunk))
                 txs.update({s: t for s, t in got.items() if t is not None})
-        if validators and moments:
-            leaders_of, validators_error = await _slot_leaders(rpc, sorted({m["slot"] for m in moments}), meter)
     finally:
         if meter.credits:
             store.usage_add(USAGE, round(meter.credits), now)

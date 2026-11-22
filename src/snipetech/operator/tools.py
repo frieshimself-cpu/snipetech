@@ -1629,9 +1629,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         lost its auction) leaves nothing on chain, so the tries it counts are the least the bot made. Every moment is
         listed (moments_list: its outcome, the bot's failed sends at it, the first other buyer of 0.1 SOL or more
         within 3 block places after the leader) and "near" counts such buyers after the leader and before it.
-        "--validators" adds each moment's block leader (getSlotLeaders, a credit a request of up to 5,000 slots) and
-        splits the moments by validator (by_validator): whether some validators sell the place right behind, or a
-        route of the leaders' own holds it, before anyone builds a sender for it.
+        "--validators" adds each moment's block leader (getSlotLeaders: one request for up to 5,000 slots, about 130
+        for 72 hours, counted at an assumed credit each and read before the failed sends, so the credit limit cuts the
+        sends and not this) and splits the moments by validator (by_validator): whether some validators sell the place
+        right behind, or a route of the leaders' own holds it, before anyone builds a sender for it.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
         gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the

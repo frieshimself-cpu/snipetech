@@ -239,6 +239,19 @@ def test_with_validators_each_moment_names_its_block_leader_and_the_moments_spli
     assert out["validators_error"] is None
 
 
+def test_the_validators_are_read_before_the_failed_sends_so_a_credit_limit_cuts_those():
+    """Review of 22 Nov: a 72-hour run behind Cented, Decu and theo side spends the 5,000-credit limit on failed sends
+    (job 20261122-074139-296636 stopped at 4,907), and the leaders read after them (about 130 requests for 72 hours)
+    found 93 credits left: the later moments would have had no validator. The leaders are read first; the limit then
+    cuts the failed sends, which the result already says are counted in part."""
+    store, chain = _world()
+    chain.leaders = {1100: "V1", 1200: "V2", 1300: "V1"}
+    out = _run(store, chain, validators=True, max_credits=3)  # the listing and the leaders fit, the two sends do not
+    assert [r["validator"] for r in out["moments_list"]] == ["V1", "V2", "V1"] and out["validators_error"] is None
+    assert out["stopped"] == "credits" and out["failed"]["fetched"] == 0 and out["credits"] == 2
+    assert [c[0] for c in chain.calls] == ["sigs", "leaders"]
+
+
 def test_a_leader_lookup_that_fails_leaves_the_validators_unknown_and_says_why():
     """A node that no longer has an epoch's leader schedule refuses: the moments keep their places, the validator is
     unknown, and the result says why rather than failing the job."""

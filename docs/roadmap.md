@@ -59,8 +59,9 @@ first on the server's recording and only then run live in capped batches.
   and Decu pay the same trading platform's fee accounts), no sender of ours reaches +0 behind them, and the studies
   of 8r6N8w's filter (I605-I622) answer the wrong question. Built 22 Nov, not yet run: `sends` lists every moment
   with the first other buyer within 3 places, and `--validators` splits the moments by the block's leader (at most
-  about 130 more requests for 72 hours, on top of the run's own credits). Still to build: reading a few of the blocks themselves (what sits at the leader's place +1
-  to +3 when it is no pump.fun trade, and where 8r6N8w's failed sends stand); then the fee analyst runs it.
+  about 130 requests for 72 hours, read before the failed sends, so the run's credit limit cuts those and never the
+  split). Still to build: reading a few of the blocks themselves (what sits at the leader's place +1 to +3 when it is
+  no pump.fun trade, and where 8r6N8w's failed sends stand); then the fee analyst runs it.
 - **What a sender of our own would be** (the audit of 22 Nov): a new buy path, not a setting. A builder for pump.fun's
   buy_exact_quote_in, pinned by a test on our own landed 3.5 SOL buy the way the sales are pinned
   (tests/test_sell_pumpswap.py); a send path outside the RPC client's shared limit of 8 requests a second, through
