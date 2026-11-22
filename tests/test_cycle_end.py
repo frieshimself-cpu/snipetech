@@ -31,8 +31,9 @@ def _payloads():
     return {"priorityFee": 0.001, "tipAmount": 0.199}
 
 
-def _two_leaders(monkeypatch, coins, *, stop_at, spent, sweep_fails=False, **kw):
-    """The runner over A and B, each copying its own wallet: LEAD_A buys M1 at 99 s and A's copy follows at 100 s."""
+def _two_leaders(monkeypatch, coins, *, stop_at, spent, sweep_fails=False, extra=(), **kw):
+    """The runner over A and B, each copying its own wallet: LEAD_A buys M1 at 99 s and A's copy follows at 100 s
+    (and the trades `extra` after)."""
     from snipetech.store import Store
 
     real_add = Store.add_oktech_sniper
@@ -43,7 +44,7 @@ def _two_leaders(monkeypatch, coins, *, stop_at, spent, sweep_fails=False, **kw)
         return real_add(self, rec)
 
     monkeypatch.setattr(Store, "add_oktech_sniper", add)
-    tape = [_buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0), _buy(T0 + 100, W6, 1.0, pos=1)]
+    tape = [_buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0), _buy(T0 + 100, W6, 1.0, pos=1), *extra]
     return _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0, coins=coins, payload=_payloads(),
                 tape=tape, stop_at=stop_at, spent=spent, sweep_fails=sweep_fails, **kw)  # fmt: skip
 
@@ -313,3 +314,31 @@ def test_a_stop_at_the_end_that_fails_once_is_tried_again(monkeypatch):
     monkeypatch.setattr(test_oktech._SpentClient, "stop", stop)
     rep, _client = _run(monkeypatch, lambda now: 10.0, stop_at=T0 + 60, minutes=5)
     assert refused["n"] == 1 and rep["left_running"] == [] and "with /stop" not in rep["reason"]
+
+
+def test_a_coin_both_snipers_bought_keeps_both_running_at_the_end(monkeypatch):
+    """Review of 22 Nov: the end placed a held coin by the run's newest buy of it only. A copied LEAD_A into M1 at
+    100 s and B copied LEAD_B into the same coin at 104 s; OKTech read both "running" (it reads so after a buy: 21 Nov
+    04:25, "finished" only 13 s on), and the end stopped A with its part of the coin held. Every buy of the holding
+    counts."""
+    extra = [_buy(T0 + 103, LEAD_B, 3.0, priority=50_000, tip=0), _buy(T0 + 104, W6, 1.0, pos=1)]
+    rep, client = _two_leaders(monkeypatch, lambda now: _coin(2.0) if now >= T0 + 102 else [], stop_at=T0 + 110,
+                               spent=lambda i, now, last_start: False, extra=extra)  # fmt: skip
+    assert not _stops(client, A) and not _stops(client, B)
+    assert "a coin is held" in rep["reason"] and sorted(rep["left_running"]) == sorted(SNIPER_IDS)
+
+
+def test_a_coin_no_buy_on_the_tape_explains_stops_no_sniper(monkeypatch):
+    """Review of 22 Nov: a coin held with no buy of the run's on the tape (a PumpSwap coin the recorder had no trade of,
+    as on 20 Nov 17:31, when OKTech still read the sniper that bought it "running") was put down to whichever sniper
+    OKTech read as fired. B's send had failed (it reads "finished", nothing bought) and A, which bought the coin, read
+    "running": the end stopped A. With no buy to tell which sniper holds the coin, none is stopped."""
+
+    def pay(i):
+        return _payloads() | {"ctbotWallets": [{"address": LEAD_A if i == A else LEAD_B}]}
+
+    rep, client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0,
+                       coins=lambda now: _coin() if now >= T0 + 102 else [], payload=pay, stop_at=T0 + 140,
+                       spent=lambda i, now, last_start: i == B and now >= T0 + 90, minutes=5)  # fmt: skip
+    assert not _stops(client, A)
+    assert "a coin is held" in rep["reason"] and A in rep["left_running"]

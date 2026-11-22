@@ -427,8 +427,9 @@ def test_a_coin_its_sniper_never_sells_is_sold_by_the_run_after_the_floor_ends_i
     assert floor_at < swept_at  # the floor came first: the sale is the run's, after its end
     assert [s["mint"] for s in rep["swept"]] == ["M1"] and rep["held"] == []
     assert rep["left_running"] == [] and "except" not in rep["reason"], rep["reason"]
-    # the other sniper, still waiting to fire, holds nothing: stopped before the sale, once OKTech's word has settled
-    assert [t for k, i, t in client.timed if k == "stop" and i == SNIPER_IDS[1] and T0 + 100 < t < sweeps[0][1]]
+    # the other sniper, still waiting to fire, is stopped once the wallet holds nothing: before the sale no buy on the
+    # tape tells which sniper holds M1, and OKTech's word alone proves nothing (review of 22 Nov)
+    assert [t for k, i, t in client.timed if k == "stop" and i == SNIPER_IDS[1] and t >= sweeps[0][1]]
     assert not [t for kind, _i, t in client.timed if kind == "start" and t >= T0 + 100]  # nothing armed again
 
 

@@ -59,11 +59,10 @@ STOP_TRIES = 3
 # wallet holds nothing (22 Nov 00:54: the floor ended a run 36 s after a copy whose sniper read "finished" and never
 # sold; the run left at once, 9 s before --sweep-after 45, and nobody sold the coin). Still held then: left to them.
 END_WATCH_SECS = 900.0
-# At an end with a coin held, a sniper OKTech reads as still waiting to fire (one of these) holds nothing, and is stopped
-# at once, unless it copies a wallet a held coin's buy followed, or that buy cannot be placed and the coin showed less
-# than STATUS_SETTLE_SECS ago (OKTech read a sniper that bought "finished" 13 s later on 21 Nov 04:25)
+# At an end with a coin held, a sniper is stopped at once when it copies none of the wallets the held coins' buys
+# followed (every buy placed) and OKTech reads it as one of these, still waiting to fire. OKTech's word alone proves
+# nothing: it reads a sniper that bought "running" (20 Nov 17:31; 21 Nov 04:25, "finished" only 13 s after its buy)
 WAITING_STATUSES = frozenset({"running", "starting"})
-STATUS_SETTLE_SECS = 30.0
 # `oktech cycle`, the kinds of copy (22 Nov plan, step 3): a copy of a copied wallet's own coin launch rests that wallet's
 # sniper this long (Cooker's launches come in bursts: a rest after each copy would have let 11 of his 57 through instead
 # of all 57), and this many copies of bait (a create naming the wallet, signed by someone else) in one UTC day rest it
@@ -1387,46 +1386,50 @@ class Service:
                 return True, g.reason
             return (None, g.reason) if not g.known else (False, "")
 
-        def leader_of(mint: str) -> str | None:
-            """The copied wallet whose buy the run's newest buy of `mint` followed (the measure stage's placing), or
-            None when it cannot be placed (no buy of the run's on the tape, a hunt sniper's coin)."""
+        def leaders_of(mint: str) -> set[str] | None:
+            """The copied wallets whose buys the run's buys of `mint` in this holding followed (the measure stage's
+            placing; a copy of an own launch or of bait by the wallet it names, `kinds_new`): every buy of the holding,
+            since two snipers can buy one coin. None when one of them cannot be placed, or none is on the tape (a
+            PumpSwap coin the recorder has no trade of): then nothing tells which sniper holds the coin."""
             from .measure.classify import classify_trade
 
             try:
-                buys = [t for t in self.store.trades_for_user(address, int(t0), fees=True)
+                since = max(t0, sight.get(mint, time.time()) - WHOSE_MARGIN_SECS)
+                buys = [t for t in self.store.trades_for_user(address, int(since), fees=True)
                         if t.is_buy and t.mint == mint and bot_tape_buy(t, run_marks)]  # fmt: skip
                 if not buys or not copied:
                     return None
-                return classify_trade(self.store, buys[-1], set(copied), None, mates=mates).get("wallet_copied")
+                out: set[str] = set()
+                for t in buys:
+                    lead = classify_trade(self.store, t, set(copied), None, mates=mates).get("wallet_copied")
+                    lead = lead or next((c.get("wallet") for c in copies if c.get("sig") == t.sig), None)
+                    if not lead:
+                        return None
+                    out.add(str(lead))
+                return out
             except Exception:  # noqa: BLE001 - not placed: the sniper that bought it cannot be told
                 return None
 
         async def stop_spare(held: list[dict], now: float) -> None:
-            """Stop each armed sniper that holds none of `held`: OKTech reads it still waiting to fire, and it copies
-            none of the wallets the held coins' buys followed. Stopping it strands nothing; left armed after the end it
-            buys once more with nobody watching (22 Nov 00:54: the Decu sniper held nothing and stayed armed until
-            stopped by hand). Nothing is stopped while a coin's buy cannot be placed and the coin is that young."""
+            """Stop each armed sniper that holds none of `held`: it copies none of the wallets any of the held coins'
+            buys followed, and OKTech reads it still waiting to fire. Stopping it strands nothing; left armed after the
+            end it buys once more with nobody watching (22 Nov 00:54: the Decu sniper held nothing and stayed armed
+            until stopped by hand). OKTech's word alone proves nothing (it reads a sniper "running" after its buy: 20
+            Nov 17:31, 21 Nov 04:25), so while any held coin's buys cannot all be placed no sniper is stopped."""
             waiting = [i for i in ids if i in armed]
             if not waiting:
+                return
+            maybe: set[str] = set()  # the snipers that may hold a held coin
+            for h in held:
+                leads = leaders_of(str(h.get("mint") or ""))
+                if leads is None:
+                    return
+                maybe |= {i for i in ids if leads & copies_of.get(i, set())}
+            if all(i in maybe for i in waiting):
                 return
             try:
                 states = {str(t.get("id")): str(t.get("status")) for t in await bounded(client.tasks())}
             except Exception:  # noqa: BLE001 - OKTech cannot say: every sniper is left as it is, tried next reading
-                return
-            maybe: set[str] = set()  # the snipers that may hold a held coin
-            fired = {i for i in ids if states.get(i) not in WAITING_STATUSES}  # it fired, or OKTech has no word of it
-            unplaced = 0
-            for h in held:
-                m = str(h.get("mint") or "")
-                lead = leader_of(m)
-                if lead is not None:
-                    maybe |= {i for i in ids if lead in copies_of.get(i, set())}
-                elif now - sight.get(m, now) >= STATUS_SETTLE_SECS:
-                    maybe |= fired
-                    unplaced += 1
-                else:
-                    return
-            if unplaced > len(fired):  # a coin is held that no fired sniper explains: OKTech's word is stale
                 return
             for i in waiting:
                 if i in maybe or states.get(i) not in WAITING_STATUSES:
