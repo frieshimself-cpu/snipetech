@@ -53,16 +53,20 @@ def _hunt_coins(store: Store, n: int = 24) -> None:
 
 def _world(store: Store) -> None:
     """76 coins on two tape spans: whale coins, hunt coins, and coins two candidates share (each candidate's own first
-    buy is a moment of the qualify lab), with a trending event on every third whale coin. Every whale is a candidate
+    buy is a moment of the qualify lab), with a trending event on every whale and hunt coin. Every whale is a candidate
     too, so the qualify lab has work on every coin."""
     whale_world(store)
     _hunt_coins(store)
     _shared_coins(store)
     for who in [f"lab-whale-{i}" for i in range(40)] + [f"par-hunt-whale-{k}" for k in range(24)]:
         store.set_label(addr(who), f"cand:{who}", "cand")
+    # audit 22 Nov lab#4: an event lab reads only the coins with an event; 64 of them keep it a lab of many coins
     store.add_events([{"ts": NOW - 5000 + i * 60 + 2, "slot": 20_000_000 + i * 1000 + 5, "kind": "trending",
                        "mint": addr(f"lab-{i}"), "wallet": None, "data": {"rank": 1}, "source": "test"}
-                      for i in range(0, 40, 3)])  # fmt: skip
+                      for i in range(40)]
+                     + [{"ts": NOW - 5800 + k * 190 + 2, "slot": 60_000_000 + k * 1000 + 5, "kind": "trending",
+                         "mint": addr(f"par-hunt-{k}"), "wallet": None, "data": {"rank": 1}, "source": "test"}
+                        for k in range(24)])  # fmt: skip
     store.set_coverage("tape", {"spans": [[NOW - 6100, NOW - 3300], [NOW - 3290, NOW]]})
 
 

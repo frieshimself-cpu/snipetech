@@ -2391,6 +2391,29 @@ def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, 
     return plan
 
 
+def _event_plan(store: Store, spans, events_by_mint: Mapping[str, list[tuple]]) -> list[tuple]:
+    """`_plan` for a lab whose every rule is an event rule: span by span (a span under ten minutes skipped, as there),
+    the coins with an event of the rule's kinds inside it, in the store's order (by mint), and no other coin. A coin
+    with fewer than the lab's trades in the span gives no row when it is read, as one `active_mints` leaves out."""
+    spans = [(a, b) for a, b in spans if b - a >= 600]
+    starts = [a for a, _b in spans]
+    named: list[set[str]] = [set() for _ in spans]
+    for mint, events in events_by_mint.items():
+        for _kind, ts, _slot, _q in events:
+            k = bisect.bisect_right(starts, ts) - 1
+            if k >= 0 and ts <= spans[k][1]:
+                named[k].add(mint)
+    return [(a, b, span_slot_secs(store, int(a), int(b)), sorted(mints))
+            for (a, b), mints in zip(spans, named) if mints]  # fmt: skip
+
+
+def _span_events(events: list[tuple] | None, a, b) -> list[tuple]:
+    """A coin's events (`collect`'s events_by_mint) inside the tape span [a, b]: an event fires only in its own
+    stretch of tape. Until 22 Nov every one was handed over, so an event of an earlier stretch, or of before the
+    tape, fired again at the coin's first trade of a later stretch, hours after it."""
+    return [e for e in events or () if e[1] is not None and a <= e[1] <= b]
+
+
 def _span_migration(store: Store, mint: str, a, b):
     """The coin's migration to PumpSwap as the tape recorded it (`migrations`), when it lies in the span [a, b]."""
     mig = store.migration(mint)
@@ -2476,6 +2499,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     wants_paid = mig is not None and any(t.kind in AMM_KINDS and t.dev_paid is not None for _, t in run.triggers)
     paid = dev_paid_earlier(store, in_span_launch) if wants_paid else None
     rows: list[dict] = []
+    events = _span_events(run.events_by_mint.get(mint), a, b)  # this stretch's own events
     by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
     recorded: tuple | None = None  # (the coin's migration as the tape recorded it), read once a wallet buys on PumpSwap
     for ti, trig in run.triggers:
@@ -2487,7 +2511,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             # for crew "only". A "skip" rule that fires on the coin says so, for the lab's count of what it left out
             # (`_crew_report`); the row is no moment
             if trig.crew == CREW_SKIP:
-                i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig, paid)
+                i = _fire(trig, path, in_span, run.kols, events, mig, paid)
                 if i is not None and fired_at(trig, path, i, mig)[1] <= b - 60:
                     rows.append({"mint": mint, "trigger": ti, "ts": int(fired_at(trig, path, i, mig)[1]),
                                  "skipped": CREW_LEFT})  # fmt: skip
@@ -2495,7 +2519,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)
         else:  # once per coin, the way one sniper takes one position per coin
-            i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig, paid)
+            i = _fire(trig, path, in_span, run.kols, events, mig, paid)
             fired = [] if i is None else [i]
         for i in fired:
             t_slot, t_ts = fired_at(trig, path, i, mig)
@@ -2816,11 +2840,12 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     wallet_runs = any(t.kind == "kol" for _, t in triggers)
     amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell or wallet_runs else {}
     events_by_mint: dict[str, list[tuple]] = {}
-    if event_kinds:
+    if event_kinds and spans:  # the events on the tape the lab reads: one fires only in its own stretch (`_coin_rows`)
         marks = ",".join("?" * len(event_kinds))
         for kind, ts, slot, mint, q_after in store._q(
-            f"SELECT kind, ts, slot, mint, json_extract(data, '$.q_after') FROM events WHERE kind IN ({marks})",
-            list(event_kinds),
+            f"SELECT kind, ts, slot, mint, json_extract(data, '$.q_after') FROM events WHERE kind IN ({marks}) "
+            "AND ts BETWEEN ? AND ?",
+            [*event_kinds, int(min(a for a, _b in spans)), int(max(b for _a, b in spans))],
         ):
             events_by_mint.setdefault(mint, []).append((kind, ts, slot, q_after))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
@@ -2853,7 +2878,12 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         # for 903 moments). A rule for one wallet reads that wallet's coins, in the qualify lab's form too
         plan_wallets = set().union(*(rule_wallets(t, kols) for _, t in triggers))
         floor = group_floor(triggers)
-    plan = _plan(store, spans, plan_wallets, min_trades, floor)
+    if triggers and all(t.kind == "event" for _, t in triggers):
+        # an event rule fires only on a coin with an event of its kind in the stretch read: the event edge read
+        # every coin of 14 days for the 46-52 % of busy coins that carry one (audit of 22 Nov)
+        plan = _event_plan(store, spans, events_by_mint)
+    else:
+        plan = _plan(store, spans, plan_wallets, min_trades, floor)
     # (a stablecoin or wrapped SOL is no coin: a wallet's swap into one is no signal, and since the first agent
     # backfill of 12 Nov USDC's own pool is on the tape; positions.NON_COIN_MINTS, read at the call)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints

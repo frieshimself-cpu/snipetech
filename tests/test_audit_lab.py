@@ -338,3 +338,66 @@ def test_the_job_runner_refuses_each_with_a_consensus_gate():
             OperatorJobs._check_triggers(argv)
     OperatorJobs._check_triggers(["lab", "--trigger", known])  # one sniper over the group: once a coin, as ever
     OperatorJobs._check_triggers(["place-bids", "--each"])  # the default rule, read wallet by wallet
+
+
+# -- lab#4: the event edge reads the coins with an event, and an event fires in its own stretch of tape only --------
+
+
+class _Counting:
+    """The store, counting the coins whose trades the lab reads."""
+
+    def __init__(self, store):
+        self._s, self.read = store, []
+
+    def trades_for_mint(self, mint, a=None, b=None):
+        self.read.append(mint)
+        return self._s.trades_for_mint(mint, a, b)
+
+    def __getattr__(self, name):
+        return getattr(self._s, name)
+
+
+def _event(st: Store, kind: str, ts: int, slot: int, mint: str, tag: str) -> None:
+    st._exec("INSERT INTO events (kind, ts, slot, mint, data, dedupe) VALUES (?,?,?,?,?,?)",
+             (kind, ts, slot, mint, json.dumps({}), tag))  # fmt: skip
+
+
+def test_the_event_edge_reads_only_the_coins_an_event_names():
+    st = Store(":memory:")
+    for k in range(60):
+        m = Market(st, addr(f"ev-coin-{k}"), addr(f"ev-dev-{k}"), NOW - 6000 + k * 60, 99_000_000 + k * 1000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        for j in range(8):
+            m.buy(addr(f"ev-fan-{k}-{j}"), 0.5, 2 + 3 * j)
+        m.commit()
+    st.set_coverage("tape", {"spans": [[NOW - 7000, NOW]]})
+    for k in (3, 40):  # two coins carry an event of the kind the edge scores
+        _event(st, "graduating", NOW - 6000 + k * 60 + 2, 99_000_000 + k * 1000 + 5, addr(f"ev-coin-{k}"), f"ev-{k}")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    seen = _Counting(st)
+    data = collect(seen, cfg, 0.2, 1, "+3", 0.0045, groups=(), event_kinds=("graduating",), exits=[HOLD], workers=1)
+    assert sorted(set(seen.read)) == sorted([addr("ev-coin-3"), addr("ev-coin-40")])  # 2 coins read, not 60
+    assert {r["mint"] for r in data["rows"]} == {addr("ev-coin-3"), addr("ev-coin-40")}
+    st.close()
+
+
+def test_an_event_fires_in_its_own_stretch_of_tape_only():
+    """A coin whose event lies in an earlier stretch of tape (or before the tape) and that trades on in a later one
+    fired again there, at its first trade of that stretch: a moment hours after the event."""
+    st = Store(":memory:")
+    t0 = NOW - 20000
+    m = Market(st, addr("st-coin"), addr("st-dev"), t0, 99_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for j in range(10):
+        m.buy(addr(f"st-fan-{j}"), 0.5, 2 + 3 * j)
+    for j in range(10):  # two hours later, after a hole in the tape: a second stretch
+        m.buy(addr(f"st-late-{j}"), 0.3, 20000 + 3 * j)
+    m.commit()
+    st.set_coverage("tape", {"spans": [[t0 - 10, t0 + 1200], [t0 + 7000, NOW]]})
+    _event(st, "graduating", t0 + 2, 99_000_000 + 5, addr("st-coin"), "st-1")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    data = collect(st, cfg, 0.2, 1, "+3", 0.0045, groups=(), event_kinds=("graduating",), exits=[HOLD], workers=1)
+    assert [r["ts"] - t0 < 60 for r in data["rows"]] == [True]  # the one moment, a few seconds after the event
+    st.close()
