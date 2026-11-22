@@ -865,3 +865,46 @@ def test_measure_7_the_automatic_test_charges_a_sales_failed_tries_once(tmp_path
         assert [f["sig"] for f in live["failed"]] == ["failed-buy"]  # the try is in the sale's result, once
     finally:
         st.close()
+
+
+def test_measure_7_the_single_send_lever_claims_the_duplicates_alone(tmp_path):
+    """measure#7, review: the trip's failed sends now hold its tries before the sale landed as well as its duplicates
+    after it (twin_fee_sol), and the single_send lever ("OKTech sending each exit once ... the copies that lose the
+    race") claimed them all as its saving. A try failed on its own (8MTKG4: the curve had completed), it lost no race:
+    the lever saves the duplicates alone, while the trip's cost still holds both."""
+    from snipetech.measure.attribution import break_down
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _sniper(st, tip=0.002)
+        m = Market(st, addr("audit-lever"), D, NOW - 3000, SLOT)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 1.0, 10)
+        buy = m.buy(W, 0.5, 11)
+        sale = m.sell(W, 1.0, 40)
+        m.commit()
+        metas = {buy.sig: _meta(buy.sig, (1_000_000, 2_000_000)), sale.sig: _meta(sale.sig, BOT_SALE_FEES)}
+        sends = []
+        for k, slot in enumerate((30, 33, 36, 41, 42)):  # three tries before the sale landed, two duplicates after it
+            name = f"send{k}"
+            meta = _meta(name, (1_000_000, 0))
+            meta.pump_ixs = [PumpIx("pump", "sell", W, {}, None, m.mint)]
+            metas[name] = meta
+            sends.append({"signature": name, "blockTime": m._ts(SLOT + slot), "slot": SLOT + slot,
+                          "err": {"InstructionError": [2, {"Custom": 6005}]}})  # fmt: skip
+
+        async def ensure(sigs):
+            st.add_tx_meta([metas[s] for s in sigs if s in metas])
+            return len(sigs)
+
+        async def failed(wallet, since):
+            return sends
+
+        asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=ensure, failed_sigs=failed))
+        row = st.fill(sale.sig)
+        trip = break_down(st, W, [row], per_tx_sol=0.0035)[sale.sig]
+        assert trip["dup_fee_sol"] == pytest.approx(5 * 0.001005)  # the trip pays every failed send, once
+        assert trip["levers"]["single_send"] == pytest.approx(2 * 0.001005)  # sending once saves the duplicates
+    finally:
+        st.close()

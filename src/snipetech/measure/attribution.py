@@ -128,7 +128,8 @@ def _lever_savings(sell: dict, lots: list[tuple[dict, float, float]], dups: list
     """What each change would have saved on this trip, in lamports, and where its buy bid was above OKTech's minimum
     ("tip" when only in the tip on the control arm, else "priority"; None when at the minimum).
 
-    - single_send: OKTech sending each exit once saves every failed duplicate.
+    - single_send: OKTech sending each exit once saves every failed duplicate (`dup_l`: theirs alone, not the sale's
+      tries that failed before it landed, which lost no race).
     - sell_fee: the sell tip ([oktech] sell_tip_sol; before the 8 Nov split one sell_fee_sol priced the tip and the
       untipped copies' priority alike) back at 0.001 saves the landed sell's tip above 0.001 and the same on each
       duplicate still priced at that joint setting (one at the setting's priority, not the buy's; a duplicate at the
@@ -215,7 +216,10 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
     flips = [k for k in COSTS if result_l <= 0 and costs[k] and result_l + costs[k] > 0]
     fall = -(price_l if price_l is not None else price_net_l)
     biggest = max([("price", fall), *((k, costs[k] or 0) for k in COSTS)], key=lambda kv: kv[1])
-    levers, bid_over = _lever_savings(sell, shares, dups, dup_l, sold_share)
+    # the sale's tries that failed before it landed (measure/run.twin_sells, `bought`) are in its cost, but sending each
+    # exit once saves none of them (8MTKG4's curve sales failed on a completed curve: no race lost to the landed one)
+    tries_l = sum(int(d.get("priority_lamports") or 0) + BASE_FEE_LAMPORTS for d in dups if d.get("try"))
+    levers, bid_over = _lever_savings(sell, shares, dups, max(0, dup_l - tries_l), sold_share)
     first_buy = buys.get(sell.get("buy_sig") or "") or shares[0][0]
     ran = sell.get("exit_name") or first_buy.get("exit_name")
     n_dups = (len(dups) or None) if dup_l else 0  # a cost on record but no send tied to it here: count unknown
@@ -275,8 +279,10 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     dups: dict[str, list[dict]] = {}
     flagged = [f | {"is_sell": failed_is_sell(f, metas.get(f["sig"])), "sells_ix": _sells_a_coin(metas.get(f["sig"]))}
                for f in failed]  # fmt: skip
+    # the duplicates alone (OKTech's extra copies, after their sale); the others tied to a sale are its tries
+    twins = twin_sells(flagged, landed)
     for fsig, ssig in twin_sells(flagged, landed, bought=bought, whose=lambda r: bot_fill(r, marks)).items():
-        dups.setdefault(ssig, []).append(by_sig[fsig])
+        dups.setdefault(ssig, []).append(by_sig[fsig] | {"try": fsig not in twins})
     replays: dict[str, dict[str, float]] = {}
     buy_sigs = sorted({s["buy_sig"] for s in todo if s.get("buy_sig")})
     for r in store.exit_shadow(buy_sigs, EXIT_MENU_VERSION) if buy_sigs else []:
