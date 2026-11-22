@@ -167,6 +167,51 @@ def tape_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str, 
     return "owner" if _paid(rows[0][0], rows[0][1], marks["buy"]) is False else "ours"
 
 
+def owner_coins(store, wallet: str, held: list[dict], marks: dict[str, frozenset]) -> set[str]:
+    """The coins among `held` (the wallet's coins, open_positions rows) that are the owner's own beyond doubt, so that no
+    sniper with `marks` holds any of them: every buy of the coin by the wallet since its last sale of it, on the tape and
+    in the measure stage's fills (22 Nov: the owner's hand buys of H8WTvo3Z are in the fills and not on the tape), paid
+    fees that are none of `marks`, and those buys brought in at least what the wallet holds of it now. A coin with no
+    buy on record since its last sale (an airdrop, a buy not written yet), with a buy of ours or one of unknown fees
+    among them, or with more of it held than they explain (a buy of ours not recorded yet) is not. With no marks none
+    is; a coin whose records cannot be read is not."""
+    if not marks["buy"]:
+        return set()
+    return {str(h["mint"]) for h in held or [] if h.get("mint") and _owners_holding(store, wallet, h, marks)}
+
+
+def _owners_holding(store, wallet: str, coin: dict, marks: dict[str, frozenset]) -> bool:
+    """owner_coins for one coin (an open_positions row)."""
+    try:
+        return _owners(store, wallet, str(coin["mint"]), int(coin["raw"]), marks)
+    except Exception:  # noqa: BLE001 - not known: the coin may be ours
+        return False
+
+
+def _owners(store, wallet: str, mint: str, raw: int, marks: dict[str, frozenset]) -> bool:
+    """owner_coins for one coin, of which the wallet holds `raw` units."""
+    trades: dict[str, dict[str, Any]] = {}  # one transaction once, whichever record has it: the tape first
+    for sig, is_buy, ts, slot, pos, base, priority, tip in store._q(
+        "SELECT sig, is_buy, ts, slot, pos, base, priority, tip FROM trades WHERE user=? AND mint=?", (wallet, mint)
+    ):
+        trades.setdefault(sig, {"buy": bool(is_buy), "at": (int(ts), int(slot), int(pos)), "tokens": float(base or 0),
+                                "ours": bool(is_buy) and _paid(priority, tip, marks["buy"]) is not False})  # fmt: skip
+    for row in store._q(
+        "SELECT sig, side, ts, slot, tokens, priority_lamports, tip_lamports, sniper_id, wallet_copied FROM fills "
+        "WHERE wallet=? AND mint=? AND side IN ('buy', 'sell')",
+        (wallet, mint),
+    ):
+        f = dict(zip(("sig", "side", "ts", "slot", "tokens", "priority_lamports", "tip_lamports", "sniper_id",
+                      "wallet_copied"), row))  # fmt: skip
+        buy = f["side"] == "buy"
+        t = trades.setdefault(f["sig"], {"buy": buy, "at": (int(f["ts"] or 0), int(f["slot"] or 0), 0),
+                                         "tokens": float(f["tokens"] or 0), "ours": False})  # fmt: skip
+        t["ours"] = t["ours"] or (buy and bot_buy(f, marks))
+    sold = max((t["at"] for t in trades.values() if not t["buy"]), default=None)
+    buys = [t for t in trades.values() if t["buy"] and (sold is None or t["at"] > sold)]
+    return bool(buys) and not any(t["ours"] for t in buys) and raw <= sum(t["tokens"] for t in buys) + 1
+
+
 class RunCoins:
     """Whose each coin the wallet holds is, for one run of the runner: "ours" when the buy that brought it in paid one
     of `marks` (the run's snipers' fees, `sniper_marks`) or fees nobody recorded, "owner" when it paid other fees or

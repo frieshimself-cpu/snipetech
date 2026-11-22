@@ -69,8 +69,8 @@ class FakeSvc:
     def __init__(self, held, snipers):
         self._held, self._snipers, self.calls = held, snipers, []
 
-    async def open_positions(self, address):
-        return self._held
+    async def open_positions(self, address, ignore=None, unknown=None):  # audit 22 Nov livetest#0: /stop passes ignore
+        return [h for h in self._held if h.get("mint") not in set(ignore or ())]
 
     async def oktech_status(self):
         return {"snipers": self._snipers}
@@ -141,6 +141,115 @@ def test_stop_when_holdings_cannot_be_read_stops_nothing(tmp_path):
     ctx, _ = _ctx(tmp_path, svc)
     reply = asyncio.run(handle_command(_cmd("stop"), **ctx))
     assert svc.calls == [] and "could not" in reply.lower()
+
+
+# -- /stop beside coins no sniper of ours holds (audit of 22 Nov, livetest#0) -----------------------------------------
+
+HAND = "H8WTvo3Zk9rFq2d1yHcU7aBmNnP4sVxLgE6tRjW5Kp1A"  # 22 Nov 02:40: the owner bought a coin three times in Axiom
+AIRDROP = "Drop1" + "1" * 39
+OUR_PRIO, OUR_TIP = 1_000_000, 0  # what our sniper on record pays on a buy (its payload: 0.001 priority, no tip)
+AXIOM_PRIO, AXIOM_TIP = 8_175, 27_000_000  # what the owner's hand buy paid
+
+
+class StoreSvc(FakeSvc):
+    """FakeSvc with the store /stop reads whose each coin is (measure/ours.py): our sniper on record with its payload."""
+
+    def __init__(self, tmp_path, held, snipers=None):
+        from snipetech.store import Store
+
+        super().__init__(held, snipers or [{"id": "s1", "name": "snipetech copy x", "status": "running"}])
+        (tmp_path / "data").mkdir(exist_ok=True)
+        self.store = Store(tmp_path / "data" / "snipetech.db")
+        self.store.add_oktech_sniper({"id": "s1", "kind": "copy", "source": "book",
+                                      "payload": {"priorityFee": 0.001, "tipAmount": 0.0, "singleSnipe": True}})  # fmt: skip
+        self.k = 0
+
+    def tape(self, mint, buy, prio, tip, base=1_000_000, ts=NOW - 3600):
+        from snipetech.models import Trade
+
+        self.k += 1
+        self.store.add_trades([Trade(sig=f"t{self.k}", ev=0, slot=100 + self.k, pos=0, ts=int(ts), mint=mint,
+                                     venue="curve", user=W, is_buy=buy, quote=1_000_000_000, base=base, fee=0,
+                                     fee_bps=0, q_after=1, b_after=1, priority=prio, tip=tip)])  # fmt: skip
+
+    def fill(self, mint, prio, tip, tokens=1_000_000.0, ts=NOW - 3600):
+        self.k += 1
+        self.store.put_fill({"sig": f"f{self.k}", "ts": int(ts), "slot": 100 + self.k, "wallet": W, "mint": mint,
+                             "side": "buy", "sol": 4.95, "tokens": tokens, "priority_lamports": prio,
+                             "tip_lamports": tip})  # fmt: skip
+
+
+def _coin(mint, raw=1_000_000, value=1.2):
+    return {"mint": mint, "amount": raw / 1e6, "raw": raw, "value_sol": value, "priced": value is not None}
+
+
+def _stop(tmp_path, svc, **cfg):
+    ctx, _sent = _ctx(tmp_path, svc)
+    for k, v in cfg.items():
+        setattr(ctx["cfg"].operator, k, v)
+    try:
+        return asyncio.run(handle_command(_cmd("stop"), **ctx)), ctx
+    finally:
+        svc.store.close()
+
+
+def test_stop_stops_the_snipers_beside_a_coin_the_owner_ignores(tmp_path):
+    svc = StoreSvc(tmp_path, [_coin(AIRDROP, value=0.01)])
+    reply, _ = _stop(tmp_path, svc, ignore_mints=[AIRDROP])
+    assert svc.calls == [("stop", "s1")], reply
+
+
+def test_stop_stops_the_snipers_beside_the_owners_hand_bought_coin(tmp_path):
+    """22 Nov 02:40: the owner's hand buys in Axiom paid fees no sniper of ours pays. No sniper of ours holds that coin:
+    /stop stopped nothing while it sat in the wallet."""
+    svc = StoreSvc(tmp_path, [_coin(HAND)])
+    svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)
+    reply, ctx = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "s1")], reply
+    assert "H8WTvo" in reply and "your own" in reply and "stopped 1 sniper" in reply
+    assert "your own" in ctx["paths"].notes.read_text()
+
+
+def test_a_hand_buy_the_measure_stage_recorded_and_the_tape_did_not_is_the_owners_too(tmp_path):
+    svc = StoreSvc(tmp_path, [_coin(HAND)])
+    svc.fill(HAND, AXIOM_PRIO, AXIOM_TIP)  # 22 Nov: H8WTvo3Z's hand buys are in the fills, not on the tape
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "s1")], reply
+
+
+def test_stop_stops_the_snipers_beside_a_coin_no_buy_explains_once_the_watch_has_seen_it_ten_minutes(tmp_path):
+    """8 Nov: an unpriced dust airdrop held every book replacement for hours (book/run._strays)."""
+    svc = StoreSvc(tmp_path, [_coin(AIRDROP, value=None)])
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    (paths.root / "watch.json").write_text(json.dumps({"ts": NOW - 60, "first_seen": {AIRDROP: NOW - 700}}))
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "s1")], reply
+
+
+@pytest.mark.parametrize("case", ["ours after", "more held", "fees unknown", "seen just now", "sold part"])
+def test_stop_keeps_every_sniper_running_while_a_held_coin_may_be_ours(tmp_path, case):
+    """A stopped sniper strands its coin (CLAUDE.md rule 1): only a coin that is surely not ours lets /stop go on."""
+    svc = StoreSvc(tmp_path, [_coin(HAND, raw=2_000_000 if case == "more held" else 1_000_000)])
+    if case != "seen just now":  # a coin no buy explains yet may be a buy of ours the tape has not written
+        svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP, base=2_000_000 if case == "sold part" else 1_000_000)
+    if case == "ours after":  # a buy of ours of the same coin after the owner's
+        svc.tape(HAND, True, OUR_PRIO, OUR_TIP, ts=NOW - 60)
+    if case == "fees unknown":
+        svc.tape(HAND, True, None, None, ts=NOW - 60)
+    if case == "sold part":  # a holding the owner sold part of: no buy since its last sale tells whose the rest is
+        svc.tape(HAND, False, AXIOM_PRIO, AXIOM_TIP, ts=NOW - 60)
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    (paths.root / "watch.json").write_text(json.dumps({"ts": NOW - 60, "first_seen": {HAND: NOW - 30}}))
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "H8WT" in reply, reply
+
+
+def test_stop_keeps_the_snipers_for_a_coin_of_ours_beside_the_owners_own(tmp_path):
+    svc = StoreSvc(tmp_path, [_coin(HAND), _coin(MINE := "Mine1" + "1" * 39)])
+    svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)
+    svc.tape(MINE, True, OUR_PRIO, OUR_TIP)
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "Mine" in reply and "H8WT" not in reply, reply
 
 
 def test_resume_removes_flag_and_status_reports(tmp_path):

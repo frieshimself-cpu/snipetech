@@ -1,6 +1,7 @@
 """Owner commands over Telegram: /status /stop /resume /book /sell /test /risk. Polled once per round and every minute
 (`operate --commands`); only the owner's chat is obeyed.
-/stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
+/stop never strands a coin: a running sniper is left alone while the wallet holds a coin one of ours may hold (it is the only
+thing that sells); the owner's ignored coins, the owner's own and strays no buy of ours explains are no sniper's.
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py: on the pump.fun curve, or on PumpSwap once the coin has left it, since 7 Nov), never buys, and never
@@ -185,13 +186,38 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
     except Exception as exc:  # noqa: BLE001 - the flag still holds every start until /resume
         auto = (f"(the automatic test's record could not be read: {type(exc).__name__}; nothing starts while the "
                 "/stop flag is set, and /test auto off turns it off)")  # fmt: skip
-    reply = await _stop_snipers(svc, cfg, notes)
+    reply = await _stop_snipers(svc, cfg, notes, paths, now)
     return "\n".join(x for x in (reply, test, auto) if x)
 
 
-async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
+def _not_ours(svc, wallet: str, held: list[dict], paths: OperatorPaths, now: float) -> dict[str, str]:
+    """The held coins no sniper of ours holds, each with why in the owner's words: the owner's own (every buy of it
+    since its last sale paid fees none of our snipers pays: measure/ours.owner_coins; 22 Nov 02:40 the owner bought a
+    coin by hand in this wallet) and strays (no buy of ours explains it and the unsold-coin watch has seen it 10 minutes:
+    book/run._strays; 8 Nov a dust airdrop). Stopping a sniper beside them strands nothing. Empty when the store cannot
+    say: every coin then keeps the snipers running, as before."""
+    store = getattr(svc, "store", None)
+    if store is None or not held:
+        return {}
+    from ..book.run import _strays
+    from ..measure.ours import fee_marks, owner_coins
+
     try:
-        held = await svc.open_positions(cfg.operator.wallet)
+        owners = owner_coins(store, wallet, held, fee_marks(store))
+        strays = _strays(store, wallet, held, paths, now)
+    except Exception:  # noqa: BLE001 - not known: each coin may be ours
+        return {}
+    return dict.fromkeys(owners, "your own (bought by hand)") | {
+        m: "no buy of ours explains it" for m in strays if m not in owners
+    }
+
+
+async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths, now: float) -> str:
+    """Stop every sniper OKTech runs, unless the wallet holds a coin one of ours may hold: a stopped sniper strands its
+    coin. The coins the owner ignores, the owner's own and strays (_not_ours) are no sniper's: beside only them every
+    sniper is stopped (audit of 22 Nov: /stop stopped nothing while the owner's hand-bought coin sat in the wallet)."""
+    try:  # the owner's ignored coins are left out, as the book, the watch and the runner leave them out
+        held = await svc.open_positions(cfg.operator.wallet, ignore=list(cfg.operator.ignore_mints or ()))
     except Exception as exc:  # noqa: BLE001
         notes.write(
             f"stopped by owner: flag set, but holdings could not be read ({type(exc).__name__}); no sniper stopped",
@@ -207,8 +233,10 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
     if not running:
         notes.write("stopped by owner: flag set, no sniper was running", "decision")
         return "stop flag set; no sniper was running."
-    if held:
-        coins = ", ".join(f"{h.get('mint', '?')[:4]}… ({h.get('amount')})" for h in held[:5])
+    theirs = _not_ours(svc, cfg.operator.wallet, held, paths, now)
+    mine = [h for h in held if str(h.get("mint")) not in theirs]
+    if mine:
+        coins = ", ".join(f"{h.get('mint', '?')[:4]}… ({h.get('amount')})" for h in mine[:5])
         ids = ", ".join(str(s.get("id")) for s in running)
         notes.write(
             f"stopped by owner: flag set; {len(running)} sniper(s) left running because coins are held: {coins}",
@@ -222,15 +250,18 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
             stopped.append(str(s.get("id")))
         except Exception as exc:  # noqa: BLE001
             failed.append(f"{s.get('id')} ({type(exc).__name__})")
+    beside = "; ".join(f"{m[:6]}… {why}" for m, why in list(theirs.items())[:5])
+    beside = f" (the wallet holds only coins no sniper of ours holds: {beside})" if beside else ""
     notes.write(
         f"stopped by owner: stopped {', '.join(stopped) or 'none'}"
-        + (f"; failed {', '.join(failed)}" if failed else ""),
+        + (f"; failed {', '.join(failed)}" if failed else "")
+        + beside,
         "decision",
     )
     return (
         f"stopped {len(stopped)} sniper(s): {', '.join(stopped) or 'none'}"
         + (f"; failed: {', '.join(failed)}" if failed else "")
-        + ". No new snipers are expected until /resume."
+        + f"{beside}. No new snipers are expected until /resume."
     )
 
 
