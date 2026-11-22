@@ -134,7 +134,7 @@ def test_stop_treats_a_starting_sniper_as_running(tmp_path):
 
 def test_stop_when_holdings_cannot_be_read_stops_nothing(tmp_path):
     class Broken(FakeSvc):
-        async def open_positions(self, address, ignore=None, unknown=None):  # /stop passes ignore: the read itself fails
+        async def open_positions(self, address, ignore=None, unknown=None):  # the read fails, not its arguments
             raise RuntimeError("rpc down")
 
     svc = Broken(held=[], snipers=[{"id": "s1", "name": "a", "status": "running"}])
