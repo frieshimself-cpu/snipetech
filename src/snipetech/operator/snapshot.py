@@ -256,6 +256,21 @@ async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, li
     return native, wsol, held
 
 
+def mark_ours(store, fills: list[dict]) -> list[dict]:
+    """Each of the wallet's trades with `ours`: whether the bot made it, by the fees our snipers and the run's own
+    sale pay (measure/ours.py); unknown fees, or no sniper on record, count as the bot's. The owner trades by hand in
+    this wallet too."""
+    from ..measure.ours import _paid, fee_marks
+
+    marks = fee_marks(store)
+    out = []
+    for f in fills:
+        side = "buy" if f.get("side") == "buy" else "sell"
+        paid = _paid(f.get("priority"), f.get("tip"), marks[side]) if marks[side] else None
+        out.append({k: v for k, v in f.items() if k not in ("priority", "tip")} | {"ours": paid is not False})
+    return out
+
+
 def carry_since(held: list[dict], prev: Snapshot | None, now: float) -> list[dict]:
     """Each held coin keeps the time it was first seen (from the previous snapshot when it was held then too), so
     the gate can tell a stuck position from one the book bought minutes ago."""
@@ -315,13 +330,11 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
             snap.failed_tx_1h, snap.ok_tx_1h = await transaction_counts(svc, wallet, now)
         try:
-            rows = svc.store._q(
-                "select ts, mint, is_buy, quote from trades where user=? and ts>? order by ts", (wallet, since)
-            )
-            snap.fills = [
-                {"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4)}
-                for ts, m, b, q in rows
-            ]
+            rows = svc.store._q("select ts, mint, is_buy, quote, priority, tip from trades where user=? and ts>? "
+                                "order by ts", (wallet, since))  # fmt: skip
+            snap.fills = mark_ours(svc.store, [
+                {"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4), "priority": pr,
+                 "tip": tp} for ts, m, b, q, pr, tp in rows])  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
     try:

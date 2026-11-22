@@ -66,8 +66,21 @@ def test_unknown_oktech_state_triggers(paths):
     assert decide(snap(snipers=None), snap(), NOW, CFG, paths).call
 
 
+BOT_SELL = {"ts": NOW - 60, "mint": "M", "side": "sell", "sol": 0.8, "ours": True}
+
+
 def test_equity_move_triggers(paths):
-    assert decide(snap(native_sol=1.0), snap(native_sol=1.2), NOW, CFG, paths).call
+    assert decide(snap(native_sol=1.0, fills=[BOT_SELL]), snap(native_sol=1.2), NOW, CFG, paths).call
+
+
+def test_the_owners_own_sol_moves_wake_nobody(paths):
+    """The owner takes SOL out of the wallet and puts it back in, and trades in it by hand ("Don't flag, I constantly
+    take out and put money on there", 9 Nov). 22 Nov 02:13 the round paged a 2.01 SOL withdrawal as a trading loss.
+    A move with no trade of the bot's since the last round is theirs, and nobody is woken for it."""
+    assert not decide(snap(native_sol=10.22), snap(native_sol=12.23), NOW, CFG, paths).call
+    hand = {"ts": NOW - 60, "mint": "H", "side": "buy", "sol": 4.95, "ours": False}
+    assert not decide(snap(native_sol=7.28, fills=[hand]), snap(native_sol=12.23), NOW, CFG, paths).call
+    assert decide(snap(native_sol=10.23, fills=[BOT_SELL]), snap(native_sol=12.23), NOW, CFG, paths).call
 
 
 def test_small_equity_move_is_quiet(paths):
@@ -264,7 +277,7 @@ def test_the_books_own_buys_and_sells_do_not_count_as_equity_moves(paths):
     holding = snap(native_sol=1.8, wsol=0.0, held=[{"mint": "M", "amount": 5.0, "priced": True, "value_sol": 0.19, "since": NOW}],
                    book_live=True, snipers=[{"id": "b1", "name": BOOK, "status": "running"}])  # fmt: skip
     assert not decide(holding, prev, NOW, CFG, paths).call
-    lost = snap(native_sol=1.85, wsol=0.0)
+    lost = snap(native_sol=1.85, wsol=0.0, fills=[BOT_SELL])
     assert decide(lost, prev, NOW, CFG, paths).call
 
 
@@ -683,3 +696,18 @@ def test_a_wallet_that_stops_qualifying_is_news_as_one_that_starts_is(paths):
     assert gained.call and any(r == "1 newly qualified wallet(s) (read_verdicts)" for r in gained.reasons)
     same = decide(snap(verdicts={"qualified": 3}), before, NOW, CFG, paths)
     assert same.call is False
+
+
+def test_each_trade_in_the_snapshot_says_whether_the_bot_made_it():
+    """The snapshot marks the wallet's trades by their fees: a sniper's buy and the run's own sale are the bot's, the
+    owner's hand buy is not, and a trade with no fee recorded counts as the bot's."""
+    from snipetech.operator.snapshot import mark_ours
+    from snipetech.store import Store
+
+    store = Store(":memory:")
+    store.add_oktech_sniper({"id": "s", "kind": "copy", "source": "x", "payload": {"priorityFee": 0.001,
+                             "tipAmount": 0.199, "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}})  # fmt: skip
+    fills = [{"side": "buy", "priority": 1_000_000, "tip": 199_000_000}, {"side": "buy", "priority": 6121, "tip": 26_993_879},
+             {"side": "sell", "priority": 1_000_000, "tip": 0}, {"side": "sell", "priority": None, "tip": None}]  # fmt: skip
+    assert [f["ours"] for f in mark_ours(store, fills)] == [True, False, True, True]
+    assert all(f["ours"] for f in mark_ours(Store(":memory:"), fills))  # no sniper on record: nothing tells

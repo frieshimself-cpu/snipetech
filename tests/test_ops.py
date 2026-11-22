@@ -870,3 +870,25 @@ def test_a_remote_runner_job_gets_the_time_limit_its_own_flags_need(monkeypatch,
     assert seen[-1][1]["op_args"] == {"timeout": 90 * 60}
     assert cli.main([*base, "run", "status"]) == 0
     assert "op_args" not in seen[-1][1]  # the server's own default
+
+
+def test_every_answer_and_every_redaction_hides_every_secret(env, monkeypatch, tmp_path):
+    """22 Nov audit: the endpoint scrubbed its answers of 7 secrets only, read from its own environment. The wallet key
+    (SNIPER_SECRET), the Telegram token and any key put in /etc/snipetech/env later went out as they were, and so did
+    a key inside a URL or a Telegram bot URL."""
+    import json
+
+    ops, _key = env
+    envfile = tmp_path / "env"
+    envfile.write_text("# secrets\nGMGN_API_KEY=gmgn-only-in-the-file-123\nNEW_PROVIDER_KEY='brand-new-secret-456'\n")
+    monkeypatch.setattr(O, "ENV_FILE", envfile)
+    monkeypatch.setenv("SNIPER_SECRET", "5Kwallet-secret-key-abcdefgh")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:AAtelegram-token-xyz")
+    log = ('wallet 5Kwallet-secret-key-abcdefgh token 123456789:AAtelegram-token-xyz gmgn gmgn-only-in-the-file-123 '
+           'new brand-new-secret-456 url https://rpc.x/?api-key=abc123456789&x=1 '
+           'bot https://api.telegram.org/bot987654321:ZZother-token-abcdefghij/sendMessage "quoted" end')  # fmt: skip
+    leaks = ("5Kwallet", "AAtelegram", "gmgn-only", "brand-new-secret", "abc123456789", "ZZother")
+    answer = json.dumps(ops.scrub({"output": log}))
+    assert not [s for s in leaks if s in answer] and '\\"quoted\\" end' in answer
+    said = O.redact(log)
+    assert not [s for s in leaks if s in said] and "api-key=<redacted>&x=1" in said

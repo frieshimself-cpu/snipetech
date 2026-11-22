@@ -48,6 +48,15 @@ def _op(env, **over):
     return asyncio.run(operate(env["cfg"], env["svc"], **kw))
 
 
+def _bot_sale(store, ts):
+    """A sale of the bot's on the tape (no fee recorded: it counts as the bot's) since the last round: the round's
+    equity move is the bot's then, and news (a move with no trade of the bot's is the owner's own, never news)."""
+    from snipetech.models import Trade
+
+    store.add_trades([Trade(sig=f"bot-sale-{ts}", ev=0, slot=int(ts), pos=0, ts=int(ts), mint="M", venue="curve",
+                            user="W", is_buy=False, quote=1, base=1, fee=0, fee_bps=0, q_after=1, b_after=1)])  # fmt: skip
+
+
 def test_second_instance_exits_locked(tmp_env):
     tmp_env["paths"].lock.write_text(str(os.getpid()))
     assert _op(tmp_env, dry_run=True) == 0
@@ -80,7 +89,8 @@ def test_a_loop_stage_ending_between_rounds_keeps_the_round_quiet(tmp_env):
 
 def test_changed_round_calls_runner(tmp_env):
     _op(tmp_env)
-    _op(tmp_env, balances=lambda w: (2.0, 0.0, []))  # equity +1 SOL
+    _bot_sale(tmp_env["svc"].store, NOW + 1)
+    _op(tmp_env, balances=lambda w: (2.0, 0.0, []))  # equity +1 SOL, with a trade of the bot's
     assert len(tmp_env["calls"]) == 1 and "call operator" in tmp_env["paths"].log.read_text()
 
 
@@ -180,7 +190,8 @@ def test_the_owners_higher_budget_lets_the_round_call_claude_past_the_configs_ca
     set_budget(tmp_env["paths"], tmp_env["cfg"], {"daily_usd": 200}, "telegram", NOW)
     tmp_env["paths"].spend.write_text(json.dumps({"ts": NOW - 10, "mode": "operator", "usd": 15.0}) + "\n")
     _op(tmp_env)
-    _op(tmp_env, balances=lambda w: (2.0, 0.0, []))  # equity +1 SOL: news
+    _bot_sale(tmp_env["svc"].store, NOW + 1)
+    _op(tmp_env, balances=lambda w: (2.0, 0.0, []))  # equity +1 SOL with a trade of the bot's: news
     assert len(tmp_env["calls"]) == 1 and "budget reached" not in tmp_env["paths"].notes.read_text()
 
 

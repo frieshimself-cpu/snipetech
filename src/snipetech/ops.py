@@ -242,13 +242,41 @@ REDACT_ENV = SECRET_ENV + (
 )
 
 
-def redact(text: str) -> str:
-    """Replace every secret value present in the environment (8+ chars) with <redacted>."""
-    for k in REDACT_ENV:
-        v = os.environ.get(k, "")
-        if len(v) >= 8:
-            text = text.replace(v, "<redacted>")
+# Secrets that sit inside text with no name to match them by: a key in a URL (Helius, Birdeye: ?api-key=...) and a
+# Telegram bot token in its URL (api.telegram.org/bot<id>:<token>/...). Neither eats a backslash or a quote, so a JSON
+# answer stays JSON.
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(api[-_]?key=)[^\s'\"&\\]+"),
+    re.compile(r"(bot)\d{6,}:[A-Za-z0-9_-]{20,}"),
+)
+
+
+def secret_values() -> list[str]:
+    """Every secret value to hide (8 characters or more), longest first: the named keys in this process's environment
+    and every value in /etc/snipetech/env as it is now (only secrets live there, and a key added to it later reaches
+    the jobs at once: `_job_env`). 22 Nov audit: the endpoint scrubbed 7 keys of its own environment only."""
+    vals = {os.environ.get(k, "") for k in REDACT_ENV}
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                vals.add(line.split("=", 1)[1].strip().strip('"').strip("'"))
+    except OSError:  # unreadable here (a session's machine, a test): the environment's keys alone
+        pass
+    return sorted((v for v in vals if len(v) >= 8), key=len, reverse=True)
+
+
+def _scrub_patterns(text: str) -> str:
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(lambda m: m.group(1) + "<redacted>", text)
     return text
+
+
+def redact(text: str) -> str:
+    """Replace every secret value (`secret_values`) and every key in a URL with <redacted>."""
+    for v in secret_values():
+        text = text.replace(v, "<redacted>")
+    return _scrub_patterns(text)
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -351,13 +379,11 @@ class Ops:
             self._asked.remote = False
 
     def scrub(self, obj: Any) -> Any:
-        vals = [os.environ[k] for k in SECRET_ENV if len(os.environ.get(k, "")) >= 8]
-        if not vals:
-            return obj
+        """Every answer, with every secret (`secret_values`) and every key in a URL replaced by <redacted>."""
         text = json.dumps(obj, default=str)
-        for v in vals:
+        for v in secret_values():
             text = text.replace(json.dumps(v)[1:-1], "<redacted>")
-        return json.loads(text)
+        return json.loads(_scrub_patterns(text))
 
     # -- ops
 

@@ -82,7 +82,7 @@ def test_take_snapshot_with_fakes(tmp_path, fake_service):
     )
     assert snap.equity == pytest.approx(1.75) and len(snap.fills) == 2 and snap.snipers is None
     assert any("oktech" in e for e in snap.errors) and snap.tape_last_ts == 1_900
-    assert snap.fills[0] == {"ts": 1800, "mint": "M1", "side": "buy", "sol": 0.05}
+    assert snap.fills[0] == {"ts": 1800, "mint": "M1", "side": "buy", "sol": 0.05, "ours": True}  # no fee: the bot's
     assert snap.spent_today == 0.0 and snap.wallet == W
 
 

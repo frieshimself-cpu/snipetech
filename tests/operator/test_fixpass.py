@@ -226,13 +226,24 @@ def test_lock_with_dead_pid_is_broken(run_env):
     assert rc == 0 and "locked" not in paths.log.read_text() and not paths.lock.exists()
 
 
+def _bot_sale(store, ts):
+    """A sale of the bot's on the tape (no fee recorded: it counts as the bot's) since the last round: the round's
+    equity move is the bot's then, and news (a move with no trade of the bot's is the owner's own, never news)."""
+    from snipetech.models import Trade
+
+    store.add_trades([Trade(sig=f"bot-sale-{ts}", ev=0, slot=int(ts), pos=0, ts=int(ts), mint="M", venue="curve",
+                            user="W", is_buy=False, quote=1, base=1, fee=0, fee_bps=0, q_after=1, b_after=1)])  # fmt: skip
+
+
 def test_missing_api_key_is_a_note_not_a_traceback(run_env, monkeypatch):
     cfg, svc, paths = run_env
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     common = dict(repo=paths.data.parent, branch="b", now=lambda: NOW, services=lambda: dict(ALL_ACTIVE))
     asyncio.run(operate(cfg, svc, balances=lambda w: (1.0, 0.0, []), **common))
+    _bot_sale(svc.store, NOW + 1)
     rc = asyncio.run(operate(cfg, svc, balances=lambda w: (2.0, 0.0, []), **common))
+    _bot_sale(svc.store, NOW + 2)
     rc2 = asyncio.run(operate(cfg, svc, balances=lambda w: (3.0, 0.0, []), **common))
     assert rc == 0 and rc2 == 0 and paths.notes.read_text().count("ANTHROPIC_API_KEY") == 1
 
@@ -246,7 +257,9 @@ def test_unexpected_turn_exception_exits_zero_with_one_note(run_env, monkeypatch
 
     common = dict(repo=paths.data.parent, branch="b", now=lambda: NOW, services=lambda: dict(ALL_ACTIVE), turn=boom)
     asyncio.run(operate(cfg, svc, balances=lambda w: (1.0, 0.0, []), **common))
+    _bot_sale(svc.store, NOW + 1)
     rc = asyncio.run(operate(cfg, svc, balances=lambda w: (2.0, 0.0, []), **common))
+    _bot_sale(svc.store, NOW + 2)
     rc2 = asyncio.run(operate(cfg, svc, balances=lambda w: (3.0, 0.0, []), **common))
     assert rc == 0 and rc2 == 0 and paths.notes.read_text().count("round failed") == 1
 
