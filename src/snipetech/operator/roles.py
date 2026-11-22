@@ -372,6 +372,7 @@ JOB_MEMORY_SECS = 2 * 86400  # how far back a turn looks for its jobs' records
 PAPER_READING = 30  # forward trades a paper rule's reading takes: 30, then 30 more (the tester's rule)
 PAPER_READINGS = 2  # the readings that are the tester's news: the first two; later ones are the paper report's rows
 SCOUT_NEWS = ("qualified", "banned")  # the verdict counts that are the scout's news: the others move every hour
+NEWS_FILLS = 1000  # the newest fills since a role's last turn looked through for one of the bot's (its news)
 IDLE_WHY = "waits 45 minutes after two turns without a test, a closed idea, a lesson or a hand-on"
 ASKER_FILE = "agents-asker.json"  # operator/: while the account is empty, who asks this round (`credit_asker`)
 ROUND_SECS = 15 * 60  # the operator's round, which starts each role's turn (standin.ROLE_EVERY_SECS)
@@ -616,8 +617,12 @@ def _news(role: str, store, state: dict[str, Any], last: float, metas: list[dict
                     continue
                 if min(int(row[0]) // PAPER_READING, PAPER_READINGS) > min(int(before.get(sid) or 0), PAPER_READINGS):
                     return f"a paper rule reached its next reading: {sid} ({int(row[0])} trades)"
-    elif store.fills(since_ts=int(last) + 1, limit=1):  # the fee and the OKTech analysts: our own fills are the truth
-        return "a new fill of ours (read_fills)"
+    else:  # the fee, OKTech and exit analysts: our own fills are the truth
+        from ..measure.ours import bot_rows
+
+        # the bot's own (measure/ours.py): 22 Nov 03:00 the owner's hand buys alone woke the OKTech analyst (1.49 $)
+        if bot_rows(store, store.fills(since_ts=int(last) + 1, limit=NEWS_FILLS)):
+            return "a new fill of ours (read_fills)"
     return None
 
 

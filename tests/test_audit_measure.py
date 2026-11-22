@@ -313,3 +313,128 @@ def test_measure_2_the_fee_policys_evidence_is_the_bots_own_fills():
         assert sorted(r["sig"] for r in fees.evidence_fills(st, W, NOW)) == ["bot-b", "bot-s"]
     finally:
         st.close()
+
+
+# -- measure#1 / agents#3 / docs#5: the post-mortem, its summary, the agents' fill tools and their wake ---------------
+
+M1, M2 = "Coin1" + "1" * 39, "Coin2" + "2" * 39
+
+
+def _bot_and_hand_trips():
+    """A copy of the bot's (-0.1 SOL) and a coin the owner bought and sold by hand (-0.5 SOL, the owner's fees)."""
+    st = Store(":memory:")
+    _sniper(st, tip=0.049)
+    st.put_fill({"sig": "bot-b", "ts": NOW - 3000, "wallet": W, "mint": M1, "side": "buy", "sol": 1.0,
+                 "tokens": 1_000_000, "priority_lamports": 1_000_000, "tip_lamports": 49_000_000,
+                 "wallet_copied": LEAD})  # fmt: skip
+    st.put_fill({"sig": "bot-s", "ts": NOW - 2988, "wallet": W, "mint": M1, "side": "sell", "sol": 0.953,
+                 "tokens": 1_000_000, "priority_lamports": 1_000_000, "tip_lamports": 2_000_000, "pnl_sol": -0.1,
+                 "buy_sig": "bot-b", "twin_fee_sol": 0.0})  # fmt: skip
+    st.put_fill({"sig": "hand-b", "ts": NOW - 1800, "wallet": W, "mint": M2, "side": "buy", "sol": 4.95,
+                 "tokens": 2_000_000, "priority_lamports": 6121, "tip_lamports": 52_000_000})  # fmt: skip
+    st.put_fill({"sig": "hand-s", "ts": NOW - 1200, "wallet": W, "mint": M2, "side": "sell", "sol": 4.5,
+                 "tokens": 2_000_000, "priority_lamports": 6121, "tip_lamports": 0, "pnl_sol": -0.5,
+                 "buy_sig": "hand-b", "twin_fee_sol": 0.0})  # fmt: skip
+    return st
+
+
+def test_measure_1_the_post_mortem_reviews_the_bots_trips_only(tmp_path):
+    """measure#1: learning.trips_since_postmortem (the trigger of a paid analyst turn), learning.round_trips (the
+    agents' read_round_trips) and postmortem.send_summary (the owner's Telegram lines) read every sale of the wallet:
+    the owner heard "2 live round trips ... Net: -0.6000 SOL" for one bot copy at -0.1 and a hand trade at -0.5."""
+    from snipetech.operator import learning
+    from snipetech.operator import postmortem as P
+    from snipetech.operator.paths import OperatorPaths
+
+    st = _bot_and_hand_trips()
+    try:
+        paths = OperatorPaths(tmp_path).ensure()
+        assert realised_today(st, W, NOW) == pytest.approx(-0.1)  # the day stop already left the owner's trip out
+        trips = learning.trips_since_postmortem(st, W, paths, NOW)
+        assert trips["n"] == 1 and trips["newest_ts"] == NOW - 2988
+        out = learning.round_trips(st, W, NOW - 7200, cfg=Config())
+        assert out["summary"]["trips"] == 1 and out["summary"]["pnl_sol"] == pytest.approx(-0.1)
+        assert [t["sig"] for t in out["trips"]] == ["bot-s"]
+
+        class Svc:
+            store = st
+
+        class Sink:
+            def __init__(self):
+                self.lines = []
+
+            def write(self, text, level="info"):
+                self.lines.append(text)
+
+            def send(self, text):
+                self.lines.append(text)
+
+        cfg = Config()
+        cfg.operator.wallet = W
+        notes, notifier = Sink(), Sink()
+        whole = {"n": 2, "since_ts": NOW - 7200, "newest_ts": NOW}  # a count taken before the fix: both sales
+        text = P.send_summary(Svc(), cfg, paths, whole, notes, notifier, started=NOW)
+        assert text.startswith("Post-mortem: 1 live round trip,") and "Net: -0.1000 SOL" in text
+    finally:
+        st.close()
+
+
+def test_agents_3_read_fills_counts_the_bots_fills_and_the_owners_apart(tmp_path):
+    """agents#3 / measure#1: read_fills (the fee, OKTech and exit analysts' "truth for the live landing") counted
+    every row: the four H8WTvo hand buys were "buys" of ours. Each row says whose it is (`ours`); the summary is the
+    bot's, the owner's rows are counted apart."""
+    import json
+
+    from snipetech.config import OperatorConfig
+    from snipetech.operator.jobs import OperatorJobs
+    from snipetech.operator.paths import OperatorPaths
+    from snipetech.operator.tools import NoteSink, make_operator_tools
+
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+    try:
+        src = _bot_and_hand_trips()
+        for r in src.fills(limit=100):
+            st.put_fill(r)
+        for rec in src.oktech_snipers(active=False):
+            st.add_oktech_sniper(rec)
+        src.close()
+
+        class Svc:
+            store = st
+
+        jobs = OperatorJobs(repo=tmp_path, data=tmp_path / "data", db=tmp_path / "data" / "snipetech.db",
+                            branch="main", max_jobs=3)  # fmt: skip
+        tools = {t.name: t for t in make_operator_tools(Svc(), paths, jobs, OperatorConfig(),
+                                                        NoteSink(paths, now=lambda: NOW))}  # fmt: skip
+        out = json.loads(asyncio.run(tools["read_fills"].call({"hours": 24 * 3650})))  # every fill on record
+        assert {f["sig"]: f["ours"] for f in out["fills"]} == {"bot-b": True, "bot-s": True, "hand-b": False,
+                                                                "hand-s": False}  # fmt: skip
+        assert out["summary"] == {"buys": 1, "sells": 1, "failed": 0, "pnl_sol": -0.1, "unpriced": 0}
+        assert out["owner"] == {"buys": 1, "sells": 1, "failed": 0}
+    finally:
+        st.close()
+
+
+@pytest.mark.parametrize("role", ["oktech", "fees", "exits"])
+def test_agents_3_the_owners_hand_fills_are_no_news_of_ours(role):
+    """agents#3 / docs#5: roles._news woke the fee, OKTech and exit analysts on any fill since their last turn: 22 Nov
+    03:00:21 the OKTech analyst's turn (1.49 $) was called by the owner's three H8WTvo hand buys alone. Only a fill of
+    the bot's is news; a sniper's fill still is."""
+    from snipetech.operator import roles
+
+    st = Store(":memory:")
+    try:
+        _sniper(st, created=NOW - 7200)
+        last = NOW - 600
+        for k, (sol, prio, tip) in enumerate(((4.95, 8175, 51_991_825), (2.475, 6121, 26_993_879))):
+            st.put_fill({"sig": f"hand{k}", "wallet": W, "mint": M2, "side": "buy", "sol": sol, "ts": last + 60 + k,
+                         "priority_lamports": prio, "tip_lamports": tip})  # fmt: skip
+        st.put_fill({"sig": "owner-failed", "wallet": W, "mint": M2, "side": "failed", "sol": 0.0, "ts": last + 90,
+                     "priority_lamports": 4500, "tip_lamports": 0})  # fmt: skip
+        assert roles._news(role, st, {"seen": {}}, float(last), []) is None
+        st.put_fill({"sig": "bot-failed", "wallet": W, "mint": M1, "side": "failed", "sol": 0.0, "ts": last + 120,
+                     "priority_lamports": 1_000_000, "tip_lamports": 199_000_000})  # fmt: skip
+        assert roles._news(role, st, {"seen": {}}, float(last), []) == "a new fill of ours (read_fills)"
+    finally:
+        st.close()

@@ -230,12 +230,15 @@ def send_summary(svc, cfg, paths: OperatorPaths, trips: dict[str, Any], notes, n
     """Send the owner the summary of the trips one post-mortem reviewed (`trips` from learning.trips_since_postmortem:
     the book wallet's sells after since_ts up to newest_ts) and write it to the notes; the text, or None when there is
     nothing to say. `started`: when the turn started, for the ideas it added (learning.ideas_since)."""
+    from ..measure.ours import bot_sells
+
     wallet = cfg.operator.wallet
     if not wallet or not trips.get("n") or trips.get("newest_ts") is None:
         return None
     since = int(trips["since_ts"]) if trips.get("since_ts") is not None else 0
-    sells = [s for s in svc.store.fills(wallet=wallet, since_ts=since + 1, side="sell", limit=100_000)
-             if int(s["ts"]) <= int(trips["newest_ts"])]  # fmt: skip
+    # the bot's own sells (measure/ours.py): a trade the owner made by hand in the wallet is no trip of the batch
+    rows = svc.store.fills(wallet=wallet, since_ts=since + 1, side="sell", limit=100_000)
+    sells = bot_sells(svc.store, [s for s in rows if int(s["ts"]) <= int(trips["newest_ts"])])
     parts = break_down(svc.store, wallet, sells, per_tx_sol=cfg.costs.per_tx_sol(),
                        lookback_days=cfg.measure.lookback_days)  # fmt: skip
     batch = [b for b in parts.values() if b]

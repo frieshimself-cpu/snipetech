@@ -2099,20 +2099,27 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """The measure stage's live fills (buys, sells with PnL, failed sends) of the last `hours`, plus the bid model per
         arm and the live expectancy per copied wallet. These are the truth for the live landing; paper numbers are
         provisional once a wallet's live n reaches 10. A sell's pnl_sol is its landed trip; its failed duplicate
-        sends are beside it in twin_fee_sol; the summary's pnl_sol is the sells' whole result, each cost once (a sell
-        measure could not pair, counted in `unpriced`, pays its failed duplicate sends alone).
+        sends are beside it in twin_fee_sol; the summary counts the bot's own fills (a row's `ours`; the owner's hand
+        trades in the wallet are counted apart, in `owner`) and its pnl_sol is the bot's sells' whole result, each cost
+        once (a sell measure could not pair, counted in `unpriced`, pays its failed duplicate sends alone).
 
         Args:
             hours: Look back this many hours (default 24).
             limit: At most this many fill rows, newest first.
         """
         try:
+            from ..measure.ours import bot_rows
+
             since = int(now_fn() - max(1, int(hours)) * 3600)
             rows = svc.store.fills(since_ts=since, limit=max(1, int(limit)))
-            sold = [r for r in rows if r["side"] == "sell"]
+            # whose each row is (measure/ours.py): the owner trades by hand in the wallet, and those fills are not ours
+            ours = {r["sig"] for r in bot_rows(svc.store, rows)}
+            rows = [r | {"ours": r["sig"] in ours} for r in rows]
+            mine = [r for r in rows if r["ours"]]
+            sold = [r for r in mine if r["side"] == "sell"]
             # a sell with no buy on record (`unpriced`: the tape missed it) still costs its failed duplicates (8 Nov)
-            summary = {"buys": sum(r["side"] == "buy" for r in rows), "sells": len(sold),
-                       "failed": sum(r["side"] == "failed" for r in rows),
+            summary = {"buys": sum(r["side"] == "buy" for r in mine), "sells": len(sold),
+                       "failed": sum(r["side"] == "failed" for r in mine),
                        "pnl_sol": round(sum(known_result_sol(r) for r in sold), 6),
                        "unpriced": sum(trip_result_sol(r) is None for r in sold)}  # fmt: skip
             out = {
@@ -2121,6 +2128,11 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
                 "bid_model": svc.store.bid_model(),
                 "wallet_live": svc.store.wallet_live(),
             }
+            hand = [r for r in rows if not r["ours"]]
+            if hand:  # the owner's own fills, counted apart
+                out["owner"] = {"buys": sum(r["side"] == "buy" for r in hand),
+                                "sells": sum(r["side"] == "sell" for r in hand),
+                                "failed": sum(r["side"] == "failed" for r in hand)}  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps(out, default=str))

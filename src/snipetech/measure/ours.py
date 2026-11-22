@@ -147,6 +147,24 @@ def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None
     return out
 
 
+def bot_rows(store, rows: list[dict], marks: dict[str, frozenset] | None = None) -> list[dict]:
+    """The rows among `rows` (fills of any side) that are the bot's, in their order: buys by `bot_buy`, sales by
+    `bot_sells`, failed sends by `bot_send`. What the agents' fill tools and their wake count (22 Nov audit: the
+    owner's hand buys woke the OKTech analyst as "a new fill of ours" and were "buys" in read_fills)."""
+    marks = fee_marks(store) if marks is None else marks
+    sold = {r.get("sig") for r in bot_sells(store, rows, marks)}
+
+    def ours(r: dict) -> bool:
+        side = r.get("side")
+        if side == "buy":
+            return bot_buy(r, marks)
+        if side == "sell":
+            return r.get("sig") in sold
+        return bot_send(r, marks) if side == "failed" else True
+
+    return [r for r in rows if ours(r)]
+
+
 def _brought_in(tx: dict, wallet: str, mint: str) -> bool:
     """Whether a transaction (getTransaction, json) raised the wallet's balance of the coin."""
     meta = tx.get("meta") or {}
