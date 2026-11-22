@@ -878,6 +878,75 @@ def test_a_book_coin_held_when_the_test_closes_does_not_end_a_complete_block(env
     assert LT.load(env.paths)["sequence"]["block"] == 2 and LT.load(env.paths)["state"] == "running"
 
 
+SNIPER_PRIO, SNIPER_TIP = 1_000_000, 0  # what the test's own hunt sniper pays (its payload: 0.001 priority, no tip)
+AXIOM_PRIO, AXIOM_TIP = 300_000, 1_000_000  # what an owner's hand trade in Axiom paid
+
+
+def _paid(e, sig, ts, mint, buy, sol, prio, tip, pnl=None, buy_sig=None):
+    """One trade of the wallet on the tape and in the fills, with the fees its transaction paid."""
+    fee = 2_000_000
+    e.store.add_trades([Trade(sig=sig, ev=0, slot=5_000 + e.k, pos=0, ts=int(ts), mint=mint, venue="curve", user=W,
+                              is_buy=buy, quote=round(sol * 1e9) + (-fee if buy else fee), base=1_000_000, fee=fee,
+                              fee_bps=100, q_after=1, b_after=1, priority=prio, tip=tip)])  # fmt: skip
+    e.k += 1
+    e.store.put_fill({"sig": sig, "ts": int(ts), "wallet": W, "mint": mint, "side": "buy" if buy else "sell", "sol": sol,
+                      "tokens": 1_000_000.0, "priority_lamports": prio, "tip_lamports": tip, "pnl_sol": pnl,
+                      "buy_sig": buy_sig})  # fmt: skip
+
+
+def _block_with_an_owner_trade(e, owner_pnl=-0.9, owner_sells=True):
+    """Block 1 makes one round trip of its own (+0.01, at its sniper's fees) while the owner trades by hand in the same
+    wallet (22 Nov 02:40: hand buys in Axiom, at other fees); its cycler then ends on its time limit."""
+    _start(e)
+    # svc.oktech_strategy(create=True) records the sniper it made with its payload: the fees that mark its trades
+    e.store.add_oktech_sniper({"id": OK_ID, "kind": "strategy", "source": "live-test",
+                               "payload": {"priorityFee": SNIPER_PRIO / 1e9, "tipAmount": SNIPER_TIP / 1e9,
+                                           "singleSnipe": True}})  # fmt: skip
+    t = LT.load(e.paths)
+    LTT._armed(e)
+    start = int(t["started_at"])
+    _paid(e, "tbuy", start + 60, "TestCoin1", True, 0.202, SNIPER_PRIO, SNIPER_TIP)
+    _paid(e, "tsell", start + 80, "TestCoin1", False, 0.212, SNIPER_PRIO, SNIPER_TIP, pnl=0.01, buy_sig="tbuy")
+    _paid(e, "obuy", start + 300, "OwnerCoin", True, 1.0, AXIOM_PRIO, AXIOM_TIP)
+    if owner_sells:
+        _paid(e, "osell", start + 400, "OwnerCoin", False, 1.0 + owner_pnl, AXIOM_PRIO, AXIOM_TIP, pnl=owner_pnl,
+              buy_sig="obuy")  # fmt: skip
+    rep = {"start_sol": 11.8, "end_sol": 11.8 + 0.01 + owner_pnl, "reason": TIME, "fills": 1, "restarts": 3,
+           "held": [], "left_running": []}  # fmt: skip
+    _cycler_ended(e, t, rep, start + 7200)
+    return start
+
+
+def test_an_owner_hand_trade_during_a_block_is_never_the_strategys_result(env):
+    """Audit of 22 Nov (livetest#2): every buy of the wallet in the block's window was the strategy's, the owner's hand
+    trades too: one hand loss of 0.9 SOL dropped a strategy for good "at its floor". Only its own sniper's trades count,
+    told by the fees it pays (measure/ours.py), as the guard and the runner tell them."""
+    start = _block_with_an_owner_trade(env)
+    _round(env, start + 7200 + 600)  # closes the block
+    _round(env, start + 7200 + 1500)  # judges it (the measure stage ran past it)
+    seq = _seq(env)
+    live = seq["blocks"][0].get("live") or {}
+    assert seq["state"] == "running", seq.get("why")
+    assert live.get("n") == 1 and live.get("n_all") == 1 and abs(live["sum"] - 0.01) < 0.005, live
+    assert abs(live["sum_all"] - 0.01) < 0.005, live
+
+
+def test_an_owner_coin_held_at_a_blocks_end_is_not_the_tests_coin(env):
+    """The owner keeps their hand-bought coin past the block's end: the block is no "coin" hold, and the owner is never
+    told to /sell their own coin as the test's."""
+    start = _block_with_an_owner_trade(env, owner_sells=False)
+    env.svc.held = [{"mint": "OwnerCoin", "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 1.0,
+                     "priced": True}]  # fmt: skip
+    LTT._armed(env, status="idle")  # the runner stopped the test's sniper: it held nothing of its own
+    env.sent.clear()
+    _round(env, start + 7200 + 600)
+    _round(env, start + 7200 + 1500)
+    seq = _seq(env)
+    assert not any("/sell OwnerCoin" in s for s in env.sent), env.sent
+    assert (seq.get("hold") or {}).get("kind") != "coin" and seq["blocks"][0].get("decision") == "next", seq
+    assert "OwnerCoin" in LT.find(env.paths, BEST, seq["blocks"][0]["requested_at"])["held_at_end"]
+
+
 def test_a_buy_whose_sales_cover_only_part_of_it_waits_for_the_rest(env):
     """With a scale-out exit (sell 35-50 % at +10-20 %, trail the rest) a buy is closed by two sales. The measure stage
     may have written the first only when the round closes the test: judging then counts half a trade. A buy counts as

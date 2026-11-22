@@ -9,8 +9,9 @@ keeps it armed (a hunt sniper fires once per start, 5 Nov) until 10 fills, 120 m
 
 A test ends with nothing left armed. The cycler stops its sniper on the way out while the wallet holds nothing, and
 the round checks it on OKTech: a test is done only once its sniper is stopped (or OKTech no longer runs it). While the
-wallet holds a coin, that sniper keeps running to sell it (a stopped sniper strands its coin) and the test stays
-"closing", its sniper and its coin expected, until a round finds the wallet empty and stops the sniper.
+wallet holds a coin that sniper may hold, it keeps running to sell it (a stopped sniper strands its coin) and the test
+stays "closing", its sniper and its coin expected, until a round finds the wallet empty of them and stops the sniper. A
+test's own trades and coins are told from the owner's hand trades in the same wallet by the fees its sniper pays.
 
 Only the round starts it: its unit leaves the jobs it starts running when the round ends and through deploys
 (KillMode=process), while the one-minute commands pass kills its children when it exits and the ops service kills its
@@ -447,15 +448,34 @@ def _fills_since(store, wallet: str, since: float) -> int | None:
 TEST_GRACE_SECS = 60  # our clock against block time, at the start of a test's window (autotest.GRACE_SECS)
 
 
-def _bought(store, t: dict, now: float) -> set[str] | None:
-    """The coins the wallet bought while the test's sniper may have been armed (its window on the tape), or None when the
-    tape cannot be read: the book trades from the same wallet, and only these can be the test's own coins. A cycler
-    that ended without its report never disarmed the sniper, so its window runs to now (autotest._window)."""
+def own_marks(store, t: dict) -> dict[str, frozenset]:
+    """The fees the test's own sniper pays (measure/ours.sniper_marks of its payload on record, by its OKTech id): its
+    trades are told by them from the owner's hand trades in the same wallet (22 Nov 02:40), as the runner tells the
+    run's own (service.oktech_cycle). With its payload not on record, no mark at all: every trade counts, as before."""
+    from ..measure.ours import sniper_marks
+
+    oid = str(t.get("oktech_id") or "")
+    try:
+        rows = store.oktech_snipers(active=False) if oid and store is not None else []
+    except Exception:  # noqa: BLE001 - not known: every trade counts
+        rows = []
+    return sniper_marks([r.get("payload") for r in rows if str(r.get("id")) == oid])
+
+
+def _bought(store, t: dict, now: float, marks: dict[str, frozenset] | None = None) -> set[str] | None:
+    """The coins the test's own sniper bought (by the fees it pays: `marks`, own_marks by default) while it may have been
+    armed (its window on the tape), or None when the tape cannot be read: the book and the owner trade from the same
+    wallet, and only these can be the test's own coins. A cycler that ended without its report never disarmed the
+    sniper, so its window runs to now (autotest._window)."""
+    from ..measure.ours import bot_tape_buy
+
+    marks = own_marks(store, t) if marks is None else marks
     rep = t.get("report") or {}
     start = float(t.get("started_at") or now) - TEST_GRACE_SECS
     end = now if rep.get("held") is None else (rep.get("job_ended") or t.get("cycler_ended_at") or now)
     try:
-        return {tr.mint for tr in store.trades_for_user(t["wallet"], int(start)) if tr.is_buy and tr.ts <= float(end)}
+        return {tr.mint for tr in store.trades_for_user(t["wallet"], int(start), fees=True)
+                if tr.is_buy and tr.ts <= float(end) and bot_tape_buy(tr, marks)}  # fmt: skip
     except Exception:  # noqa: BLE001 - every coin then counts as possibly the test's, as before
         return None
 
@@ -1097,9 +1117,13 @@ def _closing(paths: OperatorPaths, t: dict, now: float, notes: NoteSink, notifie
 async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, notes: NoteSink, notifier,
                  log: Log | None) -> dict:  # fmt: skip
     """One look at a test whose cycler has ended (see finish_ended): done when nothing of it is left armed, else
-    closing. Only the test's own sniper is ever stopped, and only while the wallet holds nothing (a stopped sniper
-    strands its coin, rule 1)."""
+    closing. Only the test's own sniper is ever stopped, and only while the wallet holds nothing that sniper may hold (a
+    stopped sniper strands its coin, rule 1): the owner's own coins, bought at fees it never pays, are not its own."""
+    from ..measure.ours import owner_coins
+
     oid = str(t.get("oktech_id") or "")
+    store = getattr(svc, "store", None)
+    marks = own_marks(store, t)
     try:
         held = await _held(svc, cfg, t["wallet"])
     except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
@@ -1112,9 +1136,11 @@ async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, no
         except Exception as exc:  # noqa: BLE001 - the next round asks again
             unread = type(exc).__name__
     mints = list(dict.fromkeys(str(h.get("mint")) for h in held))
-    if held and (unread or is_active(status)):
+    theirs = owner_coins(store, t["wallet"], held, marks) if store is not None else set()
+    mine = [m for m in mints if m not in theirs]
+    if mine and (unread or is_active(status)):
         return _closing(paths, t, now, notes, notifier, log, "held",
-                        f"the wallet still holds {', '.join(mints)}: its sniper keeps running until the wallet holds "
+                        f"the wallet still holds {', '.join(mine)}: its sniper keeps running until the wallet holds "
                         "nothing (a stopped sniper strands its coin), then the round stops it. /sell <coin> sells one "
                         "now")  # fmt: skip
     if unread:
@@ -1122,7 +1148,7 @@ async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, no
                         f"OKTech did not answer ({unread}), so its sniper {oid} is not stopped yet and may still be "
                         "armed")  # fmt: skip
     stopped = False
-    if is_active(status):  # the wallet holds nothing here: stopping its own sniper strands nothing
+    if is_active(status):  # the wallet holds nothing of its sniper's here: stopping that sniper strands nothing
         try:
             await asyncio.wait_for(svc.oktech_task("stop", oid), WALLET_READ_SECS)
             stopped = True
@@ -1130,8 +1156,8 @@ async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, no
             return _closing(paths, t, now, notes, notifier, log, "stop",
                             f"its sniper {oid} could not be stopped ({type(exc).__name__}), so it may still be armed")  # fmt: skip
     sniper = f"its sniper {oid} is stopped: it buys nothing more" if stopped else f"its sniper {oid} is not running"
-    bought = _bought(svc.store, t, now) if held and getattr(svc, "store", None) is not None else None
-    own = [m for m in mints if bought is None or m in bought]
+    bought = _bought(store, t, now, marks) if held and store is not None else None
+    own = [m for m in mine if bought is None or m in bought]
     others = [m for m in mints if m not in own]
     if own:  # its sniper is no longer running, so nothing of the test sells these
         sniper += f"; the wallet still holds {', '.join(own)} and nothing sells it: /sell <coin> sells it now"

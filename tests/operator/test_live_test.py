@@ -871,6 +871,59 @@ def test_a_test_that_ends_holding_a_coin_closes_once_the_coin_is_sold(env):
     assert [(h["id"], h["state"]) for h in history] == [(BEST, "done")]
 
 
+def _sniper_on_record(e):
+    """svc.oktech_strategy(create=True) records the test's sniper with its payload: the fees its trades pay."""
+    e.store.add_oktech_sniper({"id": OK_ID, "kind": "strategy", "source": "live-test",
+                               "payload": {"priorityFee": 0.001, "tipAmount": 0.0, "singleSnipe": True}})  # fmt: skip
+
+
+def _buy_at(e, sig, ts, prio, tip, mint=MINT):
+    e.store.add_trades([Trade(sig=sig, ev=0, slot=7_000 + len(sig), pos=0, ts=int(ts), mint=mint, venue="curve", user=W,
+                              is_buy=True, quote=1_000_000_000, base=1_000_000, fee=10_000_000, fee_bps=100, q_after=1,
+                              b_after=1, priority=prio, tip=tip)])  # fmt: skip
+
+
+def _stops_beside_the_owners_coin(e):
+    """OKTech's stop of the test's own sniper, taken while the wallet holds only coins its sniper never bought."""
+
+    async def oktech_task(action, task_id):
+        assert action == "stop" and task_id == OK_ID, (action, task_id)
+        e.svc.stops.append(task_id)
+        _armed(e, status="idle")
+        return {"success": True}
+
+    e.svc.oktech_task = oktech_task
+
+
+def test_a_closing_test_beside_the_owners_own_coin_stops_its_sniper(env):
+    """Audit of 22 Nov (livetest#2): the owner's hand-bought coin (fees the test's sniper never pays) was the test's in
+    its close: it kept the test closing and its sniper armed until the owner sold it, and was named as the test's coin
+    "nothing sells". It is the owner's: the sniper is stopped (it holds nothing of its own) and the coin is named as
+    one this test did not buy."""
+    _started(env)
+    _sniper_on_record(env)
+    _buy_at(env, "hand", LT.load(env.paths)["started_at"] + 600, 8_175, 27_000_000)  # in Axiom, mid-test
+    env.svc.held = [{"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 1.0, "priced": True}]
+    _stops_beside_the_owners_coin(env)
+    _cycler_ends(env, TIME_UP)  # its sniper left running
+    _round(env, NOW + 7300)
+    t = LT.load(env.paths)
+    assert env.svc.stops == [OK_ID] and t["state"] == "done" and t["held_own"] == [] and t["held_at_end"] == [MINT]
+    assert "did not buy" in env.sent[-1] and "nothing sells it" not in env.sent[-1], env.sent
+
+
+def test_a_closing_test_keeps_its_sniper_for_a_coin_its_sniper_bought(env):
+    _started(env)
+    _sniper_on_record(env)
+    started = LT.load(env.paths)["started_at"]
+    _buy_at(env, "hand", started + 300, 8_175, 27_000_000)  # the owner's, then the sniper's own buy of the same coin
+    _buy_at(env, "ours", started + 600, 1_000_000, 0)
+    env.svc.held = [{"mint": MINT, "amount": 2.0, "raw": 2_000_000, "decimals": 6, "value_sol": 2.0, "priced": True}]
+    _cycler_ends(env, TIME_UP)
+    _round(env, NOW + 7300)
+    assert LT.load(env.paths)["state"] == "closing" and env.svc.stops == []
+
+
 def test_a_test_whose_sniper_cannot_be_stopped_yet_stays_closing_and_says_so(env):
     """OKTech not answering, or refusing the stop, keeps the test closing (never written done over an armed sniper):
     the owner hears that its sniper may still be armed, and each round tries again."""

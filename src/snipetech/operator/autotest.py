@@ -493,20 +493,23 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     part of it. Each reading also pays the block's failed sends that are no sale's twin (OKTech's buys that fail on
     chain anyway, about 0.001 SOL each: paper does not model them; a twin is already in its sale's result, unless the
     sale has none because its buy is not on record): every one for `all`, all but those in the coins of the copies for
-    `own`. Only our own trades are read: a deposit or a
-    withdrawal is in none of it."""
+    `own`. Only the test's own sniper's trades are read, told by the fees it pays (live_test.own_marks; measure/ours.py,
+    as the guard and the runner tell them): a deposit, a withdrawal or the owner's hand trades in the wallet (22 Nov
+    02:40) are in none of it."""
     from ..measure.attribution import trip_result_sol
     from ..measure.classify import _fill_fee_sol, pair_round_trips
+    from ..measure.ours import bot_buy, bot_sells, bot_tape_buy
     from ..measure.run import BASE_FEE_LAMPORTS, _sells_a_coin, twin_sells
 
+    marks = live_test.own_marks(store, t)
     start, end, settled = _window(t, now)
     tape: dict[str, dict] = {}
-    for tr in store.trades_for_user(wallet, start):
-        if tr.is_buy and tr.ts <= end:
+    for tr in store.trades_for_user(wallet, start, fees=True):
+        if tr.is_buy and tr.ts <= end and bot_tape_buy(tr, marks):
             tape.setdefault(tr.sig, {"mint": tr.mint, "cost": (int(tr.quote) + int(tr.fee)) / 1e9 + per_tx_sol})
     rows = store.fills(wallet=wallet, since_ts=start, limit=100_000)
-    buys = {f["sig"]: f for f in rows if f.get("side") == "buy"}
-    sells = [f for f in rows if f.get("side") == "sell"]
+    buys = {f["sig"]: f for f in rows if f.get("side") == "buy" and bot_buy(f, marks)}
+    sells = bot_sells(store, rows, marks)
     usable = [b | {"sol": float(b.get("sol") or 0), "tokens": float(b["tokens"])} for b in buys.values()
               if b.get("mint") and float(b.get("tokens") or 0) > 0]  # fmt: skip
     paired = [x | {"sol": float(x.get("sol") or 0), "tokens": float(x.get("tokens") or 0)} for x in sells
@@ -540,8 +543,8 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     own_mints = {b["mint"] for b in out_buys if not b["copy"]}
     copy_mints = {b["mint"] for b in out_buys if b["copy"]}
     failed = [f for f in store.fills(wallet=wallet, since_ts=start, side="failed", limit=100_000)
-              if float(f.get("ts") or 0) <= end
-              or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled)]  # fmt: skip
+              if _sniper_send(f, marks) and (float(f.get("ts") or 0) <= end
+                                             or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled))]  # fmt: skip
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
     twins = twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], sells)
     with_result = {x["sig"] for x in paired}
@@ -556,6 +559,18 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
         charged.append({"sig": f["sig"], "mint": f.get("mint"), "fee": fee})
     return {"buys": out_buys, "failed": charged, "own_mints": sorted(own_mints), "copy_mints": sorted(copy_mints),
             "settled": settled, "copies": sum(1 for b in out_buys if b["copy"])}  # fmt: skip
+
+
+def _sniper_send(row: dict, marks: dict[str, frozenset]) -> bool:
+    """Whether a failed send in the fills may be the test's own sniper's: it paid one of its priorities (a buy's or a
+    sale's: measure/ours.sniper_marks), or a priority not recorded; with no marks, every one is."""
+    prio = row.get("priority_lamports")
+    if not marks["buy"] or prio is None:
+        return True
+    try:
+        return int(prio) in {p for p, _tip in marks["buy"] | marks["sell"]}
+    except (TypeError, ValueError):
+        return True
 
 
 def _reading(live: dict, own: bool, *, final: bool) -> dict[str, Any]:
