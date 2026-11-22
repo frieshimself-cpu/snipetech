@@ -357,9 +357,19 @@ def cycle_argv(test: dict, cfg: Config) -> list[str]:
 
 
 def _drivers(paths: OperatorPaths) -> list[dict]:
-    """OKTech cyclers and guards running now (a test's, or one started by hand): one live test at a time."""
+    """OKTech cyclers and guards running now (a test's, or one started by hand), and a live run that is over whose
+    snipers may still be armed (`leftover`: operator/leftovers.py stops them once the wallet holds nothing): one live
+    test at a time, and the book adds no sniper beside them."""
+    from . import leftovers
+
     return [j for j in running_jobs(paths.jobs) if list(j.get("argv") or [])[:1] == ["oktech"]
-            and list(j.get("argv") or [])[1:2] and j["argv"][1] in DRIVERS]  # fmt: skip
+            and list(j.get("argv") or [])[1:2] and j["argv"][1] in DRIVERS] + leftovers.armed(paths)  # fmt: skip
+
+
+def _driver_words(d: dict) -> str:
+    what = f"{d['id']}: {' '.join(str(a) for a in (d.get('argv') or [])[:2])}"
+    return f"a live run that is over still has snipers armed ({what})" if d.get("leftover") else (
+        f"an OKTech job is running ({what})")  # fmt: skip
 
 
 async def _held(svc, cfg: Config, wallet: str) -> list[dict]:
@@ -700,8 +710,7 @@ async def _go(sid: str, *, svc, cfg: Config, paths: OperatorPaths, snap, notes: 
                      f"{p['floor']:.2f} SOL floor plus one buy of {p['buy_sol']:g} and its fees).")  # fmt: skip
     busy = _drivers(paths)
     if busy:
-        return no + (f"an OKTech job is running ({busy[0]['id']}: {' '.join(busy[0]['argv'][:2])}): one live test at "
-                     "a time.")  # fmt: skip
+        return no + f"{_driver_words(busy[0])}: one live test at a time."
     lag = _tape_lag(svc, now)
     if lag:
         return no + f"{lag}, and the test's buys are counted on it. Send /test {sid} go again in a few minutes."
@@ -895,7 +904,7 @@ async def _check(
         return "the strategy's size changed since the request", False, "size"
     busy = _drivers(paths)
     if busy:
-        return f"an OKTech job is running ({busy[0]['id']}: {' '.join(busy[0]['argv'][:2])})", False, "job"
+        return _driver_words(busy[0]), False, "job"
     lag = _tape_lag(svc, now)
     if lag:  # the recorder catching up is the usual end of it
         return lag, True, "tape"
