@@ -48,7 +48,15 @@ IDEA_CAPS = IDEA_TEXT | {"result": IDEA_RESULT_CHARS}  # every text field's cap:
 # role: whose queue a research idea is in (operator/roles.py); read it with role_of, which knows what none means
 IDEA_FIELDS = ("id", *IDEA_TEXT, "result", "kind", "status", "owner_needed", "priority", "role")
 DEFAULT_PRIORITY = 3  # 1 (low) to 5 (high): the agent's own estimate of what testing the idea is worth
+# The file keeps MAX_IDEAS of the roles' open ideas and the settled ones; a new one beyond that pushes out the settled
+# idea changed longest ago, which goes to the archive (ARCHIVE_FILE: list_ideas with its id still reads it). The
+# ideas open in nobody's queue (code, config, live-test: what waits for the cloud session or the owner) are held to
+# NOBODY_MAX of their own. Until 22 Nov they counted against the one cap: nobody closes them (66 on the server, about
+# 15 more a day), each new one pushed a settled idea and its result out without a word, and in about two days every
+# idea would have been open and every write refused, a role with an empty queue then starting no job (the audit).
 MAX_IDEAS = 100
+NOBODY_MAX = 100
+ARCHIVE_FILE = "ideas-archive.jsonl"  # operator/: the settled ideas a full file pushed out, one JSON line each
 
 # what every turn is shown (the operator's, the analyst's and the strategist's message), and the digest's share
 CONTEXT_LESSONS = 10
@@ -215,6 +223,40 @@ def _write_ideas(paths: OperatorPaths, ideas: list[dict[str, Any]]) -> None:
     os.replace(tmp, p)  # a reader sees the old file or the new one, never half of one
 
 
+def _archive(paths: OperatorPaths, dropped: list[dict[str, Any]], ts: str) -> None:
+    """Append the settled ideas a full file pushes out to ARCHIVE_FILE, each as it stood with when it left
+    (`archived`). Called under the ideas' lock, before the file is written without them: one that cannot be kept is
+    not dropped either (the error stops the write)."""
+    with (paths.root / ARCHIVE_FILE).open("a") as f:
+        f.writelines(json.dumps(i | {"archived": ts}) + "\n" for i in dropped)
+
+
+def archived_ideas(paths: OperatorPaths, ids: Any) -> dict[str, dict[str, Any]]:
+    """The ideas of `ids` that a full file pushed out (ARCHIVE_FILE), each as it stood when it left, in the order they
+    left; {} when there is no archive. A line that cannot be read is skipped."""
+    want = {str(x).strip() for x in ids}
+    found: dict[str, dict[str, Any]] = {}
+    if not want:
+        return found
+    try:
+        with (paths.root / ARCHIVE_FILE).open(errors="replace") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and str(row.get("id")) in want:
+                    found[str(row["id"])] = row
+    except OSError:
+        return {}
+    return found
+
+
+def _waits(idea: dict[str, Any]) -> bool:
+    """Whether the idea is open in nobody's queue (role_of): it counts against NOBODY_MAX, not MAX_IDEAS."""
+    return role_of(idea) is None and idea.get("status") in OPEN
+
+
 def _choice(value: Any, field: str, choices: tuple[str, ...]) -> str:
     v = str(value).strip().lower()
     if v not in choices:
@@ -304,7 +346,9 @@ def upsert_idea_detail(
 
     Returns what it did: {"idea": the idea as it stands, "created": whether it is new, "changed": the fields that
     differ from before (every field given, for a new idea), "cut": {field: how long its text was} for each text that
-    was over its cap}.
+    was over its cap, "dropped": the settled ideas a new one pushed out of a full file, as they stood (they are in the
+    archive: `archived_ideas`)}. The roles' open ideas and the settled ones keep MAX_IDEAS between them; the ideas
+    open in nobody's queue are held to NOBODY_MAX of their own, for every writer.
 
     `role`: the role whose turn writes (None for every other writer, which none of this holds). A role changes only
     its own queue's ideas and the ideas in nobody's; it may add an idea to any queue (the field `role`: how work is
@@ -314,6 +358,7 @@ def upsert_idea_detail(
     clean = _validated(dict(fields or {}), cut)
     acting = _choice(role, "role", ROLES) if role is not None else None
     ts = _iso(time.time() if now is None else now)
+    dropped: list[dict[str, Any]] = []
     with _ideas_lock(paths):
         ideas, readable = _load_ideas(paths)
         if not readable:  # keep what could not be read for a person to look at, never overwrite it
@@ -339,12 +384,7 @@ def upsert_idea_detail(
             missing = [k for k in (*IDEA_TEXT, "kind") if k not in clean]
             if missing:
                 raise ValueError(f"a new idea needs {', '.join(missing)}")
-            if len(ideas) >= MAX_IDEAS:
-                closed = [i for i in ideas if i.get("status") not in OPEN]
-                if not closed:
-                    raise ValueError(f"already {MAX_IDEAS} ideas open or being tested; close some (adopted or "
-                                     "rejected) or merge them first")  # fmt: skip
-                ideas.remove(min(closed, key=lambda i: _epoch(i.get("updated"))))
+            # numbered before any idea is pushed out below: an id in the archive is never given again
             idea = {"id": _next_id(ideas), **{k: clean[k] for k in IDEA_TEXT}, "kind": clean["kind"],
                     "status": clean.get("status", "open"), "owner_needed": clean.get("owner_needed", False),
                     "priority": clean.get("priority", DEFAULT_PRIORITY), "created": ts, "updated": ts,
@@ -355,24 +395,45 @@ def upsert_idea_detail(
                 idea["role"] = clean["role"]
             elif acting and idea["kind"] == "research":  # a role's own research idea is its own queue's
                 idea["role"] = acting
+            if not _waits(idea):  # (one open in nobody's queue counts against NOBODY_MAX instead, below)
+                counted = [i for i in ideas if not _waits(i)]
+                settled = (i for i in counted if i.get("status") not in OPEN)
+                closed = sorted(settled, key=lambda i: _epoch(i.get("updated")))
+                over = len(counted) + 1 - MAX_IDEAS  # more than one when settled ideas of nobody's queue came in
+                if over > len(closed):
+                    raise ValueError(f"already {MAX_IDEAS} ideas open or being tested in the roles' queues; close some "
+                                     "(adopted or rejected, with the result) or merge them first")  # fmt: skip
+                dropped = closed[: max(0, over)]  # the settled ideas changed longest ago, to the archive
+                ideas[:] = [i for i in ideas if all(i is not d for d in dropped)]
             ideas.append(idea)
         if acting and before is not None and before.get("kind") == "research" and idea.get("kind") != "research":
             # a role set an idea of its own queue to a kind that waits for the cloud session or the owner: a hand-on
             idea.update(handed_on=ts, handed_by=acting)  # (roles._worked counts it as the turn's work)
         if idea.get("kind") in ALWAYS_OWNER:
             idea["owner_needed"] = True
+        if _waits(idea) and not (before is not None and _waits(before)):  # it would newly wait in nobody's queue
+            held = sum(1 for i in ideas if i is not idea and _waits(i))
+            if held >= NOBODY_MAX:
+                raise ValueError(f"nobody's queue already holds {held} open ideas (the limit is {NOBODY_MAX}: kinds "
+                                 "code, config and live-test, which wait for the cloud session or the owner): fold "
+                                 "what you found into the open one there closest to it (update it by id), or close "
+                                 "one that is built, settled or no longer holds, with its result, before "
+                                 "adding")  # fmt: skip
         queue = role_of(idea) if idea.get("status") in OPEN else None
         if acting and queue and queue != was_open_in:  # it would newly count in that queue
             held = sum(1 for i in ideas if i is not idea and i.get("status") in OPEN and role_of(i) == queue)
             if held >= MAX_OPEN_IDEAS:
                 raise ValueError(f"the {queue}'s queue already holds {held} open ideas (the limit is "
                                  f"{MAX_OPEN_IDEAS}): close one with its result or merge two before adding")  # fmt: skip
+        if dropped:
+            _archive(paths, dropped, ts)
         _write_ideas(paths, ideas)
         if before is None:
             changed = [k for k in IDEA_FIELDS if k in clean and k != "id"]
         else:
             changed = [k for k in IDEA_FIELDS if k != "id" and idea.get(k) != before.get(k)]
-        return {"idea": dict(idea), "created": before is None, "changed": changed, "cut": cut}
+        return {"idea": dict(idea), "created": before is None, "changed": changed, "cut": cut,
+                "dropped": [dict(d) for d in dropped]}  # fmt: skip
 
 
 def _priority(idea: dict[str, Any]) -> int:

@@ -204,6 +204,81 @@ def test_the_idea_list_is_capped_by_dropping_the_oldest_closed_idea(paths, monke
         L.upsert_idea(paths, IDEA | {"title": "e"}, source="analyst", now=NOW + 240)
 
 
+def test_a_settled_idea_a_full_file_pushes_out_is_archived_with_its_result(paths, monkeypatch):
+    """Audit of 22 Nov (agents#0): with the file full, each new idea dropped the settled idea changed longest ago, its
+    result with it, and the writer was told only "<id> created" (163 of the 196 ideas the agents' jobs named since
+    20 Nov were gone). It goes to operator/ideas-archive.jsonl first, with when it left, and the write says which one
+    left. An id is never given twice: here the idea pushed out holds the highest id, and the new one is not given
+    it again."""
+    monkeypatch.setattr(L, "MAX_IDEAS", 3)
+    a = L.upsert_idea(paths, IDEA | {"title": "a"}, source="analyst", now=NOW)
+    b = L.upsert_idea(paths, IDEA | {"title": "b"}, source="analyst", now=NOW)
+    c = L.upsert_idea(paths, IDEA | {"title": "c", "status": "rejected", "result": "lower -0.021 over 133 copies"},
+                      source="scout", now=NOW)  # fmt: skip
+    for i in (a, b):  # closed after c: c is the settled idea changed longest ago
+        L.upsert_idea(paths, {"id": i["id"], "status": "adopted", "result": "kept"}, source="analyst", now=NOW + 60)
+    done = L.upsert_idea_detail(paths, IDEA | {"title": "d"}, source="analyst", now=NOW + 120)
+    assert [i["id"] for i in done["dropped"]] == [c["id"]] and done["dropped"][0]["result"] == c["result"]
+    assert [i["id"] for i in L.list_ideas(paths, "all")] == [a["id"], b["id"], done["idea"]["id"]]
+    assert done["idea"]["id"] == "I4"  # not I3 again: that is the idea in the archive
+    kept = L.archived_ideas(paths, [c["id"], a["id"]])
+    assert list(kept) == [c["id"]] and kept[c["id"]]["result"] == "lower -0.021 over 133 copies"
+    assert kept[c["id"]]["archived"] == "2026-11-06T18:02:00Z" and kept[c["id"]]["title"] == "c"
+    assert not L.upsert_idea_detail(paths, {"id": a["id"], "priority": 4}, source="analyst", now=NOW + 180)["dropped"]
+
+
+def test_ideas_waiting_in_nobodys_queue_never_lock_the_roles_out_of_their_own(paths, monkeypatch):
+    """Audit of 22 Nov (agents#0): an idea of kind code, config or live-test waits in nobody's queue, and nobody
+    closes those (66 open on the server, about 15 more a day). They counted against the one cap of MAX_IDEAS: each
+    new one pushed a settled idea out, and in about two days every idea would have been open and every write refused,
+    so a role with an empty queue could start no job. They have a cap of their own (NOBODY_MAX): past it a new one,
+    a hand-on and a reopening there are refused with what to do; the roles' queues and the settled ideas keep
+    MAX_IDEAS between them."""
+    monkeypatch.setattr(L, "MAX_IDEAS", 3)
+    monkeypatch.setattr(L, "NOBODY_MAX", 4)
+    settled = L.upsert_idea(paths, IDEA | {"title": "settled", "status": "rejected", "result": "r"}, source="fees",
+                            now=NOW, role="fees")  # fmt: skip
+    for k in range(4):
+        L.upsert_idea(paths, IDEA | {"title": f"a tool {k}", "kind": "code"}, source="cloud", now=NOW + k)
+    assert settled["id"] in [i["id"] for i in L.list_ideas(paths, "all")]  # no code idea pushed it out
+    with pytest.raises(ValueError, match="nobody's queue already holds 4 open ideas"):
+        L.upsert_idea(paths, IDEA | {"title": "a tool 4", "kind": "code"}, source="scout", now=NOW + 10, role="scout")
+    # the fee analyst, whose queue is empty, still adds the idea its next job needs, and so does the scout
+    fees = L.upsert_idea(paths, IDEA | {"title": "price a place"}, source="fees", now=NOW + 20, role="fees")
+    scout = L.upsert_idea(paths, IDEA | {"title": "hunt wallets"}, source="scout", now=NOW + 30, role="scout")
+    assert (L.role_of(fees), L.role_of(scout)) == ("fees", "scout")
+    with pytest.raises(ValueError, match="nobody's queue already holds 4"):  # a hand-on there waits for room too
+        L.upsert_idea(paths, {"id": scout["id"], "kind": "code"}, source="scout", now=NOW + 40, role="scout")
+    tool = next(i for i in L.list_ideas(paths, "open") if L.role_of(i) is None)
+    L.upsert_idea(paths, {"id": tool["id"], "status": "adopted", "result": "built"}, source="cloud", now=NOW + 50)
+    assert L.upsert_idea(paths, {"id": scout["id"], "kind": "code"}, source="scout", now=NOW + 60, role="scout")
+    with pytest.raises(ValueError, match="nobody's queue"):  # nor is a settled one reopened into a full queue
+        L.upsert_idea(paths, {"id": tool["id"], "status": "open"}, source="cloud", now=NOW + 65)
+    # the settled ideas still make room for the roles' (the oldest first, kept in the archive)
+    done = L.upsert_idea_detail(paths, IDEA | {"title": "a rule"}, source="tester", now=NOW + 70, role="tester")
+    assert [i["id"] for i in done["dropped"]] == [settled["id"]]
+
+
+def test_the_server_mix_of_22_nov_leaves_the_roles_room_for_two_days_of_code_ideas_and_more(paths):
+    """The server's file at 11:50 UTC on 22 Nov, as the skeptic read it: 100 ideas, 66 open in nobody's queue, 5 open
+    in the roles' queues, 29 settled. After 29 more code ideas (two days at today's pace) the fee analyst, whose queue
+    is empty, still adds the idea its next job needs, and no settled idea was pushed out for a code idea."""
+    day = {"created": "2026-11-21T00:00:00Z", "updated": "2026-11-21T00:00:00Z"}
+    rows = [IDEA | day | {"id": f"I{k + 1}", "title": f"t{k}", "kind": "code", "status": "open", "source": "scout"}
+            for k in range(66)]  # fmt: skip
+    rows += [IDEA | day | {"id": f"I{k + 67}", "title": f"r{k}", "role": "tester", "status": "open", "source": "tester"}
+             for k in range(5)]  # fmt: skip
+    rows += [IDEA | {"id": f"I{k + 72}", "title": f"s{k}", "role": "scout", "status": "rejected", "result": "no",
+                     "source": "scout", "created": "2026-11-22T07:00:00Z", "updated": "2026-11-22T07:01:56Z"}
+             for k in range(29)]  # fmt: skip
+    (paths.root / "ideas.json").write_text(json.dumps(rows))
+    for k in range(29):
+        L.upsert_idea(paths, IDEA | {"title": f"code {k}", "kind": "code"}, source="cloud", now=NOW + k)
+    fees = L.upsert_idea_detail(paths, IDEA | {"title": "fees question"}, source="fees", now=NOW + 99, role="fees")
+    assert L.role_of(fees["idea"]) == "fees" and not fees["dropped"]
+    assert sum(1 for i in L.list_ideas(paths, "all") if i["status"] == "rejected") == 29
+
+
 def test_every_turn_sees_the_last_ten_lessons_and_the_top_five_open_ideas(paths):
     for i in range(12):
         L.add_lesson(paths, f"lesson L{i:02d}", f"evidence E{i:02d}", i + 1, source="analyst", now=NOW + i)

@@ -3736,8 +3736,10 @@ def _main(args) -> int:
             except ValueError as exc:
                 raise SystemExit(f"operate idea: not added: {exc}") from None
             idea = done["idea"]  # "cut": each text that was over its cap, with how long it was (it is cut and kept)
+            gone = [i.get("id") for i in done["dropped"]]  # the settled ideas the full file pushed into the archive
             print(json.dumps({"id": idea.get("id"), "title": idea.get("title"), "status": idea.get("status")}
-                             | ({"cut": done["cut"]} if done["cut"] else {})))  # fmt: skip
+                             | ({"cut": done["cut"]} if done["cut"] else {})
+                             | ({"archived": gone} if gone else {})))  # fmt: skip
             return 0
         if args.action == "agent":  # one turn of a research agent (operator/roles.py), run further down
             from .operator import roles

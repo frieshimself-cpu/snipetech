@@ -54,6 +54,24 @@ def test_idea_cli_sets_the_role(tmp_path):
         _cli(tmp_path, "idea", "--id", old["id"], "--role", "analyst")
 
 
+def test_operate_idea_says_which_settled_idea_a_full_file_pushed_into_the_archive(tmp_path, capsys, monkeypatch):
+    """Audit of 22 Nov (agents#0): the cloud session's idea pushed a settled one out of the full file and its answer
+    said nothing of it. It names the ideas that went to the archive; an answer that pushed nobody out is as before."""
+    import json
+
+    from snipetech.operator import learning
+
+    monkeypatch.setattr(learning, "MAX_IDEAS", 1)
+    _cli(tmp_path, "idea", "--title", "Cap", "--why", "w", "--test", "t", "--expected", "e", "--kind", "research",
+         "--status", "rejected", "--result", "lower -0.021 over 133 copies")  # fmt: skip
+    assert "archived" not in json.loads(capsys.readouterr().out)
+    _cli(tmp_path, "idea", "--title", "Next", "--why", "w", "--test", "t", "--expected", "e", "--kind", "research")
+    out = json.loads(capsys.readouterr().out)
+    assert out["id"] == "I2" and out["archived"] == ["I1"]
+    kept = learning.archived_ideas(OperatorPaths(tmp_path / "data"), ["I1"])
+    assert kept["I1"]["result"] == "lower -0.021 over 133 copies"
+
+
 def test_operate_idea_closes_an_idea_with_its_result_and_says_what_was_cut(tmp_path, capsys):
     """An idea is closed with what its test found (`--result`); a text over its cap is cut there and kept, and the
     command's answer names the field and how long it was, so the cloud session sees that it was cut."""

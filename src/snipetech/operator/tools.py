@@ -1169,6 +1169,8 @@ def ideas_answer(paths: OperatorPaths, status: str, limit: int, id: str | None, 
     if id and str(id).strip():
         want = [x for x in re.split(r"[\s,;]+", str(id).strip()) if x]
         every = {str(i.get("id")): i for i in learning.list_ideas(paths, "all")}
+        # a settled idea a full file pushed out is read from the archive, with when it left (`archived`)
+        every |= {k: v for k, v in learning.archived_ideas(paths, [x for x in want if x not in every]).items()}
         out: dict[str, Any] = {"ideas": [every[x] | {"queue": learning.role_of(every[x])} for x in want if x in every]}
         unknown = [x for x in want if x not in every]
         if unknown:
@@ -1198,7 +1200,8 @@ def ideas_answer(paths: OperatorPaths, status: str, limit: int, id: str | None, 
 
 def idea_answer(done: dict[str, Any]) -> str:
     """What upsert_idea returns for learning.upsert_idea_detail's result: `<id> created: ...` or `<id> updated: the
-    fields that changed`, and for each text that was cut at its cap how many of its last characters are gone."""
+    fields that changed`, for each text that was cut at its cap how many of its last characters are gone, and which
+    settled ideas the new one pushed out of the full file into the archive (until 22 Nov that went unsaid)."""
     idea = done["idea"]
     if done["created"]:
         queue = learning.role_of(idea)
@@ -1212,6 +1215,12 @@ def idea_answer(done: dict[str, Any]) -> str:
     for f, was in done["cut"].items():  # the cut takes the END, where "what is missing" is written: say how much
         out += (f"; {f} {CUT_NOTE} {learning.IDEA_CAPS[f]} characters: its last {was - len(str(idea.get(f, ''))) + 1} "
                 "characters are gone")  # fmt: skip
+    gone = done.get("dropped") or []
+    if gone:
+        names = ", ".join(f"{i.get('id')} ({i.get('status')})" for i in gone[:5])
+        names += f" and {len(gone) - 5} more" if len(gone) > 5 else ""
+        out += (f"; the file was full: {names}, settled and changed longest ago, moved to the archive "
+                f'(list_ideas id="{gone[0].get("id")}" still reads it)')  # fmt: skip
     return out
 
 
@@ -1307,7 +1316,7 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
         Args:
             status: "open" (open and being tested, best first), "all", or one of testing, adopted, rejected.
             limit: At most this many ideas.
-            id: One idea whole, or several ("I20" or "I20, I31"), as JSON.
+            id: One idea whole, or several ("I20" or "I20, I31"), as JSON; a settled one from the archive too.
             full: True gives every listed idea whole, as JSON (long: about 1,250 characters an idea).
         """
         return ideas_answer(paths, status, limit, id, full)
@@ -1322,7 +1331,8 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
         need the owner's yes, and so does any config change outside the strategist's [autotune] bounds (set
         owner_needed). An idea never changes anything by itself: research you may start with start_job; the rest
         waits for the strategist or the owner. The answer is one line: the id and what changed. A text over its
-        length is cut there and kept, and the answer says so.
+        length is cut there and kept, and the answer says so. A new idea that finds the file full pushes the settled
+        idea changed longest ago into the archive: the answer names it, and list_ideas with its id still reads it.
 
         Args:
             title: What to try, in a few words (120 characters).
@@ -1406,7 +1416,7 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
             limit: At most this many ideas.
             queue: "mine" (your own queue), "all" (every queue and the ideas in none), or scout, tester, fees, oktech,
                 exits.
-            id: One idea whole, or several ("I20" or "I20, I31"), from any queue, as JSON.
+            id: One idea whole, or several ("I20" or "I20, I31"), from any queue or the archive, as JSON.
             full: True gives every listed idea whole, as JSON (long: about 1,250 characters an idea).
         """
         if queue not in ("mine", "all", *roles.ROLES):
@@ -1425,8 +1435,10 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
         add is your own queue's unless you give role: that is how you hand work to another role (it alone moves or
         closes it; a queue holds at most 15 open ideas, so close or merge before you add). An idea of another role's
         queue you cannot change. What the owner must decide is an idea of kind live-test, code or config: it is in
-        nobody's queue, always needs the owner's yes, and never changes anything by itself. The answer is one line:
-        the id and what changed. A text over its length is cut there and kept, and the answer says so.
+        nobody's queue, which holds at most 100 open ideas, always needs the owner's yes, and never changes anything
+        by itself. The answer is one line: the id and what changed. A text over its length is cut there and kept,
+        and the answer says so. A new idea that finds the file full pushes the settled idea changed longest ago into
+        the archive: the answer names it, and list_ideas with its id still reads it.
 
         Args:
             title: What to try, in a few words (120 characters).
