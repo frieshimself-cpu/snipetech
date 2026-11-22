@@ -1534,7 +1534,12 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         text = p.read_text(errors="replace")
         if int(tail or 0) > 0:
             text = "\n".join(text.splitlines()[-int(tail) :])
-        return redact(text if len(text) <= 200_000 else text[-200_000:])
+        if len(text) > 200_000:  # its end, from a whole line: a cut inside a key handed its rest past the scrub
+            text = text[-200_000:]
+            if "\n" not in text:
+                return "error: the last 200,000 characters of this file are one line, which is never handed out cut"
+            text = text.split("\n", 1)[1]
+        return redact(text)
 
     @beta_async_tool(description=SQL_DESCRIPTION + sql_layout())
     async def sql(query: str) -> str:

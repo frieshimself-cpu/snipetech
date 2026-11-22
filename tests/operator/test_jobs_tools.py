@@ -136,6 +136,23 @@ def test_read_file_outside_roots_refused(toolbox):
     assert _call(tools["read_file"], path="reports/x/lab.txt") == "hello"
 
 
+def test_read_file_cut_at_its_limit_starts_at_a_whole_line(toolbox, monkeypatch):
+    """22 Nov audit (ops#6): a file longer than read_file's 200,000 characters was cut anywhere, and a cut inside a key
+    handed its rest to the model provider past the scrub (whole values). The cut starts at the next whole line; an end
+    that is all one line is said, never handed out cut."""
+    tools, paths, _ = toolbox
+    secret = "5Kwallet-secret-key-abcdefgh"
+    monkeypatch.setenv("SNIPER_SECRET", secret)
+    rest = " in the line the cut falls into\n"
+    n = 200_000 - len(secret[3:]) - len(rest) - 1
+    paths.reports.mkdir(parents=True, exist_ok=True)
+    (paths.reports / "big.txt").write_text("an earlier line\nwallet " + secret + rest + "z" * n + "\n")
+    got = _call(tools["read_file"], path="reports/big.txt")
+    assert "abcdefgh" not in got and got == "z" * n + "\n"
+    (paths.reports / "one.json").write_text('{"pad": "' + "x" * 210_000 + '"}')
+    assert _call(tools["read_file"], path="reports/one.json").startswith("error: the last 200,000 characters")
+
+
 def _checkout(repo):
     """A checkout as the server has one: the research rounds, their index and script, other docs, other repo files."""
     research = repo / "docs" / "research"

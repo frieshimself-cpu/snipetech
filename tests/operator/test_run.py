@@ -608,3 +608,64 @@ def test_an_amazon_bedrock_key_alone_lets_the_turn_run(tmp_env, monkeypatch):
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-test-token")
     _op(tmp_env)
     assert tmp_env["calls"]
+
+
+RUN_SNIPER = "6b009e973601fd350a8e3467"
+RUN_JOB = "20261122-015426-5c79d7"
+RUN_COIN = "5m5hP15rrB5kyF3V9xsbYfCnvKKr6ZzXozYwAd1kirCF"
+
+
+def _dead_live_run(paths):
+    """The record `remote run oktech cycle ...` left (ops._start) when the machine went down under it: still running,
+    its pid gone with the restart, no exit file (its wrapper died with it)."""
+    argv = ["oktech", "cycle", "--id", RUN_SNIPER, "--address", "W", "--max-loss", "2", "--max-minutes", "1440"]
+    (paths.jobs / f"{RUN_JOB}.json").write_text(json.dumps({"id": RUN_JOB, "argv": argv, "started": NOW - 3600,
+                                                            "ended": None, "exit_code": None, "running": True,
+                                                            "pid": 999_999_999, "by": "remote"}))  # fmt: skip
+
+
+def test_a_restart_stops_the_snipers_a_dead_live_run_left_armed(tmp_env, monkeypatch):
+    """22 Nov audit (ops#0): a live run a session starts (`remote run oktech cycle ...`) is a job, not a unit. The
+    machine's restart killed it with no end (no last stop, no report) and nothing after the boot stopped or named the
+    one-shot copy sniper it left armed, free to buy once more with nobody watching; the book saw no live run on the
+    wallet and could arm beside it. The first round after the boot stops it while the wallet holds nothing, and says
+    so; while the wallet holds a coin it keeps running to sell it, the owner hears which coin, the book holds back, and
+    a later round stops it once the wallet is empty."""
+    from snipetech.operator import leftovers
+    from snipetech.operator.live_test import _drivers
+
+    monkeypatch.setattr(leftovers, "PAUSE_SECS", 0.0)
+    paths, sent, tasks, held = tmp_env["paths"], [], [], [[{"mint": RUN_COIN, "amount": 1000.0}]]
+
+    async def oktech_status():
+        sniper = {"id": RUN_SNIPER, "name": "snipetech copy GakeSide 4Hq9Uk arm:size1", "status": "running"}
+        return {"snipers": [sniper]}
+
+    async def oktech_task(action, oid):
+        tasks.append((action, oid))
+        return {}
+
+    async def open_positions(wallet, ignore=()):
+        return list(held[0])
+
+    svc = tmp_env["svc"]
+    svc.oktech_status, svc.oktech_task, svc.open_positions = oktech_status, oktech_task, open_positions
+
+    def say(text):
+        sent.append(text)
+        return True
+
+    _op(tmp_env, boot=lambda: NOW - 86400, send=say)  # the round before the machine went down
+    _dead_live_run(paths)
+    back = NOW + 1800
+    _op(tmp_env, now=lambda: back + 200, boot=lambda: back, send=say)  # the first round after the boot
+    told = [t for t in sent if RUN_SNIPER in t]
+    assert tasks == [] and told and RUN_COIN in told[-1] and "/sell" in told[-1]  # a coin held: never stopped
+    assert [d["id"] for d in _drivers(paths)] == [RUN_JOB]  # the book adds no sniper beside it
+    held[0] = []  # the coin is sold
+    n = len(sent)
+    _op(tmp_env, now=lambda: back + 1100, boot=lambda: back, send=say)
+    assert tasks == [("stop", RUN_SNIPER)] and [t for t in sent[n:] if RUN_SNIPER in t and "stopped" in t]
+    assert _drivers(paths) == []
+    _op(tmp_env, now=lambda: back + 2000, boot=lambda: back, send=say)
+    assert tasks == [("stop", RUN_SNIPER)]  # closed: never looked at again

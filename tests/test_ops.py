@@ -66,6 +66,57 @@ def test_signature_replay_and_age(env, tmp_path):
         ops.handle(old, sig)
 
 
+def test_a_request_seen_before_is_refused_after_a_restart_too(env, monkeypatch):
+    """22 Nov audit (ops#8): the nonces of signed requests lived in memory only, and every deploy restarts this
+    endpoint: a body signed in the five minutes before a restart was accepted again after it and ran a second time (a
+    `run oktech cycle`, a `kill`, an `update`). They are kept on disk as long as a request can be fresh, never served."""
+    ops, key = env
+    body, h = O.sign(key, "run", {"argv": ["status"]})
+    ops.handle(body, h["X-Ops-Signature"])
+    restarted = O.Ops(repo=ops.repo, data=ops.data, db=ops.db, keys_file=ops.keys_file, branch="main",
+                      command=ops.command, use_sudo=False)  # fmt: skip  # the service after `remote update`
+    with pytest.raises(O.OpsError, match="replayed"):
+        restarted.handle(body, h["X-Ops-Signature"])
+    assert req(restarted, key, "status")["branch"] == "main"  # a new request goes through
+    kept = ops.data / O.NONCES
+    assert len(json.loads(kept.read_text())) == 2
+    with pytest.raises(O.OpsError):
+        req(restarted, key, "read", path=O.NONCES)
+    assert O.NONCES not in [i["name"] for i in req(restarted, key, "ls")["items"]]
+    real = time.time
+    monkeypatch.setattr(O.time, "time", lambda: real() + 2 * O.SKEW_SECS + 5)  # ten minutes on: none is fresh
+    later = O.Ops(repo=ops.repo, data=ops.data, db=ops.db, keys_file=ops.keys_file, branch="main", use_sudo=False)
+    assert req(later, key, "status")["branch"] == "main" and len(json.loads(kept.read_text())) == 1
+
+
+def test_one_bad_line_in_the_keys_file_never_locks_the_other_keys_out(env):
+    """22 Nov audit (ops#1): one line of the keys file that was no key (one pasted short, a stray character) made every
+    request a 500 with every key, the update that would bring the fixed file too: the endpoint stayed locked until
+    someone logged in over SSH. A line that is no key is skipped; the keys listed still work."""
+    ops, key = env
+    ops.keys_file.write_text(ops.keys_file.read_text() + "ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI new-session-key-pasted-short\n"
+                             "ed25519 not*base64! stray\ned25519 QUJD short-but-valid-base64\n")  # fmt: skip
+    assert len(O.load_keys(ops.keys_file)) == 1
+    server = O.make_server(ops, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert O.call(f"http://127.0.0.1:{server.server_address[1]}", key, "status")["branch"] == "main"
+    finally:
+        server.shutdown()
+
+
+def test_every_line_of_the_repo_s_keys_file_is_a_key():
+    """The file a deploy brings (deploy/ops_authorized_keys): a bad line there is what locks a key out."""
+    import base64
+
+    path = Path(__file__).resolve().parents[1] / "deploy" / "ops_authorized_keys"
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    assert lines
+    for ln in lines:
+        kind, b64 = ln.split()[:2]
+        assert kind == "ed25519" and len(base64.b64decode(b64, validate=True)) == 32, ln
+
+
 def test_run_allowlist_jobs_and_scrubbing(env, monkeypatch):
     ops, key = env
     monkeypatch.setenv("HELIUS_API_KEY", "super-secret-helius-key")
@@ -100,6 +151,60 @@ def test_files_stay_inside_data(env):
         req(ops, key, "write", name="../reports/x.txt", content="x")
 
 
+def test_remote_read_sends_its_tail_and_says_when_a_file_was_cut(env, monkeypatch, capsys):
+    """22 Nov audit (ops#2): `remote read PATH --tail N` sent no tail and printed the content alone: the server's last
+    200 kB of a file (from a whole line) read as the whole file, and a one-line file past them as nothing, exit 0."""
+    from snipetech import cli
+
+    ops, key = env
+    path = ops.data / "reports" / "big.txt"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("HEADER: the summary line a reader needs\n" + "".join(f"row {i}\n" for i in range(60000)))
+    seen = []
+
+    def call(url, k, op, **kw):
+        seen.append((op, kw))
+        return req(ops, key, op, **kw)
+
+    monkeypatch.setattr(O, "call", call)
+    base = ["remote", "--url", "https://x", "--key", "k", "read", "reports/big.txt"]
+    assert cli.main([*base, "--tail", "5000000"]) == 0
+    got = capsys.readouterr()
+    assert seen[-1] == ("read", {"path": "reports/big.txt", "tail": 5000000})
+    assert got.out == path.read_text() and got.err == ""  # whole, and nothing to say
+    assert cli.main(base) == 0  # the server's default: its last 200 kB, from a whole line
+    got, size = capsys.readouterr(), path.stat().st_size
+    assert got.out.startswith("row ") and "HEADER" not in got.out
+    assert f"{size:,} bytes" in got.err and f"--tail {size}" in got.err
+    one = ops.data / "operator" / "snapshot.json"  # one line of 185,676 bytes on the server, and growing
+    one.parent.mkdir(exist_ok=True)
+    one.write_text(json.dumps({"snipers": [], "pad": "x" * 210_000}))
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "read", "operator/snapshot.json"]) == 0
+    got = capsys.readouterr()
+    assert got.out == "" and "longer than the tail shows nothing" in got.err
+    assert req(ops, key, "read", path="operator/snapshot.json")["cut"] is True
+    assert req(ops, key, "read", path="operator/snapshot.json", tail=10**6)["cut"] is False
+
+
+def test_a_job_s_log_cut_by_its_tail_says_so(env, monkeypatch, capsys):
+    """`remote --wait run` reads a job's last 20 kB: a job whose report is one line longer than that printed nothing,
+    and nothing said why."""
+    from snipetech import cli
+
+    ops, key = env
+    jid = "20261122-101010-abcdef"
+    log = ops.data / "jobs" / f"{jid}.log"
+    log.write_text("first line\n" + json.dumps({"report": "x" * 30_000}) + "\n")
+    (ops.data / "jobs" / f"{jid}.json").write_text(json.dumps({"id": jid, "argv": ["lab"], "started": 1, "ended": 2,
+                                                               "exit_code": 0, "running": False}))  # fmt: skip
+    st = req(ops, key, "job", id=jid)
+    assert st["output"] == "" and st["output_cut"] is True and st["output_bytes"] == log.stat().st_size
+    assert "output_cut" not in req(ops, key, "job", id=jid, tail=10**6)  # whole: nothing more in the answer
+    monkeypatch.setattr(O, "call", lambda url, k, op, **kw: req(ops, key, op, **kw))
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "job", jid]) == 0
+    assert f"remote read jobs/{jid}.log --tail {log.stat().st_size}" in capsys.readouterr().err
+
+
 def test_sql_is_read_only(env):
     ops, key = env
     r = req(ops, key, "sql", query="SELECT key, updated FROM coverage")
@@ -125,6 +230,40 @@ def test_http_roundtrip(env):
         with pytest.raises(O.OpsError) as exc:
             O.call(url, key, "run", argv=["agent"])
         assert exc.value.code == 403
+    finally:
+        server.shutdown()
+
+
+def test_an_unsigned_or_stalled_post_holds_no_server_thread(env, monkeypatch):
+    """22 Nov audit (ops#10): before any signature was looked at, a POST's whole body (up to 6 MB) was read with no time
+    limit: an unsigned request that sent its body slowly held a server thread as long as it liked, and many of them
+    held memory in the ops service's cgroup, which the live runner jobs share. A request with no signature, or none
+    that could be one, is refused at once and its body never read; a body that does not come in time is cut off."""
+    import base64
+    import socket
+
+    ops, _key = env
+    monkeypatch.setattr(O, "BODY_SECS", 1.0)
+    server = O.make_server(ops, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6000000\r\n"
+    try:
+        for sig in (b"", b"X-Ops-Signature: not-a-signature\r\n"):
+            s = socket.create_connection(server.server_address)
+            s.sendall(head + sig + b"\r\n" + b"x" * 1000)  # and then nothing more
+            s.settimeout(3)
+            assert s.recv(200).split(b"\r\n")[0].endswith(b" 401 Unauthorized")
+            s.close()
+        s = socket.create_connection(server.server_address)  # one that could be signed: its body is waited for
+        s.sendall(head + b"X-Ops-Signature: " + base64.b64encode(b"\0" * 64) + b"\r\n\r\n" + b"x" * 1000)
+        s.settimeout(5)
+        t0 = time.monotonic()
+        assert s.recv(200) == b"" and time.monotonic() - t0 < 4  # cut off at BODY_SECS, not left to wait
+        s.close()
+        assert server.RequestHandlerClass.timeout == O.REQUEST_SECS
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        assert O.call(url, _key, "status")["branch"] == "main"
+        assert O.call(url, _key, "write", name="big.txt", content="x" * (4 << 20))["bytes"] == 4 << 20  # `remote put`
     finally:
         server.shutdown()
 
@@ -812,6 +951,120 @@ def test_no_job_starts_while_a_code_update_goes_out(env, monkeypatch):
     assert ops.op_run(["rescore"])["argv"] == ["rescore"]
 
 
+def test_two_updates_asked_at_once_never_both_go_out(env, monkeypatch):
+    """22 Nov audit (ops#4): "never while another update is going out" was a check, then systemctl's answer for eight
+    units and the start, then the mark: two asks that came together (two clients on --when-quiet, each asking every
+    15 s) both passed the check, and two updates reset and reinstalled the checkout under each other."""
+    ops, key = env
+    started: list[list[str]] = []
+
+    def start(cmd, argv, timeout):
+        started.append(argv)
+        return {"id": f"20261122-1200{len(started):02d}-aaaaa{len(started)}", "argv": argv}
+
+    def systemctl(cmd):
+        time.sleep(0.05)  # `systemctl is-active` of eight units: tens of milliseconds on the server
+        return "".join("inactive\n" for _ in cmd[2:])
+
+    monkeypatch.setattr(ops, "_start", start)
+    monkeypatch.setattr(ops, "_run", systemctl)
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": []})
+    go, refused = threading.Barrier(2), []
+
+    def ask():
+        go.wait()
+        try:
+            req(ops, key, "update")
+        except O.OpsError as e:
+            refused.append(e)
+
+    threads = [threading.Thread(target=ask) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(started) == 1 and len(refused) == 1
+    assert refused[0].code == 409 and "going out" in str(refused[0])
+
+
+def _checkouts(tmp_path):
+    """An origin with the old commit, the server's checkout of it, and the new commit pushed from elsewhere."""
+    import subprocess as sp
+
+    def git(*a, cwd):
+        return sp.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    origin, checkout, other = tmp_path / "origin.git", tmp_path / "checkout", tmp_path / "other"
+    sp.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    for d in (checkout, other):
+        sp.run(["git", "clone", "-q", str(origin), str(d)], check=True, capture_output=True)
+        git("config", "user.email", "a@b", cwd=d), git("config", "user.name", "a", cwd=d)
+    (checkout / "f").write_text("old\n")
+    git("add", "f", cwd=checkout), git("commit", "-qm", "old code", cwd=checkout)
+    git("push", "-q", "origin", "HEAD:main", cwd=checkout)
+    git("pull", "-q", "origin", "main", cwd=other)
+    (other / "f").write_text("new\n")
+    git("commit", "-qam", "new code", cwd=other), git("push", "-q", "origin", "HEAD:main", cwd=other)
+    return checkout, git("rev-parse", "--short", "HEAD", cwd=checkout), git("rev-parse", "--short", "HEAD", cwd=other)
+
+
+def test_an_update_whose_install_fails_puts_the_checkout_back(env, tmp_path, monkeypatch):
+    """22 Nov audit (ops#3): an update reset the checkout to the new commit, then installed it. When the install failed
+    (pip asks the package index for its build tools on every editable install) the chain stopped before the restarts:
+    the recorder and this endpoint ran the code of before, every timer unit and new job started on the new files, and
+    `status` named the new commit as the code. A failed install now puts the checkout back on its commit and the
+    update fails, saying so."""
+    ops, _key = env
+    checkout, old, new = _checkouts(tmp_path)
+    pip = checkout / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\necho 'ERROR: Could not find a version that satisfies the requirement setuptools>=77' >&2\n"
+                   "exit 1\n")  # fmt: skip
+    pip.chmod(0o755)
+    monkeypatch.setattr(O, "SYSTEMCTL", "/bin/true")  # nothing on this machine is restarted
+    up = O.Ops(repo=checkout, data=ops.data, db=ops.db, keys_file=ops.keys_file, branch="main", use_sudo=False)
+    monkeypatch.setattr(up, "deploy_waits_for", list)  # nothing mid-run
+
+    def update():
+        job = up.op_update()
+        for _ in range(200):
+            st = up.op_job(job["id"])
+            if not st["running"]:
+                return st
+            time.sleep(0.05)
+        raise AssertionError("the update did not end")
+
+    st = update()
+    assert st["exit_code"] == 1 and "deployed" not in st["output"] and f"back on {old}" in st["output"]
+    assert (checkout / "f").read_text() == "old\n" and up.op_status()["code"].startswith(old)
+    pip.write_text("#!/bin/sh\nexit 0\n")  # the package index answers again: the next update goes out
+    st = update()
+    assert st["exit_code"] == 0 and f"deployed {new}" in st["output"] and (checkout / "f").read_text() == "new\n"
+
+
+def test_status_names_the_code_this_endpoint_runs(tmp_path, monkeypatch):
+    """Beside the checkout's commit (`code`, what the next job runs), the commit this endpoint started on: a deploy
+    that changed the files but did not restart it shows as two commits."""
+    from types import SimpleNamespace
+
+    from snipetech import cli
+    from snipetech.config import Config
+
+    checkout, old, _new = _checkouts(tmp_path)
+    served = {}
+
+    class Server:
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(O, "make_server", lambda ops, host, port: served.setdefault("ops", ops) and Server())
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    args = SimpleNamespace(repo=str(checkout), branch="main", data=None, keys=None, host="127.0.0.1", port=0)
+    assert cli._ops_serve(args, cfg) == 0
+    monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "no-cgroup")
+    st = served["ops"].op_status()
+    assert st["endpoint_code"].startswith(old) and st["code"] == st["endpoint_code"]
+
+
 def test_the_database_copy_holds_no_deploy(env, monkeypatch):
     """20 Nov audit (server health 2): the 3-hourly copy took 41 to 69 minutes on 18-20 Nov, longer than the deploy
     hold (DEPLOY_HOLD_MAX_SECS, half an hour) and the client's wait, so a deploy asked during one gave up after holding
@@ -870,6 +1123,21 @@ def test_a_remote_runner_job_gets_the_time_limit_its_own_flags_need(monkeypatch,
     assert seen[-1][1]["op_args"] == {"timeout": 90 * 60}
     assert cli.main([*base, "run", "status"]) == 0
     assert "op_args" not in seen[-1][1]  # the server's own default
+
+
+def test_a_remote_guard_job_gets_the_time_limit_its_minutes_need(monkeypatch):
+    """22 Nov audit (ops#5): the limit above was given to `oktech cycle` only. `remote run oktech guard --max-minutes
+    1440` got the server's 6 h, and at hour 6 the guard was killed with no report: its snipers ran on with no floor
+    and no reserve watch for the rest of the time the owner approved."""
+    from snipetech import cli
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    guard = ["oktech", "guard", "--id", "a", "--address", "W", "--floor", "5", "--max-minutes", "1440"]
+    assert cli._job_limit(guard, None) == 1440 * 60 + 600 + 900  # its minutes, 10 over, the 15-minute watch at its end
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "run", *guard]) == 0
+    assert seen[-1][1]["op_args"] == {"timeout": 1440 * 60 + 600 + 900}
+    assert cli._job_limit(guard[:-2], None) == 60 * 60 + 600 + 900  # its default minutes
 
 
 def test_every_answer_and_every_redaction_hides_every_secret(env, monkeypatch, tmp_path):

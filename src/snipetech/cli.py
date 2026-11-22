@@ -1682,10 +1682,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--wait", action="store_true", help="run/job/update: wait for the job and print its output")
     sp.add_argument("--timeout", type=float, default=None, metavar="MINUTES",
                     help="run: the job's time limit (the server's 6 h by default; an `oktech cycle` job's own minutes, "
-                         "wait for SOL and watch after its end set it)")  # fmt: skip
+                         "wait for SOL and watch after its end set it, an `oktech guard` job's minutes)")  # fmt: skip
     sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
                                        "logs", "update", "daily"])  # fmt: skip
-    sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path; "
+    sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path "
+                    "(read: its last 200 kB from a whole line, said when cut; --tail BYTES for more); "
                     "put: local-file name; sql: query; logs: a unit, kernel, systemd or network, with --boot -1 for the boot "
                     "before this one and --lines N; update: --when-quiet [minutes] to wait (20) for the moment no job or "
                     "timer unit is mid-run, --force to deploy although one is")  # fmt: skip
@@ -2506,6 +2507,7 @@ def _ops_serve(args, cfg: Config) -> int:
                                            capture_output=True, text=True).stdout.strip() or "main"  # fmt: skip
     ops = Ops(repo=repo, data=Path(args.data or db.parent), db=db,
               keys_file=Path(args.keys or repo / "deploy" / "ops_authorized_keys"), branch=branch)  # fmt: skip
+    ops.endpoint_code = ops._git("log", "-1", "--format=%h %s %cI")  # the code this process runs until it restarts
     server = make_server(ops, args.host, args.port)
     print(f"ops endpoint on {args.host}:{args.port} (repo {repo}, branch {branch}, data {ops.data})", flush=True)
     try:
@@ -2522,11 +2524,12 @@ UPDATE_WAIT_MINUTES = 20.0
 def _job_limit(rest: list[str], minutes: float | None) -> int | None:
     """The time limit (seconds) to ask for a remote job: `--timeout` minutes when given; for `oktech cycle`, what its own
     flags need (its wait for SOL, its minutes, the watch after its end, and 10 minutes over: killed at its limit a
-    runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); else None, the server's
+    runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); for `oktech guard`, its minutes,
+    the watch at its end and 10 over (killed, its floor watch ends early: 22 Nov audit); else None, the server's
     default."""
     if minutes is not None:
         return int(float(minutes) * 60)
-    if rest[:2] != ["oktech", "cycle"]:
+    if rest[:2] not in (["oktech", "cycle"], ["oktech", "guard"]):
         return None
     from .service import END_WATCH_SECS
 
@@ -2534,6 +2537,8 @@ def _job_limit(rest: list[str], minutes: float | None) -> int | None:
         a = build_parser().parse_args(rest)
     except SystemExit:  # not a command this version reads: the server says why
         return None
+    if rest[1] == "guard":
+        return int(float(a.max_minutes) * 60 + 600 + END_WATCH_SECS)
     need = (
         float(a.max_minutes) * 60 + 600 + END_WATCH_SECS
     )  # the watch after the end runs with or without --sweep-after
@@ -2595,6 +2600,10 @@ def _remote(args) -> int:
         print(json.dumps(st, default=str))
         if out:
             print(out, end="" if out.endswith("\n") else "\n")
+        if st.get("output_cut"):  # the server sent its log's end only: said, never read as the whole of it
+            print(f"remote: the job's log is {int(st.get('output_bytes') or 0):,} bytes and this is its end only, "
+                  f"from a whole line (`remote read jobs/{st.get('id')}.log --tail {st.get('output_bytes')}` reads it "
+                  "all)", file=sys.stderr)  # fmt: skip
 
     try:
         a = args.action
@@ -2612,9 +2621,25 @@ def _remote(args) -> int:
             show_job(st)
         elif a == "kill":
             print(json.dumps(go("kill", id=rest[0])))
-        elif a == "read":
-            r = go("read", path=rest[0])
-            print(r["content"], end="")
+        elif a == "read":  # read PATH [--tail BYTES]: the server's last 200 kB unless told
+            opts = {}
+            if "--tail" in rest:
+                k = rest.index("--tail")
+                try:
+                    opts["tail"] = int(rest[k + 1])
+                except (IndexError, ValueError):
+                    print("read: --tail takes a number of bytes", file=sys.stderr)
+                    return 2
+                del rest[k : k + 2]
+            r = go("read", path=rest[0], **opts)
+            text = r.get("content") or ""
+            print(text, end="")
+            shown = len(text.encode())
+            cut = r["cut"] if "cut" in r else int(r.get("bytes") or 0) > shown  # a server before `cut`: by the sizes
+            if cut:  # 22 Nov audit: a cut read said nothing
+                print(f"remote read: {r.get('path')} is {int(r.get('bytes') or 0):,} bytes and this is its last "
+                      f"{shown:,}, from the start of a whole line (--tail {r.get('bytes')} reads it all; a line longer "
+                      "than the tail shows nothing)", file=sys.stderr)  # fmt: skip
         elif a == "ls":
             r = go("ls", path=rest[0] if rest else "")
             for it in r["items"]:

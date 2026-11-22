@@ -711,6 +711,38 @@ def test_guard_floor_is_on_equity_not_on_the_sol_balance(monkeypatch):
     store.close()
 
 
+def test_a_guard_whose_job_limit_is_shorter_than_its_minutes_starts_nothing(monkeypatch):
+    """22 Nov audit (ops#5): killed at its job's limit (the server's 6 h against a 24 h guard), a guard dies with no
+    report and its snipers run on with no floor watch. As a cycle does, it refuses such a limit before it starts
+    anything; a limit that fits its minutes runs it."""
+    import itertools
+
+    class Client:
+        def __init__(self):
+            self.started: list[str] = []
+
+        async def start(self, i):
+            self.started.append(i)
+            return {"task": {"status": "running"}}
+
+        async def tasks(self):
+            return [{"id": "a", "status": "finished"}]
+
+        async def close(self):
+            pass
+
+    client = Client()
+    svc, store = _guard_env(monkeypatch, itertools.repeat(1.0), client)
+    monkeypatch.setenv("SNIPETECH_JOB_TIMEOUT", str(6 * 3600))
+    with pytest.raises(SystemExit, match="time limit") as e:
+        asyncio.run(svc.oktech_guard(["a"], W6, 0.5, 1440))
+    assert client.started == [] and "nothing started" in str(e.value)
+    monkeypatch.setenv("SNIPETECH_JOB_TIMEOUT", str(1440 * 60 + 600 + 900))  # what `remote run oktech guard` asks for
+    asyncio.run(svc.oktech_guard(["a"], W6, 0.5, 1440))
+    assert client.started == ["a"]
+    store.close()
+
+
 def test_guard_reports_failed_stops_and_survives_oktech_errors(monkeypatch):
     import asyncio
     import itertools

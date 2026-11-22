@@ -40,7 +40,14 @@ from typing import Any
 from .jobfiles import job_files
 
 SKEW_SECS = 300
+# the nonces of the signed requests that can still be fresh (2 x SKEW_SECS), in the data directory and never served
+# (a dot-file): a request seen before is refused after a restart too (22 Nov audit: every deploy restarts this endpoint)
+NONCES = ".ops-nonces.json"
 MAX_BODY = 6 << 20
+# 22 Nov audit: a POST's whole body was read before any signature was looked at, with no time limit. Every read and
+# write of a request waits REQUEST_SECS at most, and a body (6 MB at the most) has BODY_SECS in all
+REQUEST_SECS = 30
+BODY_SECS = 120.0
 MAX_WRITE = 5 << 20
 # `remote sql` reads the live database, and a read holds its WAL back until it ends (no checkpoint passes it, the WAL
 # cannot start over): a query is cut at this many seconds, whatever a request asks for
@@ -111,13 +118,18 @@ def public_line(path: str | Path, comment: str = "snipetech-ops") -> str:
 
 
 def load_keys(path: Path) -> list[bytes]:
+    """The public keys the keys file lists. A line that is no key (one pasted short, a stray character) is skipped:
+    22 Nov audit, one such line made every request a 500, the update that would bring the fixed file too."""
     out = []
     if not path.exists():
         return out
     for line in path.read_text().splitlines():
         parts = line.split()
         if len(parts) >= 2 and parts[0] == "ed25519":
-            raw = base64.b64decode(parts[1])
+            try:
+                raw = base64.b64decode(parts[1], validate=True)
+            except (binascii.Error, ValueError):
+                continue
             if len(raw) == 32:
                 out.append(raw)
     return out
@@ -293,13 +305,19 @@ def redact(text: str) -> str:
 def _tail(path: Path, tail: int) -> str:
     """The last `tail` bytes of a file, from the first whole line in them: a read that cut into a line would hand
     out the rest of it, a secret's rest too, which the scrub (whole values) lets through (22 Nov review)."""
+    return _tail_of(path, tail)[0]
+
+
+def _tail_of(path: Path, tail: int) -> tuple[str, int]:
+    """`_tail`, and the size of the file it read: one larger than `tail` was cut (22 Nov audit: a cut read said
+    nothing, and one line longer than the tail read as an empty file)."""
     size = path.stat().st_size
     with path.open("rb") as f:
         f.seek(max(0, size - tail))
         data = f.read()
     if size > tail:
         data = data.split(b"\n", 1)[1] if b"\n" in data else b""
-    return data.decode(errors="replace")
+    return data.decode(errors="replace"), size
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -361,9 +379,12 @@ class Ops:
     branch: str
     command: list[str] = field(default_factory=list)  # prefix for allowlisted commands
     use_sudo: bool = True
+    endpoint_code: str | None = None  # the commit this endpoint started on (cli._ops_serve); it runs it until restarted
     jobs: dict[str, Job] = field(default_factory=dict)
     _nonces: dict[str, float] = field(default_factory=dict)
+    _nonces_read: bool = field(default=False, repr=False)  # NONCES read in at the first signed request
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _update_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)  # op_update: check, start, mark
     _asked: threading.local = field(default_factory=threading.local, repr=False)  # .remote: inside a signed request
 
     def __post_init__(self):
@@ -387,10 +408,14 @@ class Ops:
         if not isinstance(ts, (int, float)) or abs(now - ts) > SKEW_SECS:
             raise OpsError(401, "stale request (check the clock)")
         with self._lock:
+            if not self._nonces_read:  # those of the process before a restart (NONCES)
+                self._nonces = self._read_nonces() | self._nonces
+                self._nonces_read = True
             self._nonces = {n: t for n, t in self._nonces.items() if now - t < 2 * SKEW_SECS}
             if not nonce or nonce in self._nonces:
                 raise OpsError(401, "replayed request")
             self._nonces[nonce] = now
+            self._keep_nonces()
         op, args = req.get("op"), req.get("args") or {}
         fn = getattr(self, f"op_{op}", None) if isinstance(op, str) and op.isidentifier() else None
         if fn is None:
@@ -400,6 +425,23 @@ class Ops:
             return self.scrub(fn(**args))
         finally:
             self._asked.remote = False
+
+    def _read_nonces(self) -> dict[str, float]:
+        try:
+            kept = json.loads((self.data / NONCES).read_text())
+            return {str(n): float(t) for n, t in kept.items()} if isinstance(kept, dict) else {}
+        except (OSError, ValueError, TypeError, AttributeError):  # none yet, or a broken one: this process's alone
+            return {}
+
+    def _keep_nonces(self) -> None:
+        """Atomic, as `_save_meta`; a file that cannot be written leaves the nonces in memory, as before."""
+        path = self.data / NONCES
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(self._nonces))
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
     def scrub(self, obj: Any) -> Any:
         """Every answer, with every secret (`secret_values`) and every key in a URL replaced by <redacted>."""
@@ -414,7 +456,8 @@ class Ops:
         out: dict[str, Any] = {
             "time": int(time.time()),
             "branch": self.branch,
-            "code": self._git("log", "-1", "--format=%h %s %cI"),
+            "code": self._git("log", "-1", "--format=%h %s %cI"),  # the checkout's: what the next job runs
+            "endpoint_code": self.endpoint_code,  # this endpoint's own: another while a deploy has not restarted it
         }
         from .infra import nightly
 
@@ -472,11 +515,12 @@ class Ops:
         if job is None and meta is None:
             raise OpsError(404, f"no job {id}")
         log = self.data / "jobs" / f"{id}.log"
-        text = ""
+        text, size = "", 0
         if log.exists():
-            text = _tail(log, int(tail))
+            text, size = _tail_of(log, int(tail))
         state = self._job_dict(job) if job else meta
-        return state | {"output": text}
+        cut = {"output_bytes": size, "output_cut": True} if size > int(tail) else {}  # only its end: said (`remote`)
+        return state | {"output": text} | cut
 
     def op_jobs(self) -> dict[str, Any]:
         """Every running job first, however old (a session checks this list before a deploy kills running jobs: a
@@ -527,10 +571,12 @@ class Ops:
         return {"path": str(d.relative_to(self.data)), "items": items}
 
     def op_read(self, path: str, tail: int = 200000) -> dict[str, Any]:
+        """The file's last `tail` bytes from a whole line (`_tail`); `cut`: the file is longer, this is its end only."""
         p = self._inside(path)
         if not p.is_file() or self._hidden(p):
             raise OpsError(404, f"no file {path}")
-        return {"path": path, "bytes": p.stat().st_size, "content": _tail(p, int(tail))}
+        text, size = _tail_of(p, int(tail))
+        return {"path": path, "bytes": size, "content": text, "cut": size > int(tail)}
 
     def op_write(self, name: str, content: str) -> dict[str, Any]:
         base = (self.data / "inputs").resolve()
@@ -631,7 +677,12 @@ class Ops:
         """Bring the checkout to the branch's tip and restart the recorder and this endpoint. Refused (409) while a job
         or a timer-run unit is mid-run that would go on with part old and part new code (`deploy_waits_for`), with
         each named; `force` deploys all the same. Never while another update is going out (`update_going_out`), force
-        or not: two at once would reset and reinstall the checkout under each other."""
+        or not: two at once would reset and reinstall the checkout under each other. The check, the start and the mark
+        are one step (`_update_lock`): 22 Nov audit, two asks that came together both passed the check."""
+        with self._update_lock:
+            return self._update(force)
+
+    def _update(self, force: bool) -> dict[str, Any]:
         if self.update_going_out():
             raise OpsError(409, "a code update is going out right now: this one waits until it is out (seconds)")
         held = [] if force else self.deploy_waits_for()
@@ -650,9 +701,15 @@ class Ops:
             [*sudo, SYSTEMCTL, "--no-block", "restart", "snipetech-ops"],  # last: this server restarts itself
         ]
         lines = [" ".join(_sh(a) for a in s) for s in steps]
+        # an install that fails (no package index for pip's build tools, a dependency it cannot get) puts the checkout
+        # back on its commit: nothing is restarted, and the timer units and new jobs keep the files the installed code
+        # came from (22 Nov audit: they ran the new files beside the old services, and `status` named the new commit)
+        repo = _sh(str(self.repo))
+        lines[2] = (f'{{ {lines[2]} || {{ git -C {repo} reset -q --hard "$old"; echo "the install failed: the checkout '
+                    'is back on $old and nothing was restarted" >&2; exit 1; }; }')  # fmt: skip
         # the events poll, a service the sudo rule cannot restart: ended, its unit starts the new code (EVENTS_POLL)
         lines.insert(4, f"(pkill -TERM -f {_sh(EVENTS_POLL_PATTERN)} || true)")
-        script = " && ".join(lines)
+        script = f"old=$(git -C {repo} rev-parse HEAD) && " + " && ".join(lines)
         (self.data / DEPLOY_WAITS).unlink(missing_ok=True)  # it is going out: nothing waits any more
         job = self._start(["/bin/sh", "-c", script], ["update"], 1800)
         try:  # its first step fetches over the network for a second or more: the mark is down before files change
@@ -971,16 +1028,41 @@ def _mem_gb() -> float | None:
 
 def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
+        timeout = REQUEST_SECS  # each read and write of the connection (the request line and headers too)
+
         def log_message(self, fmt, *args):
             pass
 
-        def _send(self, code: int, data: dict) -> None:
+        def _send(self, code: int, data: dict, close: bool = False) -> None:
             raw = json.dumps(data, default=str).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
+            if close:  # a body left unread is never taken for the next request
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(raw)
+
+        def _body(self, n: int) -> bytes | None:
+            """The body's `n` bytes, read within BODY_SECS in all; None (the connection is dropped) when they do not
+            come in time: a client that sends slowly holds no thread for longer."""
+            deadline, chunks, got = time.monotonic() + BODY_SECS, [], 0
+            try:
+                while got < n:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        return None
+                    self.connection.settimeout(min(left, REQUEST_SECS))
+                    chunk = self.rfile.read1(min(1 << 16, n - got))
+                    if not chunk:
+                        return None
+                    chunks.append(chunk)
+                    got += len(chunk)
+            except OSError:  # TimeoutError among them
+                return None
+            finally:
+                self.connection.settimeout(REQUEST_SECS)
+            return b"".join(chunks)
 
         def _dash_auth(self) -> bool:
             """HTTP basic auth, password = DASH_TOKEN (any user name). No token configured → the routes do not exist."""
@@ -1039,8 +1121,17 @@ def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> Threadin
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             if n <= 0 or n > MAX_BODY:
-                return self._send(413, {"error": "body size"})
-            body = self.rfile.read(n)
+                return self._send(413, {"error": "body size"}, close=True)
+            try:  # no signature, or none that could be one: refused before the body is read (`handle` checks it)
+                signed = len(base64.b64decode(self.headers.get("X-Ops-Signature") or "", validate=True)) == 64
+            except (binascii.Error, ValueError):
+                signed = False
+            if not signed:
+                return self._send(401, {"error": "bad signature"}, close=True)
+            body = self._body(n)
+            if body is None:
+                self.close_connection = True
+                return None
             try:
                 self._send(200, ops.handle(body, self.headers.get("X-Ops-Signature")))
             except OpsError as exc:

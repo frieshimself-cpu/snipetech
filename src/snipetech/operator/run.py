@@ -17,7 +17,7 @@ from ..book.watch import watch_wallet
 from ..claude_client import has_claude_key
 from ..config import Config, provider_on
 from ..ops import _pid_alive, redact
-from . import learning, live_test, outage, plain_sol, postmortem, risk_guard, roles
+from . import learning, leftovers, live_test, outage, plain_sol, postmortem, risk_guard, roles
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
@@ -300,6 +300,15 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                     risk_guard.announce(g, notes, notifier, t0, page=_could_trade(snap, paths, t0))
             except Exception as exc:  # noqa: BLE001 - the guard's line never breaks the round
                 _log(paths, t0, redact(f"risk guard: failed: {type(exc).__name__}: {exc}"))
+            # a live run a session started (`remote run oktech cycle|guard`) that is over leaves nothing armed: its
+            # snipers are stopped once the wallet holds nothing, and named to the owner while it holds a coin (22 Nov
+            # audit: a restart killed such a run, and its snipers stayed armed with nobody told)
+            try:
+                for text in await leftovers.close(svc, cfg, paths, snap, t0,
+                                                  log=lambda m: _log(paths, t0, f"leftovers: {m}")):  # fmt: skip
+                    notifier.send(notes.write(text, "decision"))
+            except Exception as exc:  # noqa: BLE001 - the next round looks again
+                _log(paths, t0, redact(f"leftovers: failed: {type(exc).__name__}: {exc}"))
             # the owner's live test (/test <id> go in Telegram) starts here and only here: this unit's jobs outlive the
             # round and deploys (KillMode=process); the one-minute pass would take its cycler down with it
             try:
