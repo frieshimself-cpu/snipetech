@@ -812,3 +812,16 @@ def test_review_a_live_tests_sniper_is_not_excused_twice(tmp_path):
     assert watched(_sniper_snap(now, [test, rogue], run, [mine])) == ["1 sniper(s) running, expected 0"]
     other = coin(SWAP, 0.2) | {"since": now - 60, "whose": "ours", "ours": True}
     assert watched(_sniper_snap(now, [test], run, [mine, other])) == ["2 coin(s) held, expected 1"]
+
+
+def test_review_the_restart_notice_claims_no_quiet_it_could_not_read(tmp_path):
+    """When OKTech did not answer the round after a restart (its snipers None), the notice still said 'nothing was
+    traded', though a dead runner's snipers may have traded all the same. It says OKTech's snipers could not be read."""
+    from snipetech.operator import outage
+
+    paths = OperatorPaths(tmp_path).ensure()
+    outage.check(paths, 1_000_000.0, 900_000)
+    gone = outage.check(paths, 1_003_600.0, 1_003_000)
+    text = outage.words(gone, {"snipetech-tape": "active"}, None)
+    assert "nothing was traded" not in text and "could not be read" in text, text
+    assert "nothing was traded and nothing was checked" in outage.words(gone, {"snipetech-tape": "active"})

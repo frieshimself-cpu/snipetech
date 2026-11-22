@@ -93,18 +93,22 @@ def _at(ts: float, day_of: float, zone: bool = True) -> str:
 
 
 def words(event: Mapping[str, Any], services: Mapping[str, str] | None = None,
-          snipers: list[dict] | None = None) -> str:  # fmt: skip
+          snipers: list[dict] | tuple | None = ()) -> str:  # fmt: skip
     """The message for the owner. `services`: each unit's state now (the round's reading): the long-running services
     and the timers that are not active are named. `snipers`: OKTech's tasks now; one still active was armed before the
     restart and kept copying on OKTech's side with nobody watching (a dead runner's: audit 22 Nov, round#7), so the
-    message names it instead of saying nothing was traded."""
+    message names it instead of saying nothing was traded. None: OKTech did not answer, and the message says so (it
+    said nothing was traded)."""
     a, b, secs = event["from_ts"], event["to_ts"], event["secs"]
     if event["kind"] == "restart":
         tape = ("The recorder replays the trades it missed by itself." if secs <= REPLAY_SECS else
                 "That is longer than the recorder can replay (40 hours): the tape keeps a hole there.")  # fmt: skip
         armed = [str(s.get("name") or s.get("id")) for s in snipers or [] if is_active(s.get("status"))]
         missed = "nothing was traded and nothing was checked"
-        if armed:
+        if snipers is None:
+            missed = ("nothing was checked, and OKTech's snipers could not be read this round: one armed before the "
+                      "restart may have traded")  # fmt: skip
+        elif armed:
             more = f" and {len(armed) - 5} more" if len(armed) > 5 else ""
             missed = (f"nothing was checked, and {len(armed)} sniper(s) stayed armed on OKTech and may have traded: "
                       f"{', '.join(armed[:5])}{more}")  # fmt: skip
