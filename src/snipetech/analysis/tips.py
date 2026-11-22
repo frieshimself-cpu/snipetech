@@ -35,7 +35,7 @@ from .. import gmgn as G
 from ..config import Config
 from ..store import Store
 from .lab import DUST_SOL, KOL_MIN_SOL, label_groups, parse_trigger
-from .place_bids import DUST_READING, LAMPORTS, read_blocks
+from .place_bids import DUST_READING, LAMPORTS, TIP_READING, read_blocks
 
 LEVELS = (50, 75, 90)  # percent of a wallet's blocks a bid is to be above every outsider in
 SUGGESTED = (50, 90)
@@ -51,6 +51,7 @@ WARNING = (
 )
 READING = (
     "A bid is priority fee plus tip, in SOL, as the tape records it for each transaction since 11 Nov 16:34 UTC.",
+    TIP_READING,
     (
         "above_every_outsider_sol: the highest outsider bid of the block, at the 50th, 75th and 90th percentile of the "
         "wallet's blocks that had an outsider. suggested_bid_sol is one step (0.0001 SOL) above the 50 and the 90; "

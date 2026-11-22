@@ -67,11 +67,19 @@ DUST_READING = (
     "and its bid is no bid to outbid (it moves no price and competes for nothing). The bid landing model of the lab "
     "(--copy-position bid / bid-) still counts such a transaction: it stood in the block."
 )
+# audit 22 Nov: 6VhAehcS bought 11.6 SOL at block place 18 with tip 0 and paid 0.003 SOL in a tip-only transaction of
+# the same slot; the bots that hold the place right behind the big wallets show tip 0 on 19-60 % of their buys
+TIP_READING = (
+    "A tip counts the trade's own transaction only. A bundle can pay its tip in a transaction of its own, which touches "
+    "no pump.fun program and never reaches the tape: a buy near the front with a small priority fee and tip 0 bought "
+    "its place at a price the tape does not know, not for free."
+)
 READING = (
     (
         "A bid is what the transaction paid to land: its priority fee plus its tip, in SOL. The chain orders by fee per "
         "compute unit, which the tape does not hold: two bids close together say nothing about the order between them."
     ),
+    TIP_READING,
     (
         "auction.in_bid_order near 1: the place is bought, and win_at.above_all is the share of moments that bid would "
         "have been first. Near 0.5 or under: the place goes to whoever is there first, or to transactions sent together "

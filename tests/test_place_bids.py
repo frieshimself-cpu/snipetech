@@ -119,6 +119,22 @@ def test_the_bid_of_each_place_behind_a_followed_wallet():
     assert all_["first_buyer"] == {"same_block": 1.0, "next_block": 0.0, "2-4_blocks": 0.0, "nobody": 0.0}
 
 
+def test_the_table_says_a_tip_of_nothing_is_not_known_to_be_free():
+    """Audit 22 Nov: a trade's tip counts its own transaction's transfers only. A bundle can pay its tip in a transaction
+    of its own, which touches no pump.fun program and never reaches the tape (6VhAehcS bought 11.6 SOL at block place 18
+    with tip 0, and paid 0.003 SOL in a tip-only transaction in the same slot). Both bid tables say so."""
+    from snipetech.analysis import tips as T
+
+    st = _store()
+    try:
+        _coin(st, LEAD1, block=AUCTION)
+        tables = [PB.place_bids(st, Config(), NOW, trigger=RULE, hours=2), T.tips(st, Config(), NOW, group="wallet")]
+    finally:
+        st.close()
+    for out in tables:
+        assert PB.TIP_READING in out["reading"] and "never reaches the tape" in PB.TIP_READING
+
+
 def test_a_place_that_speed_takes_shows_as_bids_out_of_order():
     """A wallet's companion (the wallet its operator buys with in the next transaction) is no place a copy takes: it is
     left out, as the lab leaves it out. Behind it a low bid lands ahead of a high one in every block: the place is not
