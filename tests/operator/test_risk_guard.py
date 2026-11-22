@@ -352,6 +352,21 @@ def test_a_copy_buy_is_the_bots_whatever_its_fees(env):
     assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)["realised_sol"] == pytest.approx(-0.025)
 
 
+def test_a_sale_with_no_buy_tied_to_it_is_the_bots_by_the_fees_oktech_really_pays(env):
+    """Every sale of our snipers on record since 20 Nov paid 0.001 SOL priority and its 0.002 tip (19 of them), not the
+    0.0001 SOL their payloads' sellPriorityFeeSol names: OKTech pays a sale the buy's priority. A sale the measure stage
+    tied to no buy is told by its own fees, so those are a sniper's sale fees too: else its buy reads as still open,
+    gone from the wallet with no sale seen, and its whole cost counts as lost."""
+    _paths, store, _cfg = env
+    _measured(store, NOW - 60)
+    _sniper(store)  # by its payload a buy pays 0.001 + 0.049 and a sale 0.0001 + 0.002
+    _buy(store, "bot-b", NOW - 900, M1, sol=1.0, fee_lamports=(1_000_000, 49_000_000))
+    store.put_fill({"sig": "bot-s", "ts": NOW - 888, "wallet": W, "mint": M1, "side": "sell", "sol": 0.9,
+                    "tokens": 1_000_000, "pnl_sol": -0.1, "priority_lamports": 1_000_000,
+                    "tip_lamports": 2_000_000})  # fmt: skip
+    assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)["total_sol"] == pytest.approx(-0.1)
+
+
 def test_the_book_day_leaves_out_the_owners_own_sales(env):
     """The book's day (book/state.realised_today, the day stop's closed part) counted every sale in the wallet: a coin
     the owner bought and sold by hand at a loss is no loss of the bot's."""

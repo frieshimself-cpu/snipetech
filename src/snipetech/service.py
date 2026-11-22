@@ -1184,6 +1184,14 @@ class Service:
         most `wait_minutes`; the run's minutes, its fills and its floor count from then (the owner funds the wallet when
         the copied wallets trade).
 
+        The wallet is the owner's too: they buy, sell and send coins in it by hand while a run is on. A coin is the
+        run's only when the buy that brought it in paid the fees its snipers pay, or fees nobody recorded
+        (measure/ours.RunCoins: the tape's buy since the coin showed, else the chain's); the owner's own coins are left
+        alone, never sold by the run, counted as its fills, placed as its copies, or a reason to hold a re-arm back or
+        keep a sniper running, and the floor counts each at its worth when first known as theirs and moves with it
+        when it leaves (`owner_coins` in the report). A coin nobody can tell yet is held as the run's but never sold
+        by it. The run starts beside the owner's coins; only one of its snipers' refuses the start.
+
         `keep_plain` (SOL; None: off): one curve copy's plain SOL (the buy with pump.fun's fee inside, the bid, the
         token account's rent). OKTech keeps the wrapped SOL at 1.1 times the buy the whole time a sniper runs, whatever
         its platforms (the wrap test, 21 Nov 21:51-22:00: turned back into plain SOL, it was wrapped again within two
@@ -1224,6 +1232,11 @@ class Service:
                 raise SystemExit(f"--place-stop reads our place behind the copied wallet, and {', '.join(nobody)} "
                                  "is no copy sniper (a hunt or strategy sniper copies no wallet): run it without "
                                  "--place-stop; nothing cycled")  # fmt: skip
+        from .measure.ours import WHOSE_MARGIN_SECS, RunCoins, bot_tape_buy, sniper_marks
+
+        # whose each coin in the wallet is: the run's (its snipers' fees on the buy) or the owner's own (measure/ours.py)
+        run_marks = sniper_marks(((mine.get(i) or {}).get("payload") or {}) for i in ids)
+        coins = RunCoins(self.store, self.rpc, address, run_marks)
         client = self._oktech()
         events: list[str] = []
 
@@ -1236,9 +1249,11 @@ class Service:
             return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
 
         def fills_since(ts: float) -> int:
-            """The wallet's buys on the tape since `ts` (0 when the tape cannot be read: then nothing is re-armed)."""
+            """The run's buys on the tape since `ts`, the owner's own left out (0 when the tape cannot be read: then
+            nothing is re-armed)."""
             try:
-                return sum(1 for t in self.store.trades_for_user(address, int(ts)) if t.is_buy)
+                return sum(1 for t in self.store.trades_for_user(address, int(ts), fees=True)
+                           if t.is_buy and bot_tape_buy(t, run_marks))  # fmt: skip
             except Exception:  # noqa: BLE001 - tape_lag says so, and the coins seen in the wallet still count
                 return 0
 
@@ -1303,12 +1318,12 @@ class Service:
             keeps them running to sell. With `sweep_after` a coin held at the end is watched first (`watch_out`): sold
             by its sniper or by the run, the snipers are stopped then. (The reason with what was done, the coins held
             or None when unreadable.)"""
-            try:
-                held = await open_positions()
+            try:  # the run's coins only: one of the owner's own keeps no sniper of the run's running
+                held, _, _ = await sort_coins(await open_positions(), time.time())
                 # a buy on its way (the SOL left, its coin not shown yet) is a coin: wait for it before stopping any
                 while not held and fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS:
                     await asyncio.sleep(3.0)
-                    held = await open_positions()
+                    held, _, _ = await sort_coins(await open_positions(), time.time())
             except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
                 log(f"holdings check at the end failed ({exc})")
                 return (
@@ -1365,13 +1380,65 @@ class Service:
         tasks_read_at, tasks_unread = 0.0, False
         swept: list[dict] = []  # the coins this run sold itself (`sweep_after`)
         sweep_tried: dict[str, float] = {}  # when each coin's last sale was sent or failed: one try a minute
+        sight: dict[str, float] = {}  # each coin held now, anyone's, and when this holding of it was first seen
+        owner_val: dict[str, float] = {}  # the owner's own coins held now, at their value when first known as theirs
+        owner_coins: list[str] = []  # each coin of the owner's the run has left alone, in the order first known
+        unsure_said: set[str] = set()  # the coins said to be nobody's known yet, once each holding
+
+        async def sort_coins(held_all: list[dict], now: float, since: float | None = None):
+            """(the run's coins among `held_all`: bought by its snipers, or not known yet; the owner's own coins first
+            known as theirs in this reading, each with its value then and whether this reading is the holding's first;
+            the owner's own coins gone since the last reading, each with the value the floor counted). Whose a coin is:
+            measure/ours.RunCoins, by the buy since the coin first showed (or since `since`). 22 Nov: the owner buys,
+            sells and sends coins by hand in this wallet while a run is on; the run sold, counted and waited on them."""
+            nonlocal arrivals
+            mints = {str(h["mint"]) for h in held_all if h.get("mint")}
+            gone = [(m, owner_val.pop(m)) for m in list(owner_val) if m not in mints]
+            for m in [m for m in sight if m not in mints]:
+                del sight[m]
+                coins.forget(m)
+                unsure_said.discard(m)
+            run_coins, new_owner = [], []
+            for h in held_all:
+                m = str(h.get("mint") or "")
+                if not m:
+                    run_coins.append(h)
+                    continue
+                if m in owner_val:
+                    continue
+                first = m not in sight
+                sight.setdefault(m, now)
+                w = await coins.whose(h, sight[m] - WHOSE_MARGIN_SECS if since is None else since, now)
+                if w != "owner":
+                    if w is None and m not in unsure_said:
+                        unsure_said.add(m)
+                        log(f"{m}: no buy of it read yet, on the tape or the chain, so whose coin it is cannot be told: "
+                            "held as the run's (no re-arm while it is) and not sold by the run until it can")  # fmt: skip
+                    run_coins.append(h)
+                    continue
+                v = float(h["value_sol"]) if h.get("value_sol") is not None else 0.0
+                owner_val[m] = v
+                new_owner.append((m, v, first))
+                if m not in owner_coins:
+                    owner_coins.append(m)
+                if m in held_since:  # counted as the run's while nobody could tell: it was no buy of the run's
+                    del held_since[m]
+                    arrivals = max(0, arrivals - 1)
+                    if first_seen.get(m, -1.0) >= sight[m]:
+                        del first_seen[m]
+                log(f"{m} is the owner's own coin (the buy that brought it in paid none of this run's snipers' fees): "
+                    f"left alone, never sold, counted or waited on by the run; the floor counts it at {v:.4f} SOL "
+                    "while it is held")  # fmt: skip
+            return run_coins, new_owner, gone
 
         async def sweep_stuck(held: list[dict], now: float) -> None:
-            """Sell each coin held `sweep_after` seconds since this holding of it began that no try in the last minute
-            covers."""
+            """Sell each coin of the run's held `sweep_after` seconds since this holding of it began that no try in the
+            last minute covers. A coin nobody can tell is the run's yet is never sold: it may be the owner's."""
             for h in held:
                 mint = str(h.get("mint") or "")
                 if not mint or now - held_since.get(mint, now) < float(sweep_after or 0):
+                    continue
+                if coins.known(mint) != "ours":
                     continue
                 if now - sweep_tried.get(mint, -1e18) < SWEEP_RETRY_SECS:
                     continue
@@ -1401,7 +1468,7 @@ class Service:
                 await asyncio.sleep(5)
                 try:
                     b = await balance()
-                    now_held = await open_positions()
+                    now_held, _, _ = await sort_coins(await open_positions(), time.time())
                 except Exception as exc:  # noqa: BLE001 - unknown holdings stop nothing: read again in 5 s
                     if not unread:
                         log(f"rpc check after the end failed ({exc}); still watching")
@@ -1464,8 +1531,9 @@ class Service:
             each, and say why the re-arms end once N of the last M placed were out of place (None while they go on)."""
             from .measure.classify import classify_trade
 
-            try:
-                buys = [t for t in self.store.trades_for_user(address, int(t0)) if t.is_buy]
+            try:  # the run's own buys: a hand buy of the owner's copies nobody, and is no copy out of place
+                buys = [t for t in self.store.trades_for_user(address, int(t0), fees=True)
+                        if t.is_buy and bot_tape_buy(t, run_marks)]  # fmt: skip
             except Exception:  # noqa: BLE001 - read again at the next tick
                 return None
             for t in buys:
@@ -1509,7 +1577,7 @@ class Service:
             """The report of a run that ended in its wait for the owner's SOL: nothing was touched."""
             log(why)
             return {"start_sol": None, "end_sol": None, "reason": why, "fills": 0, "restarts": 0, "held": [],
-                    "left_running": [], "swept": [], "places": [], "events": events}  # fmt: skip
+                    "left_running": [], "swept": [], "places": [], "owner_coins": [], "events": events}  # fmt: skip
 
         async def wrapped_sol() -> float:
             """The wallet's wrapped SOL; 0 when it cannot be read (said): the plain SOL alone is then the reading."""
@@ -1566,23 +1634,29 @@ class Service:
                 t0 = time.time()  # the run's minutes and fills count from its start, not from the wait
             b0 = await settled(balance)
             w0 = await wrapped_sol()
-            how = ""
-            if max_loss is not None:
-                floor_sol = round(b0 + w0 - float(max_loss), 4)
-                how = f" ({b0 + w0:.4f} at the start less the {max_loss:g} SOL max loss)"
-            held0 = await settled(open_positions)  # before any sniper is touched: a stopped sniper strands its coin
+            held0_all = await settled(open_positions)  # before any sniper is touched: a stopped sniper strands its coin
+            # the owner's own coins strand nothing: the newest buy of each says whose it is
+            held0, _, _ = await sort_coins(held0_all, time.time(), since=0)
             if held0:
-                raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({h.get('value_sol', 0):.4f} SOL)" for h in held0)
+                raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({float(h.get('value_sol') or 0):.4f} SOL)"
+                                                                 for h in held0)
                                  + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
                                  "pass --ignore-mint MINT for a position no sniper manages.")  # fmt: skip
+            owner0 = round(sum(owner_val.values()), 6)  # the owner's own coins at their worth now, counted in
+            how = ""
+            if max_loss is not None:
+                floor_sol = round(b0 + w0 + owner0 - float(max_loss), 4)
+                how = (f" ({b0 + w0 + owner0:.4f} at the start"
+                       + (f", the owner's own coins' {owner0:.4f} in it," if owner0 else "")
+                       + f" less the {max_loss:g} SOL max loss)")  # fmt: skip
             log(f"wallet {address[:6]}… holds {b0:.4f} SOL" + (f" and {w0:.4f} wrapped" if w0 else "")
                 + f"; floor {floor_sol}{how}; cap {max_fills} fills; {max_minutes:g} min")  # fmt: skip
-            if b0 + w0 <= floor_sol:
-                raise SystemExit(f"balance {b0 + w0:.4f} is at or below the floor {floor_sol}")
+            if b0 + w0 + owner0 <= floor_sol:
+                raise SystemExit(f"balance {b0 + w0 + owner0:.4f} is at or below the floor {floor_sol}")
             lag = tape_lag()
             if lag:  # the fills cap is counted on the tape: a run that cannot count them does not start
                 raise SystemExit(f"{lag} (more than {TAPE_STALE_SECS} s): not cycling, its fills are counted there")
-            blocked, why = await guard_says(held0)
+            blocked, why = await guard_says(held0_all)  # every coin: the guard tells the bot's own from the owner's
             if blocked is not False:  # cannot tell is never clear, as for the reads above
                 raise SystemExit(
                     f"the wallet-wide guard {'holds' if blocked else 'cannot be read'} ({why}): not cycling"
@@ -1602,13 +1676,34 @@ class Service:
             # made (when, how much), when a holding last ended (a sale's SOL is no deposit) and the last reading's coins
             pending_out, moves, last_departure, held_prev = 0.0, [], -1e18, False
 
-            def move_floor(amount: float, at: float) -> None:
+            def move_floor(amount: float, at: float, what: str | None = None) -> None:
                 nonlocal floor_sol
                 floor_sol = round(floor_sol + amount, 4)
                 moves.append((at, amount))
-                log(f"{abs(amount):.4f} SOL {'came into' if amount > 0 else 'left'} the wallet with no coin "
-                    f"{'sold' if amount > 0 else 'bought'}: not a trade of this run (the owner's own move), so the "
-                    f"floor moves with it, to {floor_sol}")  # fmt: skip
+                what = what or (f"{abs(amount):.4f} SOL {'came into' if amount > 0 else 'left'} the wallet with no "
+                                f"coin {'sold' if amount > 0 else 'bought'}")  # fmt: skip
+                log(f"{what}: not a trade of this run (the owner's own move), so the floor moves with it, to "
+                    f"{floor_sol}")  # fmt: skip
+
+            # the floor's moves down made for SOL that left with no coin to show for it: one a coin shown late can take
+            # back (a move for an owner's coin that left the wallet is never one)
+            undoable: list[tuple[float, float]] = []
+
+            def undo_late(what: str, now_t: float) -> None:
+                """A coin shows whose buy's SOL left in an earlier reading, long enough ago to have moved the floor down
+                as the owner's own move: the newest such move (MOVE_UNDO_SECS) was that buy, and it is taken back. Only
+                that one: an older move down was the owner's SOL, gone (22 Nov: a copy 30 s after a 2 SOL withdrawal
+                took the withdrawal back with it)."""
+                nonlocal floor_sol
+                late = [x for x in moves if x in undoable and now_t - x[0] <= MOVE_UNDO_SECS]
+                if not late:
+                    return
+                at, a = max(late)
+                moves.remove((at, a))
+                undoable.remove((at, a))
+                floor_sol = round(floor_sol - a, 4)
+                log(f"{what} showed {now_t - at:.0f} s after the floor moved down: the {-a:.4f} SOL that left was a "
+                    f"buy, so the floor goes back to {floor_sol}")  # fmt: skip
 
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(5)
@@ -1617,7 +1712,9 @@ class Service:
                     break
                 try:
                     b = await balance()
-                    held = await open_positions()
+                    held_all = await open_positions()
+                    # `held` is the run's coins from here on; the owner's own are in `owner_val` (sort_coins)
+                    held, new_owner, owner_gone = await sort_coins(held_all, time.time())
                 except Exception as exc:
                     log(f"rpc check failed ({exc}); still watching")
                     continue
@@ -1625,6 +1722,12 @@ class Service:
                 # confirmed; a slow node shows the coin late), so for FRESH_HOLD_SECS no sniper is touched, no floor
                 # reading counts and no end of the run stops anything before the coin shows
                 now_t = time.time()
+                # SOL that left before this reading with no coin yet (a coin showing now was bought with it), and
+                # whether the SOL fell in this reading (a coin showing now was bought with that): `undo_late` neither
+                pend_before, fell_now = pending_out, b < prev_b - FRESH_BUY_SOL
+                for m, v in owner_gone:  # sold or sent away by the owner: its worth leaves the floor's count with it
+                    if v:
+                        move_floor(-v, now_t, f"{m}, the owner's own coin counted at {v:.4f} SOL, left the wallet")
                 mints_now = {str(h["mint"]) for h in held if h.get("mint")}
                 if any(m not in mints_now for m in held_since):
                     last_departure = now_t  # a holding ends: its sale's SOL comes in a reading early or late
@@ -1646,22 +1749,30 @@ class Service:
                     if w_last - w_now < 0.9 * (b - prev_b):  # not out of wrapped SOL: put in by the owner
                         move_floor(b - prev_b, now_t)
                     w_last = w_now
+                # The owner's coins that show now (not counted as the run's first): the SOL that left with no coin of
+                # the run's held was their buy, still in the wallet, each coin counted at its worth (what is left of
+                # that SOL, their buy's fees, is moved as their own at the end of the wait). SOL that left while a coin
+                # of the run's was held went with that coin (no buy on its way: fresh_at is None).
+                shown = [(m, v) for m, v, first in new_owner if first]
+                if shown and pending_out > 0:
+                    fresh_at = None
+                    pending_out = max(0.0, pending_out - sum(v for _m, v in shown))
+                elif shown and not fell_now:  # its SOL left long ago, and the floor has moved for it
+                    undo_late(", ".join(m for m, _v in shown), now_t)
                 prev_b, held_prev = b, bool(held)
                 fresh = not held and fresh_at is not None and now_t - fresh_at < FRESH_HOLD_SECS
                 if pending_out and not held and not fresh:  # no coin came for the SOL that left: the owner's move
                     move_floor(-pending_out, now_t)
+                    undoable.append(moves[-1])
                     pending_out = 0.0
                 for m in mints_now:
                     first_seen.setdefault(m, now_t)
                     if m not in held_since:  # a holding begins: a buy (the same coin again is a new one)
                         held_since[m] = now_t
                         arrivals, last_arrival = arrivals + 1, now_t
-                        late = [(at, a) for at, a in moves if a < 0 and now_t - at <= MOVE_UNDO_SECS]
-                        for at, a in late:  # the SOL that left was this coin's buy, shown late: no move of the owner
-                            moves.remove((at, a))
-                            floor_sol = round(floor_sol - a, 4)
-                            log(f"{m} showed {now_t - at:.0f} s after the floor moved down: the {-a:.4f} SOL that "
-                                f"left was a buy, so the floor goes back to {floor_sol}")  # fmt: skip
+                        if not pend_before and not fell_now:  # its SOL left long before and moved the floor
+                            undo_late(m, now_t)
+                            fell_now = True  # one move for one buy
                 for m in [m for m in held_since if m not in mints_now]:
                     del held_since[m]
                 empty_n = 0 if held or fresh else empty_n + 1
@@ -1673,6 +1784,7 @@ class Service:
                 # the floor: SOL, wrapped SOL (read only when the rest is under it) and the priced coins; with a coin
                 # the tape has not priced the wallet's worth is unknown, and nothing is re-armed while it is held anyway
                 priced = sum(float(h["value_sol"]) for h in held if h.get("value_sol") is not None)
+                priced += sum(owner_val.values())  # the owner's own coins at their worth when first known as theirs
                 under, eq = False, b + priced
                 if not fresh and not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
                     eq += await wrapped_sol()
@@ -1738,7 +1850,7 @@ class Service:
                     at = armed_at.get(i, now)
                     bought = fills_since(at) >= 1 or last_arrival > at
                     if bought or since >= rearm_after or spent:
-                        blocked, why = await guard_says(held)
+                        blocked, why = await guard_says(held_all)  # every coin: the guard tells whose itself
                         if blocked:  # the owner's guard holds: this run re-arms nothing more, as at /stop
                             reason, guarded = f"the wallet-wide guard holds ({why}): no more re-arms", True
                             break
@@ -1802,7 +1914,7 @@ class Service:
             return {"start_sol": b0, "end_sol": b1, "start_wrapped": w0, "end_wrapped": w1, "reason": reason,
                     "fills": fills, "restarts": restarts, "held": held or [], "left_running": sorted(armed),
                     "swept": swept, "places": places, "floor_moves": [round(a, 4) for _at, a in moves],
-                    "events": events}  # fmt: skip
+                    "owner_coins": list(owner_coins), "events": events}  # fmt: skip
         finally:
             await client.close()
 

@@ -6,18 +6,31 @@ the bot's loss and stopped every live trade for the day). None of that is the bo
 
 A buy is the bot's when the measure stage tied it to a copied wallet or a sniper, or when it paid the fees one of our
 snipers pays (the payloads we sent OKTech: its priority and tip on a buy, and the same priority with no tip, as a copy
-of 22 Nov 00:19 went out). A sale is the bot's when it closes such a buy, or when it paid a sniper's sale fees or the
-fees of the run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees not known, nothing
-tells a hand trade apart, and the trade counts as the bot's, as before.
+of 22 Nov 00:19 went out). A sale is the bot's when it closes such a buy, or when it paid a sniper's sale fees (OKTech
+pays a sale the buy's priority: every sale since 20 Nov paid 0.001 SOL and its 0.002 tip under a sellPriorityFeeSol of
+0.0001) or the fees of the run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees
+not known, nothing tells a hand trade apart, and the trade counts as the bot's, as before.
+
+`RunCoins` asks the same of a coin the wallet holds, for one run of the runner (service.oktech_cycle), live: the tape's
+buy of it since it showed, or the chain's when the tape has none.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 LAMPORTS = 1_000_000_000
 # what the run's own fallback sale pays (solana/sell.py: CU_PRICE_MICRO at CU_LIMIT, no tip): 0.001 SOL, untipped
 SWEEP_FEES = (1_000_000, 0)
+# A coin's chain read (RunCoins: the tape has no buy of it) is tried at most this often while it says nothing.
+CHAIN_RETRY_SECS = 30.0
+# how many of a token account's newest transactions the chain read looks through for the one that brought the coin in
+CHAIN_SIGS = 5
+# While a run is on, only a buy at most this long before its coin first showed says whose the coin is (and only one after
+# the wallet's last sale of the coin: RunCoins._tape): a node can show a coin many seconds after its buy, and an older buy
+# of the same coin says nothing about a holding that began now.
+WHOSE_MARGIN_SECS = 300.0
 
 
 def _lamports(x: Any) -> int | None:
@@ -27,27 +40,33 @@ def _lamports(x: Any) -> int | None:
         return None
 
 
-def fee_marks(store) -> dict[str, frozenset[tuple[int, int]]]:
-    """The (priority, tip) lamports our snipers pay on a buy and on a sale, from every payload on record (removed
-    snipers too: last week's fills are theirs). Empty sets when none is on record or the store cannot say."""
+def sniper_marks(payloads: Iterable[dict | None]) -> dict[str, frozenset[tuple[int, int]]]:
+    """The (priority, tip) lamports snipers with these payloads pay on a buy and on a sale. Empty sets when no payload
+    names a priority: then nothing tells a hand trade apart."""
     buy: set[tuple[int, int]] = set()
     sell: set[tuple[int, int]] = {SWEEP_FEES}
-    try:
-        snipers = store.oktech_snipers(active=False)
-    except Exception:  # noqa: BLE001 - nothing on record: nothing tells a hand trade apart
-        snipers = []
-    for s in snipers:
-        p = s.get("payload") or {}
+    for p in payloads:
+        p = p or {}
         prio, tip = _lamports(p.get("priorityFee")), _lamports(p.get("tipAmount"))
         if prio is not None:
             buy |= {(prio, tip or 0), (prio, 0)}
         a = p.get("autoSell") or {}
         sp, st = _lamports(a.get("sellPriorityFeeSol")), _lamports(a.get("sellTipAmount"))
-        if sp is not None:
-            sell |= {(sp, st or 0), (sp, 0)}
+        for q in {x for x in (sp, prio) if x is not None}:  # a sale pays its own priority or the buy's (OKTech)
+            sell |= {(q, st or 0), (q, 0)}
     if not buy:  # no sniper on record: no mark at all, so every trade counts
         return {"buy": frozenset(), "sell": frozenset()}
     return {"buy": frozenset(buy), "sell": frozenset(sell)}
+
+
+def fee_marks(store) -> dict[str, frozenset[tuple[int, int]]]:
+    """The (priority, tip) lamports our snipers pay on a buy and on a sale, from every payload on record (removed
+    snipers too: last week's fills are theirs). Empty sets when none is on record or the store cannot say."""
+    try:
+        snipers = store.oktech_snipers(active=False)
+    except Exception:  # noqa: BLE001 - nothing on record: nothing tells a hand trade apart
+        snipers = []
+    return sniper_marks(s.get("payload") for s in snipers)
 
 
 def _paid(priority: Any, tip: Any, marks: frozenset[tuple[int, int]]) -> bool | None:
@@ -101,3 +120,86 @@ def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None
         if bot_buy(b, marks) if b is not None else bot_sale_fees(r, marks):
             out.append(r)
     return out
+
+
+def _brought_in(tx: dict, wallet: str, mint: str) -> bool:
+    """Whether a transaction (getTransaction, json) raised the wallet's balance of the coin."""
+    meta = tx.get("meta") or {}
+
+    def held(rows) -> int:
+        return sum(int((r.get("uiTokenAmount") or {}).get("amount") or 0) for r in rows or []
+                   if r.get("owner") == wallet and r.get("mint") == mint)  # fmt: skip
+
+    return held(meta.get("postTokenBalances")) > held(meta.get("preTokenBalances"))
+
+
+class RunCoins:
+    """Whose each coin the wallet holds is, for one run of the runner: "ours" when the buy that brought it in paid one
+    of `marks` (the run's snipers' fees, `sniper_marks`) or fees nobody recorded, "owner" when it paid other fees or
+    another wallet sent the coin in, None while nothing tells yet. The tape's newest buy of the coin since `since_ts`
+    says it (WHOSE_MARGIN_SECS); with none there, the chain's: the newest of the coin's token account's transactions
+    that raised the wallet's balance of it (CHAIN_RETRY_SECS apart while it says nothing). An answer holds until the
+    holding ends (`forget`). With no marks every coin is ours, as before."""
+
+    def __init__(self, store, rpc, wallet: str, marks: dict[str, frozenset]):
+        self.store, self.rpc, self.wallet, self.marks = store, rpc, wallet, marks
+        self._known: dict[str, str] = {}
+        self._chain_at: dict[str, float] = {}
+
+    def known(self, mint: str) -> str | None:
+        """The answer so far, without reading anything."""
+        return "ours" if not self.marks["buy"] else self._known.get(mint)
+
+    def forget(self, mint: str) -> None:
+        """The holding has ended: the next one of the same coin is decided afresh."""
+        self._known.pop(mint, None)
+        self._chain_at.pop(mint, None)
+
+    async def whose(self, coin: dict, since_ts: float, now: float) -> str | None:
+        mint = str(coin.get("mint") or "")
+        if self.known(mint) is not None:
+            return self.known(mint)
+        ans = self._tape(mint, since_ts)
+        account = coin.get("account")
+        due = now - self._chain_at.get(mint, -1e18) >= CHAIN_RETRY_SECS
+        if ans is None and account and self.rpc is not None and due:
+            self._chain_at[mint] = now
+            try:
+                ans = await self._chain(mint, str(account))
+            except Exception:  # noqa: BLE001 - nothing told: read again in CHAIN_RETRY_SECS, the tape may have it then
+                ans = None
+        if ans is not None:
+            self._known[mint] = ans
+        return ans
+
+    def _verdict(self, priority: Any, tip: Any) -> str:
+        return "owner" if _paid(priority, tip, self.marks["buy"]) is False else "ours"
+
+    def _tape(self, mint: str, since_ts: float) -> str | None:
+        """The newest buy of the coin by the wallet since `since_ts` and after its last sale of it: a buy before that
+        sale belonged to a holding that has ended."""
+        try:
+            sold = self.store._q("SELECT slot, pos FROM trades WHERE user=? AND mint=? AND is_buy=0 "
+                                 "ORDER BY slot DESC, pos DESC LIMIT 1", (self.wallet, mint))  # fmt: skip
+            s_slot, s_pos = sold[0] if sold else (-1, -1)
+            rows = self.store._q("SELECT priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND ts>=? "
+                                 "AND (slot>? OR (slot=? AND pos>?)) ORDER BY slot DESC, pos DESC LIMIT 1",
+                                 (self.wallet, mint, int(since_ts), s_slot, s_slot, s_pos))  # fmt: skip
+        except Exception:  # noqa: BLE001 - not readable now: the chain, or the next reading
+            return None
+        return self._verdict(rows[0][0], rows[0][1]) if rows else None
+
+    async def _chain(self, mint: str, account: str) -> str | None:
+        from ..solana.txmeta import extract_tx_meta
+
+        for s in await self.rpc.get_signatures(account, limit=CHAIN_SIGS):
+            if s.get("err"):
+                continue
+            tx = await self.rpc.get_transaction(s["signature"])
+            if not tx or not _brought_in(tx, self.wallet, mint):
+                continue
+            m = extract_tx_meta(tx, s["signature"])
+            if m.fee_payer != self.wallet:
+                return "owner"  # another wallet sent it in: no buy of the run's
+            return self._verdict(m.priority_lamports, m.tip_lamports)
+        return None

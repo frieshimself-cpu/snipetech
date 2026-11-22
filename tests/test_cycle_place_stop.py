@@ -213,7 +213,8 @@ def test_a_fault_outside_the_place_reader_is_said_once_and_the_run_still_ends_di
     real = Store.trades_for_user
     odd = [SimpleNamespace(is_buy=True)]  # a row the rule cannot read: no signature, no time
     monkeypatch.setattr(Store, "trades_for_user",
-                        lambda self, user, since_ts=0: odd if user == W6 else real(self, user, since_ts))  # fmt: skip
+                        lambda self, user, since_ts=0, fees=False: odd if user == W6 else real(self, user, since_ts,
+                                                                                               fees))  # fmt: skip
     rep, _client, store = _place_run(monkeypatch, [], place_stop=(2, 3), place_max=1, minutes=4)
     assert rep["reason"].startswith("time limit") and rep["left_running"] == [] and rep["places"] == []
     assert sum("place rule" in e and "off" in e for e in rep["events"]) == 1
