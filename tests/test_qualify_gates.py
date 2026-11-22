@@ -793,6 +793,18 @@ def test_the_forward_check_says_where_the_tape_it_read_ended(cfg):
     assert forward_gate(v, [], None, [], cfg, NOW)["forward"]["tape_end"] == NOW  # no tape named: its own time
 
 
+def test_a_new_pick_starts_at_the_end_of_the_tape_the_look_read(cfg):
+    """Audit of 22 Nov (qualify#0): a new pick (no `picked_at`) was dated at the verdict's clock time, so the copies
+    after the end of the tape the picking lab read and before that time were no forward copy of any look. It starts
+    where that tape ended: its later copies are every copy that look did not see."""
+    v = _in_sample_pass(cfg)
+    out = forward_gate(v, _copies(25, 0.02, NOW - 20000), None, [[NOW - 30000, NOW - 9000]], cfg, NOW)
+    fwd = out["forward"]
+    assert fwd["picked_at"] == fwd["first_picked_at"] == fwd["tape_end"] == NOW - 9000
+    assert fwd["n"] == 0 and fwd["tape_hours"] == 0.0 and fwd["status"] == "pending"
+    assert forward_gate(v, [], None, [], cfg, NOW)["forward"]["picked_at"] == NOW  # no tape named: its own time
+
+
 ARMED_AT = NOW - 30 * 3600  # where the tape ended that its arming look read
 PICKED = NOW - 60 * 3600
 LONG = [[PICKED - 3600, NOW]]

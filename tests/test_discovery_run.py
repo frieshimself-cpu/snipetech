@@ -237,3 +237,57 @@ def test_the_two_sources_that_read_two_days_of_tape_say_six_hours():
 
     assert TapeSource.every_secs == 6 * 3600 == BirdeyeSource.every_secs
     assert not getattr(CoinFirstBuyersSource, "every_secs", 0)  # the coins that ran in the last six hours: every run
+
+
+def test_a_source_that_returned_is_kept_while_a_slow_one_still_runs(tmp_path):
+    """Audit of 22 Nov (server#2): the six-hourly look at two days of tape took 20-50 minutes, and three runs in 27 h
+    were killed at the unit's 50 minutes. Nothing had been written by then: every source's wallets, the quick ones'
+    too, were merged once all of them had returned, and the hourly GMGN source's mark was lost with them, so the next
+    run asked it again. Each source's wallets and its mark are written as soon as it returns."""
+    import threading
+    import time
+
+    from snipetech.discovery.run import LAST_KEY
+
+    class Blocking(SlowSource):  # the tape source as the server ran it on 21-22 Nov: until released
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.go = threading.Event()
+
+        def fetch(self, ctx):
+            self.go.wait(10)
+            return super().fetch(ctx)
+
+    class Hourly(ListSource):
+        every_secs = 3600  # GMGN's pace
+
+    ctx, st = _ctx(tmp_path)
+    slow = Blocking("tape", [{"wallet": "T1", "stats": {}}])
+    run = threading.Thread(target=run_discover, args=(ctx, [slow, ListSource("coinfirst", [{"wallet": "C1",
+                           "stats": {}}]), Hourly("gmgn", [{"wallet": "G1", "stats": {}}])]), daemon=True)  # fmt: skip
+    try:
+        run.start()
+        seen: set[str] = set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not {"C1", "G1"} <= seen:
+            seen = {c["wallet"] for c in st.candidates()}
+            time.sleep(0.02)
+        assert seen == {"C1", "G1"}  # the quick sources' wallets are in while the slow one still reads
+        assert set(st.coverage(LAST_KEY)) == {"gmgn"}  # and the hourly one is not asked again next hour
+    finally:
+        slow.go.set()
+        run.join(15)
+    try:
+        assert {c["wallet"] for c in st.candidates()} == {"T1", "C1", "G1"}
+        assert set(st.coverage(LAST_KEY)) == {"gmgn", "tape"}
+    finally:
+        st.close()
+
+
+def test_the_discover_unit_lets_the_six_hourly_look_finish():
+    """Audit of 22 Nov (server#2): the slow look took up to 50 minutes and the unit killed it at 50 (21 Nov 12:57 and
+    19:57, 22 Nov 02:57), each kill a failed unit and an operator turn. It has 90 (installed by deploy/setup.sh)."""
+    from pathlib import Path
+
+    unit = Path(__file__).resolve().parents[1] / "deploy" / "systemd" / "snipetech-discover.service"
+    assert "TimeoutStartSec=90m" in unit.read_text().splitlines()

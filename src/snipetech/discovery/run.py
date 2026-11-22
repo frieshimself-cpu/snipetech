@@ -4,7 +4,7 @@ platform wallets and flagged bots banned. Returns a summary the job log and the 
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..solana.programs import PROTOCOL_WALLETS
 from .sources import DiscoverContext, Source, default_sources
@@ -26,7 +26,9 @@ def _flagged(stats: dict) -> bool:
 
 def run_discover(ctx: DiscoverContext, sources: list[Source] | None = None, pace: bool = True) -> dict:
     """`pace`: a source that says how often it is worth asking (`every_secs`) is left out until then; False for
-    sources asked for by name (`discover run --sources tape`), which look now."""
+    sources asked for by name (`discover run --sources tape`), which look now. Each source's wallets and its mark are
+    written as soon as it returns (audit of 22 Nov: the six-hourly look at two days of tape ran 20-50 minutes, the
+    unit killed it at 50, and every source's wallets were lost with it, the quick ones' too)."""
     sources = default_sources(ctx) if sources is None else sources
     store = ctx.svc.store
     banned_addrs: set[str] = set(PROTOCOL_WALLETS)
@@ -51,28 +53,17 @@ def run_discover(ctx: DiscoverContext, sources: list[Source] | None = None, pace
         except Exception as exc:  # noqa: BLE001 - an API being down must not abort the run
             return src.name, [], f"{type(exc).__name__}: {exc}"
 
-    if os.environ.get("SNIPETECH_PROFILE"):
-        # profiled (`snipetech --profile`): one after another in this thread. In threads the sources share the store's
-        # one connection, and a profile counts a source's wait for another's query as its own time (11 Nov: 293 s
-        # read as the cost of the launch lookups were mostly that wait; taken out, the next run took as long).
-        done = [one(src) for src in due]
-    else:
-        with ThreadPoolExecutor(max_workers=max(1, min(len(due), 6))) as pool:
-            done = list(pool.map(one, due))
     paced = {src.name for src in due if getattr(src, "every_secs", 0)}
-    for name, rows, err in done:
+    before = {c["wallet"]: c["status"] for c in store.candidates(limit=1_000_000)}
+    counts = {"new": 0, "updated": 0, "banned": 0}
+    now = int(ctx.now)
+
+    def keep(name: str, rows: list[dict], err: str | None) -> None:
+        """One source's answer, written at once: its wallets, then its mark."""
         results[name] = rows
         if err:
             errors[name] = err
             ctx.log(f"[discover] {name}: {err}")
-        elif name in paced:  # it looked: not again before its interval (one that failed is asked at the next run)
-            last[name] = int(ctx.now)
-    if paced:
-        store.set_coverage(LAST_KEY, last)
-    before = {c["wallet"]: c["status"] for c in store.candidates(limit=1_000_000)}
-    new = updated = banned = 0
-    now = int(ctx.now)
-    for name, rows in results.items():
         for r in rows:
             w = str(r.get("wallet") or "").strip()
             if not w:
@@ -83,13 +74,27 @@ def run_discover(ctx: DiscoverContext, sources: list[Source] | None = None, pace
                 status = "banned"
             store.upsert_candidate(w, name, stats, now, status=status)
             if w not in before:
-                new += 1
+                counts["new"] += 1
                 before[w] = status or "candidate"
             else:
-                updated += 1
+                counts["updated"] += 1
             if status == "banned" and before.get(w) != "counted":
-                banned += 1
+                counts["banned"] += 1
                 before[w] = "counted"
-    return {"new": new, "updated": updated, "banned": banned, "errors": errors,
-            "by_source": {name: len(rows) for name, rows in results.items()}, "skipped": skipped, "ts": now,
+        if not err and name in paced:  # it looked: not again before its interval (one that failed: the next run)
+            last[name] = int(ctx.now)
+            store.set_coverage(LAST_KEY, last)
+
+    if os.environ.get("SNIPETECH_PROFILE"):
+        # profiled (`snipetech --profile`): one after another in this thread. In threads the sources share the store's
+        # one connection, and a profile counts a source's wait for another's query as its own time (11 Nov: 293 s
+        # read as the cost of the launch lookups were mostly that wait; taken out, the next run took as long).
+        for src in due:
+            keep(*one(src))
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, min(len(due), 6))) as pool:
+            for done in as_completed([pool.submit(one, src) for src in due]):  # each as soon as it returns
+                keep(*done.result())
+    return {**counts, "errors": errors,
+            "by_source": {src.name: len(results.get(src.name) or []) for src in due}, "skipped": skipped, "ts": now,
             "pid": os.getpid()}  # fmt: skip

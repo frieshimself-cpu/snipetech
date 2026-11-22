@@ -161,7 +161,9 @@ class GmgnSource:
     def fetch(self, ctx: DiscoverContext) -> list[dict]:
         if ctx.gmgn is None:
             return []
-        rows = ctx.svc.discover_gmgn(ctx.gmgn, now=ctx.now)
+        # a list or a read that fails inside the source is said in the run's own log: `discover run` sets no progress
+        # sink on its Service, and the source keeps the rows it has (audit of 22 Nov: errors {} and nothing said)
+        rows = ctx.svc.discover_gmgn(ctx.gmgn, now=ctx.now, log=ctx.log)
         return [{"wallet": r["wallet"], "stats": r} for r in rows if r.get("wallet")]
 
 

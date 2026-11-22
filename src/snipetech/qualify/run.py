@@ -105,7 +105,7 @@ def lab_tx_cost(store, cfg: Config, arm: str = LOW_BID_ARM) -> float:
     return float(lab_tx_cost_info(store, cfg, arm)["per_tx_sol"])
 
 
-def default_lab_runner(svc, cfg: Config) -> LabRunner:
+def default_lab_runner(svc, cfg: Config, with_size: bool = True) -> LabRunner:
     """The by-wallet lab in-process at the book's smallest fill: every candidate's first buys >= 0.1 SOL (the `cand`
     trigger group), each wallet scored on the buys its own floor lets through, on every exit of the menu
     (exits_menu.py) at the measured cost of a transaction. Its numbers, the verdict's, are those of the exit the book
@@ -113,7 +113,9 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
     (rank_wallets with a gate). Only the trades come from the hourly copy: the wallets come from the live database plus
     the due list, since the copy has none of the `cand` labels this run just wrote, and a due wallet with another label
     (a KOL) is never labelled `cand`. Each wallet's copies are scored behind its companions, the wallets its operator
-    buys with in the next transactions (gates.companions; 11 Nov: "+3x" counted them as the buyers ahead of us)."""
+    buys with in the next transactions (gates.companions; 11 Nov: "+3x" counted them as the buyers ahead of us).
+    `with_size` False: no score at the size that pays (`size_scores`, a third of a lab's time), for a caller that never
+    reads it (the stopped-wallets study)."""
 
     def run(wallets: list[str], position: str) -> list[dict]:
         from ..analysis import lab as L
@@ -134,7 +136,7 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         rows = L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
                               gate=menu["lab"], with_moments=True)  # fmt: skip
         t2 = time.monotonic()
-        if cfg.qualify.size_sol > 0 and rows:  # the size that pays, beside the verdict's numbers (`size_scores`)
+        if with_size and cfg.qualify.size_sol > 0 and rows:  # the size that pays, beside the verdict's (`size_scores`)
             measured = [r["wallet"] for r in rows if r.get("wallet")]
             size = size_scores(svc, cfg, tape, measured, dict(kols, cand=set(measured)), mates)
             for r in rows:
@@ -160,9 +162,14 @@ def _size_exit(cfg: Config):
     return L._as_live(named_exit(cfg.qualify.size_exit), float(cfg.oktech.copy_exit_threshold_percent) / 100.0)
 
 
+# what each entry of a run's `size_pass` says it was scored at, beside its numbers (CLAUDE.md rule 2: a paper result
+# names its landing and the bid that buys it)
+SIZE_PASS_AT = ("buy_sol", "bid_sol", "position", "floor_sol")
+
+
 def size_record(cfg: Config, stats: dict | None = None) -> dict[str, Any]:
     """A wallet's size score: what it was scored at ([qualify] size_*) and its numbers (n 0 and no mean when none of
-    its first buys fits the size rule)."""
+    its buys fits the size rule)."""
     q = cfg.qualify
     base = {"buy_sol": q.size_sol, "bid_sol": q.size_bid_sol, "position": q.size_position, "floor_sol": q.size_floor_sol,
             "min_mcap_sol": q.size_min_mcap_sol, "max_mcap_sol": q.size_max_mcap_sol, "exit": _size_exit(cfg).label()}  # fmt: skip
@@ -171,32 +178,36 @@ def size_record(cfg: Config, stats: dict | None = None) -> dict[str, Any]:
 
 
 def size_scores(svc, cfg: Config, tape, wallets: list[str], kols: dict, mates: dict) -> dict[str, dict]:
-    """Each wallet's score at the size that pays (21 Nov 2026), {wallet: size_record}: its own first buys of
-    `[qualify] size_floor_sol` or more between the two market caps, at `size_sol` with `size_bid_sol` at
-    `size_position`, on `size_exit`. The verdict is scored at the book's smallest fill with no bid, where nothing can
-    pay (docs/roadmap.md, the top section); this one is said beside it and gates nothing. A wallet none of whose buys
-    fits is left out (the caller gives it an empty record)."""
+    """Each wallet's score at the size that pays (21 Nov 2026), {wallet: size_record}: every buy of its own of
+    `[qualify] size_floor_sol` or more between the two market caps, its repeats in a coin too, at `size_sol` with
+    `size_bid_sol` at `size_position`, on `size_exit`: what a copy sniper sent that minSol copies (OKTech copies every
+    buy above it; audit of 22 Nov: on first buys alone, and above each wallet's own floor, the score left out most of
+    a big wallet's copies, 81 % of Cupseyy's buys of 0.95 SOL or more on 20 Nov). The verdict is scored at the book's
+    smallest fill with no bid, where nothing can pay (docs/roadmap.md, the top section); this one is said beside it
+    and gates nothing. A wallet none of whose buys fits is left out (the caller gives it an empty record)."""
     from ..analysis import lab as L
 
     q = cfg.qualify
     ex = _size_exit(cfg)
     rule = L.Trigger("kol", sol=q.size_floor_sol, group="cand", min_mcap=q.size_min_mcap_sol,
-                     max_mcap=q.size_max_mcap_sol)  # fmt: skip
+                     max_mcap=q.size_max_mcap_sol, repeats=L.REPEATS_ALSO)  # fmt: skip
     data = L.collect(tape, cfg, q.size_sol, 0, q.size_position, per_tx_sol=lab_tx_cost(svc.store, cfg),
                      groups=("cand",), triggers=[rule], exits=[ex], kols=kols, mates=mates,
                      buy_bid_sol=q.size_bid_sol)  # fmt: skip
-    rows = L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=1, wallets=wallets, gate=ex)
+    rows = L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=1, wallets=wallets, gate=ex,
+                          floor=q.size_floor_sol, own_floor=False)  # fmt: skip
     return {r["wallet"]: size_record(cfg, r) for r in rows if r.get("wallet")}
 
 
 def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
     """When the wallet was picked: (its first pick, its latest), each None when there is none. A pick is a verdict
     every in-sample gate passed: one qualified before 7 Nov, as every such verdict was, or one that carries a forward
-    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one). Its latest pick
-    starts its latest run of such verdicts; a verdict that failed an in-sample gate ends the run (review of 7 Nov: a
-    wallet that lost and qualified again on a new streak counted that streak, the copies that made it qualify again, as
-    forward copies of its first pick), so the latest is None when the wallet's latest verdict failed one. Research
-    round 2 scored the 27 wallets from the 04:15 and 14:30 verdicts from those verdicts the same way."""
+    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one), dated where the tape
+    its look read ended (`_pick_record`). Its latest pick starts its latest run of such verdicts; a verdict that
+    failed an in-sample gate ends the run (review of 7 Nov: a wallet that lost and qualified again on a new streak
+    counted that streak, the copies that made it qualify again, as forward copies of its first pick), so the latest is
+    None when the wallet's latest verdict failed one. Research round 2 scored the 27 wallets from the 04:15 and 14:30
+    verdicts from those verdicts the same way."""
     first, latest, _ = _pick_record(store, wallet)
     return first, latest
 
@@ -211,10 +222,12 @@ def armed_since(store, wallet: str) -> int | None:
 
 
 def _pick_record(store, wallet: str) -> tuple[int | None, int | None, int | None]:
-    """(first pick, latest pick, armed since) from the wallet's verdicts in order: `pick_times`, `armed_since`. A
-    verdict that says the wallet went cold since it was armed (forward "cold", gates.forward_gate) ends the arming and
-    starts a new pick itself, at the end of the tape it read: the copies from the stop on count toward the 20 the
-    wallet needs to come back (started at the next look, a day of copies counted for nothing)."""
+    """(first pick, latest pick, armed since) from the wallet's verdicts in order: `pick_times`, `armed_since`. Each
+    of the three starts where the tape ended that its look read (the verdict's own time when it does not say): a pick
+    dated at the clock time left the copies between the two in no look's sample and in no forward check (audit of 22
+    Nov: 2.5 h on average). A verdict that says the wallet went cold since it was armed (forward "cold",
+    gates.forward_gate) ends the arming and starts a new pick itself, there: the copies from the stop on count toward
+    the 20 the wallet needs to come back (started at the next look, a day of copies counted for nothing)."""
     rows = store._q("SELECT computed_at, status, forward, kept_armed IS NOT NULL FROM verdicts "
                     "WHERE wallet=? ORDER BY computed_at, id", (wallet,))  # fmt: skip
     first = latest = armed = None
@@ -227,13 +240,14 @@ def _pick_record(store, wallet: str) -> tuple[int | None, int | None, int | None
         except ValueError:
             fwd = {}
         fwd = fwd if isinstance(fwd, dict) else {}
-        first = int(at) if first is None else first
+        start = int(fwd.get("tape_end") or at)  # the last moment this look saw
+        first = start if first is None else first
         if fwd.get("cold"):
-            latest, armed = int(fwd.get("tape_end") or at), None
+            latest, armed = start, None
             continue
-        latest = int(at) if latest is None else latest
+        latest = start if latest is None else latest
         if armed is None and fwd.get("status") == "passed":
-            armed = int(fwd.get("tape_end") or at)
+            armed = start
     return first, latest, armed
 
 
@@ -310,6 +324,13 @@ CHUNK = 50  # wallets one lab measures; their verdicts are written before the ne
 # A run starts no new chunk after this long. deploy/systemd/snipetech-qualify.service kills it at three hours
 # (TimeoutStartSec=3h), and a chunk of 50 has to fit in what is left.
 RUN_BUDGET_SECS = 100 * 60
+
+
+def own_need(stats: dict | None, q) -> int:
+    """The copies a wallet's verdict needs (gates.verdict_for): `min_n_tape_strong` with a strong history, else
+    `min_n_tape` (20 on 22 Nov, with no history source on). Its history is known before the lab."""
+    _, strong, _ = history_gate(normalise_history(stats), q)
+    return q.min_n_tape_strong if strong else q.min_n_tape
 
 
 def _lab_decides(candidate: dict) -> bool:
@@ -396,15 +417,20 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
     # The count before the lab. A copy is a coin whose first buy by the wallet was at the book's floor ([book]
     # min_copy_sol: the lab copies a wallet's first buy in a coin at its own floor, never below the book's, and never a
     # top-up) on pump.fun's curve or PumpSwap (where the copy snipers buy: lab._fire, oktech.COPY_PLATFORMS), and a
-    # wallet needs `need` of them at the least: one with fewer such coins cannot pass, and is told so here. 11 Nov:
+    # wallet needs as many of them as its verdict needs copies (gates.verdict_for: 10 with a strong history, else 20;
+    # its history is known before the lab): one with fewer such coins cannot pass, and is told so here. 11 Nov:
     # of 9,808 verdicts in two days 7,425 had no copy on the tape and 8,835 fewer than 20, each after a lab and four
     # reads per wallet. 20 Nov: the count still took every coin bought with 0.1 SOL or more, anywhere, and 11,364 of
-    # 18,266 lab verdicts had fewer than 20 copies (the 03:45 run: 109 of 214 under 10). It never counts fewer coins
-    # than the lab finds copies, so no wallet that could pass is held back. The tape store is what the lab reads; a
-    # wallet with more trades than the count walks is measured.
+    # 18,266 lab verdicts had fewer than 20 copies (the 03:45 run: 109 of 214 under 10). 22 Nov: it still held every
+    # wallet to the 10 a strong history needs, and with no history source on since 20 Nov 275 of the 10:01 run's 401
+    # lab rows were wallets with 10-19 copies and no history, "n < 20" before the lab ran. A wallet's buys in the coins
+    # it created are no copies (the lab never scores a creator's buy). It never counts fewer coins than the lab finds
+    # copies, so no wallet that could pass is held back. The tape store is what the lab reads; a wallet with more
+    # trades than the count walks is measured, unless a second bounded read finds fewer coins at the floor than it
+    # needs (store.coins_bought).
     floor = float(cfg.book.min_copy_sol)
     where = f"{floor:g} SOL or more on pump.fun (curve or PumpSwap) on the tape"
-    need = min(q.min_n_tape, q.min_n_tape_strong)
+    need = min(q.min_n_tape, q.min_n_tape_strong)  # the least any wallet needs: the readings in `judge` below
     tape = getattr(svc, "tape_store", store)
     screen_spans = tape.tape_spans()  # a wallet short of coins comes back at its own pace on this tape
     measurable = []
@@ -412,25 +438,45 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         if _lab_decides(c):
             measurable.append(c)
             continue
-        coins, more = tape.coins_bought(c["wallet"], round(floor * 1e9), venues=PUMP_VENUES)
-        if coins >= need or more:
+        _, strong, _ = history_gate(normalise_history(c["stats"]), q)
+        need_c = q.min_n_tape_strong if strong else q.min_n_tape  # what this wallet's verdict needs
+        # its coins at the floor, never its own creates; past the first read's reach, measured only with enough buys
+        coins, more = tape.coins_bought(c["wallet"], round(floor * 1e9), venues=PUMP_VENUES, need=need_c)
+        if coins >= need_c or more:
             measurable.append(c)
             continue
         v = verdict_for(c["wallet"], normalise_history(c["stats"]), None, None, dict(EMPTY_CROWD), True, [], q, now)
         first_ts = tape.first_trade_ts(c["wallet"])
+        # none on the copy, some on the live tape: its trades came after the copy was taken (audit of 22 Nov: GMGN
+        # lists wallets trading right now, and one was parked 72 h for trades the next copy held)
+        newer = first_ts is None and tape is not store and store.first_trade_ts(c["wallet"]) is not None
         if first_ts is not None:  # it trades on the tape: what it lacks is said, and when it is looked at again
-            hours = sample_review_hours(coins, need, first_ts, screen_spans, q, now)
+            hours = sample_review_hours(coins, need_c, first_ts, screen_spans, q, now)
             if coins:
-                why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {where}: fewer than the {need} copies a "
-                       f"wallet needs at the least, not measured; looked at again in {hours:.1f} h, at its pace on "
-                       "the tape")  # fmt: skip
+                why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {where}: fewer than the {need_c} copies a "
+                       f"wallet {'with' if strong else 'without'} a strong history needs, not measured; looked at "
+                       f"again in {hours:.1f} h, at its pace on the tape")  # fmt: skip
             else:
-                why = (f"no coin bought with {where}, the only buys a copy sniper copies: not measured; looked at "
+                made = tape.coins_created(c["wallet"])  # a launcher's buys in its own coins are no copies
+                own = (f" (its buys in the {made} coin{'s' if made != 1 else ''} it created are the creator's, which "
+                       "the lab never scores)") if made else ""  # fmt: skip
+                why = (f"no coin bought with {where}, the only buys a copy sniper copies{own}: not measured; looked at "
                        f"again in {hours:.1f} h")  # fmt: skip
             v["reasons"] = [why]
             v["next_review"] = int(now + hours * 3600)
+        elif newer:  # looked at again at the next lab, by when a newer copy holds them
+            hours = float(q.lab_interval_h)
+            end = max((float(b) for _, b in screen_spans or []), default=float(now))
+            why = (f"no trade on the tape the lab reads (the hourly copy, to "
+                   f"{time.strftime('%d %b %H:%M UTC', time.gmtime(end))}), though the live tape has some: its trades "
+                   f"are newer; not measured, looked at again in {hours:.1f} h")  # fmt: skip
+            v["reasons"] = [why]
+            v["next_review"] = int(now + hours * 3600)
         store.put_verdict(with_followed_note(v, _followed(store, c)))
-        out["too_few" if first_ts is not None else "no_tape"] += 1
+        if newer:
+            out["newer_than_copy"] = out.get("newer_than_copy", 0) + 1
+        else:
+            out["too_few" if first_ts is not None else "no_tape"] += 1
         out["evaluated"] += 1
         out[v["status"]] += 1
     measurable = measurable[:max_wallets]  # the rest stay due: the next lab's
@@ -469,6 +515,7 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         """One measured wallet's verdict, written."""
         w = c["wallet"]
         hist = normalise_history(c["stats"])
+        want = own_need(c["stats"], q_eff)  # the copies this wallet needs (verdict_for)
         # The readings a verdict needs, made only where they can change it (11 Nov: all four ran for every wallet of a
         # run, the crowding read with one read per coin the wallet ever bought, which is where a run's two hours
         # went). With fewer copies than any wallet needs the sample gate decides alone; the crowding gate is only
@@ -489,9 +536,7 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         first, latest, armed = _pick_record(store, w)
         v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
         if v.get("gate") == "sample" and moments:  # short of copies: back when its own pace would have brought them
-            _, strong, _ = history_gate(hist, q_eff)
             first_copy = min(float(ts) for ts, _ in moments)
-            want = q_eff.min_n_tape_strong if strong else q_eff.min_n_tape
             v["next_review"] = int(now + 3600 * sample_review_hours(n_lab, want, first_copy, spans, q_eff, now))
         if latest is None:  # about to start a pick: only while it still copies
             v = not_picked_idle(v, copies, spans, q_eff, now)
@@ -502,8 +547,8 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
             v = forward_gate(v, copies, latest, spans, q_eff, now, conf=cfg.verdict.confidence,
                              samples=cfg.verdict.bootstrap_samples, first_picked_at=first, armed_at=armed)  # fmt: skip
         v = same_actor(v, act, q_eff, now)  # `v` itself unless it yields
-        if first is None and v.get("forward") is not None:
-            first = int(now)  # picked for the first time now
+        if first is None and v.get("forward") is not None:  # picked for the first time, where its lab's tape ended
+            first = int(v["forward"].get("picked_at") or now)
         if row is not None and first is not None:  # what the next run takes from the record once the tape drops it
             record = {"first_picked_at": first, "copies": [x for x in copies if x[0] > first]}
         prev = c.get("verdict")
@@ -526,11 +571,13 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
             out["non_coin"] = out.get("non_coin", 0) + (v["status"] != "qualified")
         one.release(w, v, now)  # it was its actor's candidate and no longer is: the wallets behind it are due at once
         # the score at the size that pays: kept in the score record with the lab row it rides on, named in the run's
-        # answer when it pays on enough copies, never a gate
+        # answer when it pays on the copies its verdict would need (audit of 22 Nov: the run-wide least, 10, named
+        # wallets without a strong history on 10-11 copies), with the size, bid and place it was scored at, never a gate
         size = (row.get("size") if row else None) or {}
-        if int(size.get("n") or 0) >= need and size.get("ev_lower") is not None and float(size["ev_lower"]) > 0:
+        if int(size.get("n") or 0) >= want and size.get("ev_lower") is not None and float(size["ev_lower"]) > 0:
             out.setdefault("size_pass", []).append({"wallet": w, "n": size["n"], "mean": size["mean"],
-                                                    "ev_lower": size["ev_lower"]})  # fmt: skip
+                                                    "ev_lower": size["ev_lower"],
+                                                    **{k: size.get(k) for k in SIZE_PASS_AT}})  # fmt: skip
         store.put_verdict(v)
         store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,
                                        "computed_at": int(now), "record": record or None,
@@ -570,7 +617,9 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
                 rows = {r["wallet"]: r for r in runner([c["wallet"] for c in chunk], landing) if r.get("wallet")}
                 t1 = time.monotonic()
                 one.lab_mates([c["wallet"] for c in chunk], getattr(runner, "mates", None))
-                for c in one.order(chunk, rows, need):  # as they came, unless two of them are one actor
+                # as they came, unless two of them are one actor; the ones that cannot pass by their own bar first
+                bars = {c["wallet"]: own_need(c["stats"], q_eff) for c in chunk}
+                for c in one.order(chunk, rows, bars):
                     judge(c, rows.get(c["wallet"]))
                 secs["lab"] += t1 - t0
                 secs["gates"] += time.monotonic() - t1

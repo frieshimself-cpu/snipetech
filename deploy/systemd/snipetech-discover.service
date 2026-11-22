@@ -12,4 +12,5 @@ User=@USER@
 EnvironmentFile=/etc/snipetech/env
 WorkingDirectory=@DATA@
 ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db discover run
-TimeoutStartSec=50m
+# the six-hourly look at two days of tape took up to 50 min on 21-22 Nov and was killed at 50 (audit of 22 Nov)
+TimeoutStartSec=90m

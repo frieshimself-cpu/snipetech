@@ -741,3 +741,65 @@ def test_a_wallet_the_candidate_was_chosen_over_stays_a_tie_of_two_in_its_record
         assert twin_links(block) == {yields} and actor_links(block) == set()
     finally:
         st.close()
+
+
+def test_a_banned_wallet_holds_no_place_for_its_actor(tmp_path):
+    """Audit of 22 Nov (qualify#1): qualify never looks at a banned wallet again, so its last verdict stays as it was.
+    7aPo3n and AG89fn were banned with a kept "qualified" verdict of 12 Nov, and that verdict held their actor's place:
+    BXZfyH and CjAJQL passed every in-sample gate and yielded to 7aPo3n ("the actor is already under test with it"),
+    with no forward check of their own, though nothing tested 7aPo3n. A banned wallet holds no place (as the book
+    copies none), unless a sniper of the book copies it now."""
+    from snipetech.qualify.one_actor import OneActor, standing_wallets
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st)
+        record_copying(st, set(), NOW - 120)  # the book read OKTech: nothing copies LEAD any more
+        old = NOW - 9 * 86400
+        st.upsert_candidate(LEAD, "early-leaders", {}, old - 3600)
+        # its last verdict: kept qualified under the old rules while a sniper copied it (as 7aPo3n's of 12 Nov)
+        st.put_verdict({"wallet": LEAD, "computed_at": old, "landing_pos": "+3x", "n_tape": 35, "mean_sol": 0.01,
+                        "lower_sol": -0.0015, "score": 0.004, "status": "qualified", "next_review": old + 86400,
+                        "copy_plan": PLAN, "kept_armed": {"armed_on": old - 86400, "armed_score": 0.004,
+                                                          "kept": True}})  # fmt: skip
+        st.set_candidate_status(LEAD, "banned")  # then banned: qualify never measures it again
+        assert LEAD not in standing_wallets(st)
+        assert not OneActor(st, st, NOW - 40 * 3600, set()).holds(LEAD)
+        assert OneActor(st, st, NOW - 40 * 3600, {LEAD[:6]}).holds(LEAD)  # one a book sniper copies still holds it
+        st.upsert_candidate(TAIL, "solanatracker", STRONG, NOW - 3600)
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=_runner())
+        tail = _latest(st)[TAIL]
+        assert _same_as(tail) is None and tail["forward"]["status"] == "pending"  # its own forward check
+        assert _latest(st)[LEAD]["computed_at"] == old  # the banned wallet's verdict is left as it was
+    finally:
+        st.close()
+
+
+def test_a_place_holder_short_of_its_own_bar_gives_its_place_up_before_its_actor_is_judged(tmp_path):
+    """Review of 22 Nov (qualify#3): the wallets of a lab that cannot pass are judged first, so a place-holder that
+    stops passing gives its place up before the other wallets of its actor are judged; and "cannot pass" counted the
+    10 copies a strong history needs for every wallet, while a wallet without one needs 20 (gates.verdict_for). LEAD,
+    under its forward test with no history, measures 15 copies: it cannot pass, but it was judged after TAIL, the
+    block's leader, and TAIL yielded to it ("the actor is already under test with it") for a day while LEAD gave the
+    place up. Judged by its own bar, LEAD goes first and TAIL starts its own forward check."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, pairs=((TAIL, LEAD),), solo=(), coins=20)  # TAIL is one place ahead in the block on 15 of 20 coins
+        record_copying(st, set(), NOW - 120)
+        picked = NOW - 30 * 3600
+        st.upsert_candidate(LEAD, "coinfirst", {}, picked - 3600)  # no history from any source: it needs 20 copies
+        st.put_verdict({"wallet": LEAD, "computed_at": picked, "landing_pos": "+3x", "n_tape": 30, "mean_sol": 0.02,
+                        "lower_sol": 0.006, "score": 0.006, "status": "candidate", "next_review": NOW - 60,
+                        "copy_plan": PLAN, "reasons": ["forward pending: 3 later copies"],
+                        "forward": {"picked_at": picked, "status": "pending", "n": 3, "mean": 0.01, "lower": -0.01,
+                                    "first_picked_at": picked, "tape_end": picked}})  # fmt: skip
+        st.upsert_candidate(TAIL, "coinfirst", {}, NOW - 3600)
+        rows = {LEAD: dict(_row(LEAD), n=15), TAIL: _row(TAIL)}
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda ws, pos: [rows[w] for w in ws])
+        by = _latest(st)
+        assert by[LEAD]["status"] == "candidate" and not by[LEAD]["forward"]  # its pick is over
+        assert "n 15 < 20 at +3x" in by[LEAD]["reasons"]
+        assert _same_as(by[TAIL]) is None, by[TAIL]["reasons"]
+        assert by[TAIL]["forward"]["status"] == "pending"  # its own forward check, from this look
+    finally:
+        st.close()

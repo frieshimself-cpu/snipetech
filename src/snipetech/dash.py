@@ -227,7 +227,8 @@ def _candidates(con: sqlite3.Connection | None, tables: set[str], paths: Operato
                 }
                 for w, sc, n, m, lo, nr in con.execute(
                     f"SELECT wallet, score, n_tape, mean_sol, lower_sol, next_review FROM ({latest}) v "
-                    "WHERE v.status = 'qualified' ORDER BY score DESC LIMIT ?",
+                    "WHERE v.status = 'qualified' AND NOT EXISTS (SELECT 1 FROM candidates c WHERE c.wallet = v.wallet "
+                    "AND c.status = 'banned') ORDER BY score DESC LIMIT ?",  # a banned wallet keeps its last verdict
                     (TOP_CANDIDATES,),
                 )
             ]

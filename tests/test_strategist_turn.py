@@ -90,6 +90,22 @@ def test_week_evidence_is_a_compact_document_from_the_tables():
     st.close()
 
 
+def test_a_banned_wallet_is_not_among_the_qualified_the_strategist_reads():
+    """Audit of 22 Nov (qualify#1): a banned wallet keeps its last verdict, which qualify never looks at again, and
+    the week's evidence listed 7aPo3n and AG89fn among the qualified with their numbers of 12 Nov. The book copies no
+    banned wallet; the evidence leaves them out of its qualified top too."""
+    st = _store()
+    st.upsert_candidate("GONE", "tape", {}, NOW - 86400)
+    st.put_verdict({"wallet": "GONE", "computed_at": NOW - 3600, "status": "qualified", "score": 0.05, "n_tape": 40,
+                    "lower_sol": 0.01, "next_review": NOW + 86400})  # fmt: skip
+    st.set_candidate_status("GONE", "banned")
+    cfg = Config()
+    cfg.operator.wallet = W
+    ev = week_evidence(st, cfg, NOW)
+    assert [r["wallet"] for r in ev["qualified_top"]] == ["L1"]
+    st.close()
+
+
 def test_evidence_carries_round_trip_costs_and_live_against_paper():
     """The weekly turn sees what a whole round trip cost per arm (the buy, the landed sell, the failed sends) and each
     wallet's live result next to its paper score, with the 5-copy pause."""

@@ -6,9 +6,9 @@ of their own (CGAZ/Q4J6, EGLz/HVM3, 5Ah8/6gRW/FvHw), every wallet one pass away 
 buys.
 
 The rule, for a wallet every in-sample gate has passed (`OneActor.decide`). Its actor is the wallet and its companions
-(analysis/actors.py), joined with the wallets that hold a place now: the ones whose latest verdict is qualified or
-under its forward test, and the ones a sniper of the book copies. If another wallet of its actor holds a place, only
-one of them is the candidate:
+(analysis/actors.py), joined with the wallets that hold a place now: the ones not banned whose latest verdict is
+qualified or under its forward test, and the ones a sniper of the book copies. If another wallet of its actor holds a
+place, only one of them is the candidate:
 
 * the wallet a book sniper copies now, whatever else is true;
 * else the wallet that already won this choice (`leads`, kept with its numbers), so the candidate does not change hands
@@ -118,9 +118,12 @@ def same_actor(v: dict[str, Any], decision: Decision | None, cfg: QualifyConfig,
 
 
 def standing_wallets(store: Store) -> set[str]:
-    """The wallets that hold a place now by their latest verdict: qualified, or a candidate under its forward test."""
-    rows = store._q(f"SELECT v.wallet FROM ({_LATEST_VERDICT}) v WHERE v.status = 'qualified' "
-                    "OR (v.status = 'candidate' AND v.forward IS NOT NULL)")  # fmt: skip
+    """The wallets that hold a place now by their latest verdict: qualified, or a candidate under its forward test, and
+    not banned. Qualify never looks at a banned wallet again, so its last verdict would hold the place for good (audit
+    of 22 Nov: 7aPo3n's kept verdict of 12 Nov, which its twins yielded to for a week)."""
+    rows = store._q(f"SELECT v.wallet FROM ({_LATEST_VERDICT}) v WHERE (v.status = 'qualified' "
+                    "OR (v.status = 'candidate' AND v.forward IS NOT NULL)) AND NOT EXISTS (SELECT 1 FROM candidates c "
+                    "WHERE c.wallet = v.wallet AND c.status = 'banned')")  # fmt: skip
     return {r[0] for r in rows}
 
 
@@ -178,6 +181,7 @@ class OneActor:
         self._mates: dict[str, frozenset[str]] = {}  # companions read in this run, the lab's included
         self._pool: set[str] | None = None
         self._snipers: set[str] | None = None
+        self._banned: set[str] | None = None
         self._chosen: dict[str, tuple[str, str]] = {}  # wallet -> (its actor's leader in this lab, why)
         self._firsts: dict[str, dict[str, int]] = {}  # first buys read in this run for the twin rule, once a wallet
 
@@ -223,11 +227,20 @@ class OneActor:
             self._pool = standing_wallets(self.store) | {w for w in self._sniper_leaders() if self.copied(w)}
         return self._pool
 
+    def banned(self) -> set[str]:
+        """The wallets banned in `candidates`, read once a run (`standing_wallets` says why none of them holds a place
+        unless a sniper of the book copies it)."""
+        if self._banned is None:
+            self._banned = {r[0] for r in self.store._q("SELECT wallet FROM candidates WHERE status = 'banned'")}
+        return self._banned
+
     def holds(self, wallet: str) -> bool:
-        """Whether the wallet holds a place right now: copied, or its latest verdict is qualified or under its forward
-        test and it does not itself yield to another wallet."""
+        """Whether the wallet holds a place right now: copied, or not banned, its latest verdict qualified or under its
+        forward test, and it does not itself yield to another wallet."""
         if self.copied(wallet):
             return True
+        if wallet in self.banned():
+            return False
         status, checked, _lower, _at = latest_verdict(self.store, wallet)
         if status != "qualified" and not (status == "candidate" and checked):
             return False
@@ -243,12 +256,19 @@ class OneActor:
         holds = status == "qualified" or (status == "candidate" and bool(v.get("forward")) and v.get("gate") != GATE)
         return 0 if holds or not over else self.store.review_now(over, now)
 
-    def order(self, chunk: list[dict], rows: Mapping[str, dict], need: int) -> list[dict]:
+    def order(self, chunk: list[dict], rows: Mapping[str, dict], need: int | Mapping[str, int]) -> list[dict]:
         """The wallets of one lab in the order to judge them: as they came, unless the rule needs another. Wallets
         that cannot pass the tape gate first (a candidate that stopped passing gives up its place before the others
         are judged), then the ones that can: each actor's leader ahead of its other wallets (actors.leader on the
-        lab's own lower bounds), and a wallet that yielded last time after everything else."""
-        hopeful = [c["wallet"] for c in chunk if _may_pass(rows.get(c["wallet"]), need)]
+        lab's own lower bounds), and a wallet that yielded last time after everything else. `need`: the copies a
+        wallet needs to pass, one number for all or each wallet's own (run.own_need: 20 without a strong history; by
+        the 10 a strong history needs, a place-holder without one that measured 10 to 19 was judged after its actor,
+        which yielded to it while it gave the place up: review of 22 Nov)."""
+
+        def bar(w: str) -> int:
+            return int(need[w]) if isinstance(need, Mapping) else int(need)
+
+        hopeful = [c["wallet"] for c in chunk if _may_pass(rows.get(c["wallet"]), bar(c["wallet"]))]
         if not hopeful:
             return chunk
         yielded = {w for w in hopeful if actor_block(self.store, w).get("same_as")}

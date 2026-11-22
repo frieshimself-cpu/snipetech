@@ -3546,11 +3546,12 @@ def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_
 def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | None = None, top: int = 40,
                  min_n: int = 4, floor: float | None = None, wallets=None, gate: ExitParams | None = None,
                  shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST,
-                 with_moments: bool = False) -> list[dict]:  # fmt: skip
+                 with_moments: bool = False, own_floor: bool = True) -> list[dict]:  # fmt: skip
     """Per wallet: is its first buy a signal worth our exit? For every KOL trigger, the exit is picked on the older
     60% of the trigger's moments (as `rank` does); each triggering wallet is then scored with that exit on the moments
     its sniper would copy: first buys at or above its own floor (`choose_min_leader_sol` from its buy sizes, at least
-    `floor`, default the book's `min_copy_sol`). Wallets with the same address under several triggers keep the
+    `floor`, default the book's `min_copy_sol`; `own_floor` False: at `floor` itself, as a sniper sent that minSol
+    copies every moment the rule found, its repeats too). Wallets with the same address under several triggers keep the
     best-covered trigger. Each row carries the copy plan the book needs: the floor, the leader's style, the exit's name
     in `live_exits` (None for a search exit), its parameters and LAB_VERSION. `wallets`: score only these (the qualify
     stage's due list), so none of them is cut by the `top` limit behind wallets nobody asked about.
@@ -3609,8 +3610,9 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
             if not choose and want is not None and w not in want:
                 continue  # without a choice to make, only the wallets asked for (the group needs every wallet)
             moments = [rs[i] for i in idx]
-            min_sol = choose_min_leader_sol([r.get("lead_sol") for r in moments],
-                                            [x for r in moments for x in (r.get("rebuys") or ())], floor)  # fmt: skip
+            min_sol = (choose_min_leader_sol([r.get("lead_sol") for r in moments],
+                                             [x for r in moments for x in (r.get("rebuys") or ())], floor)
+                       if own_floor else floor)  # fmt: skip
             kept = [i for i in idx if rs[i].get("lead_sol") is None or rs[i]["lead_sol"] >= min_sol - 1e-9]
             kept_by[w] = (min_sol, kept)
         # the group a wallet's train means are shrunk toward: every wallet's moments older than this wallet's first

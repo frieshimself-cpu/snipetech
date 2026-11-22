@@ -328,11 +328,11 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
     """The verdict after the forward check, for a verdict every in-sample gate passed (status qualified; any other is
     returned as it is). `moments`: the wallet's copies, [[the leader's buy ts, SOL a copy made], ...]: the lab's, and
     older than the tape the lab read, the ones earlier runs recorded (qualify.run.with_recorded); `picked_at`: its
-    latest pick, `first_picked_at`: its first (qualify.run.pick_times), None = now and the latest; `spans`: the tape the
-    lab read. Its copies after the latest pick are its forward copies, and `forward` holds their numbers: {"picked_at",
-    "tape_hours", "n", "mean", "lower", "win_rate", "status", "min_n", "min_hours", "first_picked_at", "first_n",
-    "first_mean", "off_tape"} (first_*: its copies since its first pick; off_tape: forward copies the tape no longer
-    holds, from the record).
+    latest pick (None: this look picks it, at the end of the tape it read, "tape_end" below), `first_picked_at`: its
+    first (None: the latest; qualify.run.pick_times); `spans`: the tape the lab read. Its copies after the latest pick
+    are its forward copies, and `forward` holds their numbers: {"picked_at", "tape_hours", "n", "mean", "lower",
+    "win_rate", "status", "min_n", "min_hours", "first_picked_at", "first_n", "first_mean", "off_tape"} (first_*: its
+    copies since its first pick; off_tape: forward copies the tape no longer holds, from the record).
 
     The bar (FORWARD_MIN_N, FORWARD_MIN_HOURS): picked again after it failed an in-sample gate, 20 or more copies since
     its first pick over 6 h or more of tape with a mean below 0 retire it ("failed": it lost since it was first picked),
@@ -352,10 +352,13 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
     and a reason that names the landing. Its next pick starts at this verdict (qualify.run.pick_times).
 
     "tape_end": where the tape the lab read ended. A verdict's clock time is later: the copy of the tape a lab reads
-    was 0.7 to 4 hours old at 33 labs (16 to 19 Nov)."""
+    was 0.7 to 4 hours old at 33 labs (16 to 19 Nov). A new pick starts there, not at the clock time: the copies in
+    between were in no look's sample, and counted from the clock time they were in no forward check either (audit of
+    22 Nov: 2.5 h of copies on average, right after the window the wallet was picked on)."""
     if v.get("status") != "qualified":
         return v
-    since = int(now if picked_at is None else picked_at)
+    tape_to = max((float(b) for _, b in spans or []), default=float(now))
+    since = int(min(tape_to, float(now)) if picked_at is None else picked_at)
     first = since if first_picked_at is None else min(int(first_picked_at), since)
     copies = [(float(ts), float(p)) for ts, p in (moments or [])]
     later = [p for ts, p in copies if ts > since]
@@ -365,7 +368,6 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
     tape_from = min((float(a) for a, _ in spans or []), default=float(now))
     since_first = [p for ts, p in copies if ts > first]
     first_mean = sum(since_first) / len(since_first) if since_first else None
-    tape_to = max((float(b) for _, b in spans or []), default=float(now))
     fwd = {"picked_at": since, "tape_hours": hours, "n": len(later), "mean": mean, "lower": st.get("ev_lower"),
            "win_rate": st.get("win_rate"), "status": "pending", "min_n": FORWARD_MIN_N, "min_hours": FORWARD_MIN_HOURS,
            "first_picked_at": first, "first_n": len(since_first), "first_mean": first_mean,

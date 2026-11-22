@@ -30,9 +30,10 @@ def _svc(tmp_path):
     return Service(cfg, store=st), st, data
 
 
-def _tape(st, wallets, coins=12, sol=0.5, venue="curve", topup=0.0):
-    """Each wallet buys early in a dozen coins, so it has the buys a wallet needs to be measured at all (10 at the
-    least since 11 Nov: the count before the lab); the tape span covers them. `sol`: the wallet's buy in each coin;
+def _tape(st, wallets, coins=20, sol=0.5, venue="curve", topup=0.0):
+    """Each wallet buys early in twenty coins, so it has the buys a wallet needs to be measured at all (the count
+    before the lab: 10 at the least since 11 Nov, and since the audit of 22 Nov, qualify#3, the 20 its verdict needs
+    without a strong history; until then a dozen); the tape span covers them. `sol`: the wallet's buy in each coin;
     `venue`: where the coins trade ("launchlab": Raydium LaunchLab's, which no copy sniper buys); `topup`: a second
     buy of the wallet's after the crowd's (a copy sniper copies a first buy, never a top-up)."""
     D = addr("dev")
@@ -266,8 +267,8 @@ def test_the_lab_scores_wallets_with_the_exit_the_book_sends(tmp_path, monkeypat
         assert row["wallet"] == "W1" and row["exit_name"] == "lab" and row["lab_version"] == L.LAB_VERSION
         assert row["exit_params"] == L.LIVE_EXITS["lab"].to_dict() and row["min_leader_sol"] == cfg.book.min_copy_sol
         assert row["exit_source"] == "lab" and row["exit_test_n"] == 5  # 12 moments: 5 held out, too few for its own
-        # the verdict carries the plan to the book
-        st.upsert_candidate("W1", "tape", {"positions": 12}, NOW - 3600)
+        # the verdict carries the plan to the book (a strong history: its 12 coins are enough to be measured, qualify#3)
+        st.upsert_candidate("W1", "solanatracker", STRONG, NOW - 3600)
         run_qualify(svc, cfg, data / "jobs", NOW)
         plan = st.latest_verdicts()[0]["copy_plan"]
         assert plan["exit_name"] == "lab" and plan["min_leader_sol"] == 0.3 and plan["lab_version"] == L.LAB_VERSION
@@ -286,8 +287,8 @@ def test_the_lab_measures_due_wallets_the_hourly_copy_has_no_cand_label_for(tmp_
     try:
         _tape(st, ["NEW", "KOL"], coins=12)
         st.set_label("KOL", "a kol", "kol")
-        for w in ("NEW", "KOL"):
-            st.upsert_candidate(w, "tape", {"positions": 12}, NOW - 3600)
+        for w in ("NEW", "KOL"):  # a strong history: 12 coins are enough to be measured (qualify#3)
+            st.upsert_candidate(w, "solanatracker", STRONG, NOW - 3600)
         snapshot_db(data / "snipetech.db")  # the hourly copy, taken before this run labels anything
         svc.cfg.verdict.bootstrap_samples = 50
         assert svc.tape_store.path != st.path  # the lab reads the copy
@@ -965,15 +966,58 @@ def test_a_cold_verdict_starts_a_new_pick_from_the_tape_it_read_and_ends_the_arm
         assert armed_since(st, "W") is None
         put(200, "qualified", {"status": "passed", "tape_end": 180})
         put(300, "qualified", {"status": "passed", "tape_end": 290})
-        assert pick_times(st, "W") == (100, 100) and armed_since(st, "W") == 180  # the look that first passed
+        # the pick starts at 90 too, where its look's tape ended, not at the verdict's 100 (audit of 22 Nov, qualify#0)
+        assert pick_times(st, "W") == (90, 90) and armed_since(st, "W") == 180  # the look that first passed
         put(400, "candidate", {"status": "pending", "tape_end": 380, "cold": {"n": 10, "mean": -0.05, "upper": -0.01}})
-        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") is None
+        assert pick_times(st, "W") == (90, 380) and armed_since(st, "W") is None
         put(500, "candidate", {"status": "pending", "tape_end": 480})
-        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") is None
+        assert pick_times(st, "W") == (90, 380) and armed_since(st, "W") is None
         put(600, "qualified", {"status": "passed"})  # a verdict from before the tape end was kept: its own time
-        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") == 600
+        assert pick_times(st, "W") == (90, 380) and armed_since(st, "W") == 600
         put(700, "candidate")  # stopped in-sample: the pick is over, and so is the arming
-        assert pick_times(st, "W") == (100, None) and armed_since(st, "W") is None
+        assert pick_times(st, "W") == (90, None) and armed_since(st, "W") is None
+    finally:
+        st.close()
+
+
+def test_a_new_pick_starts_where_the_tape_its_lab_read_ended(tmp_path):
+    """Audit of 22 Nov (qualify#0): the lab reads the hourly copy of the tape, up to 5 h old (the picks of 20-22 Nov:
+    2.5 h on average, 4 h at the most), and a new pick was dated at the run's clock time. The wallet's copies between
+    the copy's end and that time were in nobody's forward check: W lost on its 10 copies there and qualified on the 20
+    after. A pick starts where the tape that look read ended, as the cold restart and the arming already did: those
+    10 are forward copies, and W is retired."""
+    from snipetech.qualify.run import pick_times
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W"])
+        st.upsert_candidate("W", "solanatracker", STRONG, NOW - 4 * 86400)
+        lag = 3 * 3600  # the copy the picking lab reads ends three hours before the run
+        streak = [[NOW - 30 * 3600 + 3600 * k, 0.02] for k in range(25)]  # what it is picked on
+        gap = [[NOW - lag + 600 * k + 60, -0.05] for k in range(10)]  # after that copy ends, before the run
+        after = [[NOW + 3600 + 4000 * k, 0.01] for k in range(20)]
+        seen = {"end": NOW - lag}
+
+        def runner(wallets, pos):  # the lab sees the copies on the tape it reads; all of them still pay in-sample
+            moments = [m for m in streak + gap + after if m[0] <= seen["end"]]
+            return [_row(w, len(moments), 0.012, 0.003, moments, 0.7) for w in wallets]
+
+        st.set_coverage("tape", {"spans": [[NOW - 3 * 86400, NOW - lag]]})
+        record_copying(st, set(), NOW - 60)
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner, early=True)
+        fwd = st.latest_verdicts()[0]["forward"]
+        assert fwd["status"] == "pending" and fwd["picked_at"] == fwd["first_picked_at"] == fwd["tape_end"] == NOW - lag
+        assert pick_times(st, "W") == (NOW - lag, NOW - lag)
+        assert st.get_score("qualify", "W")["record"]["first_picked_at"] == NOW - lag
+        later = NOW + 30 * 3600
+        seen["end"] = later - lag
+        st.set_coverage("tape", {"spans": [[NOW - 3 * 86400, later - lag]]})
+        record_copying(st, set(), later - 60)
+        run_qualify(svc, svc.cfg, data / "jobs", later, lab_runner=runner, early=True)
+        v = st.latest_verdicts()[0]
+        assert v["forward"]["picked_at"] == NOW - lag and v["forward"]["n"] == 30  # the gap's 10 copies count
+        assert v["forward"]["mean"] == pytest.approx((10 * -0.05 + 20 * 0.01) / 30)
+        assert v["status"] == "retired" and v["forward"]["status"] == "failed", v["reasons"]
     finally:
         st.close()
 
@@ -1026,7 +1070,7 @@ def test_a_run_says_where_its_time_went(tmp_path):
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["W1"], coins=12)
-        st.upsert_candidate("W1", "tape", {"positions": 12}, NOW - 3600)
+        st.upsert_candidate("W1", "solanatracker", STRONG, NOW - 3600)  # a strong history: 12 coins are enough
         svc.cfg.verdict.bootstrap_samples = 50
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW)
         assert out["evaluated"] == 1 and set(out["secs"]) == {"lab", "gates"}
@@ -1057,7 +1101,7 @@ def test_a_wallet_with_too_few_buys_to_pass_gets_its_verdict_without_the_lab(tmp
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["FEW"], coins=3)
-        _tape(st, ["MANY"], coins=12)
+        _tape(st, ["MANY"], coins=20)
         st.upsert_candidate("FEW", "coinfirst", {}, NOW - 3600)
         st.upsert_candidate("MANY", "coinfirst", {}, NOW - 3500)
         sent = []
@@ -1065,13 +1109,129 @@ def test_a_wallet_with_too_few_buys_to_pass_gets_its_verdict_without_the_lab(tmp
                           lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
         assert sent == ["MANY"] and out["too_few"] == 1 and out["lab_wallets"] == 1 and out["evaluated"] == 2
         few = next(v for v in st.latest_verdicts() if v["wallet"] == "FEW")
-        # looked at again at its own pace (20 Nov): 3 coins in its first two hours of tape, 7 more take 4.5 hours
-        assert few["status"] == "candidate" and NOW + 4 * 3600 < few["next_review"] < NOW + 5 * 3600
+        # looked at again at its own pace (20 Nov): 3 coins in its first two hours of tape, and the 17 more to the 20
+        # a wallet without a strong history needs (22 Nov, qualify#3: 10, the least any wallet needs, until then) take
+        # 11 hours
+        assert few["status"] == "candidate" and NOW + 11 * 3600 < few["next_review"] < NOW + 11.1 * 3600
         why = (
-            "3 coins bought with 0.3 SOL or more on pump.fun (curve or PumpSwap) on the tape: fewer than the 10 "
-            "copies a wallet needs at the least"
+            "3 coins bought with 0.3 SOL or more on pump.fun (curve or PumpSwap) on the tape: fewer than the 20 "
+            "copies a wallet without a strong history needs"
         )
-        assert few["reasons"] == [why + ", not measured; looked at again in 4.5 h, at its pace on the tape"]
+        assert few["reasons"] == [why + ", not measured; looked at again in 11.0 h, at its pace on the tape"]
+    finally:
+        st.close()
+
+
+def test_the_count_before_the_lab_holds_each_wallet_to_the_copies_its_own_verdict_needs(tmp_path):
+    """Audit of 22 Nov (qualify#3): a verdict needs 20 copies, 10 only with a strong history (gates.verdict_for), and
+    the history is known before the lab; the count held every wallet to 10. With no history source on since 20 Nov,
+    275 of the 10:01 run's 401 lab rows were wallets with 10-19 copies and no history, their verdict "n < 20" before
+    the lab ran. NOHIST bought 12 coins and has no history: held back, looked at again at its pace. STRONGW bought the
+    same 12 and has a strong history: measured."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["NOHIST", "STRONGW"], coins=12)
+        st.upsert_candidate("NOHIST", "coinfirst", {"hits": 1}, NOW - 3600)
+        st.upsert_candidate("STRONGW", "solanatracker", STRONG, NOW - 3500)
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(12), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["STRONGW"] and out["too_few"] == 1 and out["lab_wallets"] == 1
+        nohist = next(v for v in st.latest_verdicts() if v["wallet"] == "NOHIST")
+        # 12 coins in its first 1.9 hours of tape: 8 more take about 1.3 hours, under the 2 h a lab is apart
+        assert nohist["status"] == "candidate" and nohist["next_review"] == NOW + 2 * 3600
+        said = ("12 coins bought with 0.3 SOL or more on pump.fun (curve or PumpSwap) on the tape: fewer than the 20 "
+                "copies a wallet without a strong history needs, not measured; looked at again in 2.0 h, at its pace "
+                "on the tape")  # fmt: skip
+        assert nohist["reasons"] == [said]
+    finally:
+        st.close()
+
+
+def _own_coins(st, w, coins, t0=NOW - 7000, s0=SLOT):
+    """`w` creates `coins` coins and buys each with 0.5 SOL in its create; a crowd buys after it."""
+    for k in range(coins):
+        m = Market(st, addr(f"{w}:own{k}"), w, t0 + k * 200, s0 + k * 500)
+        m.buy(w, 0.5, 0, sig=m.create_sig)
+        for j in range(5):
+            m.buy(addr(f"{w}:own{k}:c{j}"), 0.3 + 0.1 * j, 2 + j)
+        m.sell(w, 1.0, 20)
+        m.commit()
+
+
+def test_a_serial_launchers_buys_in_its_own_coins_are_no_copies(tmp_path):
+    """Audit of 22 Nov (qualify#4): the lab never scores a creator's buy in its own coin (lab._first_buys leaves out
+    the launch's deployers), but the count before the lab counted them: a serial launcher went to the lab, came back
+    "no tape data" and was due again in 72 h (8 of the 13 such verdicts of the 10:01 run; 8JX4JT's 344 coins at the
+    floor were all its own creates). LAUNCHER buys only its own 25 coins: not measured, and its verdict says why.
+    BOTH also bought 20 coins other people created: measured."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _own_coins(st, "LAUNCHER", 25)
+        _own_coins(st, "BOTH", 15, t0=NOW - 6950, s0=SLOT + 125)
+        _tape(st, ["BOTH"])  # and 20 coins of other people's
+        for i, w in enumerate(("LAUNCHER", "BOTH")):
+            st.upsert_candidate(w, "coinfirst", {"hits": 2}, NOW - 3600 + i)
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["BOTH"] and out["too_few"] == 1 and out["no_tape"] == 0
+        v = next(v for v in st.latest_verdicts() if v["wallet"] == "LAUNCHER")
+        assert v["status"] == "candidate" and v["next_review"] == NOW + 72 * 3600
+        said = ("no coin bought with 0.3 SOL or more on pump.fun (curve or PumpSwap) on the tape, the only buys a copy "
+                "sniper copies (its buys in the 25 coins it created are the creator's, which the lab never scores): "
+                "not measured; looked at again in 72.0 h")  # fmt: skip
+        assert v["reasons"] == [said]
+    finally:
+        st.close()
+
+
+def test_a_wallet_past_the_counts_reach_is_measured_only_with_enough_buys_at_the_floor(tmp_path):
+    """Audit of 22 Nov (qualify#4): the count reads a wallet's first 5,000 trades, and one with more was measured
+    whatever it bought: 5yeWDD, 10,480 trades in 6,555 coins and no buy of 0.3 SOL or more, came back "no tape data"
+    every 72 h. Past them, a second bounded read counts its buys at the floor in coins it did not create: with fewer
+    than it needs it has fewer such coins too (held back); with as many it is measured; past that read's reach as
+    well, it is measured, as before. Here the first read takes 5 trades and BOT made 8 dust buys, then 3 at the
+    floor."""
+    st = Store(tmp_path / "t.db")
+    try:
+        D = addr("dev")
+        for k in range(8):  # its first 8 trades: buys under the floor
+            m = Market(st, addr(f"dust{k}"), D, NOW - 9000 + k * 10, SLOT + k * 25)
+            m.buy("BOT", 0.05, 1)
+            m.commit()
+        for k in range(3):  # then 3 coins at the floor
+            m = Market(st, addr(f"floor{k}"), D, NOW - 8000 + k * 10, SLOT + 2500 + k * 25)
+            m.buy("BOT", 0.5, 1)
+            m.commit()
+        floor = round(0.3 * 1e9)
+        assert st.coins_bought("BOT", floor, scan=5) == (0, True)  # past its first 5 trades: a floor, as before
+        assert st.coins_bought("BOT", floor, scan=5, need=10) == (3, False)  # 3 coins at the floor in all: held back
+        assert st.coins_bought("BOT", floor, scan=5, need=3) == (0, True)  # as many as it needs: measured
+        st.PROBE_SCAN = 9  # the second read reaches its first 9 trades only: past them, measured as before
+        assert st.coins_bought("BOT", floor, scan=5, need=10) == (0, True)
+    finally:
+        st.close()
+
+
+def test_a_wallet_past_the_second_reads_reach_is_measured_without_that_read(tmp_path, monkeypatch):
+    """Review of 22 Nov (qualify#4): the second read of the count reads up to PROBE_SCAN of a wallet's trades, each
+    from the table (on the live database when the hourly copy is stale), and a wallet with more trades than that is
+    measured whatever the read finds. It was made before the look through the wallet index that says so: for a bot
+    past PROBE_SCAN, 200,000 rows read for nothing. Past that reach, the wallet is measured without it."""
+    st = Store(tmp_path / "t.db")
+    try:
+        D = addr("dev")
+        for k in range(8):  # 8 trades, every buy under the floor
+            m = Market(st, addr(f"dust{k}"), D, NOW - 9000 + k * 10, SLOT + k * 25)
+            m.buy("BOT", 0.05, 1)
+            m.commit()
+        st.PROBE_SCAN = 6  # the second read would reach its first 6 trades only
+        asked: list[str] = []
+        real = st._q
+        monkeypatch.setattr(st, "_q", lambda sql, params=(): asked.append(sql) or real(sql, params))
+        assert st.coins_bought("BOT", round(0.3 * 1e9), scan=5, need=10) == (0, True)  # measured, as before
+        assert not [sql for sql in asked if "DISTINCT" in sql], asked  # without the second read
     finally:
         st.close()
 
@@ -1089,7 +1249,7 @@ def test_the_count_before_the_lab_takes_only_coins_a_copy_sniper_would_buy(tmp_p
         _tape(st, ["SMALL"], coins=15, sol=0.2)  # 15 coins, every buy under the floor
         _tape(st, ["LAUNCH"], coins=15, venue="launchlab")  # Raydium LaunchLab's coins: no copy sniper buys them
         _tape(st, ["TOPUP"], coins=15, sol=0.2, topup=0.6)  # 0.6 SOL in each coin, but only after a 0.2 SOL first buy
-        _tape(st, ["EDGE"], coins=12, sol=0.3)  # exactly at the floor: copied
+        _tape(st, ["EDGE"], coins=20, sol=0.3)  # exactly at the floor: copied (20: it has no history, qualify#3)
         for i, w in enumerate(["SMALL", "LAUNCH", "TOPUP", "EDGE", "GONE"]):
             st.upsert_candidate(w, "coinfirst", {}, NOW - 3600 + i)
         sent = []
@@ -1108,7 +1268,7 @@ def test_the_count_before_the_lab_takes_only_coins_a_copy_sniper_would_buy(tmp_p
     (tmp_path / "own").mkdir()
     svc, st, data = _svc(tmp_path / "own")  # the floor is the book's, whatever it is set to
     try:
-        _tape(st, ["SMALL"], coins=15, sol=0.2)
+        _tape(st, ["SMALL"], coins=20, sol=0.2)  # 20: it has no history (qualify#3)
         st.upsert_candidate("SMALL", "coinfirst", {}, NOW - 3600)
         svc.cfg.book.min_copy_sol = 0.2
         sent = []
@@ -1116,6 +1276,37 @@ def test_the_count_before_the_lab_takes_only_coins_a_copy_sniper_would_buy(tmp_p
                     lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
         assert sent == ["SMALL"]
     finally:
+        st.close()
+
+
+def test_a_wallet_whose_trades_are_all_newer_than_the_tape_copy_is_looked_at_again_at_the_next_lab(tmp_path):
+    """Audit of 22 Nov (qualify#5): the count before the lab reads the hourly copy of the tape, up to 5 h old, and
+    GMGN lists wallets trading right now. HuvepLQ4 (found 09:07) bought 12 coins at the floor from 08:41 to 09:28, all
+    after the copy's end (07:31): "no tape data", looked at again in 72 h, long after the streak that listed it. A
+    wallet the copy has no trade of but the live tape has is looked at again at the next lab, and the verdict says
+    why; one that trades nowhere is "no tape data" as before."""
+    svc, st, data = _svc(tmp_path)
+    copy = Store(tmp_path / "copy.db")  # the hourly copy, taken three hours ago, before FRESH's trades
+    try:
+        copy.set_coverage("tape", {"spans": [[NOW - 3 * 86400, NOW - 3 * 3600]]})
+        svc._tape_store = copy
+        _tape(st, ["FRESH"], coins=12)  # 12 coins at 0.5 SOL on the curve, in the live database only
+        st.upsert_candidate("FRESH", "gmgn", {}, NOW - 600)
+        st.upsert_candidate("NOWHERE", "gmgn", {}, NOW - 500)
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda ws, pos: sent.extend(ws) or [])
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert sent == [] and by["FRESH"]["status"] == "candidate"
+        assert by["FRESH"]["next_review"] == NOW + 2 * 3600  # the next lab ([qualify] lab_interval_h), not 72 h
+        said = (
+            "no trade on the tape the lab reads (the hourly copy, to 05 Nov 21:00 UTC), though the live tape has "
+            "some: its trades are newer; not measured, looked at again in 2.0 h"
+        )
+        assert by["FRESH"]["reasons"] == [said]
+        assert by["NOWHERE"]["reasons"] == ["no tape data"] and by["NOWHERE"]["next_review"] == NOW + 72 * 3600
+        assert out["newer_than_copy"] == 1 and out["no_tape"] == 1 and out["too_few"] == 0 and out["evaluated"] == 2
+    finally:
+        copy.close()
         st.close()
 
 
@@ -1128,7 +1319,7 @@ def test_a_run_screens_ten_times_the_wallets_it_can_measure(tmp_path):
         few = [f"FEW{i:02d}" for i in range(15)]
         many = [f"MANY{i}" for i in range(4)]
         _tape(st, few, coins=1)
-        _tape(st, many, coins=11)
+        _tape(st, many, coins=20)  # 20: they have no history (qualify#3)
         for i, w in enumerate(few + many):
             st.upsert_candidate(w, "coinfirst", {}, NOW - 9000 + i)
         svc.cfg.qualify.max_wallets = 2
@@ -1152,7 +1343,7 @@ def test_the_readings_only_a_passing_wallet_needs_are_made_only_for_one(tmp_path
     svc, st, data = _svc(tmp_path)
     try:
         wallets = ["PASSES", "LOSES", "THIN"]
-        _tape(st, wallets, coins=12)
+        _tape(st, wallets, coins=20)  # 20: they have no history (qualify#3)
         for i, w in enumerate(wallets):
             st.upsert_candidate(w, "coinfirst", {}, NOW - 3600 + i)
         rows = {
@@ -1191,7 +1382,7 @@ def test_a_wallets_packs_are_read_only_once_every_gate_passed_it_and_someone_hol
     svc, st, data = _svc(tmp_path)
     try:
         wallets = ["FIRST", "LOSES", "THIN", "SECOND"]
-        _tape(st, wallets, coins=12)
+        _tape(st, wallets, coins=20)  # 20: they have no history (qualify#3)
         for i, w in enumerate(wallets):
             st.upsert_candidate(w, "coinfirst", {}, NOW - 3600 + i)
         rows = {"FIRST": _lab_row(30, 0.02, 0.005), "LOSES": _lab_row(30, -0.01, -0.02),
@@ -1321,7 +1512,7 @@ def test_the_qualify_lab_scores_a_wallet_behind_its_own_companions(tmp_path, mon
         before = {r["wallet"]: r for r in default_lab_runner(svc, cfg)(["W1", "W2"], "+3x")}
         assert before["W1"]["mean"] != rows["W1"]["mean"] and before["W2"]["mean"] == rows["W2"]["mean"]
         monkeypatch.undo()
-        st.upsert_candidate("W1", "tape", {"positions": 12}, NOW - 3600)
+        st.upsert_candidate("W1", "solanatracker", STRONG, NOW - 3600)  # a strong history: 12 coins are enough
         run_qualify(svc, cfg, data / "jobs", NOW)
         (v,) = [x for x in st.latest_verdicts() if x["wallet"] == "W1"]
         assert any("2 wallets of its own" in r for r in v["reasons"])
