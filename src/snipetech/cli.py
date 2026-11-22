@@ -1963,6 +1963,7 @@ async def _run(args, cfg: Config) -> int:
             from .analysis import lab_window, paper
             from .analysis.bid_landing import is_bid as lab_is_bid
             from .analysis.lab import check_bid_landing as lab_check_bid
+            from .analysis.lab import check_repeats as lab_check_repeats
             from .analysis.lab import collect as lab_collect
             from .analysis.lab import crew_fields as lab_crew_fields
             from .analysis.lab import each_groups as lab_each_groups
@@ -2012,6 +2013,8 @@ async def _run(args, cfg: Config) -> int:
                 # --each: the label groups whose wallets each give their own moments (lab.collect `groups`), which
                 # runs wallet rules only: any other rule beside it would be left out without a word
                 each = lab_each_groups(hypotheses) if args.each else None
+                # a rule that takes every buy of its wallet ("repeats": "also") would fire once a coin without --each
+                lab_check_repeats(hypotheses, bool(args.each))
                 if args.hunt_landing is not None:  # a landing no rule of the run could use: refused, never a no-op
                     paper.check_hunt_landing(hypotheses)
                 _lab_window_flags(args, hypotheses, svc.store)  # --trades without its triggers, an end past the tape

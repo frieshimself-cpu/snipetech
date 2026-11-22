@@ -66,6 +66,7 @@ from .lab import (
     LAUNCH_KINDS,
     MIG_CAP,
     MIG_LAND_SLOTS,
+    REPEATS_ALSO_FROZEN,
     SIZE_WORDS,
     SKIP_WORDS,
     SNIPER_NOTE,
@@ -101,6 +102,7 @@ from .lab import (
     size_gap,
     sniper_rule,
     span_slot_secs,
+    takes_every_buy,
     within_mig_cap,
 )
 from .lab import crew_note as trigger_crew_note
@@ -278,6 +280,15 @@ AGAIN = "again"  # on a stored rule: which new making of its rule it is (absent:
 STORED_AT = "stored_at"
 OLD_CODE_NOTE = "research only: in part scored by code that left serial crews' coins out"
 CREW_ODD_NOTE = "research only: a crew choice the lab does not know"
+# A wallet rule frozen with "repeats": "also" (20-22 Nov: 17 of them, ce9a417da4 "Cented EVERY buy 0.95 SOL+" among
+# them, 88 trades in 88 coins where Cented made 105 curve buys of that size in 87 coins): the forward run fires once a
+# coin (`lab._fire`), at the first buy at the size, and a record holds one trade a coin, where its copy sniper takes
+# every buy of the wallet at the size. It keeps its id and its trades, and it is research only (`repeats_not_as_live`);
+# such a rule is no longer frozen (`freeze`, lab.REPEATS_ALSO_FROZEN), and lab --each scores what its sniper takes
+REPEATS_NOTE = "research only: one trade a coin, where its copy sniper takes every buy"
+REPEATS_WHY = ("research only: scored one trade a coin, the first buy at the size (the forward test holds one trade a "
+               "coin), where its copy sniper takes every buy of the wallet at the size, the repeats too: its record is "
+               "not what that sniper trades. lab --each scores every buy")  # fmt: skip
 SKIP_LABEL, OLD_CODE_LABEL = "without serial crews' coins", "in part scored without serial crews' coins"
 RULE_KEYS = ("paper_strategies", CREW_KEY, "paper")  # the stored rules, the migration's flag, the run's state
 
@@ -500,6 +511,25 @@ def crew_note(strategy: dict) -> str | None:
     return (trigger_crew_note(seen.get("trigger")) or (OLD_CODE_NOTE if seen.get(OLD_CODE) else CREW_ODD_NOTE))
 
 
+def repeats_not_as_live(strategy: dict) -> str | None:
+    """Why a frozen wallet rule's record is not what its copy sniper trades (REPEATS_WHY): it takes every buy of its
+    wallet ("repeats": "also") and its record holds one trade a coin. None for every other rule."""
+    trig = strategy.get("trigger")
+    return REPEATS_WHY if isinstance(trig, dict) and takes_every_buy(trig) else None
+
+
+def research_note(strategy: dict) -> str | None:
+    """Why a record is research only, in a few words (what a row carries; the reason once, `research_reason`): other
+    coins than its sniper buys (`crew_note`), or one trade a coin where its copy sniper takes every buy
+    (REPEATS_NOTE). None for a record that is what its sniper would trade."""
+    return crew_note(strategy) or (REPEATS_NOTE if repeats_not_as_live(strategy) else None)
+
+
+def research_reason(strategy: dict) -> str:
+    """The reason behind a research record's note (`research_note`), as an answer says it once."""
+    return _crew_reason(strategy) if crew_note(strategy) else (repeats_not_as_live(strategy) or "")
+
+
 def _crew_reason(strategy: dict) -> str:
     """The reason behind a rule's `crew_note` as an answer says it once: the general words for its kind of record
     (a "skip" rule's own share of crews' coins is in its `lab.crew`)."""
@@ -509,8 +539,9 @@ def _crew_reason(strategy: dict) -> str:
 
 def row_note(strategy: dict) -> str | None:
     """What a row says of a record that is not what its sniper would trade: why its exit is not the sniper's
-    (`exit_not_as_live`), and in a few words which coins it was scored on (`crew_note`); both when both."""
-    exit_why, short = exit_not_as_live(strategy), crew_note(strategy)
+    (`exit_not_as_live`), and in a few words which coins it was scored on (`crew_note`), or that it holds one trade a
+    coin where its copy sniper takes every buy (`research_note`); both when both."""
+    exit_why, short = exit_not_as_live(strategy), research_note(strategy)
     return f"{exit_why}. Also {short}" if exit_why and short else exit_why or short
 
 
@@ -1033,10 +1064,11 @@ def _twins(a: set, b: set) -> bool:
 def not_as_live(strategy: dict) -> str | None:
     """Why a frozen strategy's record is not what its live sniper would trade, in plain words; None when it is. Two
     things can be wrong with it, and both are said when both are: its exit does not act as the sniper's would
-    (`exit_not_as_live`: a record that no longer stands for its rule), and it was scored on other coins than the
-    sniper buys (`crew_not_as_live`: without serial crews' coins, or on them alone; research only). A strategy with
-    either keeps its id, its trades and its place, and never goes live (live_test)."""
-    exit_why, crew = exit_not_as_live(strategy), crew_not_as_live(strategy)
+    (`exit_not_as_live`: a record that no longer stands for its rule), and it was scored on other trades than the
+    sniper takes (`crew_not_as_live`: without serial crews' coins, or on them alone; `repeats_not_as_live`: one trade
+    a coin where its copy sniper takes every buy of the wallet; research only). A strategy with either keeps its id,
+    its trades and its place, and never goes live (live_test)."""
+    exit_why, crew = exit_not_as_live(strategy), crew_not_as_live(strategy) or repeats_not_as_live(strategy)
     if exit_why and crew:
         return f"{exit_why}. Also {crew}"
     return exit_why or crew
@@ -1253,6 +1285,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             # a research-only rule (a MIG buy at any age): no sniper is ever sent it, so its forward record would
             # stand for no trade of ours, and the lab already says what it makes
             raise ValueError(f"{t.label()} cannot be frozen: {why}. Score it with `lab --trigger`")
+        if takes_every_buy(t):  # its record would hold one trade a coin of the buys its copy sniper takes
+            raise ValueError(f"{t.label()} cannot be frozen: {REPEATS_ALSO_FROZEN}")
     if buy_sol is None:
         buy_sol = recipe.buy_sol if recipe is not None else 0.2
     if buy_bid_sol is None:
@@ -1370,7 +1404,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                     "took them"} for x in ranked[k:]]  # fmt: skip
             break
         spec = r["trigger_spec"]
-        why = research_only_why(spec)
+        why = research_only_why(spec) or (REPEATS_ALSO_FROZEN if takes_every_buy(spec) else None)
         if why is not None:  # in a lab it was handed: never frozen, takes no place, and says why
             skipped.append({"label": f"{r['trigger']} | {r['exit']}", "why": why})
             continue
@@ -1509,9 +1543,9 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         if note is None:
             continue
         stale.append({"id": s["id"], "label": s.get("label"), "why": note})
-        if crew_note(s):
+        if research_note(s):
             stale[-1]["research_only"] = True
-            whys.setdefault(crew_note(s), _crew_reason(s))
+            whys.setdefault(research_note(s), research_reason(s))
     if stale:
         out["not_as_live"] = stale
     if whys:
@@ -1595,9 +1629,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
 
     Serial crews' coins (14 Nov): the stored rules are settled first (`settle_rules`: the migration, and the mark of
     a run of other code, `old_code_scored` in the answer when this run found one). `new_trades_research` of the new
-    trades belong to research records, which no sniper trades (`crew_note`); `crew_passed` says, per rule, how many
-    coins its crew choice passed over in this run's window, with the crews known now (forward a crew is one once its
-    third coin has launched: a "skip" record holds its first two coins, an "only" record lacks them). The state this
+    trades belong to research records, which no sniper trades (`research_note`); `crew_passed` says, per rule, how
+    many coins its crew choice passed over in this run's window, with the crews known now (forward a crew is one once
+    its third coin has launched: a "skip" record holds its first two coins, an "only" record lacks them). The state this
     run leaves carries STATE_MARK, and never while a run of other code stands unmarked in the stored rules: the
     rules are settled again right before the state is written, and a refused write of the marks stops the run
     (raised) with the state as it was. `closed`: the records scored no more because a run of other code scored
@@ -1662,7 +1696,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     # each run's window move back by the same lag, so a rule's windows follow one another with no moment left between
     lag = {s["id"]: math.ceil(settle_secs(ex) - SETTLE_SECS) for s, _, ex, _ in parsed}
     added = own_added = research_added = 0
-    research = {s["id"] for s, *_ in parsed if crew_note(s)}  # records no sniper trades: counted apart
+    research = {s["id"] for s, *_ in parsed if research_note(s)}  # records no sniper trades: counted apart
     passed: dict[str, int] = {}  # strategy -> coins its crew choice passed over in this run's window (`crew_skips`)
     for a, b in store.tape_spans():
         windows = {d: (max(a, since - d), min(b, until - d)) for d in sorted(set(lag.values()))}
@@ -1793,8 +1827,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     # `landing` is where a rule frozen plainly is scored; `new_trades_own_landing` of the new trades belong to rules
     # frozen at a place asked for or with a bid (`pinned`), scored there and not where our copies land live
     # `new_trades_research` of them belong to research records (scored without serial crews' coins, on them alone,
-    # or in part by other code: `crew_note`), which no sniper trades; `crew_passed`: per rule, the coins its crew
-    # choice passed over in this run's window
+    # or in part by other code; or one trade a coin where a copy sniper takes every buy: `research_note`), which no
+    # sniper trades; `crew_passed`: per rule, the coins its crew choice passed over in this run's window
     out = {"new_trades": added, "new_trades_own_landing": own_added, "new_trades_research": research_added,
            "since": since, "until": until,
            "landing": landings(copy_pos), "unscored": unscored,
@@ -2073,9 +2107,11 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
             # a record that is not what its sniper would trade: an exit that is not the sniper's (why, in full), or
             # other coins than the sniper buys (in a few words; the reason once, under `research_only_why`)
             out[-1]["exit_note"] = note
-            if crew_note(s):  # scored without serial crews' coins, on them alone, or in part by other code
+            # scored without serial crews' coins, on them alone, or in part by other code; or one trade a coin where
+            # its copy sniper takes every buy
+            if research_note(s):
                 out[-1]["research_only"] = True
-                whys.setdefault(crew_note(s), _crew_reason(s))
+                whys.setdefault(research_note(s), research_reason(s))
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
         nums = numbers(s, False)

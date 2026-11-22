@@ -441,6 +441,17 @@ REPEATS_ALSO, REPEATS_ONLY = "also", "only"
 REPEAT_CHOICES = ("", REPEATS_ALSO, REPEATS_ONLY)
 REPEATS_ONLY_WHY = ("it follows only a wallet's repeat buys in a coin, and no copy sniper can: OKTech copies every buy "
                     "of the wallet above its floor, its first in a coin included")  # fmt: skip
+# A rule that takes every buy of its wallet ("also", what a copy sniper copies) has that many moments in a coin only
+# where each followed wallet gives its own moments (`lab --each`: `collect` with groups, `_first_buys`). Anywhere else
+# a wallet rule fires once a coin (`_fire`), at the first buy at the size, and the repeats its label promises are never
+# scored (audit of 22 Nov: 17 forward records labelled "every buy" held one trade a coin). Refused in these words
+# (`check_repeats`, and a freeze: REPEATS_ALSO_FROZEN)
+REPEATS_ALSO_WHY = ('it takes every buy of its wallet at the size ("repeats": "also"), as a copy sniper copies them, '
+                    "and without --each a wallet rule fires once a coin, at the first of them: the repeats would never "
+                    "be scored. Score it with --each")  # fmt: skip
+REPEATS_ALSO_FROZEN = ("the forward test holds one trade a coin, the first buy at the size, and this rule takes every "
+                       'buy of its wallet ("repeats": "also"), as a copy sniper copies them: score it with lab '
+                       "--each")  # fmt: skip
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
@@ -765,6 +776,25 @@ def research_only_why(trig: Trigger | Mapping[str, Any]) -> str | None:
     if repeats == REPEATS_ONLY:
         return REPEATS_ONLY_WHY
     return MIG_ANY_AGE_WHY if _mig_window_of(trig) == 0 else None
+
+
+def takes_every_buy(trig: Trigger | Mapping[str, Any] | None) -> bool:
+    """Whether a wallet rule takes every buy of its wallet at the size, the repeats too ("repeats": "also"). `trig`: a
+    Trigger or a stored rule's trigger fields."""
+    if not trig:
+        return False
+    get = trig.get if isinstance(trig, Mapping) else (lambda name: getattr(trig, name, None))
+    return get("kind") == "kol" and get("repeats") == REPEATS_ALSO
+
+
+def check_repeats(triggers: Sequence[Trigger] | None, each: bool) -> None:
+    """Refuse in words, before any tape is read, a rule that takes every buy of its wallet where it would be scored
+    once a coin: in a lab or a place-bids table without --each (`each`), REPEATS_ALSO_WHY."""
+    if each:
+        return
+    every = [t for t in triggers or () if takes_every_buy(t)]
+    if every:
+        raise ValueError(f"{every[0].label()}: {REPEATS_ALSO_WHY}")
 
 
 def mig_window_fields(trig: Trigger | Mapping[str, Any]) -> dict[str, Any]:

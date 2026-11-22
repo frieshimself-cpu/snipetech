@@ -122,13 +122,14 @@ def _as_scored(con: sqlite3.Connection, strategies: list) -> list:
 
 
 def _research_only(strategies: list) -> set:
-    """The ids of the frozen rules that are research records (analysis.paper.crew_note: scored without serial crews'
-    coins, on them alone, or in part by other code). The paper module is loaded only here, at the page's first read
-    of the paper test; a page that cannot load it marks nothing."""
+    """The ids of the frozen rules that are research records (analysis.paper.research_note: scored without serial
+    crews' coins, on them alone, or in part by other code; or one trade a coin where a copy sniper takes every buy).
+    The paper module is loaded only here, at the page's first read of the paper test; a page that cannot load it marks
+    nothing."""
     try:
-        from .analysis.paper import crew_note
+        from .analysis.paper import research_note
 
-        return {s.get("id") for s in strategies if isinstance(s, dict) and crew_note(s)}
+        return {s.get("id") for s in strategies if isinstance(s, dict) and research_note(s)}
     except Exception:  # noqa: BLE001 - the page shows the rules without the mark
         return set()
 

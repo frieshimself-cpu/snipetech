@@ -191,10 +191,19 @@ class OperatorJobs:
         id, the job died on start, and the analyst ended its turn thinking the lab was running."""
         from itertools import pairwise
 
-        from ..analysis.lab import parse_trigger, recipe, research_only_why
+        from ..analysis.lab import (
+            REPEATS_ALSO_FROZEN,
+            check_repeats,
+            parse_trigger,
+            recipe,
+            research_only_why,
+            takes_every_buy,
+        )
 
         specs = [v for a, v in pairwise(argv) if a == "--trigger"]
         specs += [a.split("=", 1)[1] for a in argv if a.startswith("--trigger=")]
+        freeze = argv[:2] == ["paper", "freeze"]
+        triggers = []
         for spec in specs:
             try:
                 trig = parse_trigger(spec)
@@ -202,10 +211,21 @@ class OperatorJobs:
                 raise PermissionError(f"--trigger refused, no job started: {exc}") from None
             # a rule the lab scores and no sniper can be sent (a MIG buy at any age): `paper freeze` refuses it, so
             # the refusal comes here, before a job starts and dies on it
-            why = research_only_why(trig) if argv[:2] == ["paper", "freeze"] else None
+            why = research_only_why(trig) if freeze else None
             if why is not None:
                 raise PermissionError(f"--trigger refused, no job started: paper freeze does not take this rule "
                                       f"({why}). Score it with lab --trigger")  # fmt: skip
+            if freeze and takes_every_buy(trig):  # its forward record would hold one trade a coin (audit, 22 Nov)
+                raise PermissionError(f"--trigger refused, no job started: paper freeze does not take this rule "
+                                      f"({REPEATS_ALSO_FROZEN})")  # fmt: skip
+            triggers.append(trig)
+        # a rule that takes every buy of its wallet, in a lab or a place-bids table without --each: once a coin, so
+        # the repeats it names would never be scored (`lab.check_repeats`)
+        if argv[:1] in (["lab"], ["place-bids"]):
+            try:
+                check_repeats(triggers, "--each" in argv)
+            except ValueError as exc:
+                raise PermissionError(f"--trigger refused, no job started: {exc}") from None
         # a bot's recipe by name (`lab --recipe`, `paper freeze --recipe`): one the table does not hold is refused
         # here too, with the names there are
         names = [v for a, v in pairwise(argv) if a == "--recipe"]

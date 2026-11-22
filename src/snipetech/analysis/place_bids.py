@@ -43,6 +43,7 @@ from .lab import (
     _fire,
     _first_buys,
     _plan,
+    check_repeats,
     fired_at,
     implausible_coin,
     label_groups,
@@ -95,6 +96,7 @@ def moments(store: Store, trig: Trigger, spans: Sequence[tuple[int, int]], *, ea
     if trig.kind != "kol":
         raise ValueError(f"place-bids reads the block behind a followed wallet: it takes a wallet rule (a kol "
                          f"trigger), not a {trig.kind} one")  # fmt: skip
+    check_repeats([trig], each)  # a rule that takes every buy would be read once a coin without `each`
     kols = label_groups(store) if kols is None else kols
     group = set(rule_wallets(trig, kols))
     keep = None if not wallets else set(wallets)

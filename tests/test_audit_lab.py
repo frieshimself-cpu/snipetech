@@ -5,14 +5,21 @@ exit; their results move together, and the lower bound the agents hold to "above
 of its own (120 moments in 40 coins: a bound twice too tight). Every bound of the lab's tables now draws a coin's
 moments together (`stats.bootstrap_mean_bounds` with `clusters`), and the ranked row says how many coins its newer
 moments are (`test.coins`).
+
+docs#0: a wallet rule that takes every buy of its wallet ("repeats": "also", what a live copy sniper copies) fires once
+a coin without --each, at the first buy at the size, and the forward test holds one trade a coin: 17 records labelled
+"every buy" held the first buy alone. A lab, a place-bids table and a freeze of such a rule without --each are refused
+in words, before any tape is read and before a job starts; the records frozen so read as research only.
 """
 
 from __future__ import annotations
 
+import json
 import random
 import time
 
 import numpy as np
+import pytest
 
 from snipetech.analysis.lab import (
     bands,
@@ -134,3 +141,97 @@ def test_a_wallets_own_exit_is_judged_on_its_coins():
     cut = int(60 * 0.6)
     assert by_coin["lower"] == bootstrap_mean_bounds(gain[cut:], 0.8, 2000, clusters=keys[cut:])[0]
     assert by_coin["lower"] < one["lower"] and by_coin["gain"] == one["gain"]
+
+
+# -- docs#0: a rule that takes every buy is scored with --each, never once a coin ------------------------------------
+
+REPEATS_JSON = json.dumps(REPEATS)
+
+
+def test_a_lab_without_each_refuses_a_rule_that_takes_every_buy(tmp_path, capsys):
+    from snipetech import cli
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    _repeat_world(st, coins=25)
+    st.close()
+    base = ["--db", str(db), "lab", "--trigger", REPEATS_JSON, "--buy", "0.2", "--per-tx", "0.0045",
+            "--copy-position", "+0", "--exit", "hold30s", "--json"]  # fmt: skip
+    assert cli.main(base) == 2
+    err = capsys.readouterr().err
+    assert "--each" in err and "once a coin" in err
+    assert cli.main([*base, "--each"]) == 0  # every buy at the size, as the copy sniper takes them
+    out = json.loads(capsys.readouterr().out)
+    assert out["each"] is True and out["moments"] == 75
+
+
+def test_place_bids_without_each_refuses_a_rule_that_takes_every_buy():
+    from snipetech.analysis.place_bids import place_bids
+
+    st = Store(":memory:")
+    _repeat_world(st, coins=6)
+    kw = {"hours": 48, "kols": {"wallet": {LEAD}}, "labels": {}, "own": ()}
+    with pytest.raises(ValueError, match="--each"):
+        place_bids(st, Config(), NOW, trigger=REPEATS, **kw)
+    assert place_bids(st, Config(), NOW, trigger=REPEATS, each=True, **kw)["moments"] == 18
+    st.close()
+
+
+def test_the_job_runner_refuses_it_before_a_job_starts():
+    from snipetech.operator.jobs import OperatorJobs
+
+    refused = (
+        ["lab", "--trigger", REPEATS_JSON],
+        ["lab", f"--trigger={REPEATS_JSON}", "--hours", "24"],
+        ["place-bids", "--trigger", REPEATS_JSON],
+        ["paper", "freeze", "--trigger", REPEATS_JSON],
+    )
+    for argv in refused:
+        with pytest.raises(PermissionError, match="no job started.*--each"):
+            OperatorJobs._check_triggers(argv)
+    OperatorJobs._check_triggers(["lab", "--each", "--trigger", REPEATS_JSON])  # what a copy sniper takes: scored
+    OperatorJobs._check_triggers(["place-bids", "--each", "--trigger", REPEATS_JSON])
+    OperatorJobs._check_triggers(["lab", "--trigger", json.dumps(REPEATS | {"repeats": ""})])  # first buys: as ever
+
+
+def test_paper_freeze_refuses_a_rule_that_takes_every_buy(monkeypatch):
+    from snipetech.analysis import paper
+
+    def no_tape(*_a, **_k):
+        raise AssertionError("the refusal comes before any tape is read")
+
+    monkeypatch.setattr(paper, "collect", no_tape)
+    st = Store(":memory:")
+    with pytest.raises(ValueError, match="one trade a coin.*lab --each"):
+        paper.freeze(st, Config(), triggers=[parse_trigger(REPEATS)], now=NOW)
+    st.close()
+
+
+def _record(sid: str, repeats: str) -> dict:
+    from snipetech.analysis.lab import kind_exits
+
+    ex = kind_exits([HOLD], Config())["kol"][0]  # watched, with the copy exit: the copy sniper's own sale
+    trig = parse_trigger(REPEATS | {"repeats": repeats})
+    return {"id": sid, "label": f"{trig.label()} | {ex.label()}", "trigger": dict(trig.__dict__), "exit": ex.to_dict(),
+            "position": "+2x", "latency": 0, "buy_sol": 1.0, "per_tx_sol": 0.0045, "from_ts": NOW - 3600,
+            "lab": {"mean": 0.01, "ev_lower": 0.004, "landing": "+2x@0"}}  # fmt: skip
+
+
+def test_a_record_frozen_with_repeats_is_research_only():
+    from snipetech import dash
+    from snipetech.analysis import paper
+
+    every, first = _record("rep1", "also"), _record("first1", "")
+    assert paper.exit_not_as_live(every) is None  # its exit is the copy sniper's: the trades are what is not
+    why = paper.not_as_live(every)
+    assert "one trade a coin" in why and "every buy" in why and "lab --each" in why
+    assert paper.not_as_live(first) is None
+    st = Store(":memory:")
+    st.set_coverage("paper_strategies", {"strategies": [every, first], "superseded": []})
+    rep = paper.report(st, Config(), NOW)
+    rows = {r["id"]: r for r in rep["strategies"]}
+    assert rows["rep1"]["research_only"] is True and rows["rep1"]["exit_note"] == paper.REPEATS_NOTE
+    assert "research_only" not in rows["first1"] and "exit_note" not in rows["first1"]
+    assert "every buy" in rep["research_only_why"][paper.REPEATS_NOTE]
+    assert dash._research_only([every, first]) == {"rep1"}
+    st.close()
