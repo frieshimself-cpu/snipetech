@@ -1244,7 +1244,9 @@ class Service:
         owner took 2 SOL out and the run ended on its floor with no fill. SOL that leaves while a coin of the run's is
         held waits for a coin the same way (22 Nov audit: it was taken for the held coin's buy): a coin of the run's
         that shows, or one held that grows, was the newest such fall's buy, an older fall the owner's own, and no
-        floor reading counts while a fall is that fresh. A coin the tape has not priced yet is no reading (positions.py), and a
+        floor reading counts while a fall is that fresh; one that showed with no fall to take was the buy of the fall
+        in the next reading (the SOL is read before the coins, and OKTech wraps a PumpSwap buy's SOL again a second
+        on). A coin the tape has not priced yet is no reading (positions.py), and a
         reading under the floor holds the re-arms back and ends the run only when the next one agrees (FLOOR_READINGS:
         21 Nov, a 5 SOL copy from 10 SOL read as a loss in the second its SOL had left and its coin did not show).
         Beside the floor, the run's own result by its trades on the tape (`run_result`: what its buys paid, what its
@@ -2350,6 +2352,10 @@ class Service:
             pend: list[tuple[float, float]] = []
             moves, last_departure, held_prev = [], -1e18, False
             raw_held: dict[str, int] = {}
+            # whether a coin of the run's showed in the last reading with no fall of the SOL to take: the SOL is read a
+            # moment before the coins, and OKTech wraps a PumpSwap buy's SOL again a second or two after it, so that
+            # coin's SOL can leave in the next reading (review of the runner fixes, 22 Nov)
+            unpaid = False
 
             def move_floor(amount: float, at: float, what: str | None = None) -> None:
                 nonlocal floor_sol
@@ -2416,6 +2422,9 @@ class Service:
                     if w_now - w_last >= 0.9 * (prev_b - b):  # into wrapped SOL: OKTech's top-up at a start
                         log(f"OKTech wrapped {w_now - w_last:.4f} SOL (its top-up at a start, for PumpSwap buys): "
                             "no buy")  # fmt: skip
+                    elif unpaid:  # the buy of the coin that showed in the last reading, its SOL read after it
+                        log(f"{prev_b - b:.4f} SOL left a reading after a coin of the run's showed with none leaving: "
+                            "that coin's buy (or OKTech wrapping its SOL again), no move of the owner's")  # fmt: skip
                     else:
                         fresh_at = now_t
                         if not traded:
@@ -2428,9 +2437,15 @@ class Service:
                     w_last = w_now
                 # each buy into a coin of the run's took the newest SOL that left; an older fall is the owner's own,
                 # as for a move already made (`undo_late`: a copy 30 s after a 2 SOL withdrawal took it back with it)
+                took = 0
                 for _m in bought:
                     if pend:
                         pend.pop()
+                        took += 1
+                # one that took no fall, with none in this reading or waiting (one right after a sale is not in `pend`):
+                # its SOL leaves in the next one (`unpaid`)
+                unpaid = took < len(bought) and not fell_now and not (
+                    fresh_at is not None and now_t - fresh_at < FRESH_HOLD_SECS)  # fmt: skip
                 if bought:
                     fresh_at = max((at for at, _a in pend), default=None)
                 raw_held = {str(h["mint"]): int(h.get("raw") or 0) for h in held if h.get("mint")}
