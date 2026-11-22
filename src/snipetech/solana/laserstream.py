@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
@@ -247,6 +248,113 @@ async def probe_replay(programs: list[str], head: int, back_slots: int, secs: fl
                         out["other_ticks"] += 1
                 elif u.HasField("block_meta"):
                     probe.meta(int(u.block_meta.slot), int(u.block_meta.executed_transaction_count), at)
+                if at >= secs:
+                    break
+        except Exception as exc:  # noqa: BLE001 - what the server refused is the answer
+            out["error"] = str(exc)[:300]
+    return probe.summary() | out
+
+
+# geyser.proto SlotStatus: the steps of a slot a processed subscription is sent with interslot updates, by name
+SLOT_STEPS = {3: "first_shred", 5: "bank", 4: "completed", 0: "processed", 1: "confirmed"}
+SLOT_DEAD = 6
+
+
+def _spread(values: list[float]) -> dict[str, float] | None:
+    """n, the 10th, 50th and 90th percentile (nearest rank) and the largest of `values`, rounded to a tenth."""
+    if not values:
+        return None
+    v = sorted(values)
+
+    def rank(p: float) -> float:
+        return round(v[max(0, math.ceil(p / 100 * len(v)) - 1)], 1)
+
+    return {"n": len(v), "p10": rank(10), "p50": rank(50), "p90": rank(90), "max": round(v[-1], 1)}
+
+
+class FeedLatencyProbe:
+    """How soon after a slot's first shred each step of it, and its first transaction of the watched programs, reached
+    this machine (audit 22 Nov, goal#3: the tape reads confirmed transactions only, keeps no receive time and drops
+    failed sends, so nothing said how many milliseconds after a leader's buy a processed feed hands it over, nor how
+    many sends lost the race). Each update is stamped `at` on this machine's monotonic clock; a step is a slot status
+    (first shred received, bank created, completed, processed, confirmed), the first time it came; transactions count
+    in their slot, failed ones apart; a block's summary gives its transaction count."""
+
+    def __init__(self) -> None:
+        self.steps: dict[int, dict[str, float]] = {}  # slot -> step -> when it first came (seconds)
+        self.first_tx: dict[int, float] = {}  # slot -> when its first transaction came
+        self.txs = self.failed = self.dead = 0
+        self.executed: dict[int, int] = {}  # slot -> the transactions its block executed
+
+    def feed(self, u: Any, at: float) -> None:
+        if u.HasField("transaction"):
+            self.first_tx.setdefault(int(u.transaction.slot), at)
+            self.txs += 1
+            self.failed += int(u.transaction.transaction.meta.HasField("err"))
+        elif u.HasField("slot"):
+            steps = self.steps.setdefault(int(u.slot.slot), {})
+            if int(u.slot.status) == SLOT_DEAD:
+                self.dead += 1
+            elif (step := SLOT_STEPS.get(int(u.slot.status))) is not None:
+                steps.setdefault(step, at)
+        elif u.HasField("block_meta"):
+            self.executed[int(u.block_meta.slot)] = int(u.block_meta.executed_transaction_count)
+
+    def _gaps(self, a: str, b: str) -> dict[str, float] | None:
+        return _spread([(s[b] - s[a]) * 1000 for s in self.steps.values() if a in s and b in s])
+
+    def _first_tx_after(self, step: str) -> dict[str, float] | None:
+        return _spread([(self.first_tx[k] - s[step]) * 1000 for k, s in self.steps.items()
+                        if k in self.first_tx and step in s])  # fmt: skip
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "slots": len(self.steps), "dead": self.dead, "txs": self.txs, "failed": self.failed,
+            "first_shred_to_processed_ms": self._gaps("first_shred", "processed"),
+            "processed_to_confirmed_ms": self._gaps("processed", "confirmed"),
+            "first_shred_to_confirmed_ms": self._gaps("first_shred", "confirmed"),
+            "first_tx_after_first_shred_ms": self._first_tx_after("first_shred"),
+            "first_tx_after_processed_ms": self._first_tx_after("processed"),
+            "block_txs": _spread([float(n) for n in self.executed.values()]),
+        }  # fmt: skip
+
+
+def feed_latency_request(programs: list[str]):
+    """What `FeedLatencyProbe` reads: `programs`' transactions at processed, failed ones too, every status of every
+    slot with the steps inside it, and each block's summary. Never the tape's own subscription: that stays at
+    confirmed, a record without forks and without failed sends."""
+    req = subscribe_request(programs, "processed", slots=True, name="probe", metas=True)
+    req.transactions["probe"].ClearField("failed")  # both: who lost the race too
+    req.slots["probe"].filter_by_commitment = False  # every status, not only the commitment's
+    req.slots["probe"].interslot_updates = True  # and the steps inside a slot (first shred received, ...)
+    return req
+
+
+async def probe_feed_latency(programs: list[str], secs: float, endpoint: str = DEFAULT_ENDPOINT,
+                             token: str | None = None) -> dict[str, Any]:  # fmt: skip
+    """Listen to `feed_latency_request` for `secs` seconds: `FeedLatencyProbe.summary`, and the error the stream ended
+    on, if any (a provider that sends no step inside a slot leaves those numbers None)."""
+    import grpc
+
+    from .ys import geyser_pb2, geyser_pb2_grpc
+
+    token = token if token is not None else os.environ.get("HELIUS_API_KEY", "")
+    probe, req = FeedLatencyProbe(), feed_latency_request(programs)
+    out: dict[str, Any] = {"secs": secs, "error": None}
+
+    async def requests() -> AsyncIterator[Any]:
+        yield req
+        while True:
+            await asyncio.sleep(PING_SECS)
+            yield geyser_pb2.SubscribeRequest(ping=geyser_pb2.SubscribeRequestPing(id=1))
+
+    async with grpc.aio.secure_channel(endpoint, grpc.ssl_channel_credentials(),
+                                       options=[("grpc.max_receive_message_length", 64 << 20)]) as ch:  # fmt: skip
+        t0 = time.monotonic()
+        try:
+            async for u in geyser_pb2_grpc.GeyserStub(ch).Subscribe(requests(), metadata=[("x-token", token)]):
+                at = time.monotonic() - t0
+                probe.feed(u, at)
                 if at >= secs:
                     break
         except Exception as exc:  # noqa: BLE001 - what the server refused is the answer
