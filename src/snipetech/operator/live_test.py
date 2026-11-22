@@ -1169,10 +1169,12 @@ async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, no
         except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
             return _closing(paths, t, now, notes, notifier, log, "wallet", f"the wallet's coins could not be read again "
                             f"({type(exc).__name__}), so its sniper {oid} is not stopped yet and may still be armed")  # fmt: skip
+        # the first reading showed nothing of its sniper's; the second is weighed by its own amounts (more of an owner's
+        # coin there than their buys explain may be a buy of the sniper's in between)
+        theirs = owner_coins(store, t["wallet"], again, marks) if store is not None else set()
+        mine = [m for m in dict.fromkeys(str(h.get("mint")) for h in again) if m not in theirs]
         held = [*held, *(h for h in again if str(h.get("mint")) not in mints)]
         mints = list(dict.fromkeys(str(h.get("mint")) for h in held))
-        theirs = owner_coins(store, t["wallet"], held, marks) if store is not None else set()
-        mine = [m for m in mints if m not in theirs]
         coming = _unseen_buy(store, t, marks, now, set(mints)) if not mine and store is not None else None
         if coming:
             return _closing(paths, t, now, notes, notifier, log, "held",

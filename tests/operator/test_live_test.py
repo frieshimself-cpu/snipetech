@@ -951,6 +951,27 @@ def test_one_wallet_reply_that_leaves_the_coin_out_never_stops_the_sniper_that_h
     assert env.svc.stops == [] and LT.load(env.paths)["state"] == "closing"
 
 
+def test_a_second_reading_with_more_of_the_owners_coin_keeps_the_sniper_running(env):
+    """Review of 22 Nov (livetest#1): the close reads the wallet twice before it stops the test's sniper, and weighed a
+    coin both readings showed by the first one's amount. More of the owner's coin in the second than their buys explain
+    (a buy of the sniper's between the two, not on the tape yet) is a coin the sniper may hold."""
+    _started(env)
+    _sniper_on_record(env)
+    _buy_at(env, "hand", LT.load(env.paths)["started_at"] + 600, 8_175, 27_000_000)  # the owner's 1,000,000 units
+    coin = {"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 1.0, "priced": True}
+    more = coin | {"amount": 2.0, "raw": 2_000_000}
+    replies = [[coin]]  # the first reading; every later one shows the sniper's buy too
+
+    async def readings(address, ignore=None, unknown=None):
+        return replies.pop(0) if replies else [more]
+
+    env.svc.open_positions = readings
+    _stops_beside_the_owners_coin(env)
+    _cycler_ends(env, TIME_UP)  # its sniper left running
+    _round(env, NOW + 7300)
+    assert env.svc.stops == [] and LT.load(env.paths)["state"] == "closing"
+
+
 def test_a_buy_of_the_tests_sniper_on_its_way_keeps_it_running_until_its_coin_shows(env):
     """The coin shows in the wallet a second or so after its buy (21 Nov): a buy of the sniper's on the tape whose coin
     no reply showed yet, and that no sale followed, keeps the sniper running; the round looks again."""
