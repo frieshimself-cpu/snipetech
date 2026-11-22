@@ -18,10 +18,12 @@ the 20 slots before), and that sniper's own exits from its local payload. A coin
 
 It runs from the one-minute pass (`operate --commands`), and at the end of the book's run when that timer is off. A
 flagged coin gets one Telegram decision line, repeated every 15 minutes while it is held, and one `events` row (kind
-"unmanaged") for the weekly evidence. A coin with no buy of ours on the tape at all (an airdropped token), or whose open
-buys all paid fees no sniper of ours pays (the owner's own trade by hand in this wallet, measure/ours.py), is not a coin
-the book bought: it gets one line a day, never every 15 minutes. The coins on the owner's [operator] ignore_mints list
-are not watched at all. operator/watch.json keeps the current hits; the operator's gate reads them."""
+"unmanaged") for the weekly evidence. A coin with no buy of ours at all, on the tape or in the measure stage's fills (an
+airdropped token), or whose open buys all paid fees no sniper of ours pays (the owner's own trade by hand in this
+wallet, measure/ours.py), is not a coin the book bought: it gets one line a day, never every 15 minutes. A buy of ours
+the tape does not hold (a copy into an older PumpSwap coin, read off the chain into fills) keeps its coin ours. The
+coins on the owner's [operator] ignore_mints list are not watched at all. operator/watch.json keeps the current hits;
+the operator's gate reads them."""
 
 from __future__ import annotations
 
@@ -223,6 +225,21 @@ def _owner_buys(store: Store, wallet: str, mint: str, now: float, marks: dict) -
     return {str(sig) for sig, prio, tip in rows if not bot_tape_buy(SimpleNamespace(priority=prio, tip=tip), marks)}
 
 
+_FILL_KEYS = ("sig", "ts", "sol", "wallet_copied", "sniper_id", "priority_lamports", "tip_lamports")
+
+
+def _fill_buys(store: Store, wallet: str, mint: str, now: float, on_tape: set[str]) -> list[dict]:
+    """The wallet's buys of `mint` in the measure stage's fills that the tape does not hold (a copy into a coin the
+    recorder no longer keeps, an older PumpSwap coin: the measure stage reads those off the chain), newest first, in
+    `unmanaged`'s window; none when they cannot be read."""
+    try:
+        rows = store._q(f"SELECT {', '.join(_FILL_KEYS)} FROM fills WHERE wallet=? AND mint=? AND side='buy' AND ts>=? "
+                        "AND ts<=? ORDER BY ts DESC LIMIT 20", (wallet, mint, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not known: the tape alone judges the coin, as before
+        return []
+    return [dict(zip(_FILL_KEYS, r)) for r in rows if str(r[0]) not in on_tape]
+
+
 def _leader(payload: dict) -> str | None:
     ws = payload.get("ctbotWallets") or []
     first = ws[0] if isinstance(ws, list) and ws else None
@@ -331,7 +348,7 @@ def unmanaged(store: Store, wallet: str, holdings: list[dict], tasks: list[dict]
     )
     tape_last = _tape_last(store, now)
     lagging = tape_last is None or now - tape_last > TAPE_LAG_SECS
-    from ..measure.ours import fee_marks
+    from ..measure.ours import bot_buy, fee_marks
 
     marks = fee_marks(store)  # the fees our snipers pay: a buy at other fees is the owner's own (measure/ours.py)
     out = []
@@ -348,13 +365,21 @@ def unmanaged(store: Store, wallet: str, holdings: list[dict], tasks: list[dict]
         else:  # no open buy of the bot's on the tape explains the coin: the buy is not recorded yet, or is older
             start = max([float((first_seen or {}).get(mint, now))] + [float(t.ts) for t in ours])
             bot_bought = any(t.is_buy and t.sig not in owner for t in ours)
-            # stray: no buy of the bot's on the tape at all (an airdrop), or the open buys are all the owner's own (22
-            # Nov audit: the owner's hand-bought coin was told "Sell it now" every 15 minutes): said once a day
+            # a buy the tape does not hold, read off the chain into fills (22 Nov audit: our own copies into older
+            # PumpSwap coins were told as airdrops): the bot's keeps the coin ours, the owner's own says it is theirs
+            fills = _fill_buys(store, wallet, mint, now, {t.sig for t in ours})
+            mine = next((f for f in fills if bot_buy(f, marks)), None)
+            # stray: no buy of the bot's at all (an airdrop), or the open buys are all the owner's own (22 Nov audit:
+            # the owner's hand-bought coin was told "Sell it now" every 15 minutes): said once a day
+            stray = mine is None and (bool(lots) or not bot_bought)
+            theirs = bool(lots) or bool(owner) or any(not bot_buy(f, marks) for f in fills)
             hit = {"mint": mint, "reason": "not_on_tape", "flag_at": start + UNKNOWN_HOLD_SECS, "start": start,
-                   "held_secs": now - start, "bought_at": None, "buy_sig": None, "buy_slot": None, "buy_sol": None,
-                   "leader": None, "sniper_id": None, "also": [], "sniper_status": None, "timer_secs": None,
-                   "lagging": lagging, "due": [], "stray": bool(lots) or not bot_bought,
-                   "owner": bool(lots) or (not bot_bought and bool(owner))}  # fmt: skip
+                   "held_secs": now - start, "bought_at": float(mine["ts"]) if mine else None,
+                   "buy_sig": mine["sig"] if mine else None, "buy_slot": None,
+                   "buy_sol": float(mine["sol"] or 0) or None if mine else None,
+                   "leader": mine.get("wallet_copied") if mine else None, "sniper_id": None, "also": [],
+                   "sniper_status": None, "timer_secs": None, "lagging": lagging, "due": [], "off_tape": mine is not None,
+                   "stray": stray, "owner": stray and theirs}  # fmt: skip
         if now >= hit["flag_at"]:
             out.append(hit | {"value_sol": h.get("value_sol")})
     return out
@@ -406,6 +431,9 @@ def alert_line(hit: dict, *, migrated: bool = False) -> str:
         why += f"; its exits were due: {due}" if due else ""
     elif reason == "sniper_unknown":
         why = "No sniper of ours is known to have bought it, so nothing may be selling it"
+    elif reason == "not_on_tape" and hit.get("off_tape"):
+        why = ("Our buy of it is not on the tape, only in the measure stage's record (read off the chain), so its exits "
+               "cannot be checked and nothing may be selling it")  # fmt: skip
     elif reason == "not_on_tape":
         why = "The tape shows no buy of ours still open for it (the buy may not be recorded yet), so nothing may be selling it"
     elif reason == "past_timer":

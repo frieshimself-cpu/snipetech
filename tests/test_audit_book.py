@@ -561,3 +561,46 @@ def test_book6_no_sniper_is_made_whose_curve_copies_the_wrapped_sol_top_up_leave
     assert made(0.425, 0.0)[0] and not made(0.424, 0.0)[0]  # 0.22 is wrapped from it, 0.205 pays a curve copy
     assert made(0.205, 0.22)[0]  # the top-up is there already: the plain SOL pays the curve copy
     assert made(None, 0.0)[0]  # a balance that was not read says nothing, as before
+
+
+# -- book#7: our own copy that only the measure stage's fills hold -----------------------------------------------------
+
+
+def test_book7_our_copy_the_tape_does_not_hold_is_watched_as_ours_never_called_an_airdrop(tmp_path):
+    """The tape keeps a coin's PumpSwap trades only a while after it leaves its curve, so a copy into an older PumpSwap
+    coin is read off the chain into fills by the measure stage (3 of the 19 copy buys since 16 Nov on the server). Left
+    unsold, the watch called it "not a coin the book bought ... tell me to ignore it", once a day. A buy of the bot's in
+    fills keeps the coin ours: the 15-minute alert, with the wallet it copied and its /sell line. The owner's own buy
+    in fills, at fees no sniper of ours pays, keeps the once-a-day line, in words that say it is theirs."""
+    from snipetech.book.watch import watch_pass
+
+    coin = "Bivu" + "p" * 40
+    st, cfg = _env(tmp_path / "a")
+    _book_sniper(st)
+    _fresh_tape(st)
+    st.put_fill({"sig": "BUYSIG" + "b" * 80, "ts": int(NOW) - 900, "wallet": W, "wallet_copied": L1, "mint": coin,
+                 "side": "buy", "sol": 0.05, "tokens": 1e6, "priority_lamports": 1_000_000,
+                 "tip_lamports": 2_000_000})  # fmt: skip
+    _seen(tmp_path / "a", coin, NOW - 880)
+    held = [{"mint": coin, "amount": 1e6, "value_sol": None, "priced": False}]
+    sent: list[str] = []
+    try:
+        hits = watch_pass(cfg, st, _notifier(sent), W, held, [], NOW)
+        again = watch_pass(cfg, st, _notifier(sent), W, held, [], NOW + 15 * 60)
+        assert not hits[0]["stray"] and hits[0]["leader"] == L1, hits
+        assert again[0]["alerted"], again  # said again 15 minutes on, as for any coin of ours nobody sells
+        assert len(sent) == 2 and all("Nobody is selling" in t and t.endswith(f"/sell {coin}") for t in sent), sent
+        assert f"copying wallet {L1[:6]}" in sent[0] and "not a coin the book bought" not in sent[0]
+    finally:
+        st.close()
+    st, cfg = _env(tmp_path / "b")
+    _book_sniper(st)
+    _fresh_tape(st)
+    _hand_buy_in_fills(st, NOW - 900, mint=coin)
+    _seen(tmp_path / "b", coin, NOW - 880)
+    sent = []
+    try:
+        hits = watch_pass(cfg, st, _notifier(sent), W, held, [], NOW)
+        assert hits[0]["stray"] and len(sent) == 1 and "your own" in sent[0] and "/sell" not in sent[0], sent
+    finally:
+        st.close()
