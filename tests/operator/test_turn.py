@@ -993,7 +993,8 @@ def test_a_role_whose_last_two_waits_were_over_an_hour_gets_no_hour_marker_on_th
     """The hour's cache costs twice the input price to write, the five-minute one 1.25 times: a role whose next turn
     comes after the hour has run out pays the difference for nothing. operator/agents.json keeps when the role's last
     turn ended and its last two waits (from the end of one turn to the start of the next); when both were over an hour
-    the list gets no hour marker. One short wait brings it back. The instructions' marker stays as it is."""
+    the list gets no hour marker. One short wait brings it back. Since the audit of 22 Nov (agents#5) the instructions'
+    marker follows the list's: the OKTech analyst's three-hour looks wrote them at the hour's price for nothing."""
     from snipetech.operator import roles
 
     clock = [NOW]
@@ -1003,9 +1004,11 @@ def test_a_role_whose_last_two_waits_were_over_an_hour_gets_no_hour_marker_on_th
         asyncio.run(run_turn(env["cfg"], env["svc"], env["paths"], env["snap"], Decision(True, "fees", ["first turn"]),
                              env["ledger"], env["notifier"], env["notes"], jobs=env["jobs"], client=_client(handler),
                              now=lambda: clock[0], role="fees"))  # fmt: skip
-        assert requests[0]["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        marks = [mark for _, mark in _marks(requests[0])]
+        # the instructions' marker follows the list's (audit of 22 Nov, agents#5): five minutes when no hour pays
+        assert requests[0]["system"][0]["cache_control"] == (hour[0] if marks else {"type": "ephemeral"})
         assert cache_rule_breaks(requests[0]) == []
-        return [mark for _, mark in _marks(requests[0])]
+        return marks
 
     hour = [{"type": "ephemeral", "ttl": "1h"}]
     assert turn() == hour  # the first turn: nothing known, the marker is there
