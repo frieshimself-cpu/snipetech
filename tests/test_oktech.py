@@ -809,7 +809,12 @@ def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda s
 
     class Rpc:
         async def call(self, method, params):
-            return {"value": int(balance() * 1e9)} if method == "getBalance" else {"value": []}
+            if method == "getBalance":
+                v = balance()
+                return {"value": int((await v if asyncio.iscoroutine(v) else v) * 1e9)}
+            if method == "getSignatureStatuses":  # every sale the run sends lands
+                return {"value": [{"confirmationStatus": "confirmed", "err": None} for _ in params[0]]}
+            return {"value": []}
 
     store = Store(":memory:")
     store.add_oktech_sniper(
@@ -835,6 +840,7 @@ def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda s
                      floor_sol=10.0, owner_set=False)  # fmt: skip
 
     monkeypatch.setattr(svc, "_oktech", lambda: client)
+    monkeypatch.setattr(svc, "selling_wallet", lambda: W6)  # the selling key is the run's wallet's
     monkeypatch.setattr(svc, "stop_flag_set", lambda: flag["stop"])
     monkeypatch.setattr(svc, "open_positions", positions)
     if guard != "real":
@@ -978,7 +984,7 @@ def test_a_coin_oktech_leaves_unsold_is_sold_by_the_cycler_after_sweep_after(mon
 
     async def sweep_coin(mint):
         sold[mint] = S.time.time()
-        return {"wallet": W6, "holdings": 1, "results": [{"mint": mint, "sent": "SIGSWEEP"}]}
+        return {"wallet": W6, "holdings": 1, "results": [{"mint": mint, "signature": "SIGSWEEP"}]}
 
     monkeypatch.setattr(svc, "sweep_coin", sweep_coin)
     rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800, sweep_after=45))

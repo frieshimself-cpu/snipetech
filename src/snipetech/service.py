@@ -41,6 +41,19 @@ TASKS_READ_SECS = 15.0
 SPENT_REARM_SECS = 30.0
 # `oktech cycle --sweep-after`: a sale of a coin OKTech left unsold that failed is tried again this many seconds later
 SWEEP_RETRY_SECS = 60.0
+# and one that did not go out (the sale answered "skipped": PumpSwap's pool not there yet, the chain refused it) or did
+# not land is tried again this soon; a sale counts as sold only once the chain has it, SALE_LAND_SECS at most after it
+# went out (22 Nov audit, finding 9: twice a sale that never went out was said sold, and the next try waited a minute).
+# The sale itself has SALE_SECS (its reads and its send).
+SWEEP_SOON_SECS = 15.0
+SALE_LAND_SECS = 12.0
+SALE_SECS = 60.0
+# one read of the runner's (the wallet, its coins, OKTech's tasks): an RPC call retries for minutes on a refusal
+# (solana/rpc.py: six tries of 30 s), and the floor, the sale and /stop waited on it (22 Nov audit, finding 10). One
+# that has not answered by then is a failed reading, said; the next tick comes on time.
+READ_SECS = 20.0
+# a stop at the end of a run is tried this often, two seconds apart: one refused stop left a sniper armed, nobody watching
+STOP_TRIES = 3
 # and after the run's end with a coin held (the floor, /stop, the time limit, the fills cap) the run goes on reading the
 # wallet this long at most, selling each coin held past --sweep-after itself, and stops the snipers it armed once the
 # wallet holds nothing (22 Nov 00:54: the floor ended a run 36 s after a copy whose sniper read "finished" and never
@@ -1145,6 +1158,21 @@ class Service:
 
         return await sweep(self.rpc, [mint], store=self.store)
 
+    def selling_wallet(self) -> str | None:
+        """The wallet `sweep_coin` signs for: the selling key's (SNIPER_SECRET, solana/sell.py), or None when that key
+        is not set or is no key."""
+        import os
+
+        from .solana.sell import keypair_from_secret
+
+        secret = os.environ.get("SNIPER_SECRET", "").strip()
+        if not secret:
+            return None
+        try:
+            return str(keypair_from_secret(secret).pubkey())
+        except Exception:  # noqa: BLE001 - no valid key: nothing can sign
+            return None
+
     async def oktech_cycle(self, ids: list[str], address: str, floor_sol: float | None, max_minutes: float,
                            max_fills: int = 10, rearm_after: float = 60.0, ignore_mints: list[str] | None = None,
                            sweep_after: float | None = None, place_stop: tuple[int, int] | None = None,
@@ -1172,7 +1200,9 @@ class Service:
         run itself (`sweep_coin`), and said (`swept` in the report). 21 Nov 04:25: a one-shot copy sniper bought, read
         "finished" 13 s later and never sold (the buy that uses up a sniper's cap can be left with no exit), and the run,
         which never restarts while a coin is held, sat seven minutes with it. Set it above the snipers' longest exit (a
-        12 s timer: 45 s). A sale that fails is said and tried again a minute later. It goes on past the run's end while
+        12 s timer: 45 s). A sale counts only once the chain has it (`swept` lists those): one that fails is said and
+        tried again a minute later, one that did not go out or did not land 15 s later (SWEEP_SOON_SECS), and the sale
+        signs with the selling key, so --sweep-after needs that key to be this wallet's. It goes on past the run's end while
         a coin is held (`watch_out`, END_WATCH_SECS at most; nothing is armed again), and the snipers are stopped once
         the wallet holds nothing: 22 Nov 00:54 the floor ended a run 36 s after a copy whose sniper never sold, and the
         run left at once, 9 s before its sweep, with both snipers running and nobody selling the coin.
@@ -1205,6 +1235,10 @@ class Service:
         keep a sniper running, and the floor counts each at its worth when first known as theirs and moves with it
         when it leaves (`owner_coins` in the report). A coin nobody can tell yet is held as the run's but never sold
         by it. The run starts beside the owner's coins; only one of its snipers' refuses the start.
+
+        Every read of the loop has READ_SECS (one that does not answer is a failed reading, said), every stop at the
+        end is tried STOP_TRIES times, a sniper counts as armed from the moment its start is sent (a lost answer), and
+        an error out of the run ends it as a stop signal does: what strands nothing is stopped first (22 Nov audit).
 
         `keep_plain` (SOL; None: off): one curve copy's plain SOL (the buy with pump.fun's fee inside, the bid, the
         token account's rent). OKTech keeps the wrapped SOL at 1.1 times the buy the whole time a sniper runs, whatever
@@ -1257,6 +1291,15 @@ class Service:
                 raise SystemExit(f"--place-stop reads our place behind the copied wallet, and {', '.join(nobody)} "
                                  "is no copy sniper (a hunt or strategy sniper copies no wallet): run it without "
                                  "--place-stop; nothing cycled")  # fmt: skip
+        # the run's own sale (`sweep_coin`) signs with the selling key: on another wallet it sells nothing, or that
+        # wallet's coin of the same mint (22 Nov audit, finding 30)
+        seller = self.selling_wallet()
+        if sweep_after is not None and seller != address:
+            raise SystemExit("--sweep-after: the run's own sale signs with the selling key (SNIPER_SECRET), and that "
+                             "key's wallet is " + (f"{seller[:6]}…" if seller else "not set") + f", not this run's "
+                             f"{address[:6]}…: it would sell nothing, or that wallet's coin. Run it on the selling key's "
+                             "wallet, or without --sweep-after; nothing cycled")  # fmt: skip
+        can_sell = seller == address  # without it, a copy of an own launch or of bait is left to its sniper's exit
         from .measure.ours import WHOSE_MARGIN_SECS, RunCoins, bot_tape_buy, sniper_marks
 
         # whose each coin in the wallet is: the run's (its snipers' fees on the buy) or the owner's own (measure/ours.py)
@@ -1270,8 +1313,15 @@ class Service:
             events.append(line)
             self.progress(line)
 
+        async def bounded(aw):
+            """One read of the run's, READ_SECS at most (TimeoutError past it)."""
+            return await asyncio.wait_for(aw, READ_SECS)
+
+        def failed(exc: BaseException) -> str:
+            return f"it did not answer in {READ_SECS:g} s" if isinstance(exc, TimeoutError) else str(exc)
+
         async def balance() -> float:
-            return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
+            return (await bounded(self.rpc.call("getBalance", [address, {"commitment": "processed"}])))["value"] / 1e9
 
         def fills_since(ts: float) -> int:
             """The run's buys on the tape since `ts`, the owner's own left out (0 when the tape cannot be read: then
@@ -1296,7 +1346,7 @@ class Service:
             # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
             # ignore_mints: positions no sniper manages (to be sold by hand). A token the tape cannot price is held too
             # (positions.filter_positions keeps it, unpriced)
-            return await self.open_positions(address, ignore=ignore_mints)
+            return await bounded(self.open_positions(address, ignore=ignore_mints))
 
         def tag(i: str) -> str:
             # a sniper by its own end: OKTech's ids open with their creation second, the same for snipers made together
@@ -1309,7 +1359,7 @@ class Service:
             seen so; a read that fails leaves it as it was, said once (the timer still re-arms)."""
             nonlocal tasks_unread
             try:
-                states = {str(t.get("id")): str(t.get("status")) for t in await client.tasks()}
+                states = {str(t.get("id")): str(t.get("status")) for t in await bounded(client.tasks())}
             except Exception as exc:  # noqa: BLE001 - a spent sniper then waits for its timer, as before
                 if not tasks_unread:
                     log(
@@ -1329,7 +1379,7 @@ class Service:
             the start and at each re-arm like the /stop flag: (True, why) while it holds, (None, why) when it cannot
             tell, (False, "") when it is clear."""
             try:  # the SOL only while the floor is on: with the owner's guard off nothing is read for it
-                sol = await self.wallet_sol(address) if self.risk_guard_reads_balance() else None
+                sol = await bounded(self.wallet_sol(address)) if self.risk_guard_reads_balance() else None
                 g = self.risk_guard(address, sol, held)
             except Exception as exc:  # noqa: BLE001 - cannot tell is never clear
                 return None, f"the guard cannot tell ({type(exc).__name__})"
@@ -1360,7 +1410,7 @@ class Service:
             if not waiting:
                 return
             try:
-                states = {str(t.get("id")): str(t.get("status")) for t in await client.tasks()}
+                states = {str(t.get("id")): str(t.get("status")) for t in await bounded(client.tasks())}
             except Exception:  # noqa: BLE001 - OKTech cannot say: every sniper is left as it is, tried next reading
                 return
             maybe: set[str] = set()  # the snipers that may hold a held coin
@@ -1445,23 +1495,29 @@ class Service:
                     f"{why}; a coin is held, so the snipers keep running to sell it (a stopped sniper strands its coin)",
                     held,
                 )
-            failed = []
+            unstopped = []
             for i in [i for i in ids if i in armed]:
+                if not await stop_end(i, "at the end"):
+                    unstopped.append(i)
+            return f"{why}; the wallet holds nothing, so the snipers it armed are stopped" + (
+                f" except {', '.join(unstopped)} (stop them with /stop)" if unstopped else ""
+            ), held
+
+        async def stop_end(i: str, when: str) -> bool:
+            """Stop sniper i, STOP_TRIES times two seconds apart: whether it is stopped (OKTech's NOT_RUNNING for a
+            finished one counts: it is stopped already). Each failure is said."""
+            for attempt in range(STOP_TRIES):
                 try:
                     await client.stop(i)
-                    armed.discard(i)
-                except OktechError as exc:
-                    if exc.code == "NOT_RUNNING":  # OKTech refuses to stop a finished sniper: it is stopped already
-                        armed.discard(i)
+                except Exception as exc:  # noqa: BLE001 - said; the reason names what is left to stop by hand
+                    if not (isinstance(exc, OktechError) and exc.code == "NOT_RUNNING"):
+                        log(f"stop of {tag(i)} {when} failed ({attempt + 1} of {STOP_TRIES}): {exc}")
+                        if attempt + 1 < STOP_TRIES:
+                            await asyncio.sleep(2.0)
                         continue
-                    failed.append(i)
-                    log(f"stop of {tag(i)} at the end failed: {exc}")
-                except Exception as exc:  # noqa: BLE001 - said in the reason: the owner stops it by hand
-                    failed.append(i)
-                    log(f"stop of {tag(i)} at the end failed: {exc}")
-            return f"{why}; the wallet holds nothing, so the snipers it armed are stopped" + (
-                f" except {', '.join(failed)} (stop them with /stop)" if failed else ""
-            ), held
+                armed.discard(i)
+                return True
+            return False
 
         t0 = time.time()
         reason, restarts = "time limit", 0
@@ -1482,8 +1538,10 @@ class Service:
         w_last = 0.0  # the wrapped SOL as last read: a fall of the SOL into it is OKTech's top-up, not a buy
         spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
         tasks_read_at, tasks_unread = 0.0, False
-        swept: list[dict] = []  # the coins this run sold itself (`sweep_after`)
-        sweep_tried: dict[str, float] = {}  # when each coin's last sale was sent or failed: one try a minute
+        swept: list[dict] = []  # the coins this run sold itself (`sweep_after`): each sale the chain has
+        # when each coin's next sale may go: a minute after one that failed, SWEEP_SOON_SECS after one that did not go
+        # out or did not land
+        sweep_due: dict[str, float] = {}
         sight: dict[str, float] = {}  # each coin held now, anyone's, and when this holding of it was first seen
         owner_val: dict[str, float] = {}  # the owner's own coins held now, at their value when first known as theirs
         owner_coins: list[str] = []  # each coin of the owner's the run has left alone, in the order first known
@@ -1535,10 +1593,28 @@ class Service:
                     "while it is held")  # fmt: skip
             return run_coins, new_owner, gone
 
+        async def sale_landed(sig: str) -> bool | None:
+            """Whether the run's own sale `sig` landed: True once the chain has it confirmed with no error, False when
+            it landed with one, None when it was not seen within SALE_LAND_SECS (dropped, or not yet)."""
+            until = time.time() + SALE_LAND_SECS
+            while True:
+                try:
+                    st = (await bounded(self.rpc.call("getSignatureStatuses",
+                                                      [[sig], {"searchTransactionHistory": False}])))["value"][0]  # fmt: skip
+                except Exception:  # noqa: BLE001 - not seen this time: asked again
+                    st = None
+                if isinstance(st, dict) and st.get("err") is not None:
+                    return False
+                if isinstance(st, dict) and st.get("confirmationStatus") in ("confirmed", "finalized"):
+                    return True
+                if time.time() >= until:
+                    return None
+                await asyncio.sleep(2.0)
+
         async def sweep_stuck(held: list[dict], now: float) -> None:
             """Sell each coin of the run's held `sweep_after` seconds since this holding of it began, and each copy of
-            an own launch or bait at once (`sell_now`), that no try in the last minute covers. A coin nobody can tell
-            is the run's yet is never sold: it may be the owner's."""
+            an own launch or bait at once (`sell_now`), when its next try is due (`sweep_due`). A coin nobody can tell
+            is the run's yet is never sold: it may be the owner's. A sale counts once the chain has it."""
             for h in held:
                 mint = str(h.get("mint") or "")
                 age = now - held_since.get(mint, now)
@@ -1547,15 +1623,37 @@ class Service:
                     continue
                 if coins.known(mint) != "ours":
                     continue
-                if now - sweep_tried.get(mint, -1e18) < SWEEP_RETRY_SECS:
+                if now < sweep_due.get(mint, -1e18):
                     continue
-                sweep_tried[mint] = now
+                sweep_due[mint] = now + SWEEP_RETRY_SECS
                 try:
-                    result = await self.sweep_coin(mint)
+                    result = await asyncio.wait_for(self.sweep_coin(mint), SALE_SECS)
                 except Exception as exc:  # noqa: BLE001 - said, tried again in a minute; the run goes on
-                    log(f"sweep of {mint} failed ({type(exc).__name__}: {exc}); trying again in {SWEEP_RETRY_SECS:g} s")
+                    why = (
+                        f"no answer in {SALE_SECS:g} s"
+                        if isinstance(exc, TimeoutError)
+                        else f"{type(exc).__name__}: {exc}"
+                    )
+                    log(f"sweep of {mint} failed ({why}); trying again in {SWEEP_RETRY_SECS:g} s")
                     continue
-                swept.append({"mint": mint, "held_secs": round(age, 1), "result": result})
+                answers = result.get("results") if isinstance(result, dict) else None
+                rows = [r for r in answers or [] if isinstance(r, dict) and r.get("mint") == mint]
+                sig = next((str(r["signature"]) for r in rows if r.get("signature")), "")
+                if not sig:  # nothing was sent: the coin is still held, and soon tried again
+                    why = next((str(r["skipped"]) for r in rows if r.get("skipped")), "") or (
+                        "the selling key's wallet holds none of it"
+                    )
+                    sweep_due[mint] = time.time() + SWEEP_SOON_SECS
+                    log(f"the run's sale of {mint} did not go out ({why}): trying again in {SWEEP_SOON_SECS:g} s")
+                    continue
+                landed = await sale_landed(sig)
+                if landed is not True:
+                    sweep_due[mint] = time.time() + SWEEP_SOON_SECS
+                    log(f"the run's sale of {mint} went out ({sig[:8]}…) but "
+                        + ("failed on chain" if landed is False else f"was not seen landed in {SALE_LAND_SECS:g} s")
+                        + f": not counted sold; tried again in {SWEEP_SOON_SECS:g} s while it is held")  # fmt: skip
+                    continue
+                swept.append({"mint": mint, "held_secs": round(age, 1), "signature": sig, "result": result})
                 if quick:
                     log(f"swept {mint} at once, held {age:.0f} s: a copy of an own launch or of bait (the kinds of "
                         f"copy): {result}")  # fmt: skip
@@ -1581,7 +1679,7 @@ class Service:
                     now_held, _, _ = await sort_coins(await open_positions(), time.time())
                 except Exception as exc:  # noqa: BLE001 - unknown holdings stop nothing: read again in 5 s
                     if not unread:
-                        log(f"rpc check after the end failed ({exc}); still watching")
+                        log(f"rpc check after the end failed ({failed(exc)}); still watching")
                     unread = True
                     continue
                 unread, held, now = False, now_held, time.time()
@@ -1673,16 +1771,24 @@ class Service:
                 who = [i for i in ids if wallet and wallet in copies_of.get(i, set())]
                 names = ", ".join(tag(i) for i in who) or "no sniper of this run"
                 w6 = (wallet or "")[:6]
+                # sold at once by the run itself only with the run's own selling key (`can_sell`)
+                sale = (
+                    "sold at once"
+                    if can_sell
+                    else "left to its sniper's own exit (the selling key is another wallet's)"
+                )
                 if kind == "own launch":
-                    sell_now.add(t.mint)
+                    if can_sell:
+                        sell_now.add(t.mint)
                     until = now + LAUNCH_REST_SECS
                     for i in who:
                         rests[i] = max(rests.get(i, 0.0), until)
                     save_rests()
-                    log(f"copy in {t.mint}: {w6}…'s own launch (it created the coin): sold at once, not counted for the "
+                    log(f"copy in {t.mint}: {w6}…'s own launch (it created the coin): {sale}, not counted for the "
                         f"place stop; {names} rests until {hm(until)}")  # fmt: skip
                 elif kind == "bait":
-                    sell_now.add(t.mint)
+                    if can_sell:
+                        sell_now.add(t.mint)
                     day = int(now // 86400)
                     said = []
                     for i in who:
@@ -1692,7 +1798,7 @@ class Service:
                             rests[i] = max(rests.get(i, 0.0), (day + 1) * 86400.0)
                             said[-1] += f", rests until {hm((day + 1) * 86400.0)}"
                     save_rests()
-                    log(f"copy in {t.mint}: bait (a create naming {w6}…, signed by someone else): sold at once, not "
+                    log(f"copy in {t.mint}: bait (a create naming {w6}…, signed by someone else): {sale}, not "
                         f"counted for the place stop; {'; '.join(said) or names}")  # fmt: skip
                 elif kind == "repeat":
                     log(f"copy in {t.mint}: a repeat ({w6}… had bought it before): tagged only")
@@ -1786,7 +1892,7 @@ class Service:
         async def wrapped_sol() -> float:
             """The wallet's wrapped SOL; 0 when it cannot be read (said): the plain SOL alone is then the reading."""
             try:
-                return await self.wsol_balance(address)
+                return await bounded(self.wsol_balance(address))
             except Exception as exc:  # noqa: BLE001 - said; the SOL alone is the more careful reading
                 log(f"the wrapped SOL could not be read ({type(exc).__name__}): counted as 0")
                 return 0.0
@@ -1796,7 +1902,7 @@ class Service:
             for one refused RPC call to end the run."""
             for attempt in range(3):
                 try:
-                    return await read()
+                    return await bounded(read())
                 except Exception as exc:  # noqa: BLE001 - the third failure ends the run, as before
                     if attempt == 2:
                         raise
@@ -1819,10 +1925,8 @@ class Service:
             if held:
                 await stop_spare(held, time.time())
             elif not unseen_buy(time.time()) and (fresh_at is None or time.time() - fresh_at >= FRESH_HOLD_SECS):
-                for i in [i for i in ids if i in armed]:
-                    with contextlib.suppress(Exception):  # said below by what is left running
-                        await client.stop(i)
-                        armed.discard(i)
+                # side by side: the job is killed 30 s after it was told to stop, and one slow stop holds no other back
+                await asyncio.gather(*(stop_end(i, "on the way out") for i in [i for i in ids if i in armed]))
             log("on the way out: " + (f"left running {', '.join(tag(i) for i in sorted(armed))}" if armed
                                       else "nothing left armed"))  # fmt: skip
 
@@ -1930,9 +2034,11 @@ class Service:
                 with contextlib.suppress(Exception):  # a sniper left running from an earlier run has spent its shot
                     await client.stop(i)
                     await asyncio.sleep(1.0)
+                # armed before the answer: OKTech can carry a start out and its answer be lost (a timeout), and the end
+                # must stop it all the same (22 Nov audit, finding 7)
+                armed.add(i)
                 ans = await client.start(i)
                 armed_at[i] = time.time()
-                armed.add(i)
                 log(f"started {tag(i)}: {ans.get('task', {}).get('status', ans)}")
             low, paused, unsure = b0, False, False
             prev_b, under_n = b0, 0  # the last reading's SOL; the readings in a row under the floor
@@ -1981,7 +2087,7 @@ class Service:
                     # `held` is the run's coins from here on; the owner's own are in `owner_val` (sort_coins)
                     held, new_owner, owner_gone = await sort_coins(held_all, time.time())
                 except Exception as exc:
-                    log(f"rpc check failed ({exc}); still watching")
+                    log(f"rpc check failed ({failed(exc)}); still watching")
                     continue
                 # the SOL left and no coin shows: a buy on its way (the SOL is read at processed, the coins at
                 # confirmed; a slow node shows the coin late), so for FRESH_HOLD_SECS no sniper is touched, no floor
@@ -2148,9 +2254,9 @@ class Service:
                             if self.stop_flag_set():  # the owner's /stop came in the pause: it wins, the next tick ends
                                 log(f"/stop came while {tag(i)} was being re-armed: left stopped")
                                 break
+                            armed.add(i)  # before the answer, as at the start: a lost answer leaves it armed
                             ans = await client.start(i)
                             armed_at[i] = time.time()
-                            armed.add(i)
                             spent_at.pop(i, None)
                             restarts += 1
                             why_now = (f": OKTech had it spent {SPENT_REARM_SECS:g} s with nothing held (a send that "
@@ -2198,6 +2304,16 @@ class Service:
                 await asyncio.wait_for(last_stop(), 20.0)
             except Exception as exc:  # noqa: BLE001 - said: the owner stops the rest with /stop
                 log(f"the stop on the way out did not finish ({type(exc).__name__})")
+            raise
+        except Exception as exc:
+            # 22 Nov audit, finding 7: an error out of the loop (OKTech timing out on a start) left what was armed
+            # running with nobody watching. It ends the run as a stop signal does, then is raised as before.
+            log(f"the run failed ({type(exc).__name__}: {exc}): stopping what strands nothing first")
+            if armed:
+                try:
+                    await asyncio.wait_for(last_stop(), 60.0)
+                except Exception as exc2:  # noqa: BLE001 - said: the owner stops the rest with /stop
+                    log(f"the stop on the way out did not finish ({type(exc2).__name__})")
             raise
         finally:
             for sig in caught:

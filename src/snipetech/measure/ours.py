@@ -17,6 +17,7 @@ buy of it since it showed, or the chain's when the tape has none.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any
 
@@ -27,6 +28,9 @@ SWEEP_FEES = (1_000_000, 0)
 CHAIN_RETRY_SECS = 30.0
 # how many of a token account's newest transactions the chain read looks through for the one that brought the coin in
 CHAIN_SIGS = 5
+# one chain read's limit: an RPC call retries for minutes on a refusal (solana/rpc.py), and the runner's whole reading
+# waited on it (22 Nov audit, finding 10). Past it nothing is told yet, and it is read again CHAIN_RETRY_SECS later.
+CHAIN_READ_SECS = 20.0
 # While a run is on, only a buy at most this long before its coin first showed says whose the coin is (and only one after
 # the wallet's last sale of the coin: RunCoins._tape): a node can show a coin many seconds after its buy, and an older buy
 # of the same coin says nothing about a holding that began now.
@@ -165,8 +169,8 @@ class RunCoins:
         if ans is None and account and self.rpc is not None and due:
             self._chain_at[mint] = now
             try:
-                ans = await self._chain(mint, str(account))
-            except Exception:  # noqa: BLE001 - nothing told: read again in CHAIN_RETRY_SECS, the tape may have it then
+                ans = await asyncio.wait_for(self._chain(mint, str(account)), CHAIN_READ_SECS)
+            except Exception:  # noqa: BLE001 - nothing told (no answer in time too): read again in CHAIN_RETRY_SECS
                 ans = None
         if ans is not None:
             self._known[mint] = ans

@@ -121,3 +121,18 @@ def test_a_rest_an_earlier_run_left_holds_at_the_start(monkeypatch):
     rep, client = _run(monkeypatch, lambda now: 10.0, payload=_payload, before=before, rearm_after=60, minutes=3)
     assert not _starts(client, A, T0) and _starts(client, B, T0)
     assert any("rests until" in e for e in rep["events"])
+
+
+def test_with_another_wallets_selling_key_a_launch_copy_is_left_to_its_sniper(monkeypatch):
+    """The run's own sale signs for the selling key's wallet: with that key another wallet's, a copy of an own launch
+    is not sold by the run (it would sell that wallet's coin) but left to its sniper's own exit, and said so. The rest
+    holds all the same."""
+    sweeps = []
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0,
+                        coins=lambda now: [_coin("L1")] if T0 + 102 <= now < T0 + 130 else [],
+                        payload=_payload, launches=[_launch(T0 + 98, "L1", COOKER, FRESH)],
+                        tape=[_trade(T0 + 98, COOKER, "L1", 5.0, pos=1), _ours(T0 + 100, "L1")], sweeps=sweeps,
+                        rearm_after=60, minutes=5, seller="Other111111111111111111111111111111111111111")  # fmt: skip
+    assert sweeps == [] and [c["kind"] for c in rep["copies"]] == ["own launch"]
+    assert any("own exit" in e for e in rep["events"])
+    assert rep["rests"][A] >= T0 + 100 + 3 * 3600

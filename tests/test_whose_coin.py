@@ -156,6 +156,21 @@ def test_a_chain_read_that_fails_is_tried_again_a_while_later():
     assert _whose(coins, now=NOW + CHAIN_RETRY_SECS) == "owner" and rpc.reads == 2
 
 
+def test_a_chain_read_that_never_answers_tells_nothing_yet(monkeypatch):
+    """A node that never answers held up the runner's whole reading (22 Nov audit, finding 10): the chain read has a
+    limit, and past it nothing is told yet (read again CHAIN_RETRY_SECS later)."""
+    import snipetech.measure.ours as O
+
+    class Hung(_Rpc):
+        async def get_signatures(self, address, limit=1000, **_kw):
+            self.reads += 1
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(O, "CHAIN_READ_SECS", 0.05)
+    rpc = Hung({})
+    assert _whose(RunCoins(Store(":memory:"), rpc, W, RUN)) is None and rpc.reads == 1
+
+
 def test_a_coin_with_no_token_account_known_waits_for_the_tape():
     store = Store(":memory:")
     coins = RunCoins(store, _Rpc({"buy": _tx("buy", W, 6121, 0, 1_000_000)}), W, RUN)

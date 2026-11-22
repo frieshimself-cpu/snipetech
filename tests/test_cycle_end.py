@@ -166,3 +166,150 @@ def test_a_run_never_starts_beside_snipers_it_did_not_arm(monkeypatch):
 
     with pytest.raises(SystemExit, match="ffff01"):
         _run(monkeypatch, lambda now: 10.0, others=[("6b00664d3601fd350affff01", "running"), ("x2", "finished")])
+
+
+def _capture_clients(monkeypatch):
+    from tests import test_oktech
+
+    clients = []
+    real_init = test_oktech._SpentClient.__init__
+
+    def init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        clients.append(self)
+
+    monkeypatch.setattr(test_oktech._SpentClient, "__init__", init)
+    return clients
+
+
+def test_a_failed_start_stops_what_was_armed_before_the_run_goes(monkeypatch):
+    """System audit finding 7: OKTech timing out on the second start raised out of the start loop with the first sniper
+    armed, and nobody stopped it. Any error ends the run the way a stop signal does: what strands nothing is stopped."""
+    import pytest
+
+    from snipetech.oktech import OktechError
+    from tests import test_oktech
+
+    clients = _capture_clients(monkeypatch)
+    real_start = test_oktech._SpentClient.start
+
+    async def start(self, i):
+        if i == B:
+            raise OktechError(504, "NETWORK", "gateway timeout")
+        return await real_start(self, i)
+
+    monkeypatch.setattr(test_oktech._SpentClient, "start", start)
+    with pytest.raises(OktechError):
+        _run(monkeypatch, lambda now: 10.0, minutes=5)
+    (client,) = clients
+    started = [t for kind, i, t in client.timed if kind == "start" and i == A]
+    assert started and [t for kind, i, t in client.timed if kind == "stop" and i == A and t >= started[0]]
+
+
+def test_a_rearm_whose_start_answer_is_lost_is_still_stopped_at_the_end(monkeypatch):
+    """A re-arm whose start OKTech carried out but whose answer never came took that sniper out of the run's count:
+    the end stopped only the others and said nothing was left armed."""
+    from snipetech.oktech import OktechError
+    from tests import test_oktech
+
+    clients = _capture_clients(monkeypatch)
+    real_start = test_oktech._SpentClient.start
+    lost = {"n": 0}
+
+    async def start(self, i):
+        out = await real_start(self, i)  # OKTech starts it ...
+        if i == A and self.clock["t"] > T0 + 30 and lost["n"] == 0:
+            lost["n"] += 1
+            raise OktechError(504, "NETWORK", "the answer was lost")  # ... and the answer never comes
+        return out
+
+    monkeypatch.setattr(test_oktech._SpentClient, "start", start)
+    rep, _client = _run(monkeypatch, lambda now: 10.0, rearm_after=60, stop_at=T0 + 64, minutes=5)
+    (client,) = clients
+    lost_at = min(t for kind, i, t in client.timed if kind == "start" and i == A and t > T0 + 30)
+    assert [t for kind, i, t in client.timed if kind == "stop" and i == A and t > lost_at]
+    assert rep["left_running"] == []
+
+
+def test_a_sale_that_did_not_go_out_is_not_reported_sold_and_is_tried_again_soon(monkeypatch):
+    """System audit finding 9: the run's own sale took any answer for a sale. Twice the PumpSwap pool was not there
+    yet ("skipped") and the end said the coin was sold by the run itself; the next try waited 60 s."""
+    sweeps = []
+
+    def sol(now):
+        return 10.0 if now < T0 + 100 else 9.0
+
+    def coins(now):  # held from 102 s until OKTech's own sale at 160 s
+        return [{"mint": "M1", "amount": 1.0, "value_sol": 1.0, "priced": True}] if T0 + 102 <= now < T0 + 160 else []
+
+    def skipped(mint):
+        return {"wallet": W6, "holdings": 1, "results": [{"mint": mint, "skipped": "PumpSwap: no pool yet"}]}
+
+    rep, _client = _run(monkeypatch, sol, coins=coins, sweeps=sweeps, sweep_after=20, minutes=4, sweep_answer=skipped)
+    times = [t for _m, t in sweeps]
+    assert rep["swept"] == [] and len(times) >= 2 and times[1] - times[0] <= 20
+    assert not any("sold by the run itself" in e for e in rep["events"])
+    assert any("did not go out" in e for e in rep["events"])
+
+
+def test_a_read_that_never_answers_holds_up_no_tick(monkeypatch):
+    """System audit finding 10: one RPC read can retry for minutes, and the floor, the sweep and /stop all waited on
+    it. A read that does not answer in time is a failed reading: the next tick comes on time."""
+    import snipetech.service as S
+
+    monkeypatch.setattr(S, "READ_SECS", 0.05)
+    hung = {"done": False}
+
+    def sol(now):
+        return 10.0
+
+    rep, _client = _run(monkeypatch, sol, stop_at=T0 + 60, minutes=5, hang_at=T0 + 30, hung=hung)
+    assert hung["done"] and "/stop" in rep["reason"]
+    assert any("did not answer" in e for e in rep["events"])
+
+
+def test_the_runs_own_sale_must_sign_for_the_runs_wallet(monkeypatch):
+    """System audit finding 30: the run's own sale signs with the selling key's wallet (SNIPER_SECRET), never the
+    run's --address: on another wallet it sold nothing, or another wallet's copy of the same coin, and said swept."""
+    import pytest
+
+    with pytest.raises(SystemExit, match="selling key"):
+        _run(monkeypatch, lambda now: 10.0, sweep_after=20, seller="Other111111111111111111111111111111111111111")
+
+
+def test_the_selling_wallet_is_the_selling_keys(monkeypatch):
+    """The run's own sale signs with SNIPER_SECRET (solana/sell.py): its wallet, or None with no key or no valid one."""
+    from solders.keypair import Keypair
+
+    from snipetech.config import Config
+    from snipetech.service import Service
+    from snipetech.store import Store
+
+    kp = Keypair()
+    svc = Service(Config(), store=Store(":memory:"))
+    monkeypatch.setenv("SNIPER_SECRET", str(kp))
+    assert svc.selling_wallet() == str(kp.pubkey())
+    monkeypatch.setenv("SNIPER_SECRET", "not a key")
+    assert svc.selling_wallet() is None
+    monkeypatch.delenv("SNIPER_SECRET")
+    assert svc.selling_wallet() is None
+
+
+def test_a_stop_at_the_end_that_fails_once_is_tried_again(monkeypatch):
+    """One refused stop at the end (OKTech timing out) left the sniper armed with nobody watching, and the end said to
+    stop it with /stop. Each stop at the end is tried three times, two seconds apart."""
+    from snipetech.oktech import OktechError
+    from tests import test_oktech
+
+    real_stop = test_oktech._SpentClient.stop
+    refused = {"n": 0}
+
+    async def stop(self, i):
+        if i == A and self.clock["t"] >= T0 + 60 and refused["n"] == 0:
+            refused["n"] += 1
+            raise OktechError(504, "NETWORK", "gateway timeout")
+        return await real_stop(self, i)
+
+    monkeypatch.setattr(test_oktech._SpentClient, "stop", stop)
+    rep, _client = _run(monkeypatch, lambda now: 10.0, stop_at=T0 + 60, minutes=5)
+    assert refused["n"] == 1 and rep["left_running"] == [] and "with /stop" not in rep["reason"]
