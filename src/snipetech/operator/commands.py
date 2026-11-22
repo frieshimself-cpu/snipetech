@@ -1,6 +1,7 @@
 """Owner commands over Telegram: /status /stop /resume /book /sell /test /risk. Polled once per round and every minute
 (`operate --commands`); only the owner's chat is obeyed.
-/stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
+/stop never strands a coin: a running sniper is left alone while the wallet holds a coin (it is the only thing that sells),
+one on the owner's [operator] ignore_mints aside (no sniper manages those).
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py: on the pump.fun curve, or on PumpSwap once the coin has left it, since 7 Nov), never buys, and never
@@ -190,8 +191,8 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
 
 
 async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
-    try:
-        held = await svc.open_positions(cfg.operator.wallet)
+    try:  # a coin on the owner's ignore list is managed by no sniper, so it keeps none running (audit 22 Nov, round#5)
+        held = await svc.open_positions(cfg.operator.wallet, ignore=list(cfg.operator.ignore_mints or ()))
     except Exception as exc:  # noqa: BLE001
         notes.write(
             f"stopped by owner: flag set, but holdings could not be read ({type(exc).__name__}); no sniper stopped",

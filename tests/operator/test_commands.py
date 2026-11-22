@@ -69,7 +69,8 @@ class FakeSvc:
     def __init__(self, held, snipers):
         self._held, self._snipers, self.calls = held, snipers, []
 
-    async def open_positions(self, address):
+    # /stop passes the owner's ignore list, as Service.open_positions takes it (audit 22 Nov, round#5)
+    async def open_positions(self, address, ignore=None):
         return self._held
 
     async def oktech_status(self):
@@ -134,7 +135,7 @@ def test_stop_treats_a_starting_sniper_as_running(tmp_path):
 
 def test_stop_when_holdings_cannot_be_read_stops_nothing(tmp_path):
     class Broken(FakeSvc):
-        async def open_positions(self, address):
+        async def open_positions(self, address, ignore=None):
             raise RuntimeError("rpc down")
 
     svc = Broken(held=[], snipers=[{"id": "s1", "name": "a", "status": "running"}])

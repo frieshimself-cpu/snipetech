@@ -236,8 +236,9 @@ async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) 
     return (await transaction_counts(svc, wallet, now, window))[0]
 
 
-async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, list[dict]]:
-    """(native SOL, wrapped SOL, open positions) from the RPC; positions by the one shared rule (positions.py)."""
+async def rpc_balances(svc, wallet: str, ignore: tuple[str, ...] = ()) -> tuple[float | None, float | None, list[dict]]:
+    """(native SOL, wrapped SOL, open positions) from the RPC; positions by the one shared rule (positions.py), the
+    owner's ignored coins (`ignore`: [operator] ignore_mints) left out as every other reader of the wallet does."""
     from ..positions import filter_positions
     from ..solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 
@@ -257,7 +258,7 @@ async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, li
             accounts.append(
                 {"mint": info["mint"], "amount": amt, "raw": raw, "decimals": decimals, "account": a.get("pubkey")}
             )
-    held = filter_positions(accounts, svc.store.last_price)
+    held = filter_positions(accounts, svc.store.last_price, ignore=tuple(ignore or ()))
     return native, wsol, held
 
 
@@ -340,7 +341,10 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         snap.errors.append(f"tape: {exc}")
     if wallet:
         try:
-            res = balances(wallet) if balances else rpc_balances(svc, wallet)
+            # the owner's ignored coins are no holding here either (audit 22 Nov, round#5: the watch offers that list for
+            # a stray coin, and the round kept counting it)
+            ignore = tuple(str(m) for m in cfg.operator.ignore_mints or ())
+            res = balances(wallet) if balances else rpc_balances(svc, wallet, ignore=ignore)
             if hasattr(res, "__await__"):
                 res = await res
             snap.native_sol, snap.wsol, held = res
