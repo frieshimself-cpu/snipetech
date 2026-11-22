@@ -786,3 +786,29 @@ def test_review_a_tape_stall_longer_than_the_lookback_loses_no_trade(book):
     z = take_rpc(st, cfg, paths, prev, 9200.0, Rpc(5_000_000_000, {}, sigs))
     assert z.bot_cash == pytest.approx(0.996995) and not bot_lines(paths, z, prev, 9200.0)
     assert z.counted_from == pytest.approx(9200.0 - 3600)  # with the tape current again the window moves on
+
+
+def test_review_a_live_tests_sniper_is_not_excused_twice(tmp_path):
+    """A live test writes its one sniper and its one coin into expected.json, and its cycler names the same sniper
+    (--id): round#7 excused that sniper a second time, so a second sniper running, or a second coin of the bot's held,
+    during a test said nothing. A runner's snipers are part of what is expected, not on top of it."""
+    from snipetech.operator.gate import decide
+    from snipetech.operator.live_test import TEST_EXPECTED, cycle_argv
+
+    paths = OperatorPaths(tmp_path).ensure()
+    now = 1_795_321_800.0
+    paths.expected.write_text(json.dumps(TEST_EXPECTED))
+    oid = "6b021a37ca420f45d72aed5d"
+    argv = cycle_argv({"oktech_id": oid, "wallet": W, "floor": 1.0, "minutes": 60, "fills": 1}, Config())
+    run = [{"id": "20261122-120000-abcdef", "argv": argv, "started": now - 600}]
+    test = {"id": oid, "name": "snipetech test 1974dc22d6", "status": "running"}
+    rogue = {"id": "crew", "name": "snipetech hunt crew", "status": "running"}
+    mine = coin(COIN, 0.2) | {"since": now - 60, "whose": "ours", "ours": True}
+
+    def watched(s):
+        return [r for r in decide(s, s, now, OperatorConfig(), paths).reasons if "sniper" in r or "held" in r]
+
+    assert watched(_sniper_snap(now, [test], run, [mine])) == []  # the test at work
+    assert watched(_sniper_snap(now, [test, rogue], run, [mine])) == ["1 sniper(s) running, expected 0"]
+    other = coin(SWAP, 0.2) | {"since": now - 60, "whose": "ours", "ours": True}
+    assert watched(_sniper_snap(now, [test], run, [mine, other])) == ["2 coin(s) held, expected 1"]

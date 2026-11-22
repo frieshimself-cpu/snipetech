@@ -298,13 +298,16 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
             driven = runner_ids(getattr(snap, "jobs_running", None))
             runner_running = [s for s in running if str(s.get("id")) in driven]
             running = [s for s in running if s not in runner_running]
-        if len(running) > exp["snipers_running"]:
-            states.append(f"{len(running)} sniper(s) running, expected {exp['snipers_running']}")
+        # a live test's expected.json already counts its own cycler's sniper and coin: a runner's snipers make up what
+        # is expected, never on top of it (review of round#7: a second sniper during a test said nothing)
+        others = max(0, exp["snipers_running"] - len(runner_running))
+        if len(running) > others:
+            states.append(f"{len(running)} sniper(s) running, expected {others}")
     # the bot's coins only (snapshot.mark_held): the owner's own coin, and one no buy brought in (an airdrop the watch
     # already says once a day), are nobody's deviation; on 22 Nov an airdrop woke 7 operator turns that paged the owner
     # about it (audit 22 Nov, round#6, docs#2)
     bots = [h for h in snap.held if h.get("ours", True)]
-    allowed_held = exp["held"] + len(book_running) + len(runner_running)  # each may hold the coin it bought
+    allowed_held = max(exp["held"], len(runner_running)) + len(book_running)  # each may hold the coin it bought
     if len(bots) > allowed_held:
         states.append(f"{len(bots)} coin(s) held, expected {allowed_held}")
     # the watchdog's coins nobody is selling (written by the one-minute pass), while the wallet still holds them: a
