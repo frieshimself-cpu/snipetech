@@ -223,7 +223,7 @@ def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, 
             net -= a_pre - (r["pre"] if wrapped else 0)
     sol_l = 0 if failed else abs(net)
     # a coin moved to or from another wallet: no pool took or gave it and no SOL came across but, at most, the rent of
-    # the other side's token account (22 Nov 23:07:39: the owner moved a coin out, read as a sale of 0 SOL until then)
+    # the other side's token account (21 Nov 23:07:39: the owner moved a coin out, read as a sale of 0 SOL until then)
     moved = not failed and pool is None and sol_l <= MOVE_RENT_LAMPORTS
     tokens = abs(change)
     price = price_from = None
@@ -625,18 +625,20 @@ async def wallet_landings(rpc, wallet: str, leaders: str | Iterable[str] | Calla
     coins, `result_sol` (the sells less the buy and less both sides' priority fee, tip and base fee, paired first in
     first out as the measure stage pairs them), and the failed sends of ours that named its coin after it
     (`failed_sends`, `failed_cost_sol`: each kept its priority fee and base fee), which the result is less of too.
+    A coin moved to or from another wallet (side "transfer") is no trade: a buy whose coin was moved after it, before
+    the next buy of that coin, has `moved_out` (no result: none is on the chain).
     `leaders`: the copied wallet or wallets, or a function of a buy's time (the wallets copied then)."""
     until_ts = int(until_ts if until_ts is not None else time.time())
     listed = [s for s in await wallet_signatures(rpc, wallet, int(since_ts))
               if s.get("signature") and (s.get("blockTime") or 0) <= until_ts]  # fmt: skip
     txs = await rpc.get_transactions([s["signature"] for s in listed]) if listed else {}
-    buys, sells, failed = [], [], []
+    buys, sells, failed, moves = [], [], [], []
     for s in listed:
         tx = txs.get(s["signature"])
         fill = read_fill(tx, wallet, services, ours=True) if tx else None
         if fill is None or not fill["mint"]:
             continue
-        {"buy": buys, "sell": sells, "failed": failed}[fill["side"]].append((fill, tx))
+        {"buy": buys, "sell": sells, "failed": failed, "transfer": moves}[fill["side"]].append((fill, tx))
     paired = pair_round_trips([_trade_row(f) for f, _ in buys], [_trade_row(f) for f, _ in sells], 0.0)
     rows = []
     for fill, tx in sorted(buys, key=lambda x: (x[0]["slot"], x[0]["sig"])):
@@ -648,11 +650,13 @@ async def wallet_landings(rpc, wallet: str, leaders: str | Iterable[str] | Calla
         end = min((f["slot"] for f in later), default=None)
         lost = [f for f, _ in failed if f["mint"] == fill["mint"] and f["slot"] >= fill["slot"]
                 and (end is None or f["slot"] < end)]  # fmt: skip
+        moved = any(f["mint"] == fill["mint"] and f["slot"] > fill["slot"] and (end is None or f["slot"] < end)
+                    for f, _ in moves)  # fmt: skip
         cost = sum(f["priority_lamports"] + BASE_FEE_PER_SIGNATURE for f in lost) / LAMPORTS
         row |= {"sold_sol": round(sum(t["received_sol"] for t in trips), 9) if trips else None,
                 "sold_share": round(sum(t["tokens"] for t in trips) / fill["tokens"], 4) if trips else 0.0,
                 "result_sol": round(sum(t["pnl_sol"] for t in trips) - cost, 9) if trips else None,
-                "failed_sends": len(lost), "failed_cost_sol": round(cost, 9)}  # fmt: skip
+                "failed_sends": len(lost), "failed_cost_sol": round(cost, 9), "moved_out": moved}  # fmt: skip
         rows.append(row)
     return rows
 
@@ -687,7 +691,8 @@ def render(rows: list[dict[str, Any]]) -> str:
             f"{b['wallet'][:6]}…: {_g(b['bid_sol'])}" + (f" +{_g(b['other_sol'])}?" if b.get("other_sol") else "")
             for b in r["buyers_ahead"]
         )
-        result = "held" if r.get("result_sol") is None and "result_sol" in r else _g(r.get("result_sol"))
+        unsold = r.get("result_sol") is None and "result_sol" in r
+        result = ("moved" if r.get("moved_out") else "held") if unsold else _g(r.get("result_sol"))
         line = (f"{when:<15}{coin:<9}{_g(r['blocks_after']):>13}{place:>12}{_g(r['our_bid_sol']):>9}"
                 f"{_g(r['highest_bid_ahead_sol']):>9}{gap:>17}{result:>10}  {r['verdict'] or '-':<8} "
                 f"{ahead or ('nobody' if r['place'] == 0 else r.get('leader_note') or '-')}")  # fmt: skip

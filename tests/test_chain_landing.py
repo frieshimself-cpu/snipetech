@@ -212,11 +212,13 @@ def test_one_wallets_side_of_a_transaction_another_wallet_paid_for():
 
 
 def test_a_coin_sent_to_another_wallet_is_no_sale_and_one_received_is_no_buy():
-    """22 Nov 23:07:39: the owner moved a coin out of the sniper wallet (a token transfer: no pool, no SOL back). The
+    """21 Nov 23:07:39: the owner moved a coin out of the sniper wallet (a token transfer: no pool, no SOL back). The
     reader took it for a sale of 0 SOL, and the post-mortem would have counted the whole buy as lost. A coin that
     leaves or arrives with no pool on the other side and no SOL across is a transfer: no trade."""
-    out = token_move("out", ME, COIN, tokens=289_527_971_424, to=key("the owner's other wallet")) | {"slot": S,
-                                                                                                    "blockTime": 1}
+    out = token_move("out", ME, COIN, tokens=289_527_971_424, to=key("the owner's other wallet")) | {
+        "slot": S,
+        "blockTime": 1,
+    }
     moved = CL.read_fill(out, ME)
     assert moved is not None and moved["side"] == "transfer" and moved["sol"] == 0.0
     assert moved["mint"] == COIN and moved["tokens"] == 289_527_971_424
@@ -298,6 +300,22 @@ def test_every_buy_of_a_wallet_in_a_window_and_the_table():
     assert "0.035" in row and "0.35" in row and f"{RICH[:6]}…: 0.35" in row and f"{FAST[:6]}…: 0.0011" in row
     assert "speed" in row
     assert NOZOMI not in text
+
+
+def test_a_coin_moved_out_is_no_sale_in_the_landing_table():
+    """22 Nov 01:00: `landing --since-minutes 185` ended with KeyError 'transfer' (the agents' I572): since 00:47 a coin
+    moved to another wallet is side "transfer", and wallet_landings sorted fills into buy, sell and failed only, so no
+    window holding the owner's coin move of 21 Nov 23:07:39 could be read. A move is no sale: the window reads, and the
+    buy whose coin left that way says "moved", with no result (none is on the chain), never "held"."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(S, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    chain.put(S + 50, token_move("moved", ME, COIN, tokens=38_000_000, to=key("the owner's other wallet")))
+    rows = _run(CL.wallet_landings(chain, ME, LEAD, since_ts=chain.ts(S) - 60, until_ts=chain.ts(S + 500), own={ME}))
+    assert [r["sig"] for r in rows] == [sig("ours")]
+    assert rows[0]["sold_sol"] is None and rows[0]["result_sol"] is None and rows[0]["moved_out"] is True
+    row = next(ln for ln in CL.render(rows).splitlines() if COIN[:6] in ln)
+    assert "moved" in row and "held" not in row
 
 
 def test_failed_sends_of_ours_on_a_coin_are_counted_against_its_buy():

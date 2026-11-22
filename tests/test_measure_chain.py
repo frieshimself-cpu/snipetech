@@ -115,7 +115,7 @@ def test_a_backfill_writes_the_copy_of_a_coin_the_tape_does_not_hold(tmp_path):
 
 
 def test_a_coin_moved_out_is_no_sell_and_the_row_written_for_it_before_goes(tmp_path):
-    """22 Nov 23:07:39: a coin the owner moved out of the sniper wallet was written as a sale of 0 SOL, so the
+    """21 Nov 23:07:39: a coin the owner moved out of the sniper wallet was written as a sale of 0 SOL, so the
     post-mortem would have counted its whole buy as lost. Read again it is a transfer: no fill, and the row written
     for it before is dropped."""
     chain = Chain(t0=T0 + 240, slot0=S)

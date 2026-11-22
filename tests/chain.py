@@ -227,7 +227,7 @@ def noise(name: str, wallet: str) -> dict:
 
 def token_move(name: str, sender: str, mint: str, *, tokens: int, to: str) -> dict:
     """A coin sent from one wallet to another (SPL transferChecked): `tokens` raw units leave `sender`'s token account
-    for `to`'s, no pool on either side and no SOL across; the sender pays the fee. 22 Nov 23:07:39: the owner moved a
+    for `to`'s, no pool on either side and no SOL across; the sender pays the fee. 21 Nov 23:07:39: the owner moved a
     coin out of the sniper wallet this way."""
     src, dst = key(f"ata {sender} {mint}"), key(f"ata {to} {mint}")
     keys = [sender, src, dst, to, SPL_TOKEN, mint]
