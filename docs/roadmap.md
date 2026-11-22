@@ -58,8 +58,8 @@ first on the server's recording and only then run live in capped batches.
   0.48-1.0 SOL a landed buy) and the thing to build is a bundle client on that route. If the flow is private (Cented
   and Decu pay the same trading platform's fee accounts), no sender of ours reaches +0 behind them, and the studies
   of 8r6N8w's filter (I605-I622) answer the wrong question. Built 22 Nov, not yet run: `sends` lists every moment
-  with the first other buyer within 3 places, and `--validators` splits the moments by the block's leader (a few
-  hundred Helius credits). Still to build: reading a few of the blocks themselves (what sits at the leader's place +1
+  with the first other buyer within 3 places, and `--validators` splits the moments by the block's leader (at most
+  about 130 more requests for 72 hours, on top of the run's own credits). Still to build: reading a few of the blocks themselves (what sits at the leader's place +1
   to +3 when it is no pump.fun trade, and where 8r6N8w's failed sends stand); then the fee analyst runs it.
 - **What a sender of our own would be** (the audit of 22 Nov): a new buy path, not a setting. A builder for pump.fun's
   buy_exact_quote_in, pinned by a test on our own landed 3.5 SOL buy the way the sales are pinned
