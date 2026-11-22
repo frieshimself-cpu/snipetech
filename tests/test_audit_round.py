@@ -253,3 +253,48 @@ def test_round1_a_buy_the_tape_has_not_written_yet_is_told_by_the_next_round(boo
     tick(st, 2895)
     c = take(st, cfg, paths, b, 2900.0, 6.8, [coin(COIN, 3.5)])
     assert whose(c) == {COIN: "ours"}
+
+
+# -- round#0 (and server#1): a coin the tape cannot price, that is not the bot's, does not hold the loss alert back --
+
+BOT_SELL_FEES = (1_000_000, 2_000_000)  # the sniper's sale: the buy's priority and its 0.002 sell tip
+
+
+def test_round0_a_bot_loss_beside_an_unpriced_airdrop_is_told_that_round(book):
+    """The equity block, the bot's own result with it, needed the whole wallet valued: one coin the tape never priced
+    (the owner's airdrop, 22 Nov 03:58-09:00) switched the loss alert off while it was held. The bot's result only
+    needs the bot's own coins priced; the whole move is said to be unknown."""
+    st, cfg, paths = book
+    tick(st, 95)
+    a = take(st, cfg, paths, None, 100.0, 10.0, [])
+    tick(st, 995)
+    b = take(st, cfg, paths, a, 1000.0, 10.0, [unpriced(AIRDROP)])
+    trade(st, "copy", 1500, COIN, True, 3.5, BOT_BUY_FEES)  # the bot's copy loses 2.2 SOL
+    trade(st, "exit", 1512, COIN, False, 1.5, BOT_SELL_FEES)
+    tick(st, 1895)
+    c = take(st, cfg, paths, b, 1900.0, 7.8, [unpriced(AIRDROP)])
+    assert c.total_equity is None
+    lines = bot_lines(paths, c, b, 1900.0)
+    assert len(lines) == 1 and "-2.203 SOL of it by the bot's own" in lines[0], lines
+    assert lines[0].startswith("equity moved (the whole move is not known")
+    tick(st, 2795)
+    d = take(st, cfg, paths, c, 2800.0, 7.8, [unpriced(AIRDROP)])  # nothing new: the loss was told once
+    assert not bot_lines(paths, d, c, 2800.0)
+
+
+def test_round0_a_coin_of_the_bots_the_tape_has_not_priced_still_waits(book):
+    """The bot's own coin without a price leaves its result unknown: the alert waits (the baseline is carried) until the
+    coin is priced or sold, as before."""
+    st, cfg, paths = book
+    tick(st, 95)
+    a = take(st, cfg, paths, None, 100.0, 10.0, [])
+    trade(st, "copy", 500, COIN, True, 3.5, BOT_BUY_FEES)
+    tick(st, 995)
+    b = take(st, cfg, paths, a, 1000.0, 6.3, [unpriced(COIN)])
+    assert whose(b) == {COIN: "ours"} and not b.bot_valued and not bot_lines(paths, b, a, 1000.0)
+    assert b.ref_ours_sol == a.ref_ours_sol and b.bot_cash_since_ref == pytest.approx(-3.700005)
+    trade(st, "exit", 1500, COIN, False, 1.0, BOT_SELL_FEES)
+    tick(st, 1895)
+    c = take(st, cfg, paths, b, 1900.0, 7.3, [])
+    lines = bot_lines(paths, c, b, 1900.0)
+    assert len(lines) == 1 and "-2.703 SOL of it by the bot's own" in lines[0], lines

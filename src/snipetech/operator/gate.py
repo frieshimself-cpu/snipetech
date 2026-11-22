@@ -219,8 +219,9 @@ def bot_result(snap, prev) -> float | None:
     """The SOL the bot's own trades and coins moved since the round that set the baseline (`prev.equity_ref`): what its
     trades took in less what they paid, fees in (the baseline's carried `bot_cash_since_ref` and this round's
     `bot_cash`), plus what its coins are worth now less what they were worth then (`ref_ours_sol`). None when a part
-    cannot be told (trades that could not be read, a snapshot taken before 22 Nov)."""
-    if prev is None:
+    cannot be told (trades that could not be read, a snapshot taken before 22 Nov, a coin of the bot's with no price or
+    balances not read this round: `Snapshot.bot_valued`)."""
+    if prev is None or not snap.bot_valued:
         return None
     ref_ours = getattr(prev, "ref_ours_sol", None)
     before = getattr(prev, "bot_cash_since_ref", None)
@@ -298,28 +299,31 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     if ref is None and prev is not None and not prev.held:  # a snapshot written before equity_ref existed
         ref = prev.equity
     total = snap.total_equity
-    if total is not None and ref is not None:
+    # The owner takes SOL out, puts it in and trades by hand in this wallet ("Don't flag, I constantly take out and put
+    # money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss). The alert is on the bot's own
+    # result since the baseline (`bot_result`: its trades' SOL, fees in, and its coins' worth); the rest of the move is
+    # the owner's, never news (review of 22 Nov: a withdrawal beside one small copy paged in full). It needs the bot's
+    # own coins valued, not the whole wallet: a coin of someone else's with no price (an airdrop) kept it off for as long
+    # as it was held (audit 22 Nov, round#0); the whole move is then said not to be known.
+    own = bot_result(snap, prev)
+    if own is not None:
+        if abs(own) > cfg.equity_alert_sol:
+            whole = (f"{total - ref:+.3f} SOL" if total is not None and ref is not None
+                     else "(the whole move is not known: a coin that is not the bot's has no price)")  # fmt: skip
+            rest = " (the rest is the owner's)" if total is not None and ref is not None else ""
+            events.append(f"equity moved {whole}, {own:+.3f} SOL of it by the bot's own trades and coins{rest}")
+    elif total is not None and ref is not None:
         move = total - ref
-        # The owner takes SOL out, puts it in and trades by hand in this wallet ("Don't flag, I constantly take out and
-        # put money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss). The alert is on the bot's
-        # own result since the baseline (`bot_result`: its trades' SOL, fees in, and its coins' worth); the rest of the
-        # move is the owner's, never news (review of 22 Nov: a withdrawal beside one small copy paged in full).
-        own = bot_result(snap, prev)
-        if own is not None:
-            if abs(own) > cfg.equity_alert_sol:
-                events.append(f"equity moved {move:+.3f} SOL, {own:+.3f} SOL of it by the bot's own trades and coins "
-                              "(the rest is the owner's)")  # fmt: skip
-        else:
-            # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the
-            # whole move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;
-            # `bot_since_ref` carried while a coin was unpriced; unread trades count as the bot's) or holds a coin
-            # (`snapshot.mark_held`)
-            bot_traded = (any(f.get("ours", True) for f in snap.fills or [])
-                          or bool(getattr(snap, "fills_unread", False))
-                          or bool(getattr(prev, "bot_since_ref", False)))  # fmt: skip
-            bot_holds = any(h.get("ours", True) for h in snap.held or [])
-            if abs(move) > cfg.equity_alert_sol and (bot_traded or bot_holds):
-                events.append(f"equity moved {move:+.3f} SOL")
+        # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the whole
+        # move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;
+        # `bot_since_ref` carried while a coin was unpriced; unread trades count as the bot's) or holds a coin
+        # (`snapshot.mark_held`)
+        bot_traded = (any(f.get("ours", True) for f in snap.fills or [])
+                      or bool(getattr(snap, "fills_unread", False))
+                      or bool(getattr(prev, "bot_since_ref", False)))  # fmt: skip
+        bot_holds = any(h.get("ours", True) for h in snap.held or [])
+        if abs(move) > cfg.equity_alert_sol and (bot_traded or bot_holds):
+            events.append(f"equity moved {move:+.3f} SOL")
     if snap.tape_last_ts is not None and now - snap.tape_last_ts > cfg.tape_stale_secs:
         states.append(f"tape stale {int(now - snap.tape_last_ts)} s")
     from .snapshot import ONESHOT_UNITS, WATCHED_UNITS

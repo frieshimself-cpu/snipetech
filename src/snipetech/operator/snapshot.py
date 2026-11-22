@@ -88,6 +88,16 @@ class Snapshot:
             total += float(h["value_sol"])
         return total
 
+    @property
+    def bot_valued(self) -> bool:
+        """Whether this round can value what the bot holds: the balances were read and every coin of the bot's (`ours`)
+        has a price. A coin that is not the bot's (an airdrop the tape never priced, the owner's coin on a venue it does
+        not record) leaves the whole wallet unvalued, never the bot's own result (audit 22 Nov, round#0)."""
+        if self.native_sol is None or self.wsol is None:
+            return False
+        return all(h.get("priced") is not False and h.get("value_sol") is not None
+                   for h in self.held or [] if h.get("ours", True))  # fmt: skip
+
     def to_json(self) -> str:
         return json.dumps(asdict(self) | {"equity": self.equity}, default=str)
 
@@ -442,8 +452,9 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed
         ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
         snap.bot_since_ref = snap.total_equity is None and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)
-        # and the bot's own result since then (the gate's alert, review of 22 Nov): its trades' SOL and its coins' worth
-        if snap.total_equity is not None:  # this round values the wallet: the baseline is this round
+        # and the bot's own result since then (the gate's alert, review of 22 Nov): its trades' SOL and its coins' worth,
+        # whose baseline moves whenever the bot's own coins are valued, whatever else the wallet holds (round#0)
+        if snap.bot_valued:  # this round values the bot's coins: the baseline is this round
             snap.ref_ours_sol = round(sum(float(h["value_sol"]) for h in snap.held if h.get("ours", True)), 9)
             snap.bot_cash_since_ref = 0.0
         else:
