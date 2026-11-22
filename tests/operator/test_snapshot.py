@@ -109,6 +109,43 @@ def test_the_snapshot_marks_research_records_and_a_turn_is_not_handed_them_among
     json.dumps(compact)
 
 
+def test_paper_top_ranks_only_rules_at_our_landing_and_every_row_names_its_landing_and_bid(tmp_path, fake_service):
+    """Audit of 22 Nov (paper#0): `paper_top` was the six biggest totals of every rule not research only, each row
+    with id, label, n, mean, ev_lower and total alone. On the server all six were rules frozen at a bid landing ("bid-"
+    with a 0.05 SOL bid, at 2 or 5 SOL), which is not where our copies land live, and no row said so (CLAUDE.md rule 2:
+    a paper result names its landing and the bid that buys it). Each snapshot row now keeps its size, its bid, its
+    landing and whether that is where our trades land live; `paper_top` ranks only the rules scored there, and the
+    others are `paper_own_landing`, each naming its place and bid."""
+    from snipetech.operator.prompts import _compact_snapshot
+    from tests.operator.test_live_test import BEST, SECOND, _freeze
+
+    copy_exit = {"copy_exit_pct": 0.5, "watch_secs": 1.3, "max_hold_secs": 10.0, "stop_loss": 0.0, "take_profit": 0.0}
+    store = fake_service.store
+    _freeze(store, BEST, kind="kol", pnl=0.40, landing=(0, "bid-"), buy=5.0)  # the best total, at a bid landing
+    _freeze(store, SECOND, kind="kol", pnl=0.01, landing=(0, "+6"), buy=0.2)  # where our copies land live
+    cov = store.coverage("paper_strategies")
+    for s in cov["strategies"]:
+        s["exit"] = dict(copy_exit)  # the exit a copy sniper runs: neither row is told apart by its exit
+        if s["id"] == BEST:  # as `paper freeze --copy-position bid- --buy-bid 0.05` stores it
+            s |= {"buy_bid_sol": 0.05, "landing_asked": True}
+    store.set_coverage("paper_strategies", cov)
+    cfg = Config()
+    cfg.operator.wallet = W
+    snap = asyncio.run(take_snapshot(fake_service, OperatorPaths(tmp_path).ensure(), cfg, prev=None, now=2_000,
+                                     services=dict, balances=lambda w: (1.5, 0.25, [])))  # fmt: skip
+    rows = {s["id"]: s for s in snap.paper["strategies"]}
+    keys = ("live_landing", "landing", "buy_sol", "buy_bid_sol")
+    assert {k: rows[BEST][k] for k in keys} == {"live_landing": False, "landing": "bid-@0.05", "buy_sol": 5.0,
+                                                "buy_bid_sol": 0.05}  # fmt: skip
+    assert {k: rows[SECOND][k] for k in keys} == {"live_landing": True, "landing": "+6@0", "buy_sol": 0.2,
+                                                  "buy_bid_sol": 0.0}  # fmt: skip
+    compact = _compact_snapshot(snap)
+    assert [s["id"] for s in compact["paper_top"]] == [SECOND]  # the bid landing's bigger total is not the best here
+    (own,) = compact["paper_own_landing"]
+    assert own["id"] == BEST and own["landing"] == "bid-@0.05" and own["buy_bid_sol"] == 0.05 and own["buy_sol"] == 5.0
+    json.dumps(compact)
+
+
 def test_equity_is_none_when_a_balance_is_unknown():
     s = Snapshot(ts=1, native_sol=None, wsol=0.1)
     assert s.equity is None

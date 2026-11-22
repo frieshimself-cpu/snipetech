@@ -653,8 +653,19 @@ def _compact_snapshot(snap: Snapshot) -> dict:
     }  # fmt: skip
     if snap.paper:
         rows = snap.paper.get("strategies", [])
-        strategies = sorted((s for s in rows if not s.get("research_only")), key=lambda s: -(s.get("total") or 0))[:6]
-        d["paper_top"] = strategies
+        plain = [s for s in rows if not s.get("research_only")]
+
+        def best(some: list[dict]) -> list[dict]:  # the six biggest totals
+            return sorted(some, key=lambda s: -(s.get("total") or 0))[:6]
+
+        # the best totals of the rules scored where our trades land live: the paper results that are evidence for a
+        # live trade (CLAUDE.md rule 2). A rule at a place asked for, bought with a bid, or with no live place at all
+        # is ranked apart, each row naming its landing and bid (audit of 22 Nov: all six of paper_top were rules at
+        # a bid landing, and nothing in a row said so)
+        d["paper_top"] = best([s for s in plain if s.get("live_landing")])
+        own = [s for s in plain if not s.get("live_landing")]
+        if own:
+            d["paper_own_landing"] = best(own)
         d["paper_research_only"] = sum(1 for s in rows if s.get("research_only"))
     return d
 
