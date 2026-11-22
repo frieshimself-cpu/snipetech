@@ -403,6 +403,25 @@ def test_an_event_fires_in_its_own_stretch_of_tape_only():
     st.close()
 
 
+def test_an_event_that_names_no_coin_is_no_coin_of_the_plan():
+    """The events table holds rows with no coin (its `mint` may be empty). Such an event fires on no coin; planned
+    among the coins of its stretch (review of 22 Nov), sorting them in mint order stopped the whole event edge."""
+    st = Store(":memory:")
+    m = Market(st, addr("nm-coin"), addr("nm-dev"), NOW - 6000, 98_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for j in range(8):
+        m.buy(addr(f"nm-fan-{j}"), 0.5, 2 + 3 * j)
+    m.commit()
+    st.set_coverage("tape", {"spans": [[NOW - 7000, NOW]]})
+    _event(st, "graduating", NOW - 6000 + 2, 98_000_000 + 5, addr("nm-coin"), "nm-1")
+    _event(st, "graduating", NOW - 5000, 98_002_500, None, "nm-none")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    data = collect(st, cfg, 0.2, 1, "+3", 0.0045, groups=(), event_kinds=("graduating",), exits=[HOLD], workers=1)
+    st.close()
+    assert [r["mint"] for r in data["rows"]] == [addr("nm-coin")]
+
+
 # -- goal#2: a copy that reacts to the leader's landed buy, K block places after it ----------------------------------
 # +0, +1x and the qualify landing +6 count trades, whenever they came; a reacting sender's place is set by time, which
 # on the chain is how many block places after the leader its transaction lands. "react:K": behind every trade of the

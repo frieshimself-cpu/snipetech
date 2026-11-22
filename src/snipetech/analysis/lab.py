@@ -2406,11 +2406,14 @@ def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, 
 def _event_plan(store: Store, spans, events_by_mint: Mapping[str, list[tuple]]) -> list[tuple]:
     """`_plan` for a lab whose every rule is an event rule: span by span (a span under ten minutes skipped, as there),
     the coins with an event of the rule's kinds inside it, in the store's order (by mint), and no other coin. A coin
-    with fewer than the lab's trades in the span gives no row when it is read, as one `active_mints` leaves out."""
+    with fewer than the lab's trades in the span gives no row when it is read, as one `active_mints` leaves out. An
+    event that names no coin (the table's `mint` may be empty) fires on none, and is no coin of the plan."""
     spans = [(a, b) for a, b in spans if b - a >= 600]
     starts = [a for a, _b in spans]
     named: list[set[str]] = [set() for _ in spans]
     for mint, events in events_by_mint.items():
+        if not mint:
+            continue
         for _kind, ts, _slot, _q in events:
             k = bisect.bisect_right(starts, ts) - 1
             if k >= 0 and ts <= spans[k][1]:
