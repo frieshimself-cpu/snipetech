@@ -17,7 +17,17 @@ A moment is a leader's first buy of a coin (no buy of it by that leader in the F
 or more. A send tries a moment when it names the moment's coin among its accounts and lands from the moment's slot to
 TRY_SLOTS after it (the latest moment of that coin when several are near). A landed buy of the wallet in that span is
 placed: "adjacent" (the next buy of the coin after the leader's in its block), "block" (in it, behind other buyers) or
-"later"; a moment with no landed buy and a failed try is "failed", one with neither "none"."""
+"later"; a moment with no landed buy and a failed try is "failed", one with neither "none".
+
+The route to the place right behind (audit of 22 Nov; the fee analyst's I617): before a sender of our own is built,
+who stands there and how. Every moment is listed (`moments_list`) with its outcome, the bot's failed sends at it and
+the first other buyer of NEAR_MIN_SOL or more within NEAR_PLACES block places after the leader, from the tape; `near`
+counts such buyers after the leader and before it (22 Nov: after on 65 % of 386 moments, before on 1, so they had the
+leader's transaction before it ran). With `validators` it also reads each moment's block leader (getSlotLeaders, one
+request for up to LEADERS_PER_CALL slots, LEADERS_CREDITS a request: assumed, not checked) and splits the moments by
+validator (`by_validator`): places sold by some validators show there, a private route does not. What sits at the
+leader's place +1 to +3 when it is no pump.fun trade, and where the bot's failed sends stand in the block, needs the
+blocks themselves (getBlock): not read here yet."""
 
 from __future__ import annotations
 
@@ -37,6 +47,10 @@ USAGE = "helius-sends"  # `Store.usage_add`: the credits this command counted in
 FETCH_CHUNK = 100
 OUTCOMES = ("adjacent", "block", "later", "failed", "none")
 UNSEEN = "a send that never landed (dropped, or a bundle that lost its auction) leaves nothing on chain"
+NEAR_PLACES = 3  # block places after (and before) the leader's buy where another wallet's buy counts as near it
+NEAR_MIN_SOL = 0.1  # the smallest buy that counts there
+LEADERS_PER_CALL = 5000  # slots one getSlotLeaders request answers at most
+LEADERS_CREDITS = 1.0  # a getSlotLeaders request, counted: assumed (most Helius calls are 1 credit), not checked
 
 
 def _err_text(err: Any) -> str:
@@ -63,8 +77,45 @@ def _moments(tape, leaders: list[str], since: float, end: float, min_sol: float)
             seen.add(t.mint)
             if first and since <= t.ts <= end and int(t.quote) >= floor:
                 out.append({"leader": lead, "mint": t.mint, "slot": int(t.slot), "pos": int(t.pos), "ts": int(t.ts),
-                            "sol": round(int(t.quote) / LAMPORTS, 4)})  # fmt: skip
+                            "sol": round(int(t.quote) / LAMPORTS, 4), "sig": t.sig})  # fmt: skip
     return sorted(out, key=lambda m: (m["slot"], m["pos"]))
+
+
+def _near(tape, m: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
+    """The first other wallet's buy of NEAR_MIN_SOL or more within NEAR_PLACES block places after the leader's (its
+    place, wallet and size), and how many such buys stand within NEAR_PLACES places before it. A buy in the leader's
+    own transaction is the leader's."""
+    floor = round(NEAR_MIN_SOL * LAMPORTS)
+    rows = [t for t in tape.trades_for_mint(m["mint"], m["ts"] - 2, m["ts"] + 2)
+            if t.is_buy and t.slot == m["slot"] and t.user != m["leader"] and t.sig != m["sig"]
+            and int(t.quote) >= floor]  # fmt: skip
+    after = sorted((t for t in rows if 0 < t.pos - m["pos"] <= NEAR_PLACES), key=lambda t: t.pos)
+    before = sum(1 for t in rows if 0 < m["pos"] - t.pos <= NEAR_PLACES)
+    if not after:
+        return None, before
+    t = after[0]
+    return {"place": int(t.pos - m["pos"]), "wallet": t.user, "sol": round(int(t.quote) / LAMPORTS, 4)}, before
+
+
+async def _slot_leaders(rpc, slots: list[int], meter: Meter) -> tuple[dict[int, str], str | None]:
+    """Each slot's leader (slots ascending), a request for every run of slots that fits in LEADERS_PER_CALL, each
+    counted on `meter` at LEADERS_CREDITS; what was read, and why it stopped when it did."""
+    out: dict[int, str] = {}
+    i = 0
+    while i < len(slots):
+        start, j = slots[i], i
+        while j + 1 < len(slots) and slots[j + 1] - start < LEADERS_PER_CALL:
+            j += 1
+        if meter.credits + LEADERS_CREDITS > meter.max:
+            return out, f"stopped at the {meter.max:g} credit limit"
+        meter.credits += LEADERS_CREDITS  # asked is counted, answered or not
+        try:
+            got = await rpc.get_slot_leaders(start, slots[j] - start + 1)
+        except Exception as exc:  # noqa: BLE001 - a node without the epoch's schedule: the places stand without it
+            return out, f"{type(exc).__name__}: {exc}"[:300]
+        out.update({s: str(got[s - start]) for s in slots[i : j + 1] if 0 <= s - start < len(got)})
+        i = j + 1
+    return out, None
 
 
 def _place(tape, m: dict[str, Any], buys: list) -> str | None:
@@ -81,8 +132,10 @@ def _place(tape, m: dict[str, Any], buys: list) -> str | None:
 
 
 async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *, hours: float = 72.0,
-                min_sol: float = 1.9, max_credits: float = DEFAULT_MAX_CREDITS) -> dict[str, Any]:  # fmt: skip
-    """`store`: where the month's credits are counted (the live store); `tape`: the trades read (the hourly copy)."""
+                min_sol: float = 1.9, max_credits: float = DEFAULT_MAX_CREDITS,
+                validators: bool = False) -> dict[str, Any]:  # fmt: skip
+    """`store`: where the month's credits are counted (the live store); `tape`: the trades read (the hourly copy);
+    `validators`: also read each moment's block leader and split the moments by it."""
     end = _tape_end(tape, now)
     since = end - float(hours) * 3600
     moments = _moments(tape, list(leaders), since, end, min_sol)
@@ -94,6 +147,8 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
     meter, stopped = Meter(max_credits), None
     listed: list[dict] = []
     cursor = None
+    leaders_of: dict[int, str] = {}
+    validators_error: str | None = None
     try:
         while True:
             if not meter.fits(SIGS):
@@ -116,6 +171,8 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
                 got = await rpc.get_transactions(chunk)
                 meter.add(TX, len(chunk))
                 txs.update({s: t for s, t in got.items() if t is not None})
+        if validators and moments:
+            leaders_of, validators_error = await _slot_leaders(rpc, sorted({m["slot"] for m in moments}), meter)
     finally:
         if meter.credits:
             store.usage_add(USAGE, round(meter.credits), now)
@@ -148,6 +205,9 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
     # every placed send's fee on the failed moments)
     sends_at = {k: 0 for k in OUTCOMES if k != "none"}
     fee_at = dict(sends_at)
+    rows: list[dict[str, Any]] = []
+    near_after = near_before = 0
+    by_validator: dict[str, dict[str, Any]] = {}
     for i, m in enumerate(moments):
         where = _place(tape, m, buys_by_mint.get(m["mint"], []))
         if where is None:
@@ -156,6 +216,24 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
             sends_at[where] += len(tries.get(i, []))
             fee_at[where] += sum(f["fee"] for f in tries.get(i, []))
         outcomes[where] += 1
+        nxt, before = _near(tape, m)
+        near_after += nxt is not None
+        near_before += before > 0
+        mine = tries.get(i, [])
+        rows.append({"leader": m["leader"], "mint": m["mint"], "slot": m["slot"], "pos": m["pos"], "sol": m["sol"],
+                     "outcome": where, "next_within3": nxt,
+                     "failed_sends": {"n": len(mine), "fee_sol": round(sum(f["fee"] for f in mine) / LAMPORTS, 9),
+                                      "slots_after": sorted(f["slot"] - m["slot"] for f in mine)}})  # fmt: skip
+        if validators:
+            v = leaders_of.get(m["slot"])
+            rows[-1]["validator"] = v
+            if v is not None:
+                vr = by_validator.setdefault(v, {"validator": v, "moments": 0, "taken_after": 0, "tried": 0,
+                                                 "adjacent": 0})  # fmt: skip
+                vr["moments"] += 1
+                vr["taken_after"] += nxt is not None
+                vr["tried"] += where != "none"
+                vr["adjacent"] += where == "adjacent"
         row = per_leader.setdefault(m["leader"], dict.fromkeys(("moments", "tried", *OUTCOMES), 0))
         row["moments"] += 1
         row[where] += 1
@@ -167,7 +245,9 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
     verdict = (f"tried {tried} of {len(moments)} first buys of {min_sol:g} SOL or more: right behind on "
                f"{outcomes['adjacent']}, behind other buyers in the block on {outcomes['block']}, later on "
                f"{outcomes['later']}; {outcomes['failed']} with only failed sends ({fee_at['failed'] / LAMPORTS:.4f} "
-               f"SOL in their fees); {outcomes['none']} with nothing seen.")  # fmt: skip
+               f"SOL in their fees); {outcomes['none']} with nothing seen. Another wallet's buy of {NEAR_MIN_SOL:g} SOL "
+               f"or more stood within {NEAR_PLACES} block places after the leader on {near_after} of the "
+               f"{len(moments)}, before it on {near_before}.")  # fmt: skip
     if placed:
         verdict += (f" The {placed} failed sends at its tries cost {placed_fee / LAMPORTS:.4f} SOL, "
                     f"{placed_fee / placed / LAMPORTS:.4f} a send, {landed_fee / LAMPORTS:.4f} of it beside the buys "
@@ -175,6 +255,7 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
     verdict += f" {UNSEEN}"
     if stopped:
         verdict += f"; stopped at the {max_credits:g} credit limit, so the failed sends are counted in part"
+    # the long list of moments last: a reader from the top meets the verdict before it
     return {"wallet": wallet, "hours": float(hours), "window": [int(since), int(end)], "leaders": list(leaders),
             "min_sol": float(min_sol), "moments": len(moments), "tried": tried, "outcomes": outcomes,
             "per_leader": per_leader, "signatures": len(listed),
@@ -184,4 +265,9 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
                                       for k in sends_at},
                        "priority_sol": round(sum(f["priority"] for f in fails) / LAMPORTS, 9),
                        "errors": dict(Counter(f["err"] for f in fails).most_common())},
-            "credits": meter.credits, "stopped": stopped, "unseen": UNSEEN, "verdict": verdict}  # fmt: skip
+            "near": {"places": NEAR_PLACES, "min_sol": NEAR_MIN_SOL, "taken_after": near_after,
+                     "taken_before": near_before},
+            **({"by_validator": sorted(by_validator.values(), key=lambda r: (-r["moments"], r["validator"]))[:30],
+                "validators_error": validators_error} if validators else {}),
+            "credits": meter.credits, "stopped": stopped, "unseen": UNSEEN, "verdict": verdict,
+            "moments_list": rows}  # fmt: skip

@@ -1384,6 +1384,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hours", type=float, default=72.0)
     sp.add_argument("--min-sol", type=float, default=1.9, help="a leader's smallest first buy that is a moment")
     sp.add_argument("--max-credits", type=int, default=5000, help="Helius credits the run may count at most")
+    sp.add_argument("--validators", action="store_true", help="also read each moment's block leader (getSlotLeaders, "
+                    "a credit a request of up to 5,000 slots) and split the moments by validator")  # fmt: skip
     sp = cmd(
         "copy-context",
         "what a known wallet's buy is worth by its context: entered a block late and marked at each horizon, split by "
@@ -3458,7 +3460,8 @@ def _main(args) -> int:
                     pb = playbook(svc.tape_store, args.wallet, time.time(), hours=args.hours, top=5)
                     leaders = [str(t["wallet"]) for t in pb.get("triggers") or [] if int(t.get("coins") or 0) >= 3][:5]
                 return await sends_mod.sends(svc.store, svc.tape_store, svc.rpc, args.wallet, leaders, time.time(),
-                                             hours=args.hours, min_sol=args.min_sol, max_credits=args.max_credits)  # fmt: skip
+                                             hours=args.hours, min_sol=args.min_sol, max_credits=args.max_credits,
+                                             validators=args.validators)  # fmt: skip
             finally:
                 await svc.close()
                 svc.store.close()
