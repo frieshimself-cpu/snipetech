@@ -102,7 +102,7 @@ class Snapshot:
         (round#3)."""
         if self.native_sol is None or self.wsol is None or self.tape_behind:
             return False
-        return all(h.get("priced") is not False and h.get("value_sol") is not None
+        return all(h.get("priced") is not False and h.get("value_sol") is not None and not h.get("stale_price")
                    for h in self.held or [] if h.get("ours", True))  # fmt: skip
 
     def to_json(self) -> str:
@@ -426,6 +426,66 @@ def mark_held(store, wallet: str, held: list[dict], prev: Snapshot | None = None
     return out
 
 
+FILL_COLS = ("sig", "ts", "slot", "pos", "mint", "side", "sol", "priority_lamports", "tip_lamports", "sniper_id",
+             "wallet_copied", "buy_sig")  # fmt: skip
+
+
+def off_tape_fills(store, wallet: str, start: float, counted: dict[str, int]) -> list[dict]:
+    """The wallet's buys and sales since `start` that the measure stage read off the chain and the tape does not hold,
+    not counted yet: a coin's PumpSwap trades past the tape's 30 minutes after it left its curve (audit 22 Nov, round#4:
+    three of the bot's 16 buys since 21 Nov, and their sales, were on no round's count)."""
+    rows = store._q("SELECT sig, ts, slot, pos_in_slot, mint, side, sol, priority_lamports, tip_lamports, sniper_id, "
+                    "wallet_copied, buy_sig FROM fills WHERE wallet=? AND ts>? AND side IN ('buy', 'sell') ORDER BY ts",
+                    (wallet, start))  # fmt: skip
+    fresh = [dict(zip(FILL_COLS, r, strict=True)) for r in rows if f"{r[0]}:chain" not in counted]
+    sigs, taped = [f["sig"] for f in fresh], set()
+    for i in range(0, len(sigs), 500):
+        chunk = sigs[i : i + 500]
+        taped |= {s for (s,) in store._q(f"SELECT DISTINCT sig FROM trades WHERE sig IN ({','.join('?' * len(chunk))})",
+                                         chunk)}  # fmt: skip
+    return [f for f in fresh if f["sig"] not in taped]
+
+
+def mark_off_tape(store, fills: list[dict], prev: Snapshot | None, wallet: str) -> list[dict]:
+    """Each off-tape fill with `ours`, by measure's own rule: a buy by its sniper, its fees or its copied wallet
+    (measure/ours.bot_buy); a sale with its coin as `mark_ours` tells it, else by the buy it closes (`buy_sig`), else by
+    its own fees (measure/ours.bot_sale_fees)."""
+    from ..measure.ours import bot_buy, bot_sale_fees, fee_marks
+
+    marks = fee_marks(store)
+    held_before = {str(h["mint"]): h for h in (prev.held if prev is not None else None) or [] if h.get("mint")}
+    out = []
+    for f in fills:
+        if not marks["buy"]:
+            ours = True
+        elif f["side"] == "buy":
+            ours = bot_buy(f, marks)
+        else:
+            whose = _coin_whose(store, wallet, f, marks, held_before)
+            if whose is None and f.get("buy_sig"):
+                b = store.fill(str(f["buy_sig"]))
+                whose = None if b is None else ("ours" if bot_buy(b, marks) else "owner")
+            ours = whose == "ours" if whose is not None else bot_sale_fees(f, marks)
+        out.append(f | {"ours": bool(ours)})
+    return out
+
+
+PRICE_STALE_SECS = 600  # a coin off its curve with no trade on the tape this long: the tape no longer follows its price
+
+
+def stale_price(store, mint: str, now: float) -> bool:
+    """Whether the tape's last price of a coin is one it stopped keeping up: the coin left its pump.fun curve (the tape
+    keeps its PumpSwap trades only for [live] amm_recent_secs after that) and the tape's newest trade of it is
+    PRICE_STALE_SECS old. A coin still on its curve is priced by its last trade however long ago (round#4)."""
+    try:
+        if store.completion(mint) is None and store.migration(mint) is None:
+            return False
+        rows = store._q("SELECT ts FROM trades WHERE mint=? ORDER BY slot DESC, pos DESC LIMIT 1", (mint,))
+    except Exception:  # noqa: BLE001 - nothing known: the tape's price stands, as before
+        return False
+    return bool(rows) and now - float(rows[0][0]) > PRICE_STALE_SECS
+
+
 FILLS_LOOKBACK_SECS = 3600  # a round reads the wallet's trades this far back: one the tape writes late is still counted
 
 
@@ -507,11 +567,12 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         # the wallet's trades since the window's start, less those an earlier round counted: one the tape writes after
         # a round read it is counted by a later round, once (audit 22 Nov, round#3: such a sale was counted by none)
         start, counted = fills_window(prev, now)
-        rows, frontier = None, None
+        rows, chain, frontier = None, [], None
         try:
             frontier = svc.store._q("select max(ts) from trades")[0][0]
             rows = svc.store._q("select sig, ev, ts, mint, is_buy, quote, priority, tip, fee, slot, pos from trades "
                                 "where user=? and ts>? order by ts", (wallet, start))  # fmt: skip
+            chain = off_tape_fills(svc.store, wallet, start, counted)  # the measure stage's, from the chain (round#4)
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
             snap.fills_unread, snap.bot_cash = True, None
@@ -525,15 +586,27 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             except Exception as exc:  # noqa: BLE001 - the coins still count; whose they are is asked again next round
                 snap.errors.append(f"whose: {exc}")
                 snap.held = held
+            # a coin of the bot's the tape stopped following (off its curve, past the tape's PumpSwap window) has no
+            # value known: its last tape price can be hours old (round#4)
+            for h in snap.held:
+                if h.get("ours") and h.get("mint") and stale_price(store, str(h["mint"]), now):
+                    h["stale_price"] = True
         if rows is not None:
-            new = [r for r in rows if f"{r[0]}:{r[1]}" not in counted]
+            new = [r for r in rows if f"{r[0]}:{r[1]}" not in counted and f"{r[0]}:chain" not in counted]
             trades = [{"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4),
                        "priority": pr, "tip": tp, "slot": sl, "pos": po}
                       for _s, _e, ts, m, b, q, pr, tp, _fe, sl, po in new]  # fmt: skip
-            snap.fills = mark_ours(svc.store, trades, prev, wallet)
-            snap.bot_cash = round(sum(trade_cash(b, q, fe, pr, tp) for (_s, _e, _ts, _m, b, q, pr, tp, fe, _sl, _po), f
-                                      in zip(new, snap.fills, strict=True) if f.get("ours", True)), 9)  # fmt: skip
+            taped = mark_ours(svc.store, trades, prev, wallet)
+            off = mark_off_tape(svc.store, chain, prev, wallet)
+            snap.fills = taped + [{"ts": int(f["ts"] or 0), "mint": f["mint"], "side": f["side"],
+                                   "sol": round(float(f["sol"] or 0), 4), "ours": f["ours"]} for f in off]  # fmt: skip
+            cash = [trade_cash(b, q, fe, pr, tp) for (_s, _e, _ts, _m, b, q, pr, tp, fe, _sl, _po), f
+                    in zip(new, taped, strict=True) if f.get("ours", True)]  # fmt: skip
+            cash += [trade_cash(f["side"] == "buy", round(float(f["sol"] or 0) * 1e9), 0, f["priority_lamports"],
+                                f["tip_lamports"]) for f in off if f["ours"]]  # fmt: skip
+            snap.bot_cash = round(sum(cash), 9)
             counted |= {f"{s}:{e}": int(ts) for s, e, ts, *_rest in new}
+            counted |= {f"{f['sig']}:chain": int(f["ts"] or 0) for f in off}
             snap.counted_from = max(start, now - FILLS_LOOKBACK_SECS)
             snap.counted = {k: ts for k, ts in counted.items() if ts > snap.counted_from}
         else:  # nothing read: the next round reads from the same place

@@ -197,10 +197,13 @@ def test_the_owners_higher_budget_lets_the_round_call_claude_past_the_configs_ca
     assert len(tmp_env["calls"]) == 1 and "budget reached" not in tmp_env["paths"].notes.read_text()
 
 
-def _sells(st, n, start, wallet="W"):
+def _sells(st, n, start, wallet="W", buys=False):
     for i in range(n):
         st.put_fill({"sig": f"{wallet}-{start + i}", "ts": int(start + i * 60), "wallet": wallet, "mint": f"M{start + i}",
                      "side": "sell", "sol": 0.19, "tokens": 1.0, "pnl_sol": -0.01})  # fmt: skip
+        if buys:  # the trip's buy too: a fill off the tape counts in the bot's result (audit 22 Nov, round#4)
+            st.put_fill({"sig": f"{wallet}-{start + i}-buy", "ts": int(start + i * 60 - 30), "wallet": wallet,
+                         "mint": f"M{start + i}", "side": "buy", "sol": 0.20, "tokens": 1.0})  # fmt: skip
 
 
 def test_five_new_live_round_trips_start_one_post_mortem_and_it_is_not_repeated(tmp_env):
@@ -217,7 +220,7 @@ def test_five_new_live_round_trips_start_one_post_mortem_and_it_is_not_repeated(
     pm = learning.postmortem_state(tmp_env["paths"])
     assert pm == {"ts": NOW, "sell_ts": NOW - 3600 + 240, "n": 5, "mode": "postmortem"}
     _op(tmp_env)  # the same trips: reviewed already
-    _sells(tmp_env["svc"].store, 6, NOW - 1800)
+    _sells(tmp_env["svc"].store, 6, NOW - 1800, buys=True)  # whole round trips: 0.06 SOL lost, under the alert
     _op(tmp_env)  # six new ones, but the last post-mortem ran under three hours ago
     assert len(tmp_env["calls"]) == 1 and "call postmortem" in tmp_env["paths"].log.read_text()
 

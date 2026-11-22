@@ -657,3 +657,55 @@ def test_round7_the_restart_notice_names_the_snipers_that_stayed_armed(tmp_path)
     assert "nothing was traded" not in text and "1 sniper(s) stayed armed on OKTech" in text, text
     assert "snipetech copy Cented CyaE1V arm:size35" in text and "snipetech copy old" not in text
     assert "nothing was traded and nothing was checked" in outage.words(gone, {}, [armed[1]])
+
+
+# -- round#4: the bot's trades the tape never holds (PumpSwap past its 30 minutes) are counted from the fills ---------
+
+
+def put_fill(st, sig, ts, mint, side, sol, fees, **kw):
+    st.put_fill({"sig": sig, "ts": ts, "slot": ts, "wallet": W, "mint": mint, "side": side, "sol": sol, "tokens": 1000.0,
+                 "priority_lamports": fees[0], "tip_lamports": fees[1], "venue": "PumpSwap"} | kw)  # fmt: skip
+
+
+def test_round4_a_losing_pumpswap_round_trip_off_the_tape_is_the_bots(book):
+    """The tape keeps a coin's PumpSwap trades only for 30 minutes after it left its curve, and the bot's cash was read
+    from the tape alone: a copy bought and sold there between two rounds read 0 while the wallet was 1.2 SOL down. The
+    measure stage's fills (read off the chain) hold it: they count, once, and a fill the tape also holds counts once."""
+    st, cfg, paths = book
+    tick(st, 995)
+    a = take(st, cfg, paths, None, 1000.0, 10.0, [])
+    put_fill(st, "pb", 1200, SWAP, "buy", 3.5, BOT_BUY_FEES)
+    put_fill(st, "ps", 1210, SWAP, "sell", 2.5, BOT_SELL_FEES)
+    trade(st, "tb", 1300, COIN, True, 1.0, BOT_BUY_FEES)  # a trade the tape holds, and so does a fill of it
+    put_fill(st, "tb", 1300, COIN, "buy", 1.0, BOT_BUY_FEES, venue="curve")
+    tick(st, 1895)
+    b = take(st, cfg, paths, a, 1900.0, 7.59, [coin(COIN, 1.0)])
+    assert b.bot_cash == pytest.approx(-1.20301 - 1.200005)
+    lines = bot_lines(paths, b, a, 1900.0)  # the round trip's -1.203 and the held copy's fees and spread, -0.200
+    assert len(lines) == 1 and "-1.403 SOL of it by the bot's own" in lines[0], lines
+    tick(st, 2795)
+    c = take(st, cfg, paths, b, 2800.0, 7.59, [coin(COIN, 1.0)])
+    assert c.bot_cash == 0.0 and not bot_lines(paths, c, b, 2800.0)  # counted once
+
+
+def test_round4_a_held_copy_the_tape_stopped_pricing_is_not_valued_from_its_old_price(book):
+    """A copy held across a round on PumpSwap past the tape's window was valued at the tape's last price, hours old: a
+    gain of that value at the buy, the same loss at the sale. A coin of the bot's that left its curve, whose newest
+    trade on the tape is older than PRICE_STALE_SECS, has no value known: the bot's result waits for the sale."""
+    from snipetech.models import Migration
+
+    st, cfg, paths = book
+    trade(st, "old", 100, SWAP, True, 0.5, (0, 0), user="someone")  # the tape's last price, from the migration hour
+    st.add_migrations([Migration(SWAP, "pool", 90, 90, "mig")])
+    tick(st, 995)
+    a = take(st, cfg, paths, None, 1000.0, 10.0, [])
+    put_fill(st, "pb", 1200, SWAP, "buy", 3.5, BOT_BUY_FEES)
+    tick(st, 1895)
+    b = take(st, cfg, paths, a, 1900.0, 6.3, [coin(SWAP, 9.0)])  # 9.0: the tape's price of hours ago
+    assert whose(b) == {SWAP: "ours"} and b.held[0]["stale_price"] is True and not b.bot_valued
+    assert not bot_lines(paths, b, a, 1900.0)
+    put_fill(st, "ps", 2000, SWAP, "sell", 2.5, BOT_SELL_FEES)
+    tick(st, 2795)
+    c = take(st, cfg, paths, b, 2800.0, 8.79, [])
+    lines = bot_lines(paths, c, b, 2800.0)
+    assert len(lines) == 1 and "-1.203 SOL of it by the bot's own" in lines[0], lines
