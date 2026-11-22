@@ -121,6 +121,26 @@ def test_state_uses_phase2_tables_when_present(ops):
     assert s["fills"][0]["mint"] == "M1" and s["fills"][0]["sol"] == 0.2
 
 
+def test_the_best_qualified_list_leaves_out_a_banned_wallet(ops):
+    """Audit 22 Nov (tools#6): "Qualified wallets, best first" was read off the latest verdicts alone, so AG89fn and
+    7aPo3n, banned on 12 Nov after their last verdict qualified them, led it while the same page counted them banned
+    (the book leaves a banned wallet out: book/run.py)."""
+    from snipetech.store import Store
+
+    st = Store(ops.db)
+    try:
+        st.upsert_candidate("AG89fnBANNED", "tape", {}, NOW - 100, status="banned")
+        st.upsert_candidate("GoodQUALIFIED", "tape", {}, NOW - 100)
+        for w, score in (("AG89fnBANNED", 0.0038), ("GoodQUALIFIED", 0.0010)):
+            st.put_verdict({"wallet": w, "computed_at": NOW - 50, "n_tape": 30, "mean_sol": 0.02, "lower_sol": 0.005,
+                            "score": score, "status": "qualified", "next_review": NOW + 3600})  # fmt: skip
+    finally:
+        st.close()
+    c = dash_state(ops, now=NOW)["candidates"]
+    assert c["counts"] == {"banned": 1, "qualified": 1}
+    assert [r["wallet"] for r in c["top"]] == ["GoodQUALIFIED"], c["top"]
+
+
 def _serve(ops):
     server = O.make_server(ops, "127.0.0.1", 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
