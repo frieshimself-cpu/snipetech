@@ -286,9 +286,11 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
         move = total - ref
         # The owner takes SOL out, puts it in and trades by hand in this wallet ("Don't flag, I constantly take out and
         # put money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss): a move with no trade of
-        # the bot's since the last round (each fill marked by its fees, `snapshot.mark_ours`) is theirs, never news
+        # the bot's since the last round (each fill marked by its fees, `snapshot.mark_ours`) and no coin of the bot's
+        # held (`snapshot.mark_held`: its value moves the equity too; 22 Nov review) is theirs, never news
         bot_traded = any(f.get("ours", True) for f in snap.fills or [])
-        if abs(move) > cfg.equity_alert_sol and bot_traded:
+        bot_holds = any(h.get("ours", True) for h in snap.held or [])
+        if abs(move) > cfg.equity_alert_sol and (bot_traded or bot_holds):
             events.append(f"equity moved {move:+.3f} SOL")
     if snap.tape_last_ts is not None and now - snap.tape_last_ts > cfg.tape_stale_secs:
         states.append(f"tape stale {int(now - snap.tape_last_ts)} s")

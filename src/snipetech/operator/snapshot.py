@@ -271,6 +271,22 @@ def mark_ours(store, fills: list[dict]) -> list[dict]:
     return out
 
 
+def mark_held(store, wallet: str, held: list[dict]) -> list[dict]:
+    """Each held coin with `ours`: whether the bot holds it, by the wallet's newest buy of it on the tape since the
+    holding began (its `since`, WHOSE_MARGIN_SECS earlier: a node shows a coin late), as the runner tells them apart
+    (measure/ours.tape_whose); a coin with no buy read counts as the bot's. The gate wakes the round when a coin of
+    the bot's moves, never for the owner's own coin (22 Nov review)."""
+    from ..measure.ours import WHOSE_MARGIN_SECS, fee_marks, tape_whose
+
+    marks = fee_marks(store)
+    out = []
+    for h in held:
+        since = float(h.get("since") or 0) - WHOSE_MARGIN_SECS
+        whose = tape_whose(store, wallet, str(h.get("mint") or ""), since, marks) if h.get("mint") else None
+        out.append(h | {"ours": whose != "owner"})
+    return out
+
+
 def carry_since(held: list[dict], prev: Snapshot | None, now: float) -> list[dict]:
     """Each held coin keeps the time it was first seen (from the previous snapshot when it was held then too), so
     the gate can tell a stuck position from one the book bought minutes ago."""
@@ -316,7 +332,7 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             if hasattr(res, "__await__"):
                 res = await res
             snap.native_sol, snap.wsol, held = res
-            snap.held = carry_since(list(held or []), prev, now)
+            snap.held = mark_held(getattr(svc, "store", None), wallet, carry_since(list(held or []), prev, now))
             total = snap.total_equity
             snap.equity_ref = total if total is not None else getattr(prev, "equity_ref", None)
             clear_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, now)

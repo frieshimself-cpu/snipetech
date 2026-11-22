@@ -143,6 +143,26 @@ def test_held_coins_keep_the_time_they_were_first_seen(tmp_path, fake_service):
     assert {h["mint"]: h["since"] for h in later.held} == {"A": 2_000, "B": 2_900, "C": 2_000}
 
 
+def test_held_coins_say_whose_they_are_by_the_buy_that_brought_them_in(tmp_path, fake_service):
+    """The gate wakes the round when a coin the bot holds moves, not when the owner's own coin does: each held coin
+    is the bot's when the wallet's newest buy of it on the tape paid a sniper's fees (or fees nobody recorded), the
+    owner's when it paid other fees (measure/ours.py)."""
+    st = fake_service.store
+    st.add_oktech_sniper({"id": "s", "kind": "copy", "source": "x",
+                          "payload": {"singleSnipe": True, "priorityFee": 0.001, "tipAmount": 0.049}})  # fmt: skip
+    for sig, mint, ts, pr, tp in (("h", "H", 1950, 6121, 52_000_000), ("b", "B", 1960, 1_000_000, 49_000_000)):
+        st._exec("insert into trades(sig,ev,slot,pos,ts,mint,venue,user,is_buy,quote,base,fee,fee_bps,q_after,b_after,"
+                 "priority,tip) values (?,0,9,0,?,?,'curve',?,1,1000000000,1,0,0,1,1,?,?)", (sig, ts, mint, W, pr, tp))  # fmt: skip
+    cfg = Config()
+    cfg.operator.wallet = W
+    paths = OperatorPaths(tmp_path).ensure()
+    coins = [{"mint": "H", "amount": 5.0}, {"mint": "B", "amount": 1.0}, {"mint": "U", "amount": 1.0}]
+    snap = asyncio.run(take_snapshot(fake_service, paths, cfg, prev=None, now=2_000,
+                                     services=lambda: {"snipetech-tape": "active"},
+                                     balances=lambda w: (1.0, 0.0, coins)))  # fmt: skip
+    assert {h["mint"]: h["ours"] for h in snap.held} == {"H": False, "B": True, "U": True}  # U: no buy read: the bot's
+
+
 def test_snapshot_records_whether_the_book_is_live(tmp_path, fake_service):
     from snipetech.book.switch import book_switch
 

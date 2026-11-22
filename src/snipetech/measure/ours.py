@@ -145,6 +145,27 @@ def _brought_in(tx: dict, wallet: str, mint: str) -> bool:
     return held(meta.get("postTokenBalances")) > held(meta.get("preTokenBalances"))
 
 
+def tape_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str, frozenset]) -> str | None:
+    """Whose the wallet's holding of `mint` is by the tape: the newest buy of it by the wallet since `since_ts` and
+    after the wallet's last sale of it (a buy before that sale belonged to a holding that has ended) says "ours" (a
+    sniper's fees, or fees nobody recorded) or "owner" (other fees); None with no such buy, or a tape that cannot be
+    read. With no marks every coin is ours."""
+    if not marks["buy"]:
+        return "ours"
+    try:
+        sold = store._q("SELECT slot, pos FROM trades WHERE user=? AND mint=? AND is_buy=0 "
+                        "ORDER BY slot DESC, pos DESC LIMIT 1", (wallet, mint))  # fmt: skip
+        s_slot, s_pos = sold[0] if sold else (-1, -1)
+        rows = store._q("SELECT priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND ts>=? "
+                        "AND (slot>? OR (slot=? AND pos>?)) ORDER BY slot DESC, pos DESC LIMIT 1",
+                        (wallet, mint, int(since_ts), s_slot, s_slot, s_pos))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not readable now: the chain, or the next reading
+        return None
+    if not rows:
+        return None
+    return "owner" if _paid(rows[0][0], rows[0][1], marks["buy"]) is False else "ours"
+
+
 class RunCoins:
     """Whose each coin the wallet holds is, for one run of the runner: "ours" when the buy that brought it in paid one
     of `marks` (the run's snipers' fees, `sniper_marks`) or fees nobody recorded, "owner" when it paid other fees or
@@ -188,18 +209,8 @@ class RunCoins:
         return "owner" if _paid(priority, tip, self.marks["buy"]) is False else "ours"
 
     def _tape(self, mint: str, since_ts: float) -> str | None:
-        """The newest buy of the coin by the wallet since `since_ts` and after its last sale of it: a buy before that
-        sale belonged to a holding that has ended."""
-        try:
-            sold = self.store._q("SELECT slot, pos FROM trades WHERE user=? AND mint=? AND is_buy=0 "
-                                 "ORDER BY slot DESC, pos DESC LIMIT 1", (self.wallet, mint))  # fmt: skip
-            s_slot, s_pos = sold[0] if sold else (-1, -1)
-            rows = self.store._q("SELECT priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND ts>=? "
-                                 "AND (slot>? OR (slot=? AND pos>?)) ORDER BY slot DESC, pos DESC LIMIT 1",
-                                 (self.wallet, mint, int(since_ts), s_slot, s_slot, s_pos))  # fmt: skip
-        except Exception:  # noqa: BLE001 - not readable now: the chain, or the next reading
-            return None
-        return self._verdict(rows[0][0], rows[0][1]) if rows else None
+        """The newest buy of the coin by the wallet since `since_ts` and after its last sale of it (`tape_whose`)."""
+        return tape_whose(self.store, self.wallet, mint, since_ts, self.marks)
 
     def _learned(self) -> dict[str, str]:
         """The tip accounts the recorder learned and reads the tape's tips with (`Store.tip_accounts`, the marked ones,

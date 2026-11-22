@@ -83,6 +83,23 @@ def test_the_owners_own_sol_moves_wake_nobody(paths):
     assert decide(snap(native_sol=10.23, fills=[BOT_SELL]), snap(native_sol=12.23), NOW, CFG, paths).call
 
 
+def test_a_fall_of_a_coin_the_bot_holds_wakes_the_round_with_no_trade(paths):
+    """Review of 22 Nov: since an equity move needs a trade of the bot's to wake anyone (the owner's own moves wake
+    nobody), a coin the bot holds falling from 2.0 to 0.5 SOL between two rounds with no trade woke nobody. A move while
+    the bot holds a coin (`ours` on the snapshot's held coins: whose by the buy that brought it in) is news; one while
+    only the owner's own coin is held is not."""
+
+    def coin(value, ours):
+        return {"mint": "M", "amount": 1.0, "value_sol": value, "priced": True, "since": NOW - 600, "ours": ours}
+
+    paths.expected.write_text(json.dumps({"snipers_running": 0, "held": 1}))  # a coin held is what quiet means now
+    before = snap(held=[coin(2.0, True)], equity_ref=3.1)
+    d = decide(snap(held=[coin(0.5, True)]), before, NOW, CFG, paths)
+    assert d.call and any("equity moved -1.500" in r for r in d.reasons)
+    owners = snap(held=[coin(2.0, False)], equity_ref=3.1)
+    assert not decide(snap(held=[coin(0.5, False)]), owners, NOW, CFG, paths).call
+
+
 def test_small_equity_move_is_quiet(paths):
     assert not decide(snap(native_sol=1.0), snap(native_sol=1.05), NOW, CFG, paths).call
 
