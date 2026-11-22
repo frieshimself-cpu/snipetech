@@ -317,6 +317,13 @@ def _fill_fee_sol(row: dict) -> float | None:
     return (int(row.get("priority_lamports") or 0) + int(row.get("tip_lamports") or 0) + 5000) / 1e9
 
 
+def _bought_by(lot: dict, sell: dict) -> bool:
+    """The lot was bought at or before the sell: by slot when both are known, else by the second."""
+    if lot.get("slot") is not None and sell.get("slot") is not None:
+        return int(lot["slot"]) <= int(sell["slot"])
+    return float(lot["ts"]) <= float(sell["ts"])
+
+
 def pair_round_trips(buys: list[dict], sells: list[dict], per_tx_sol: float,
                      whose: Callable[[dict], Any] | None = None) -> dict[str, Any]:  # fmt: skip
     """FIFO per mint: each sell consumes the oldest open buy lots; a partial sell closes the proportional share.
@@ -326,18 +333,20 @@ def pair_round_trips(buys: list[dict], sells: list[dict], per_tx_sol: float,
     sell then closes the open lots of its own maker first, oldest first, and only then the others': a sniper's sale
     never closes the owner's older lot of the same coin while the bot's own is open (22 Nov audit: it did, and the day
     stop lost the bot's trip), and a sale by hand of a coin only the bot bought is still the bot's 'manual' exit.
-    None: one pool, as before.
+    None: one pool, as before. A sell closes only lots bought at or before it (by slot when both are known, else by the
+    second): 22 Nov audit, a sale whose own buy was outside the window took a later buy's lot.
     Returns trips (one per buy lot touched by a sell), the sells with nothing to close, the buys still open, and PnL per sell."""
     open_lots: dict[str, list[dict]] = {}
     for b in sorted(buys, key=lambda r: (r["ts"], r["sig"])):
         open_lots.setdefault(b["mint"], []).append({"sig": b["sig"], "ts": b["ts"], "sol": float(b["sol"]), "tokens": float(b["tokens"]),
                                                     "left": float(b["tokens"]), "fee": _fill_fee_sol(b),
-                                                    "who": whose(b) if whose else None})  # fmt: skip
+                                                    "who": whose(b) if whose else None,
+                                                    "slot": b.get("slot")})  # fmt: skip
     trips: list[dict] = []
     unmatched: list[dict] = []
     pnl_by_sell: dict[str, float] = {}
     for s in sorted(sells, key=lambda r: (r["ts"], r["sig"])):
-        lots = open_lots.get(s["mint"]) or []
+        lots = [lot for lot in open_lots.get(s["mint"]) or [] if _bought_by(lot, s)]
         if whose:  # its own maker's lots first; a stable sort keeps each maker's lots oldest first
             who = whose(s)
             lots = sorted(lots, key=lambda lot: lot["who"] != who)

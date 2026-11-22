@@ -739,7 +739,19 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     all_buys = store.fills(wallet=wallet, since_ts=look, side="buy", limit=100_000)
     all_sells = store.fills(wallet=wallet, since_ts=look, side="sell", limit=100_000)
     marks = fee_marks(store)
-    paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol(), whose=lambda r: bot_fill(r, marks))
+    in_window = {b["sig"] for b in all_buys}
+
+    def paired_before(s: dict) -> bool:
+        """A sale paired with a buy that has since left the window: that pairing stands. Paired again without its buy,
+        it would take the coin's next lot and write that over the right pairing for good (22 Nov audit)."""
+        bsig = s.get("buy_sig")
+        if not bsig or bsig in in_window or s.get("pnl_sol") is None:
+            return False
+        b = store.fill(bsig)
+        return b is not None and int(b.get("ts") or 0) < look
+
+    paired = pair_round_trips(all_buys, [s for s in all_sells if not paired_before(s)], cfg.costs.per_tx_sol(),
+                              whose=lambda r: bot_fill(r, marks))  # fmt: skip
     buy_by_sig = {b["sig"]: b for b in all_buys}
     # measure's own outputs (the bid model, the live record per copied wallet, the measured landing, the exit shadow)
     # hold the bot's trades only: the owner's hand trades are written and paired, never counted in them (22 Nov audit:

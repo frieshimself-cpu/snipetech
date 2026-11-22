@@ -582,3 +582,65 @@ def test_measure_4_the_sell_tip_choice_never_raises_on_sales_that_carry_no_landi
     assert choice.sell_tip == pytest.approx(0.001)
     assert "no landing" in choice.why["sell_tip"]
     assert explain(cfg, fills, [LEAD])["copy_leaders"][0]["sell_tip"] == pytest.approx(0.001)
+
+
+# -- measure#8: a sale closes only lots bought before it; the window's edge keeps a right pairing ----------------------
+
+
+def _row(sig, ts, mint, sol, tokens, prio=1_000_000, tip=2_000_000, slot=None):
+    return {"sig": sig, "ts": ts, "slot": slot, "mint": mint, "sol": sol, "tokens": tokens, "priority_lamports": prio,
+            "tip_lamports": tip}  # fmt: skip
+
+
+def test_measure_8_a_sale_never_closes_a_lot_bought_after_it():
+    """measure#8: pair_round_trips let a sale take any lot with tokens left, whatever its time. 3VTTN1VU (20 Nov
+    16:24, a USDC sale whose buy was outside the window) was paired with a dust 'buy' written three hours after it, and
+    a sale whose own buy is missing took the lot of the coin's next copy, leaving that copy's sale mostly unpaired."""
+    from snipetech.measure.classify import pair_round_trips
+
+    usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    sale = _row("3VTTN1VU", 1795191887, usdc, 0.058638, 4_040_509.0)
+    dust = [_row("3kA7a2QS", 1795202792, usdc, 0.0, 100.0, prio=50, tip=0),
+            _row("3h1KvzFZ", 1795233210, usdc, 0.0, 100.0, prio=50, tip=0)]  # fmt: skip
+    out = pair_round_trips(dust, [sale], 0.0035)
+    assert out["trips"] == [] and [s["sig"] for s in out["unmatched"]] == ["3VTTN1VU"]
+    s1 = _row("s1", 1000, "M", 0.221903, 676_584_615_915.0)  # its buy is not on record
+    b2 = _row("b2", 1020, "M", 0.2, 754_183_083_976.0)
+    s2 = _row("s2", 1034, "M", 0.030394, 754_183_083_976.0)
+    out = pair_round_trips([b2], [s1, s2], 0.0035)
+    assert [(t["buy_sig"], t["sell_sig"]) for t in out["trips"]] == [("b2", "s2")]
+    assert out["trips"][0]["tokens"] == pytest.approx(754_183_083_976.0) and out["trips"][0]["hold_secs"] == 14
+    # by slot when both are known: a buy later in the same second as the sale, in a later block, is not its lot
+    out = pair_round_trips([_row("b", 1000, "M", 0.2, 1e9, slot=11)], [_row("s", 1000, "M", 0.3, 1e9, slot=10)], 0.0)
+    assert out["trips"] == []
+
+
+def test_measure_8_the_windows_edge_keeps_a_right_pairing(tmp_path):
+    """measure#8: every run re-pairs the last 7 days; once a sale's buy had just left the window and the sale had not,
+    the sale took the coin's next lot (a coin copied twice, as 8 Nov's AJNiDeZg) and wrote that pairing over the right
+    one for good. A sale whose stored buy has left the window keeps its pairing, and the next sale its own lot."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        st.add_oktech_sniper({"id": "cs1", "external_id": "cs1", "kind": "copy", "source": LEAD, "name": "copy",
+                              "config_hash": "h", "created_at": NOW - 86400,
+                              "payload": {"ctbotWallets": [{"address": LEAD}]}})  # fmt: skip
+        m = Market(st, addr("audit-twice"), D, NOW, SLOT)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 2.0, 5)
+        b1 = m.buy(W, 0.2, 10)
+        m.buy(LEAD, 2.0, 19)
+        b2 = m.buy(W, 0.2, 20)
+        s1 = m.sell(W, b1.base / m.holdings[W], 30)  # the first copy's coins
+        m.buy(addr("audit-z"), 0.2, 35)
+        s2 = m.sell(W, 1.0, 40)  # the second's
+        m.commit()
+        metas = {t.sig: _meta(t.sig, BOT_SALE_FEES) for t in (b1, b2, s1, s2)}
+        _measure(svc, cfg, metas, now=NOW + 3600, since=NOW - 600)
+        right = {s.sig: (st.fill(s.sig)["buy_sig"], st.fill(s.sig)["pnl_sol"]) for s in (s1, s2)}
+        assert right[s1.sig][0] == b1.sig and right[s2.sig][0] == b2.sig
+        edge = b1.ts + 7 * 86400 + 2  # b1 has just left the 7-day window; b2, s1 and s2 have not
+        assert b1.ts < edge - 7 * 86400 <= b2.ts
+        _measure(svc, cfg, metas, now=edge, since=edge - 600)
+        assert {s.sig: (st.fill(s.sig)["buy_sig"], st.fill(s.sig)["pnl_sol"]) for s in (s1, s2)} == right
+    finally:
+        st.close()
