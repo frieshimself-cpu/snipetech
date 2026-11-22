@@ -529,11 +529,19 @@ class Seller:
 
 
 async def sweep(rpc, mints: list[str] | None = None, slippage: float = 0.5, dry_run: bool = False,
-                secret_b58: str | None = None, store=None) -> dict[str, Any]:  # fmt: skip
+                secret_b58: str | None = None, store=None, amounts: dict[str, int] | None = None) -> dict[str, Any]:  # fmt: skip
+    """Sell the wallet's holdings of `mints` (every coin it holds without). `amounts`: at most this many raw units of
+    a coin, not the whole holding (the runner's own sale of a coin the owner bought into too sells the run's tokens
+    alone, 22 Nov review)."""
+    from dataclasses import replace
+
     s = Seller(rpc, secret_b58, store=store)
     held = await s.holdings()
     if mints:
         held = [h for h in held if h.mint in set(mints)]
+    if amounts:
+        held = [replace(h, amount=min(h.amount, int(amounts[h.mint]))) if h.mint in amounts else h for h in held]
+        held = [h for h in held if h.amount > 0]
     results = []
     for h in held:
         try:

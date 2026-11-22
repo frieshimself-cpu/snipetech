@@ -1156,12 +1156,12 @@ class Service:
         finally:
             await client.close()
 
-    async def sweep_coin(self, mint: str) -> dict:
+    async def sweep_coin(self, mint: str, amount: int | None = None) -> dict:
         """Sell one coin the sniper wallet holds, as `snipetech sweep --mint` does: on its curve, or on its PumpSwap pool
-        once it has left it (the exit OKTech can drop)."""
+        once it has left it (the exit OKTech can drop). `amount`: at most this many raw units of it (None: all)."""
         from .solana.sell import sweep
 
-        return await sweep(self.rpc, [mint], store=self.store)
+        return await sweep(self.rpc, [mint], store=self.store, amounts=None if amount is None else {mint: int(amount)})
 
     def selling_wallet(self) -> str | None:
         """The wallet `sweep_coin` signs for: the selling key's (SNIPER_SECRET, solana/sell.py), or None when that key
@@ -1650,8 +1650,17 @@ class Service:
                 if now < sweep_due.get(mint, -1e18):
                     continue
                 sweep_due[mint] = now + SWEEP_RETRY_SECS
+                # the run's own tokens only, when the wallet holds more of the coin than they are: the owner bought into
+                # it by hand, and the sale would sell their tokens too (22 Nov review)
                 try:
-                    result = await asyncio.wait_for(self.sweep_coin(mint), SALE_SECS)
+                    mine = run_tokens()[0].get(mint)
+                except Exception:  # noqa: BLE001 - the tape cannot say: the holding is the run's, as it was known
+                    mine = None
+                raw = int(h.get("raw") or 0)
+                part = int(mine) if mine is not None and 0 < mine < raw else None
+                sale = self.sweep_coin(mint) if part is None else self.sweep_coin(mint, amount=part)
+                try:
+                    result = await asyncio.wait_for(sale, SALE_SECS)
                 except Exception as exc:  # noqa: BLE001 - said, tried again in a minute; the run goes on
                     why = (
                         f"no answer in {SALE_SECS:g} s"
@@ -1743,11 +1752,13 @@ class Service:
             except Exception:  # noqa: BLE001 - no reading: the equity floor holds as before
                 return None
 
-        def _run_result(held_all: list[dict], now: float) -> float | None:
+        def run_tokens() -> tuple[dict[str, float], dict[str, float], float]:
+            """By the run's own trades on the tape since its start: its tokens of each coin (its buys less its sales; a
+            sale at the owner's own fees is theirs), each coin's last buy, and what those trades came to in SOL."""
             from .measure.ours import _paid
 
             trades = self.store.trades_for_user(address, int(t0), fees=True)
-            left: dict[str, float] = {}  # the run's tokens of each coin by its own buys and sales
+            left: dict[str, float] = {}
             last_buy: dict[str, float] = {}
             total = 0.0
             for t in trades:
@@ -1765,6 +1776,10 @@ class Service:
                     take = min(float(t.base), left[t.mint])
                     total += (int(t.quote) - int(t.fee)) / 1e9 * take / float(t.base) - fees
                     left[t.mint] -= take
+            return left, last_buy, total
+
+        def _run_result(held_all: list[dict], now: float) -> float | None:
+            left, last_buy, total = run_tokens()
             shown = {str(h["mint"]): h for h in held_all if h.get("mint")}
             for m, n in left.items():
                 if n <= 0:

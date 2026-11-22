@@ -67,3 +67,34 @@ def test_one_refused_coin_never_stops_the_sweep(monkeypatch):
     out = asyncio.run(S.sweep(object(), None))
     assert [r["mint"] for r in out["results"]] == ["A", "B"] and out["results"][1]["signature"] == "SIG-B"
     assert "refused" in out["results"][0]["skipped"] and "0x1772" in out["results"][0]["skipped"]
+
+
+def test_a_sweep_with_an_amount_sells_only_that_much_of_a_coin(monkeypatch):
+    """The runner's own sale of a coin the owner bought into sells the run's tokens alone (22 Nov review): `amounts`
+    caps a coin's sale at that many raw units, never more than the holding; a coin not named sells whole."""
+    import asyncio
+
+    from snipetech.solana import sell as S
+
+    sold = {}
+
+    class FakeSeller:
+        def __init__(self, rpc, secret_b58=None, store=None):
+            self.user = "W"
+
+        async def holdings(self):
+            return [
+                S.Holding("A", "accA", 2_000_000, 6, S.TOKEN_PROGRAM),
+                S.Holding("B", "accB", 500, 6, S.TOKEN_PROGRAM),
+            ]
+
+        async def sell(self, h, slippage, dry_run):
+            sold[h.mint] = h.amount
+            return {"mint": h.mint, "signature": f"SIG-{h.mint}"}
+
+    monkeypatch.setattr(S, "Seller", FakeSeller)
+    asyncio.run(S.sweep(object(), ["A", "B"], amounts={"A": 1_000_000}))
+    assert sold == {"A": 1_000_000, "B": 500}
+    sold.clear()
+    asyncio.run(S.sweep(object(), ["A"], amounts={"A": 9_000_000}))  # never more than the holding
+    assert sold == {"A": 2_000_000}

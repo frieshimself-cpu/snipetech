@@ -219,3 +219,21 @@ def test_a_copy_into_a_coin_the_owner_holds_still_counts_its_loss(monkeypatch):
                         tape=[_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(T0 + 100, mint=OWN, sol=3.0)], floor=None,
                         max_loss=2.0, minutes=10)  # fmt: skip
     assert rep["reason"].startswith("EMERGENCY"), rep["reason"]
+
+
+def test_the_runs_own_sale_sells_only_its_own_tokens_of_a_coin_the_owner_bought_into(monkeypatch):
+    """Review of 22 Nov: the owner bought 1,000,000 more of the coin the run's copy held (by hand, at their own fees);
+    OKTech left the copy unsold and the run's own sale sold the whole holding, the owner's tokens too. It sells the
+    run's own tokens by its buys and sales on the tape, and leaves the owner's."""
+    sold, sweeps = [], []
+    both = {"mint": OURS, "amount": 2.0, "raw": 2_000_000, "value_sol": 2.0, "priced": True}
+
+    def coins(now):
+        if now < T0 + 102:
+            return []
+        return [both] if now >= T0 + 111 and not sweeps else [_coin(OURS, 1.0)]
+
+    _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else (9.0 if now < T0 + 110 else 8.0), coins=coins,
+         payload=FEES, tape=[_copy(T0 + 100, sol=1.0), _hand(T0 + 110, mint=OURS, sol=1.0)], sweeps=sweeps,
+         sold_amounts=sold, sweep_after=20, minutes=3)  # fmt: skip
+    assert sold and sold[0] == (OURS, 1_000_000)

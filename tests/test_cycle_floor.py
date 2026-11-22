@@ -27,7 +27,7 @@ def _coin(value=5.0):
 
 def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, sweeps=None,
          spent=None, sweep_fails=False, payload=None, tape=(), db_dir=None, others=(), launches=(), before=None,
-         sweep_answer=None, hang_at=None, hung=None, seller=None, **kw):  # fmt: skip
+         sweep_answer=None, hang_at=None, hung=None, seller=None, sold_amounts=None, **kw):  # fmt: skip
     """The runner over two copy snipers on the fake clock, with `sol(now)` SOL in the wallet, the coins `coins(now)`
     lists (priced) and `unpriced(now)` lists (not on the tape), `wsol(now)` wrapped SOL, and the owner's /stop from
     `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time), and each fails when
@@ -38,7 +38,8 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     `others`: OKTech's other tasks, as (id, status). `launches`: coin creations on the tape. `before(store)`: runs on
     the store just before the run (what an earlier run left in it). `sweep_answer(mint)`: what the run's own sale
     answers (a sale that went out, by default). `hang_at`: the first balance read from then never answers (`hung`
-    says it came). `seller`: the selling key's wallet (the run's, by default)."""
+    says it came). `seller`: the selling key's wallet (the run's, by default). `sold_amounts`: each sale's coin and
+    the token amount it was asked to sell (None: the whole holding)."""
     from snipetech.models import Trade
 
     clock, flag = {"t": T0}, {"stop": False}
@@ -98,9 +99,11 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     async def wrapped(address):
         return wsol(clock["t"]) if wsol else 0.0
 
-    async def sweep(mint):
+    async def sweep(mint, amount=None):
         if sweeps is not None:
             sweeps.append((mint, clock["t"]))
+        if sold_amounts is not None:
+            sold_amounts.append((mint, amount))
         if sweep_fails:
             raise RuntimeError("the sale failed: slippage")
         if sweep_answer is not None:
