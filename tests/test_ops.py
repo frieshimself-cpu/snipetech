@@ -892,3 +892,28 @@ def test_every_answer_and_every_redaction_hides_every_secret(env, monkeypatch, t
     assert not [s for s in leaks if s in answer] and '\\"quoted\\" end' in answer
     said = O.redact(log)
     assert not [s for s in leaks if s in said] and "api-key=<redacted>&x=1" in said
+
+
+def test_settings_in_the_env_file_are_no_secrets(monkeypatch, tmp_path):
+    """Review of 22 Nov: every value in /etc/snipetech/env was taken for a secret, the settings path setup.sh writes
+    there too, so the path was blanked in every answer and a lesson that named it was refused. A setting (a path, the
+    model, a number) stays readable; a key stays hidden."""
+    envfile = tmp_path / "env"
+    envfile.write_text("SNIPETECH_CONFIG=/etc/snipetech/settings.toml\nSNIPETECH_MODEL=claude-some-model\n"
+                       "SNIPETECH_RETAIN_DAYS=14\nHELIUS_API_KEY=helius-key-abcdef123\n")  # fmt: skip
+    monkeypatch.setattr(O, "ENV_FILE", envfile)
+    said = O.redact("config /etc/snipetech/settings.toml model claude-some-model key helius-key-abcdef123")
+    assert "/etc/snipetech/settings.toml" in said and "claude-some-model" in said and "helius-key" not in said
+
+
+def test_a_tail_read_that_starts_inside_a_line_drops_that_line(env, monkeypatch, tmp_path):
+    """Review of 22 Nov: a read of a file's tail that began inside a secret returned the rest of it, and the scrub,
+    which matches whole values, let it through. A read that cuts into a line starts at the next one."""
+    ops, _key = env
+    monkeypatch.setenv("SNIPER_SECRET", "5Kwallet-secret-key-abcdefgh")
+    path = ops.data / "jobs" / "cut.log"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("x" * 40 + " 5Kwallet-secret-key-abcdefgh\nthe next line\n")
+    tail = len("key-abcdefgh\nthe next line\n")  # the cut falls inside the secret
+    got = ops.scrub(ops.op_read("jobs/cut.log", tail=tail))["content"]
+    assert "abcdefgh" not in got and got == "the next line\n"

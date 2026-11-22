@@ -253,17 +253,28 @@ _SECRET_PATTERNS = (
 
 def secret_values() -> list[str]:
     """Every secret value to hide (8 characters or more), longest first: the named keys in this process's environment
-    and every value in /etc/snipetech/env as it is now (only secrets live there, and a key added to it later reaches
-    the jobs at once: `_job_env`). 22 Nov audit: the endpoint scrubbed 7 keys of its own environment only."""
+    and every value in /etc/snipetech/env as it is now (a key added to it later reaches the jobs at once: `_job_env`),
+    but the settings that live there too (`SETTINGS_ENV`, and any absolute path): 22 Nov review, the settings path
+    was blanked in every answer and a lesson that named it was refused. 22 Nov audit: the endpoint scrubbed 7 keys of
+    its own environment only."""
     vals = {os.environ.get(k, "") for k in REDACT_ENV}
     try:
         for line in ENV_FILE.read_text().splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
-                vals.add(line.split("=", 1)[1].strip().strip('"').strip("'"))
+                name, value = line.split("=", 1)
+                value = value.strip().strip('"').strip("'")
+                if name.strip().removeprefix("export ").strip() in SETTINGS_ENV or value.startswith("/"):
+                    continue
+                vals.add(value)
     except OSError:  # unreadable here (a session's machine, a test): the environment's keys alone
         pass
     return sorted((v for v in vals if len(v) >= 8), key=len, reverse=True)
+
+
+# settings that live in /etc/snipetech/env beside the keys: shown as they are (`secret_values`)
+SETTINGS_ENV = frozenset({"SNIPETECH_CONFIG", "SNIPETECH_DB", "SNIPETECH_RPC_RPS", "SNIPETECH_RETAIN_DAYS",
+                          "SNIPETECH_CLAUDE_VIA", "SNIPETECH_MODEL", "SNIPETECH_LAB_SLOTS", "SNIPETECH_PROFILE"})  # fmt: skip
 
 
 def _scrub_patterns(text: str) -> str:
@@ -277,6 +288,18 @@ def redact(text: str) -> str:
     for v in secret_values():
         text = text.replace(v, "<redacted>")
     return _scrub_patterns(text)
+
+
+def _tail(path: Path, tail: int) -> str:
+    """The last `tail` bytes of a file, from the first whole line in them: a read that cut into a line would hand
+    out the rest of it, a secret's rest too, which the scrub (whole values) lets through (22 Nov review)."""
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        f.seek(max(0, size - tail))
+        data = f.read()
+    if size > tail:
+        data = data.split(b"\n", 1)[1] if b"\n" in data else b""
+    return data.decode(errors="replace")
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -451,10 +474,7 @@ class Ops:
         log = self.data / "jobs" / f"{id}.log"
         text = ""
         if log.exists():
-            size = log.stat().st_size
-            with log.open("rb") as f:
-                f.seek(max(0, size - int(tail)))
-                text = f.read().decode(errors="replace")
+            text = _tail(log, int(tail))
         state = self._job_dict(job) if job else meta
         return state | {"output": text}
 
@@ -510,10 +530,7 @@ class Ops:
         p = self._inside(path)
         if not p.is_file() or self._hidden(p):
             raise OpsError(404, f"no file {path}")
-        size = p.stat().st_size
-        with p.open("rb") as f:
-            f.seek(max(0, size - int(tail)))
-            return {"path": path, "bytes": size, "content": f.read().decode(errors="replace")}
+        return {"path": path, "bytes": p.stat().st_size, "content": _tail(p, int(tail))}
 
     def op_write(self, name: str, content: str) -> dict[str, Any]:
         base = (self.data / "inputs").resolve()
