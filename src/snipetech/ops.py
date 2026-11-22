@@ -40,6 +40,9 @@ from typing import Any
 from .jobfiles import job_files
 
 SKEW_SECS = 300
+# the nonces of the signed requests that can still be fresh (2 x SKEW_SECS), in the data directory and never served
+# (a dot-file): a request seen before is refused after a restart too (22 Nov audit: every deploy restarts this endpoint)
+NONCES = ".ops-nonces.json"
 MAX_BODY = 6 << 20
 MAX_WRITE = 5 << 20
 # `remote sql` reads the live database, and a read holds its WAL back until it ends (no checkpoint passes it, the WAL
@@ -375,6 +378,7 @@ class Ops:
     endpoint_code: str | None = None  # the commit this endpoint started on (cli._ops_serve); it runs it until restarted
     jobs: dict[str, Job] = field(default_factory=dict)
     _nonces: dict[str, float] = field(default_factory=dict)
+    _nonces_read: bool = field(default=False, repr=False)  # NONCES read in at the first signed request
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _update_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)  # op_update: check, start, mark
     _asked: threading.local = field(default_factory=threading.local, repr=False)  # .remote: inside a signed request
@@ -400,10 +404,14 @@ class Ops:
         if not isinstance(ts, (int, float)) or abs(now - ts) > SKEW_SECS:
             raise OpsError(401, "stale request (check the clock)")
         with self._lock:
+            if not self._nonces_read:  # those of the process before a restart (NONCES)
+                self._nonces = self._read_nonces() | self._nonces
+                self._nonces_read = True
             self._nonces = {n: t for n, t in self._nonces.items() if now - t < 2 * SKEW_SECS}
             if not nonce or nonce in self._nonces:
                 raise OpsError(401, "replayed request")
             self._nonces[nonce] = now
+            self._keep_nonces()
         op, args = req.get("op"), req.get("args") or {}
         fn = getattr(self, f"op_{op}", None) if isinstance(op, str) and op.isidentifier() else None
         if fn is None:
@@ -413,6 +421,23 @@ class Ops:
             return self.scrub(fn(**args))
         finally:
             self._asked.remote = False
+
+    def _read_nonces(self) -> dict[str, float]:
+        try:
+            kept = json.loads((self.data / NONCES).read_text())
+            return {str(n): float(t) for n, t in kept.items()} if isinstance(kept, dict) else {}
+        except (OSError, ValueError, TypeError, AttributeError):  # none yet, or a broken one: this process's alone
+            return {}
+
+    def _keep_nonces(self) -> None:
+        """Atomic, as `_save_meta`; a file that cannot be written leaves the nonces in memory, as before."""
+        path = self.data / NONCES
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(self._nonces))
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
     def scrub(self, obj: Any) -> Any:
         """Every answer, with every secret (`secret_values`) and every key in a URL replaced by <redacted>."""

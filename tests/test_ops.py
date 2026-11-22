@@ -66,6 +66,29 @@ def test_signature_replay_and_age(env, tmp_path):
         ops.handle(old, sig)
 
 
+def test_a_request_seen_before_is_refused_after_a_restart_too(env, monkeypatch):
+    """22 Nov audit (ops#8): the nonces of signed requests lived in memory only, and every deploy restarts this
+    endpoint: a body signed in the five minutes before a restart was accepted again after it and ran a second time (a
+    `run oktech cycle`, a `kill`, an `update`). They are kept on disk as long as a request can be fresh, never served."""
+    ops, key = env
+    body, h = O.sign(key, "run", {"argv": ["status"]})
+    ops.handle(body, h["X-Ops-Signature"])
+    restarted = O.Ops(repo=ops.repo, data=ops.data, db=ops.db, keys_file=ops.keys_file, branch="main",
+                      command=ops.command, use_sudo=False)  # fmt: skip  # the service after `remote update`
+    with pytest.raises(O.OpsError, match="replayed"):
+        restarted.handle(body, h["X-Ops-Signature"])
+    assert req(restarted, key, "status")["branch"] == "main"  # a new request goes through
+    kept = ops.data / O.NONCES
+    assert len(json.loads(kept.read_text())) == 2
+    with pytest.raises(O.OpsError):
+        req(restarted, key, "read", path=O.NONCES)
+    assert O.NONCES not in [i["name"] for i in req(restarted, key, "ls")["items"]]
+    real = time.time
+    monkeypatch.setattr(O.time, "time", lambda: real() + 2 * O.SKEW_SECS + 5)  # ten minutes on: none is fresh
+    later = O.Ops(repo=ops.repo, data=ops.data, db=ops.db, keys_file=ops.keys_file, branch="main", use_sudo=False)
+    assert req(later, key, "status")["branch"] == "main" and len(json.loads(kept.read_text())) == 1
+
+
 def test_one_bad_line_in_the_keys_file_never_locks_the_other_keys_out(env):
     """22 Nov audit (ops#1): one line of the keys file that was no key (one pasted short, a stray character) made every
     request a 500 with every key, the update that would bring the fixed file too: the endpoint stayed locked until
