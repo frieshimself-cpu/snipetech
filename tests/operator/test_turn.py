@@ -440,12 +440,15 @@ def test_the_analyst_is_told_to_append_its_update_when_the_days_report_exists():
 
 
 def test_the_analyst_tests_one_hypothesis_of_its_own_each_turn():
-    """The hypothesis protocol: one idea a turn, stated with what would refute it, a lab on the newest day (one lab at
-    a time), frozen into the forward paper test only with a positive lower bound at its live landing; the paper test,
-    never the lab, is the evidence, and a rule has one forward record."""
+    """The hypothesis protocol: one idea a turn, stated with what would refute it, a lab on the newest day (as many
+    labs at once as the machine runs), frozen into the forward paper test only with a positive lower bound at its live
+    landing; the paper test, never the lab, is the evidence, and a rule has one forward record."""
     text = " ".join(ANALYST_SYSTEM.split())
+    # "One lab at a time" until the audit of 22 Nov (docs#7): the 32 GB server runs two, as start_job says
+    assert "One lab at a time" not in text
     for words in ("ONE hypothesis", "operator/ideas.json", "refute", '["lab", "--trigger", "<json>", "--hours", "24", "--json"]',
-                  "One lab at a time", "live_landing", '["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]',
+                  "as many at once as the machine runs",
+                  "live_landing", '["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]',
                   "never the lab, is the evidence", "One forward record a rule", "Hunt triggers are the ones OKTech can run exactly"):  # fmt: skip
         assert words in text, words
 

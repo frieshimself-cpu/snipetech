@@ -622,6 +622,18 @@ def test_start_job_names_every_command_an_agent_may_start(toolbox):
         assert re.search(rf"(?<![\w-]){re.escape(command)}(?![\w-])", text), command
 
 
+def test_the_sentence_that_lists_what_an_agent_may_start_names_every_command(toolbox):
+    """Audit of 22 Nov (docs#7): the list the operator and the analyst read ("Only lab, follow, ... are allowed") left
+    out sends, which the runner starts and a later paragraph describes; the test above finds a command anywhere."""
+    from snipetech.operator import roles
+
+    tools, _, _ = toolbox
+    parts = roles.cut_job_help(tools["start_job"].to_dict()["description"])
+    (allowed,) = [words for tags, words in parts if tags == roles.OWN_LIST]
+    for command in RESEARCH_COMMANDS:
+        assert re.search(rf"(?<![\w-]){re.escape(command)}(?![\w-])", allowed), command
+
+
 def test_the_agents_are_told_the_two_tests_they_could_not_run(toolbox):
     """11 Nov: two of the owner's ideas of 10 Nov were untested. The dip buy had no tool (the lab has no trigger for a
     fall): `dip-buys` is one now. The instant-bond migration snipe had one, the lab's mig trigger with its window,
