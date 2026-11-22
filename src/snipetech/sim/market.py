@@ -60,6 +60,8 @@ def react_places(position) -> int | None:
     p = str(position)
     k = p[len(REACT) :]
     return int(k) if p.startswith(REACT) and k.isdigit() else None
+
+
 # The name of the model a position is valued by after its entry (the module's account of it). A stored result says
 # which one priced it (a paper trade's `model`): one without a name, or with another, was priced by an earlier one.
 FILL_MODEL = "replay-1"

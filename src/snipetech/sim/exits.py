@@ -498,6 +498,7 @@ def exits_reach(exits) -> float:
     """Seconds after a buy at which these exits can still sell, at the latest: the longest timer, moved on by its
     timer extension (`ext_max`) and followed by its parts. Every other exit sells before its timer (a momentum hold,
     a migration sell and a stale exit are read up to the timer's state)."""
+
     def reach(ex: ExitParams) -> float:
         ext = ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0
         return (float(ex.max_hold_secs) + (float(ex.ext_max) if ext else 0.0)
