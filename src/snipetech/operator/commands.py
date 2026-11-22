@@ -93,7 +93,7 @@ def _book_loosens(cmd: Command) -> bool:
 
 def _late(exc: BaseException, secs: float, what: str) -> str:
     """An error in plain words for the owner: no answer within `secs`, or the error's kind."""
-    return f"{what} did not answer in {secs:g} s" if isinstance(exc, TimeoutError) else type(exc).__name__
+    return f"{what} did not answer in {secs:.3g} s" if isinstance(exc, TimeoutError) else type(exc).__name__
 
 
 def parse_updates(updates: list[dict], owner_chat_id: int) -> tuple[list[Command], int | None]:
