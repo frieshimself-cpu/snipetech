@@ -1241,7 +1241,10 @@ class Service:
         with no coin coming in for FRESH_HOLD_SECS (and not into wrapped SOL), or comes in with nothing held and no coin
         sold, is no trade of the run, so the floor moves by as much and says so (`floor_moves` in the report); a coin
         that shows within MOVE_UNDO_SECS of a move down was that SOL's buy, and the move is taken back. 22 Nov 02:13 the
-        owner took 2 SOL out and the run ended on its floor with no fill. A coin the tape has not priced yet is no reading (positions.py), and a
+        owner took 2 SOL out and the run ended on its floor with no fill. SOL that leaves while a coin of the run's is
+        held waits for a coin the same way (22 Nov audit: it was taken for the held coin's buy): a coin of the run's
+        that shows, or one held that grows, was the newest such fall's buy, an older fall the owner's own, and no
+        floor reading counts while a fall is that fresh. A coin the tape has not priced yet is no reading (positions.py), and a
         reading under the floor holds the re-arms back and ends the run only when the next one agrees (FLOOR_READINGS:
         21 Nov, a 5 SOL copy from 10 SOL read as a loss in the second its SOL had left and its coin did not show).
         Beside the floor, the run's own result by its trades on the tape (`run_result`: what its buys paid, what its
@@ -2337,9 +2340,13 @@ class Service:
             low, paused, unsure = b0, False, False
             prev_b, under_n = b0, 0  # the last reading's SOL; the readings in a row under the floor
             w_last = w0
-            # the owner's own moves of SOL (MOVE_UNDO_SECS): the SOL that left with no coin yet, the moves the floor
-            # made (when, how much), when a holding last ended (a sale's SOL is no deposit) and the last reading's coins
-            pending_out, moves, last_departure, held_prev = 0.0, [], -1e18, False
+            # the owner's own moves of SOL (MOVE_UNDO_SECS): each fall of the SOL with no coin to show for it yet (when,
+            # how much), the moves the floor made (when, how much), when a holding last ended (a sale's SOL is no
+            # deposit), whether the last reading held a coin of the run's, and how much of each it held (a buy into a
+            # coin held is that coin's growth: the other sniper's, or the owner's by hand)
+            pend: list[tuple[float, float]] = []
+            moves, last_departure, held_prev = [], -1e18, False
+            raw_held: dict[str, int] = {}
 
             def move_floor(amount: float, at: float, what: str | None = None) -> None:
                 nonlocal floor_sol
@@ -2389,7 +2396,7 @@ class Service:
                 now_t = time.time()
                 # SOL that left before this reading with no coin yet (a coin showing now was bought with it), and
                 # whether the SOL fell in this reading (a coin showing now was bought with that): `undo_late` neither
-                pend_before, fell_now = pending_out, b < prev_b - FRESH_BUY_SOL
+                pend_before, fell_now = sum(a for _at, a in pend), b < prev_b - FRESH_BUY_SOL
                 for m, v in owner_gone:  # sold or sent away by the owner: its worth leaves the floor's count with it
                     if v:
                         move_floor(-v, now_t, f"{m}, the owner's own coin counted at {v:.4f} SOL, left the wallet")
@@ -2397,9 +2404,11 @@ class Service:
                 if any(m not in mints_now for m in held_since):
                     last_departure = now_t  # a holding ends: its sale's SOL comes in a reading early or late
                 traded = now_t - last_departure < FRESH_HOLD_SECS
-                if held:
-                    fresh_at, pending_out = None, 0.0  # the SOL that left was this coin's buy
-                elif b < prev_b - FRESH_BUY_SOL:
+                # the coins of the run's a buy went into in this reading: a holding that begins, or one held that grew
+                bought = [m for m in mints_now if m not in held_since] + [
+                    m for h in held if (m := str(h.get("mint") or "")) in raw_held and int(h.get("raw") or 0) > raw_held[m] + 1]  # fmt: skip
+                if fell_now:  # a coin held or not (22 Nov audit, runner finding 3: the owner's SOL that left beside a
+                    # copy held was taken for the copy's buy, and the floor never moved with it)
                     w_now = await wrapped_sol()
                     if w_now - w_last >= 0.9 * (prev_b - b):  # into wrapped SOL: OKTech's top-up at a start
                         log(f"OKTech wrapped {w_now - w_last:.4f} SOL (its top-up at a start, for PumpSwap buys): "
@@ -2407,29 +2416,41 @@ class Service:
                     else:
                         fresh_at = now_t
                         if not traded:
-                            pending_out += prev_b - b
+                            pend.append((now_t, prev_b - b))
                     w_last = w_now
-                elif b > prev_b + FRESH_BUY_SOL and not held_prev and not traded:
+                elif b > prev_b + FRESH_BUY_SOL and not held_prev and not held and not traded:
                     w_now = await wrapped_sol()
                     if w_last - w_now < 0.9 * (b - prev_b):  # not out of wrapped SOL: put in by the owner
                         move_floor(b - prev_b, now_t)
                     w_last = w_now
-                # The owner's coins that show now (not counted as the run's first): the SOL that left with no coin of
-                # the run's held was their buy, still in the wallet, each coin counted at its worth (what is left of
-                # that SOL, their buy's fees, is moved as their own at the end of the wait). SOL that left while a coin
-                # of the run's was held went with that coin (no buy on its way: fresh_at is None).
+                # each buy into a coin of the run's took the newest SOL that left; an older fall is the owner's own,
+                # as for a move already made (`undo_late`: a copy 30 s after a 2 SOL withdrawal took it back with it)
+                for _m in bought:
+                    if pend:
+                        pend.pop()
+                if bought:
+                    fresh_at = max((at for at, _a in pend), default=None)
+                raw_held = {str(h["mint"]): int(h.get("raw") or 0) for h in held if h.get("mint")}
+                # The owner's coins that show now (not counted as the run's first): the newest SOL that left was their
+                # buy, still in the wallet, each coin counted at its worth (what is left of that SOL, their buy's fees,
+                # is moved as their own at once).
                 shown = [(m, v) for m, v, first in new_owner if first]
-                if shown and pending_out > 0:
-                    fresh_at = None
-                    pending_out = max(0.0, pending_out - sum(v for _m, v in shown))
+                if shown and pend:
+                    fresh_at, rest = None, sum(v for _m, v in shown)
+                    while pend and rest > 0:
+                        at, a = pend.pop()
+                        if a > rest:
+                            pend.append((at, a - rest))
+                        rest -= a
                 elif shown and not fell_now:  # its SOL left long ago, and the floor has moved for it
                     undo_late(", ".join(m for m, _v in shown), now_t)
                 prev_b, held_prev = b, bool(held)
-                fresh = not held and fresh_at is not None and now_t - fresh_at < FRESH_HOLD_SECS
-                if pending_out and not held and not fresh:  # no coin came for the SOL that left: the owner's move
-                    move_floor(-pending_out, now_t)
+                waiting = fresh_at is not None and now_t - fresh_at < FRESH_HOLD_SECS  # a coin may yet show for it
+                fresh = not held and waiting
+                if pend and not waiting:  # no coin came for the SOL that left: the owner's move
+                    move_floor(-sum(a for _at, a in pend), now_t)
                     undoable.append(moves[-1])
-                    pending_out = 0.0
+                    pend.clear()
                 for m in mints_now:
                     first_seen.setdefault(m, now_t)
                     if m not in held_since:  # a holding begins: a buy (the same coin again is a new one)
@@ -2461,7 +2482,8 @@ class Service:
                 priced = sum(float(h["value_sol"]) for h in held if h.get("value_sol") is not None)
                 priced += sum(owner_val.values())  # the owner's own coins at their worth when first known as theirs
                 under, eq = False, b + priced
-                if not fresh and not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
+                # no reading counts while the SOL that left may yet show as a coin, a coin held or not
+                if not waiting and not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
                     eq += await wrapped_sol()
                     under = eq < floor_sol
                 # the run's own trades on the tape, beside the wallet's equity: the owner's moves are in none of it
