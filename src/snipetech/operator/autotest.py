@@ -321,9 +321,12 @@ def on_resume(paths: OperatorPaths, now: float | None = None) -> str | None:
     seq = load_seq(paths)
     if seq and seq.get("state") == "running":
         hold = seq.get("hold") or {}
-        dead = int(hold.get("deaths") or 0) if hold.get("kind") == "cycler" else 0
-        again = (f"; its cycler died {dead} times in a row, and your /resume tries one block again" if dead > 1
-                 else "")  # fmt: skip
+        # the faults in a row that back it off (_cycler_wait): dead cyclers and starts that left a sniper idle, one
+        # streak (_streak); /resume lifts the back-off whichever came last (review of 22 Nov: a start's went unsaid)
+        dead = int(hold.get("deaths") or 0) if hold.get("kind") in ("cycler", "start") else 0
+        told = (f"its cycler died {dead} times in a row" if hold.get("kind") == "cycler" else
+                f"its blocks failed {dead} times in a row (the last could not start and left its sniper idle)")  # fmt: skip
+        again = f"; {told}, and your /resume tries one block again" if dead > 1 else ""
         return (f"The automatic live test goes on with {_label(seq)} at the next round, if it still passes on paper "
                 f"(the same floor as before){again}.")  # fmt: skip
     if read_autotest(paths)["on"]:

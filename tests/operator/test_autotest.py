@@ -1422,6 +1422,31 @@ def test_the_owners_resume_tries_a_block_again_after_its_cycler_died_twice(env):
     assert len(env.started) == 3 and LT.load(env.paths)["state"] == "running"
 
 
+def test_the_owners_resume_after_starts_that_left_their_snipers_idle_says_it_tries_again(env):
+    """Review of 22 Nov (livetest#7): starts that left their sniper idle back off as dead cyclers do, and /resume lifts
+    that back-off as well, but its reply counted only a dead cycler's faults: after two such starts it said nothing of
+    trying a block again."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    real = env.jobs.ops.op_run
+
+    def cannot_start(argv, timeout=0):
+        raise RuntimeError("no space left on device")
+
+    env.jobs.ops.op_run = cannot_start
+    at = NOW + 60
+    for _k in range(4):  # two starts that each left a sniper idle, each found a round later
+        _round(env, at)
+        at += 900
+    assert len(env.svc.created) == 2 and "tried at" in _seq(env)["waiting"]["why"]
+    env.jobs.ops.op_run = real
+    LTT._send(env, name="stop", at=at + 60)
+    reply = LTT._send(env, name="resume", at=at + 120)
+    assert "goes on with" in reply and "2 times in a row" in reply and "tries one block" in reply, reply
+    _round(env, at + 900)
+    assert len(env.svc.created) == 3 and LT.load(env.paths)["state"] == "running"
+
+
 def test_a_buy_the_sniper_made_after_its_cycler_died_counts_against_the_strategy(env):
     """A cycler that dies leaves its sniper armed until the round closes the block; a buy it makes then is the
     strategy's own and counts (review of 7 Nov: the block's window ended when the cycler died)."""
