@@ -125,6 +125,12 @@ SKIP_MARGIN_SECS = 5  # every skipped stretch is widened by this on both sides a
 # a new PumpSwap subscription replays at most this many slots (96 s at 0.214 s a slot); what lies further back is a
 # skipped stretch
 REPLAY_MAX_SLOTS = 450
+# After a restart the coins that left their curve before it (seeded from the database) are replayed from this many
+# slots before the last one the tape's stream handed over whole (11 s of chain): this process's run of the coverage
+# record starts at the last stretch's end, which lies up to about 2 s before that slot (audit 22 Nov: they started live,
+# and 4-23 s of their PumpSwap trades after every restart were never handed over). What is handed over twice is
+# recorded once.
+SEED_BACK_SLOTS = 50
 # the fields of a run of the coverage record that every version of this recorder wrote: a run with them is kept
 RUN_FIELDS = frozenset({"run", "from", "to", "secs", "skipped"})
 SHRINK_RESTART_SECS = 120  # expired pools leave the PumpSwap subscription at its next restart, or after 2 min
@@ -526,10 +532,13 @@ class LiveWatcher:
     # -- entry point --------------------------------------------------------------------------
 
     async def run(self) -> None:
+        laser = self.firehose and self._use_laserstream()
         if self.migrated is not None:
+            if laser:
+                self._load_position()  # first: the coins seeded next are replayed from where the tape's stream stood
             self._seed_recent(self.clock())
         tasks = [asyncio.create_task(self._maintenance())]
-        if self.firehose and self._use_laserstream():
+        if laser:
             tasks.append(asyncio.create_task(self._laserstream()))
             if self.migrated is not None:
                 self.amm_source = "laserstream"
@@ -1238,7 +1247,7 @@ class LiveWatcher:
         if replayed and (self.span_start is not None or self.resume_span is not None):
             if self.span_start is None:
                 self.span_start, self.span_end = self.resume_span[0], self.resume_span[1]
-                self.amm_from = self.resume_span[1] + 1  # the PumpSwap side has nothing from before this process
+                self.amm_from = self.resume_span[1] + 1  # the PumpSwap side claims nothing from before this process
             self.disconnected_at = None
             return
         now = self.clock()
@@ -1357,16 +1366,20 @@ class LiveWatcher:
 
     def _seed_recent(self, now: float) -> None:
         """Start with the coins that left their curve within the window before this start (a restart, `remote update`),
-        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it. Nothing
-        of theirs is replayed (a restart is a gap in the whole tape; the coverage record claims none of them)."""
+        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it. When
+        the tape's stream goes on from where the last process stood (`_load_position`, which run() reads first), their
+        PumpSwap trades are replayed from SEED_BACK_SLOTS before that slot, so every second this process's run of the
+        coverage record claims is handed over (a coin that left before the run's start is claimed by no run). Without
+        that position nothing of theirs is replayed: a start with a hole, and the record claims none of them."""
         assert self.migrated is not None
         since = int(now - self.migrated.secs)
+        slot = None if self.tape_slot is None else max(0, self.tape_slot - SEED_BACK_SLOTS)
         try:
             done = self.store._q("SELECT mint, ts FROM completions WHERE ts>=?", (since,))
             moved = self.store._q("SELECT mint, pool, ts FROM migrations WHERE ts>=?", (since,))
             rows = [(ts, mint, self._derived_pool(mint)) for mint, ts in done] + [(ts, m, p) for m, p, ts in moved]
             for ts, mint, pool in sorted(rows):
-                self.migrated.note(mint, ts, [pool])
+                self.migrated.note(mint, ts, [pool], slot)
         except Exception as exc:  # noqa: BLE001 — a start without the earlier coins beats no start
             self._amm_failed("seed", exc)
 
@@ -1919,7 +1932,8 @@ class LiveWatcher:
         try:
             chain = self._chain_now()
             # where this process's stretch began: the tape's own, or, in a stretch it goes on with after a restart (the
-            # tape's stream replays; the PumpSwap side of the coins that left before it does not), where it took over
+            # tape's stream replays it; the PumpSwap side replays the coins that left before it only from just before
+            # where the last process stood, SEED_BACK_SLOTS), where it took over
             began = None if self.span_start is None else max(self.span_start, self.amm_from or self.span_start)
             if self.disconnected_at is None and began is not None and int(chain) - 2 > began:
                 self.amm_runs[f"{int(self.started)}-{began}"] = [began, int(chain) - 2]

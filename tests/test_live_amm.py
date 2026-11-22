@@ -620,7 +620,37 @@ def test_a_restart_keeps_recording_the_coins_that_left_their_curve_before_it():
     w._seed_recent(now)
     assert list(w.migrated.coins) == [A1_MINT, addr("done")]
     assert w.migrated.touches([b58decode(A1_POOL)]) and w.migrated.touches([b58decode(pump_pool(addr("done")))])
-    assert w.migrated.slot_of(A1_POOL) is None  # nothing from before the start is replayed
+    assert w.migrated.slot_of(A1_POOL) is None  # no record of where the tape's stream stood: nothing is replayed
+
+
+def test_after_a_restart_the_seeded_coins_are_replayed_from_where_the_tapes_stream_stood():
+    """Audit 22 Nov: the tape's own stream replays a restart, but the coins seeded from the database were noted without
+    a slot, so their PumpSwap subscription started live: CcNZwFkw traded 4-7 times a second on PumpSwap up to 07:41:20
+    and from 07:41:25 again, nothing between, while this process's run of the coverage record began at the last
+    stretch's end. They are replayed from a little before the slot the record holds now, so every second the new run
+    claims is handed over, also for a coin that left its curve in the old process's last whole slots (seeded too: the
+    tape's replay drops those slots as handed over)."""
+    st = Store(":memory:")
+    # what the last process wrote at its exit: its stretch up to A1_TS - 1, its stream's slot and chain clock there
+    st.set_coverage("tape", {"spans": [[A1_TS - 9000, A1_TS - 1]], "slot": A1_SLOT, "head": [A1_SLOT, A1_TS]})
+    st.add_migrations([Migration(A1_MINT, A1_POOL, A1_SLOT - 2800, A1_TS - 600, "migrate-sig")])  # ten minutes before
+    late = addr("left in the last whole slot")
+    st.add_completions([Completion(late, A1_SLOT - 1, A1_TS, "c-late")])
+    w = watcher(store=st)
+    w.amm_source = "laserstream"
+    w.clock = lambda: A1_TS + 5.0  # the new process, five seconds after the last one stood
+    w._load_position()  # run() reads where the tape's stream stood before it seeds
+    w._seed_recent(w.clock())
+    start = w._amm_start(w._amm_want())  # the PumpSwap side's first subscription
+    assert start is not None and start <= A1_SLOT - 1  # was None: live
+    w.amm_gap = None  # its on_connect
+    w._connected(replayed=True)  # the tape's stream hands over its first replayed message: the stretch goes on
+    clocked(w, A1_SLOT + round(600 / CHAIN_SLOT_SECS), A1_TS + 600, secs=600)
+    w._mark_amm_recent()
+    (run,) = w.store.coverage(AMM_RECENT_KEY)["runs"]
+    assert run["from"] == A1_TS and run["skipped"] == []  # the run starts at the last stretch's end + 1, as before
+    assert chain_ts(start) < run["from"] - 5  # ... and the replay hands over every second it claims, with a margin
+    assert amm_recent_covers(w.store.coverage(AMM_RECENT_KEY), A1_TS, A1_TS + 590)  # the late coin, claimed and held
 
 
 # -- the logs fallback --------------------------------------------------------------------------------------------
