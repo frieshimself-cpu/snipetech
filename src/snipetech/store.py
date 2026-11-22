@@ -1016,29 +1016,57 @@ class Store:
 
         self._write(do)
 
+    # the trades of a wallet past `coins_bought`'s first read that its second read takes: past them it is measured
+    PROBE_SCAN = 200_000
+
     def coins_bought(self, wallet: str, min_quote: int, scan: int = 5000,
-                     venues: tuple[str, ...] | None = None) -> tuple[int, bool]:  # fmt: skip
+                     venues: tuple[str, ...] | None = None, need: int | None = None) -> tuple[int, bool]:  # fmt: skip
         """How many coins `wallet` first bought with `min_quote` lamports or more (its first buy in the coin, in tape
         order: a copy sniper copies a wallet's first buy, never a top-up; on `venues` only, when given) among its first
-        `scan` trades here, and whether it has more trades than that (the count is then a floor). One bounded read
-        through the wallet index: qualify's count before its lab, which says in milliseconds that a wallet cannot have
-        the copies it needs."""
-        rows = self._q("SELECT mint, is_buy, quote, venue, slot, pos FROM trades WHERE user=? LIMIT ?",
+        `scan` trades here, and whether it has more trades than that (the count is then a floor). Its buys in a coin it
+        created are left out: the lab never scores a creator's buy in its own coin (lab._first_buys skips the launch's
+        deployers), and counted, a serial launcher went to the lab for "no tape data" every 72 h (audit of 22 Nov). One
+        bounded read through the wallet index: qualify's count before its lab, which says in milliseconds that a wallet
+        cannot have the copies it needs. `need`: with more trades than `scan` and fewer such coins among them, a second
+        bounded read (its first PROBE_SCAN trades) looks for `need` coins it did not create with a buy of that size:
+        with fewer, it has fewer such coins too, and their count comes back as no floor (a bot with 10,480 trades and
+        no buy at the floor was measured every 72 h for "no tape data")."""
+        rows = self._q("SELECT t.mint, t.is_buy, t.quote, t.venue, t.slot, t.pos, l.user, l.creator FROM trades t "
+                       "LEFT JOIN launches l ON l.mint = t.mint WHERE t.user=? LIMIT ?",
                        (wallet, int(scan) + 1))  # fmt: skip
         first: dict[str, tuple[tuple[int, int], int, str]] = {}  # coin -> (its place on the tape, SOL, venue)
-        for mint, is_buy, quote, venue, slot, pos in rows[:scan]:
+        for mint, is_buy, quote, venue, slot, pos, by, creator in rows[:scan]:
+            if wallet in (by, creator):  # its own coin: its buy there is the creator's
+                continue
             if is_buy and (mint not in first or (slot, pos) < first[mint][0]):
                 first[mint] = ((slot, pos), quote, venue)
         coins = sum(
             1 for _, quote, venue in first.values() if quote >= min_quote and (venues is None or venue in venues)
         )
-        return coins, len(rows) > scan
+        more = len(rows) > scan
+        if more and need is not None and coins < need:
+            on = f" AND t.venue IN ({','.join('?' * len(venues))})" if venues else ""
+            hits = self._q("SELECT DISTINCT t.mint FROM (SELECT mint, is_buy, quote, venue FROM trades WHERE user=? "
+                           "LIMIT ?) t LEFT JOIN launches l ON l.mint = t.mint WHERE t.is_buy=1 AND t.quote>=?" + on +
+                           " AND coalesce(l.user, '') <> ? AND coalesce(l.creator, '') <> ? LIMIT ?",
+                           (wallet, int(self.PROBE_SCAN), int(min_quote), *(venues or ()), wallet, wallet,
+                            int(need)))  # fmt: skip
+            past = self._q("SELECT 1 FROM trades WHERE user=? LIMIT 1 OFFSET ?", (wallet, int(self.PROBE_SCAN)))
+            if len(hits) < need and not past:
+                return len(hits), False
+        return coins, more
 
     def first_trade_ts(self, wallet: str) -> int | None:
         """When `wallet` first traded on this tape (its earliest slot's time), None without a trade: one read through
         the wallet index. Qualify's pace for a wallet short of coins (gates.sample_review_hours)."""
         rows = self._q("SELECT ts FROM trades WHERE user=? ORDER BY slot LIMIT 1", (wallet,))
         return int(rows[0][0]) if rows else None
+
+    def coins_created(self, wallet: str) -> int:
+        """How many coins on this tape `wallet` launched (it signed the create or is the coin's creator), through the
+        launches' own indexes: what qualify's count before the lab says of a wallet whose buys were in its own coins."""
+        rows = self._q("SELECT count(*) FROM launches WHERE user=? OR creator=?", (wallet, wallet))
+        return int(rows[0][0]) if rows else 0
 
     def set_candidate_status(self, wallet: str, status: str) -> None:
         self._exec("UPDATE candidates SET status=? WHERE wallet=?", (status, wallet))

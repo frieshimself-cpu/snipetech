@@ -416,9 +416,11 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
     # reads per wallet. 20 Nov: the count still took every coin bought with 0.1 SOL or more, anywhere, and 11,364 of
     # 18,266 lab verdicts had fewer than 20 copies (the 03:45 run: 109 of 214 under 10). 22 Nov: it still held every
     # wallet to the 10 a strong history needs, and with no history source on since 20 Nov 275 of the 10:01 run's 401
-    # lab rows were wallets with 10-19 copies and no history, "n < 20" before the lab ran. It never counts fewer coins
-    # than the lab finds copies, so no wallet that could pass is held back. The tape store is what the lab reads; a
-    # wallet with more trades than the count walks is measured.
+    # lab rows were wallets with 10-19 copies and no history, "n < 20" before the lab ran. A wallet's buys in the coins
+    # it created are no copies (the lab never scores a creator's buy). It never counts fewer coins than the lab finds
+    # copies, so no wallet that could pass is held back. The tape store is what the lab reads; a wallet with more
+    # trades than the count walks is measured, unless a second bounded read finds fewer coins at the floor than it
+    # needs (store.coins_bought).
     floor = float(cfg.book.min_copy_sol)
     where = f"{floor:g} SOL or more on pump.fun (curve or PumpSwap) on the tape"
     need = min(q.min_n_tape, q.min_n_tape_strong)  # the least any wallet needs: the readings in `judge` below
@@ -429,9 +431,10 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         if _lab_decides(c):
             measurable.append(c)
             continue
-        coins, more = tape.coins_bought(c["wallet"], round(floor * 1e9), venues=PUMP_VENUES)
         _, strong, _ = history_gate(normalise_history(c["stats"]), q)
         need_c = q.min_n_tape_strong if strong else q.min_n_tape  # what this wallet's verdict needs
+        # its coins at the floor, never its own creates; past the first read's reach, measured only with enough buys
+        coins, more = tape.coins_bought(c["wallet"], round(floor * 1e9), venues=PUMP_VENUES, need=need_c)
         if coins >= need_c or more:
             measurable.append(c)
             continue
@@ -447,7 +450,10 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
                        f"wallet {'with' if strong else 'without'} a strong history needs, not measured; looked at "
                        f"again in {hours:.1f} h, at its pace on the tape")  # fmt: skip
             else:
-                why = (f"no coin bought with {where}, the only buys a copy sniper copies: not measured; looked at "
+                made = tape.coins_created(c["wallet"])  # a launcher's buys in its own coins are no copies
+                own = (f" (its buys in the {made} coin{'s' if made != 1 else ''} it created are the creator's, which "
+                       "the lab never scores)") if made else ""  # fmt: skip
+                why = (f"no coin bought with {where}, the only buys a copy sniper copies{own}: not measured; looked at "
                        f"again in {hours:.1f} h")  # fmt: skip
             v["reasons"] = [why]
             v["next_review"] = int(now + hours * 3600)

@@ -1148,6 +1148,72 @@ def test_the_count_before_the_lab_holds_each_wallet_to_the_copies_its_own_verdic
         st.close()
 
 
+def _own_coins(st, w, coins, t0=NOW - 7000, s0=SLOT):
+    """`w` creates `coins` coins and buys each with 0.5 SOL in its create; a crowd buys after it."""
+    for k in range(coins):
+        m = Market(st, addr(f"{w}:own{k}"), w, t0 + k * 200, s0 + k * 500)
+        m.buy(w, 0.5, 0, sig=m.create_sig)
+        for j in range(5):
+            m.buy(addr(f"{w}:own{k}:c{j}"), 0.3 + 0.1 * j, 2 + j)
+        m.sell(w, 1.0, 20)
+        m.commit()
+
+
+def test_a_serial_launchers_buys_in_its_own_coins_are_no_copies(tmp_path):
+    """Audit of 22 Nov (qualify#4): the lab never scores a creator's buy in its own coin (lab._first_buys leaves out
+    the launch's deployers), but the count before the lab counted them: a serial launcher went to the lab, came back
+    "no tape data" and was due again in 72 h (8 of the 13 such verdicts of the 10:01 run; 8JX4JT's 344 coins at the
+    floor were all its own creates). LAUNCHER buys only its own 25 coins: not measured, and its verdict says why.
+    BOTH also bought 20 coins other people created: measured."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _own_coins(st, "LAUNCHER", 25)
+        _own_coins(st, "BOTH", 15, t0=NOW - 6950, s0=SLOT + 125)
+        _tape(st, ["BOTH"])  # and 20 coins of other people's
+        for i, w in enumerate(("LAUNCHER", "BOTH")):
+            st.upsert_candidate(w, "coinfirst", {"hits": 2}, NOW - 3600 + i)
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["BOTH"] and out["too_few"] == 1 and out["no_tape"] == 0
+        v = next(v for v in st.latest_verdicts() if v["wallet"] == "LAUNCHER")
+        assert v["status"] == "candidate" and v["next_review"] == NOW + 72 * 3600
+        said = ("no coin bought with 0.3 SOL or more on pump.fun (curve or PumpSwap) on the tape, the only buys a copy "
+                "sniper copies (its buys in the 25 coins it created are the creator's, which the lab never scores): "
+                "not measured; looked at again in 72.0 h")  # fmt: skip
+        assert v["reasons"] == [said]
+    finally:
+        st.close()
+
+
+def test_a_wallet_past_the_counts_reach_is_measured_only_with_enough_buys_at_the_floor(tmp_path):
+    """Audit of 22 Nov (qualify#4): the count reads a wallet's first 5,000 trades, and one with more was measured
+    whatever it bought: 5yeWDD, 10,480 trades in 6,555 coins and no buy of 0.3 SOL or more, came back "no tape data"
+    every 72 h. Past them, a second bounded read counts its buys at the floor in coins it did not create: with fewer
+    than it needs it has fewer such coins too (held back); with as many it is measured; past that read's reach as
+    well, it is measured, as before. Here the first read takes 5 trades and BOT made 8 dust buys, then 3 at the
+    floor."""
+    st = Store(tmp_path / "t.db")
+    try:
+        D = addr("dev")
+        for k in range(8):  # its first 8 trades: buys under the floor
+            m = Market(st, addr(f"dust{k}"), D, NOW - 9000 + k * 10, SLOT + k * 25)
+            m.buy("BOT", 0.05, 1)
+            m.commit()
+        for k in range(3):  # then 3 coins at the floor
+            m = Market(st, addr(f"floor{k}"), D, NOW - 8000 + k * 10, SLOT + 2500 + k * 25)
+            m.buy("BOT", 0.5, 1)
+            m.commit()
+        floor = round(0.3 * 1e9)
+        assert st.coins_bought("BOT", floor, scan=5) == (0, True)  # past its first 5 trades: a floor, as before
+        assert st.coins_bought("BOT", floor, scan=5, need=10) == (3, False)  # 3 coins at the floor in all: held back
+        assert st.coins_bought("BOT", floor, scan=5, need=3) == (0, True)  # as many as it needs: measured
+        st.PROBE_SCAN = 9  # the second read reaches its first 9 trades only: past them, measured as before
+        assert st.coins_bought("BOT", floor, scan=5, need=10) == (0, True)
+    finally:
+        st.close()
+
+
 def test_the_count_before_the_lab_takes_only_coins_a_copy_sniper_would_buy(tmp_path):
     """20 Nov audit (pipeline 5): 11,364 of 18,266 lab verdicts had fewer than 20 copies, about half of every lab's
     4 to 19 minutes. The count before the lab took every coin bought with 0.1 SOL or more, while the lab copies a
