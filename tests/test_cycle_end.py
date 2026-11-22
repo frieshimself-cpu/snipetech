@@ -139,3 +139,30 @@ def test_a_job_limit_shorter_than_the_run_refuses_it_before_anything_is_armed(mo
     monkeypatch.setenv("SNIPETECH_JOB_TIMEOUT", str(6 * 3600))
     with pytest.raises(SystemExit, match="time limit"):
         _run(monkeypatch, lambda now: 10.0, minutes=1440, sweep_after=20)
+
+
+def test_a_second_runner_on_the_same_wallet_is_refused(monkeypatch, tmp_path):
+    """Live-path audit finding 7: nothing kept one runner per wallet. A second one swept the first's coins at its own
+    --sweep-after, counted its buys as its own, put its losses on its own floor and re-armed its snipers."""
+    import fcntl
+
+    import pytest
+
+    from snipetech.operator.paths import OperatorPaths
+
+    lock = OperatorPaths(tmp_path).ensure().root / f"driver-{W6}.lock"
+    with open(lock, "a+") as fh:  # the first runner holds it
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(SystemExit, match="one runner per wallet"):
+            _run(monkeypatch, lambda now: 10.0, db_dir=tmp_path)
+    rep, _client = _run(monkeypatch, lambda now: 10.0, db_dir=tmp_path, minutes=1)  # free once it has gone
+    assert rep["reason"].startswith("time limit")
+
+
+def test_a_run_never_starts_beside_snipers_it_did_not_arm(monkeypatch):
+    """A sniper armed in OKTech beside the run (by hand, by the book, by another test) buys into the same wallet: its
+    coins would be swept, counted and floored as the run's. The run names it and starts nothing."""
+    import pytest
+
+    with pytest.raises(SystemExit, match="ffff01"):
+        _run(monkeypatch, lambda now: 10.0, others=[("6b00664d3601fd350affff01", "running"), ("x2", "finished")])

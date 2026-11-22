@@ -27,7 +27,7 @@ from .analysis.study import study_report
 from .config import Config
 from .ingest import Ingestor
 from .models import Launch
-from .positions import SPENT_STATUSES
+from .positions import ACTIVE_STATUSES, SPENT_STATUSES
 from .sim.exits import ExitParams
 from .solana.base58 import is_pubkey
 from .solana.rpc import SolanaRpc
@@ -1719,6 +1719,22 @@ class Service:
             log("on the way out: " + (f"left running {', '.join(tag(i) for i in sorted(armed))}" if armed
                                       else "nothing left armed"))  # fmt: skip
 
+        # one runner per wallet (22 Nov audit, finding 7): a second one would sell, count and floor the first's coins
+        driver = None
+        if getattr(self.store, "path", ":memory:") != ":memory:":
+            import fcntl
+
+            from .operator.paths import OperatorPaths
+
+            folder = OperatorPaths(Path(self.cfg.storage.db_path).resolve().parent).ensure().root
+            lock = folder / f"driver-{address}.lock"
+            driver = open(lock, "a+")  # noqa: SIM115, ASYNC230 - a lock file held for the whole run, closed in its finally
+            try:
+                fcntl.flock(driver, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                driver.close()
+                raise SystemExit(f"another oktech cycle drives {address[:6]}… now ({lock.name}): one runner per wallet "
+                                 "(its coins, fills and floor are its own); nothing cycled") from None  # fmt: skip
         loop, me, caught = asyncio.get_running_loop(), asyncio.current_task(), []
         for sig in (signal.SIGTERM, signal.SIGINT):  # the job's limit, a kill or a restart: the loop ends at its wait
             try:
@@ -1788,6 +1804,16 @@ class Service:
                 raise SystemExit(
                     f"the wallet-wide guard {'holds' if blocked else 'cannot be read'} ({why}): not cycling"
                 )
+            # a sniper armed beside the run (by hand, by the book, by a test) buys into the same wallet: the run would
+            # sell, count and floor its coins as its own
+            beside = [t for t in await settled(client.tasks)
+                      if str(t.get("status")) in ACTIVE_STATUSES and str(t.get("id")) not in ids]  # fmt: skip
+            if beside:
+                raise SystemExit("OKTech has " + ", ".join(f"{tag(str(t.get('id')))} ({t.get('name') or t.get('status')})"
+                                                           for t in beside)
+                                 + " armed beside this run: its buys would land in the same wallet, and the run would "
+                                 "sell, count and floor them as its own. Stop it first (one driver per wallet); not "
+                                 "cycling")  # fmt: skip
             for i in ids:
                 with contextlib.suppress(Exception):  # a sniper left running from an earlier run has spent its shot
                     await client.stop(i)
@@ -2053,6 +2079,8 @@ class Service:
         finally:
             for sig in caught:
                 loop.remove_signal_handler(sig)
+            if driver is not None:
+                driver.close()
             await client.close()
 
     def oktech_copy_audit(self, address: str, since_ts: int, leaders: list[str]) -> list[dict]:
