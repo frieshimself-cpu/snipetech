@@ -26,7 +26,8 @@ def _coin(value=5.0):
 
 
 def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, sweeps=None,
-         spent=None, sweep_fails=False, payload=None, tape=(), db_dir=None, others=(), **kw):  # fmt: skip
+         spent=None, sweep_fails=False, payload=None, tape=(), db_dir=None, others=(), launches=(), before=None,
+         **kw):  # fmt: skip
     """The runner over two copy snipers on the fake clock, with `sol(now)` SOL in the wallet, the coins `coins(now)`
     lists (priced) and `unpriced(now)` lists (not on the tape), `wsol(now)` wrapped SOL, and the owner's /stop from
     `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time), and each fails when
@@ -34,7 +35,8 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     `payload`: more of each sniper's payload (the fees it pays, the wallets it copies). `tape`: trades the recorder
     writes once the clock reaches each one's time, or (time, trade) for one it writes late; with any, a stranger's
     trade each tick keeps the tape current. `db_dir`: the database's folder (the operator's files, the runner's lock);
-    `others`: OKTech's other tasks, as (id, status)."""
+    `others`: OKTech's other tasks, as (id, status). `launches`: coin creations on the tape. `before(store)`: runs on
+    the store just before the run (what an earlier run left in it)."""
     from snipetech.models import Trade
 
     clock, flag = {"t": T0}, {"stop": False}
@@ -70,10 +72,15 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
             return await real_tasks() + [{"id": i, "status": st} for i, st in others]
 
         client.tasks = tasks
+    if launches:
+        store.add_launches(list(launches))
     write_tape()
     for i in SNIPER_IDS:
+        own = payload(i) if callable(payload) else (payload or {})  # each sniper its own payload, when a function
         store.add_oktech_sniper({"id": i, "kind": "copy", "source": "x",
-                                 "payload": {"singleSnipe": True, "totalSnipes": 1} | (payload or {})})  # fmt: skip
+                                 "payload": {"singleSnipe": True, "totalSnipes": 1} | own})  # fmt: skip
+    if before is not None:
+        before(store)
 
     async def wrapped(address):
         return wsol(clock["t"]) if wsol else 0.0

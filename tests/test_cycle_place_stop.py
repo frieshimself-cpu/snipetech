@@ -99,9 +99,10 @@ def test_a_copy_no_copied_wallet_bought_before_is_out_of_place(monkeypatch):
 
 def test_a_copy_of_the_copied_wallets_own_coin_with_no_first_buy_is_no_miss(monkeypatch):
     """Cented created 38 coins from 7 to 21 Nov, 17 of them with no dev buy (no buy at all in their first minute).
-    A copy sniper that buys such a create has no copied buy before it, but that is no place and no bait: the copied
-    wallet signed the create itself. Said, kept apart (`own_create`), and never counted against the rule; a create
-    signed by anybody else (create-bait, which can put the copied wallet in the coin's creator field) still is."""
+    A copy sniper that buys such a create has no copied buy before it, but that is no place: the copied wallet signed
+    the create itself. A create signed by anybody else that puts the copied wallet in the coin's creator field is
+    create-bait. Since the kinds of copy (22 Nov plan, step 3) neither counts for the place stop: both are sold at
+    once, an own launch rests its wallet's sniper 3 hours, and bait has its own limit (3 a day)."""
     from snipetech.models import Launch
 
     fills = [(100, 0, False, 0), (300, 0, False, 0), (500, 0, False, 0)]
@@ -118,10 +119,9 @@ def test_a_copy_of_the_copied_wallets_own_coin_with_no_first_buy_is_no_miss(monk
 
     monkeypatch.setitem(_place_run.__globals__, "_cycle_svc", wrapped)
     rep, _client, store = _place_run(monkeypatch, fills, place_stop=(2, 3), place_max=1, minutes=12)
-    assert [p["own_create"] for p in rep["places"]] == [True, True, False]
-    assert [p["bad"] for p in rep["places"]] == [False, False, True]
-    assert rep["reason"].startswith("time limit")  # one miss (the bait), two own coins: the rule holds
-    assert sum("its own coin" in e for e in rep["events"]) == 2
+    assert rep["places"] == [] and [c["kind"] for c in rep["copies"]] == ["own launch", "own launch", "bait"]
+    assert rep["reason"].startswith("time limit")  # nothing counted against the place rule: it holds
+    assert sum("own launch" in e for e in rep["events"]) == 2
     store.close()
 
 

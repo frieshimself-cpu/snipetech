@@ -51,6 +51,14 @@ END_WATCH_SECS = 900.0
 # than STATUS_SETTLE_SECS ago (OKTech read a sniper that bought "finished" 13 s later on 21 Nov 04:25)
 WAITING_STATUSES = frozenset({"running", "starting"})
 STATUS_SETTLE_SECS = 30.0
+# `oktech cycle`, the kinds of copy (22 Nov plan, step 3): a copy of a copied wallet's own coin launch rests that wallet's
+# sniper this long (Cooker's launches come in bursts: a rest after each copy would have let 11 of his 57 through instead
+# of all 57), and this many copies of bait (a create naming the wallet, signed by someone else) in one UTC day rest it
+# until the next day. The rests outlive the run (the store's coverage under RESTS_KEY): a restarted run keeps them.
+LAUNCH_REST_SECS = 3 * 3600.0
+BAIT_DAY_MAX = 3
+RESTS_KEY = "runner:rests"
+QUICK_KINDS = ("own launch", "bait")  # copies sold at once and never counted for the place stop
 # `oktech cycle --place-stop`: a buy of ours is placed this long after it ran (the recorder writes a block's trades in
 # batches; the buys between the copied one and ours ran before ours, so they are on the tape once ours is, and settled)
 PLACE_SETTLE_SECS = 10.0
@@ -1528,24 +1536,30 @@ class Service:
             return run_coins, new_owner, gone
 
         async def sweep_stuck(held: list[dict], now: float) -> None:
-            """Sell each coin of the run's held `sweep_after` seconds since this holding of it began that no try in the
-            last minute covers. A coin nobody can tell is the run's yet is never sold: it may be the owner's."""
+            """Sell each coin of the run's held `sweep_after` seconds since this holding of it began, and each copy of
+            an own launch or bait at once (`sell_now`), that no try in the last minute covers. A coin nobody can tell
+            is the run's yet is never sold: it may be the owner's."""
             for h in held:
                 mint = str(h.get("mint") or "")
-                if not mint or now - held_since.get(mint, now) < float(sweep_after or 0):
+                age = now - held_since.get(mint, now)
+                quick = mint in sell_now
+                if not mint or not (quick or (sweep_after is not None and age >= float(sweep_after))):
                     continue
                 if coins.known(mint) != "ours":
                     continue
                 if now - sweep_tried.get(mint, -1e18) < SWEEP_RETRY_SECS:
                     continue
                 sweep_tried[mint] = now
-                age = now - held_since[mint]
                 try:
                     result = await self.sweep_coin(mint)
                 except Exception as exc:  # noqa: BLE001 - said, tried again in a minute; the run goes on
                     log(f"sweep of {mint} failed ({type(exc).__name__}: {exc}); trying again in {SWEEP_RETRY_SECS:g} s")
                     continue
                 swept.append({"mint": mint, "held_secs": round(age, 1), "result": result})
+                if quick:
+                    log(f"swept {mint} at once, held {age:.0f} s: a copy of an own launch or of bait (the kinds of "
+                        f"copy): {result}")  # fmt: skip
+                    continue
                 log(f"swept {mint}: held {age:.0f} s, past --sweep-after {sweep_after:g} s, so OKTech left it unsold: "
                     f"{result}")  # fmt: skip
 
@@ -1595,6 +1609,94 @@ class Service:
         def fills_now() -> int:
             return max(fills_since(t0), arrivals, len(first_seen))
 
+        # the kinds of copy (22 Nov plan, step 3): each buy of the run's on the tape, tagged as it lands (`kinds_new`)
+        copies: list[dict] = []
+        kinded: set[str] = set()  # their signatures, each read once
+        kinded_blocks: set[tuple[str, int]] = set()  # (coin, slot): a duplicate send of OKTech's is one copy
+        kind_by_sig: dict[str, str] = {}
+        sell_now: set[str] = set()  # coins of own-launch and bait copies: sold at the next reading
+        baits: dict[tuple[str, int], int] = {}  # (sniper, UTC day) -> its bait copies that day
+        kinds_off = False
+        try:  # the rests an earlier run left (a restarted run keeps them)
+            rests: dict[str, float] = {str(i): float(u) for i, u in (self.store.coverage(RESTS_KEY) or {}).items()
+                                       if str(i) in ids and float(u) > time.time()}  # fmt: skip
+        except Exception:  # noqa: BLE001 - none readable: none held
+            rests = {}
+
+        def hm(ts: float) -> str:
+            same_day = int(ts // 86400) == int(time.time() // 86400)
+            return time.strftime("%H:%M UTC" if same_day else "%d %b %H:%M UTC", time.gmtime(ts))
+
+        def save_rests() -> None:
+            try:
+                now = time.time()
+                kept = {k: float(v) for k, v in (self.store.coverage(RESTS_KEY) or {}).items() if float(v) > now}
+                self.store.set_coverage(RESTS_KEY, kept | {i: u for i, u in rests.items() if u > now})
+            except Exception as exc:  # noqa: BLE001 - said; the rest holds for this run all the same
+                log(f"the snipers' rests could not be saved ({type(exc).__name__}): they hold for this run only")
+
+        def kind_of(t) -> tuple[str, str | None]:
+            """What kind of buy the run's buy `t` copied, and the copied wallet it concerns: "own launch" (the wallet
+            signed the coin's create, or is named its creator and bought in it), "bait" (a create naming the wallet,
+            signed by someone else, no buy of its), "repeat" (the wallet had bought the coin before the buy we
+            followed), "unseen" (no buy of a copied wallet before ours on the tape), or "first"."""
+            rows = self.store._q("SELECT user, creator FROM launches WHERE mint=?", (t.mint,))
+            signer, creator = (str(rows[0][0]), str(rows[0][1])) if rows else ("", "")
+            qs = ",".join("?" * len(copied))
+            leaders = [str(r[0]) for r in self.store._q(
+                f"SELECT user FROM trades WHERE mint=? AND is_buy=1 AND user IN ({qs}) AND (slot<? OR (slot=? AND pos<?)) "
+                "ORDER BY slot, pos", (t.mint, *copied, int(t.slot), int(t.slot), int(t.pos)))]  # fmt: skip
+            if signer in copied:
+                return "own launch", signer
+            if creator in copied:
+                return ("own launch" if creator in leaders else "bait"), creator
+            if not leaders:
+                return "unseen", None
+            lead = leaders[-1]
+            return ("repeat" if leaders.count(lead) > 1 else "first"), lead
+
+        def kinds_new(now: float) -> None:
+            """Tag each buy of the run's that reached the tape since the last reading, say each, sell own-launch and bait
+            copies at once, and rest their wallets' snipers (LAUNCH_REST_SECS; BAIT_DAY_MAX)."""
+            buys = [t for t in self.store.trades_for_user(address, int(t0), fees=True)
+                    if t.is_buy and bot_tape_buy(t, run_marks) and t.sig not in kinded]  # fmt: skip
+            for t in buys:
+                kinded.add(t.sig)
+                if (t.mint, int(t.slot)) in kinded_blocks:  # OKTech sends a buy more than once: one copy
+                    twin = next((c["sig"] for c in copies if c["mint"] == t.mint), "")
+                    kind_by_sig[t.sig] = kind_by_sig.get(twin, "")
+                    continue
+                kinded_blocks.add((t.mint, int(t.slot)))
+                kind, wallet = kind_of(t)
+                kind_by_sig[t.sig] = kind
+                copies.append({"sig": t.sig, "mint": t.mint, "ts": int(t.ts), "kind": kind, "wallet": wallet})
+                who = [i for i in ids if wallet and wallet in copies_of.get(i, set())]
+                names = ", ".join(tag(i) for i in who) or "no sniper of this run"
+                w6 = (wallet or "")[:6]
+                if kind == "own launch":
+                    sell_now.add(t.mint)
+                    until = now + LAUNCH_REST_SECS
+                    for i in who:
+                        rests[i] = max(rests.get(i, 0.0), until)
+                    save_rests()
+                    log(f"copy in {t.mint}: {w6}…'s own launch (it created the coin): sold at once, not counted for the "
+                        f"place stop; {names} rests until {hm(until)}")  # fmt: skip
+                elif kind == "bait":
+                    sell_now.add(t.mint)
+                    day = int(now // 86400)
+                    said = []
+                    for i in who:
+                        baits[(i, day)] = baits.get((i, day), 0) + 1
+                        said.append(f"{tag(i)} {baits[(i, day)]} of {BAIT_DAY_MAX} today")
+                        if baits[(i, day)] >= BAIT_DAY_MAX:
+                            rests[i] = max(rests.get(i, 0.0), (day + 1) * 86400.0)
+                            said[-1] += f", rests until {hm((day + 1) * 86400.0)}"
+                    save_rests()
+                    log(f"copy in {t.mint}: bait (a create naming {w6}…, signed by someone else): sold at once, not "
+                        f"counted for the place stop; {'; '.join(said) or names}")  # fmt: skip
+                elif kind == "repeat":
+                    log(f"copy in {t.mint}: a repeat ({w6}… had bought it before): tagged only")
+
         places: list[dict] = []  # our buys placed behind the copied wallets (`place_stop`), in the order they ran
         placed: set[str] = set()  # their signatures, each read once
         placed_blocks: set[tuple[str, int]] = set()  # (coin, slot) of each placed buy: a duplicate send is one copy
@@ -1636,7 +1738,11 @@ class Service:
             for t in buys:
                 if t.sig in placed or now - t.ts < PLACE_SETTLE_SECS:
                     continue
+                if not kinds_off and t.sig not in kind_by_sig:  # tagged first (`kinds_new`), placed at the next reading
+                    continue
                 placed.add(t.sig)
+                if kind_by_sig.get(t.sig) in QUICK_KINDS:  # sold at once and never counted (`kinds_new` said it)
+                    continue
                 if (t.mint, int(t.slot)) in placed_blocks:  # OKTech sends a buy more than once: two landed, one copy
                     continue
                 placed_blocks.add((t.mint, int(t.slot)))
@@ -1651,7 +1757,7 @@ class Service:
                 # Cented's empty launches (17 of his 38 coins, 7-21 Nov), kept apart and never counted as a miss
                 own = leader is None and _own_create(t.mint)
                 bad = not own and (leader is None or behind is None or int(behind) > place_max)
-                places.append({"sig": t.sig, "mint": t.mint, "ts": int(t.ts), "leader": leader,
+                places.append({"sig": t.sig, "mint": t.mint, "ts": int(t.ts), "leader": leader, "kind": kind_by_sig.get(t.sig),
                                "trades_behind": behind, "pack_ahead": row.get("pack_ahead"),
                                "verdict": row.get("landing_verdict"), "own_create": own, "bad": bad})  # fmt: skip
                 if own:
@@ -1674,7 +1780,8 @@ class Service:
             """The report of a run that ended in its wait for the owner's SOL: nothing was touched."""
             log(why)
             return {"start_sol": None, "end_sol": None, "reason": why, "fills": 0, "restarts": 0, "held": [],
-                    "left_running": [], "swept": [], "places": [], "owner_coins": [], "events": events}  # fmt: skip
+                    "left_running": [], "swept": [], "places": [], "owner_coins": [], "copies": [], "rests": {},
+                    "events": events}  # fmt: skip
 
         async def wrapped_sol() -> float:
             """The wallet's wrapped SOL; 0 when it cannot be read (said): the plain SOL alone is then the reading."""
@@ -1815,6 +1922,11 @@ class Service:
                                  "sell, count and floor them as its own. Stop it first (one driver per wallet); not "
                                  "cycling")  # fmt: skip
             for i in ids:
+                if rests.get(i, 0.0) > time.time():  # an earlier run rested it (the kinds of copy): armed once over
+                    armed_at[i] = 0.0
+                    log(f"{tag(i)} rests until {hm(rests[i])} (a copy of its wallet's own launch, or its third bait "
+                        "of the day): not armed until then")  # fmt: skip
+                    continue
                 with contextlib.suppress(Exception):  # a sniper left running from an earlier run has spent its shot
                     await client.stop(i)
                     await asyncio.sleep(1.0)
@@ -1928,8 +2040,16 @@ class Service:
                             fell_now = True  # one move for one buy
                 for m in [m for m in held_since if m not in mints_now]:
                     del held_since[m]
+                    sell_now.discard(m)  # its quick sale is done: the coin again later is a new copy
                 empty_n = 0 if held or fresh else empty_n + 1
-                if held and sweep_after is not None:  # a coin OKTech left unsold: the run sells it itself
+                if copied and not kinds_off:
+                    try:
+                        kinds_new(time.time())
+                    except Exception as exc:  # noqa: BLE001 - the run must reach its own end, where it disarms
+                        kinds_off = True
+                        log(f"the kinds of copy failed ({type(exc).__name__}: {exc}) and are off for the rest of this "
+                            "run: every copy counts for the place stop again")  # fmt: skip
+                if held and (sweep_after is not None or sell_now):  # a coin OKTech left unsold, or a quick sale
                     await sweep_stuck(held, time.time())
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
@@ -1994,6 +2114,8 @@ class Service:
                     await read_spent(now)
                 guarded = False
                 for i in ids:
+                    if rests.get(i, 0.0) > now:  # resting (the kinds of copy): not re-armed until its rest is over
+                        continue
                     since = now - armed_at.get(i, now)
                     if since < 20:  # a fresh shot may have just been fired and not reached the tape or the RPC yet
                         continue
@@ -2067,7 +2189,8 @@ class Service:
             return {"start_sol": b0, "end_sol": b1, "start_wrapped": w0, "end_wrapped": w1, "reason": reason,
                     "fills": fills, "restarts": restarts, "held": held or [], "left_running": sorted(armed),
                     "swept": swept, "places": places, "floor_moves": [round(a, 4) for _at, a in moves],
-                    "owner_coins": list(owner_coins), "events": events}  # fmt: skip
+                    "owner_coins": list(owner_coins), "copies": copies,
+                    "rests": {i: u for i, u in rests.items() if u > time.time()}, "events": events}  # fmt: skip
         except asyncio.CancelledError:
             # 22 Nov audit: a runner its job's limit, a kill or a restart ended left every sniper armed, nobody watching
             log("the job was told to stop (its time limit, a kill or a restart): stopping what strands nothing first")
