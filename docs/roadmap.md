@@ -6,6 +6,46 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 22 Nov, 04:45 UTC: checked against all our data, 100 SOL a day is out of reach through OKTech
+
+- **The verdict.** Six research sweeps of the server's data, then an adversarial check of each of their 22 candidates
+  (workflow of 22 Nov 02:03-04:36; its working files in the session scratchpad `chk/`). The quoted numbers reproduce;
+  the forecasts mostly do not. What survives on OKTech comes to about -10 to +15 SOL a week, centred near 0 to +5.
+  Expect about 0 to +5 SOL this week; losing a few SOL is about as likely. 100 SOL in the coming week is under 1
+  chance in 20, and 100 a day is seven times further.
+- **Why.** The money is in standing 1st or 2nd behind a big wallet. 71 % of the best paper rule's profit (3d82dd6508:
+  +45.8 of +64.5 SOL) came from copies 1 behind it; 2-3 behind it makes about +0.30 per 5 SOL copy, which the measured
+  gap between live and paper (0.18-0.40 SOL a copy) eats. OKTech lands us 2nd to 5th behind crowded wallets, and the
+  buyers ahead of us mostly bid less than we did: speed decides the place, not the bid. OKTech also buys what the
+  paper never counted: last week 38 of Cooker's 73 buys of 2 SOL or more were inside his own coin launches; Cupseyy's
+  copies buy coins made by others that only name him (bait); repeat buys are copied too. No copy of ours has yet
+  matched its paper number live.
+- **Where 100 a day is.** At 1st place: 6Z91 netted about +544 SOL on 15-21 Nov after 532 SOL of bids (+52 to +105 a
+  day). That takes a faster sender than OKTech, one of our own; OKTech signs every trade today and this repo never
+  does. Whether a new sender could win that place against bots that hold it is unmeasured: the fee analyst's I603
+  measures who stands 1st and 2nd behind Cented, Decu, Cupseyy and Cooker, and the owner decides on that table.
+- **What holds (each checked):** copy first buys only; keep the 12 s hold (every faster exit makes less at our place);
+  don't copy Cooker's launches; don't rerun Cented and Decu (8 live copies -3.58 against -1.34 on paper); the crew
+  sniper of 11 Nov stays off for good (its paper twin -0.35 over 23 trades, the crew silent since 20 Nov); don't copy
+  the launch bots (-0.31 to -0.34 per 1 SOL copy); don't run 5Y9pyD at size; the creator-0 hunt only as a 0.2 SOL
+  probe (its profit was one operator's coins; capped, its forward record is -7.26); the 0.003 tip is worth testing
+  (behind the same wallet a bigger tip bought no visible place).
+- **Fixed tonight, test-first** (live-path audit of 22 Nov, 20 findings; the other five audits are being checked):
+  - the wallet-wide guard counts only the bot's trades, told apart by the fees our snipers pay (c54388d, deployed:
+    today reads -3.97 SOL, not -14.48; the owner's hand trades had tripped the day stop);
+  - the runner leaves the owner's own coins alone: never sold, counted, placed or waited on, the floor moving with
+    them (d8f4843); a coin showing late takes back only the floor's move for its own SOL;
+  - at a run's end, the snipers that hold nothing are stopped at once, and one empty wallet reading stops none
+    (d1f39c6);
+  - a runner told to stop (its job's limit, a kill, a restart) stops what strands nothing before it goes; a run
+    refuses a job limit shorter than itself; `remote run oktech cycle` gets the limit its flags need (306c8ef);
+  - one runner per wallet: a lock, and no start beside another armed sniper (a04d3ab).
+  These wait for a deploy (the daily job holds it). No live run starts on the old code.
+- **The plan, in order** (no SOL until the runner fixes are out): the owner asks OKTech six questions (below, in
+  the report of 05:00); deploy; a fill classifier in the runner (own-launch, bait and repeat copies sold at once and
+  never counted for the place stop); one runner for several strategies; then the 1 SOL day behind Gake Side and
+  Cooker as approved, a 0.1 SOL A/B tip test behind Cupseyy, and size only where counted copies make money live.
+
 ## 22 Nov, 03:00 UTC: the night's mistakes, each with its fix; the goal is now 100 SOL a day
 
 - **The goal (the owner, 22 Nov ~02:20 UTC: "not 100 sol a week 100 sol a day").** That is about what the best bot on

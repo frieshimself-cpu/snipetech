@@ -4,7 +4,9 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
-## The 1 SOL day behind Gake Side and Cooker, LIVE since 22 Nov 01:54:27 UTC (runner 20261122-015426-5c79d7; written before it started)
+## The 1 SOL day behind Gake Side and Cooker: ENDED 22 Nov, nothing armed since 02:58 (runner 20261122-015426-5c79d7 and its restarts; written before it started)
+
+**Ended (written 04:45).** The waiting run 20261122-025836-2df7e1 armed nothing and was stopped by hand at ~03:4x: the runner of then sold every coin held past `--sweep-after`, the owner's hand buys too (the owner buys and sells in this wallet). Fixed since: the runner leaves the owner's own coins alone (d8f4843), stops at an end the snipers that hold nothing (d1f39c6), stops what strands nothing when its job ends (306c8ef), and runs one at a time per wallet (a04d3ab); deploying. OKTech 0 of 40 running. **Correction:** "Gake Side and Cooker are the two whose buys of 2 SOL or more are 93-96 % first buys" (below) is wrong for Cooker: of his 73 buys of 2 SOL or more on 15-21 Nov, 31 were first buys in other people's coins, 38 were his own buys inside coins he launched, 4 were repeats (the plan's check, 22 Nov 04:3x). OKTech copies the launch buys (4 of 4 fills behind 7AUb9n on 21 Nov were its own creates) and a 1 SOL copy of one loses 0.11-0.23 SOL. Cooker's sniper is not armed again until the runner tells launch copies apart (the plan's step 3). He has launched nothing since 20 Nov 02:39.
 
 **Started 01:54:27:** the runner read 8.3793 plain and 3.8500 wrapped SOL (12.2293; the wrapped is what OKTech kept beside the 3.5 SOL snipers of the night), floor 10.2293, cap 100 fills, 1,440 minutes; both snipers started 01:54:28 (Gake Side 8e3467, Cooker 8e3473). It ends by 01:54 UTC on 23 Nov at the latest. Watched in the background (`bash scratchpad/watch_runner.sh 20261122-015426-5c79d7 20`).
 
