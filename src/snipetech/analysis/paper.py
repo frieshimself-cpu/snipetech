@@ -1163,7 +1163,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     strategy it freezes, so a cost that was not measured is never read as one that was. `tape`: gives the store the
     lab reads the tape from, asked once the lab lock is held (the CLI's gives `Service.tape_store`, the hourly copy,
     as `lab` and the strategy search read theirs: a lab's reads held the live WAL back for as long as they took); the
-    frozen strategies are written to `store`.
+    frozen strategies are written to `store`. Each is scored forward from `now`, or from the second after the tape its
+    lab read when that tape ends later (`from_ts`; its `lab.window` says which window and file the lab read).
 
     A launch-type rule (launch, hunt, whale, burst) is scored on every coin the live sniper would buy, serial crews'
     coins too, unless its trigger says crew "skip" or "only" (14 Nov; lab.Trigger.crew). One frozen with crew ""
@@ -1294,6 +1295,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                            sell_parts=sell_parts)  # fmt: skip
     every = rank(data, cfg, top=50)
     ranked = [r for r in every if (r["test"].get("ev_lower") or 0) > 0]
+    # Each record's forward trades start after the tape its lab read (audit of 22 Nov). `now` is taken before the
+    # lab lock is waited for and the tape is resolved only once it is held, so that tape can end after `now` (the live
+    # store when the hourly copy is stale or lacks a deploy's schema, a copy renamed over the path during the wait):
+    # its newest moments, the lab's test part where the rule's lower bound was found, were scored again as forward
+    # trades. The lab's tape holds its last second (`Store.trades_for_mint` reads up to it): the record starts after it
+    window_end = (data.get("window") or {}).get("until_ts")
+    start = max(int(now), int(window_end) + 1) if window_end is not None else int(now)
 
     def scored_at(r: dict) -> tuple[int, str]:  # the landing the lab scored this row at (per kind since 7 Nov)
         lat, pos = r.get("landing") or (latency, position)
@@ -1466,8 +1474,10 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         counts = {key: r[key] for key in ("moments", "exit_moments") if key in r}
         new.append({"id": sid, "label": label, "trigger": spec, "exit": r["exit_params"],
                     "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol,
-                    "per_tx_source": per_tx_source, "from_ts": int(now),
+                    "per_tx_source": per_tx_source, "from_ts": start,
                     "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r), bid), **counts,
+                            # from when to when its lab read, and which file: where its forward record may start
+                            **({"window": dict(data["window"])} if data.get("window") else {}),
                             **({"places": r["places"]} if r.get("places") else {}),
                             # how many of its moments were serial crews' coins, known with hindsight (lab.crew_block)
                             **({"crew": {k: v for k, v in r["crew"].items() if k != "line"}} if r.get("crew") else {}),

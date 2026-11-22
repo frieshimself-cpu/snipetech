@@ -32,6 +32,7 @@ from snipetech.analysis.lab import (
     rank,
     watched,
 )
+from snipetech.analysis.lab_window import until_tape
 from snipetech.config import Config
 from snipetech.operator.jobs import OperatorJobs
 from snipetech.sim.exits import ExitParams
@@ -86,6 +87,13 @@ def _cfg() -> Config:
     cfg = Config()
     cfg.verdict.bootstrap_samples = 200
     return cfg
+
+
+def _upto(store: Store, at: int):
+    """The tape a freeze at `at` has its lab read: the tape as it stood when the freeze began, as the server's hourly
+    copy is. These tests build the whole tape first, and a lab that read on past the freeze would have its newest
+    moments scored again forward: the record would start after them (audit of 22 Nov, paper#1)."""
+    return lambda: until_tape(store, int(at) - 1)
 
 
 def _lab(store: Store, triggers) -> dict:
@@ -542,20 +550,22 @@ def test_the_old_rule_is_not_frozen_again_and_the_default_is_a_new_rule_scored_o
     paper.run(store, _cfg(), now=START + 55 * 60)  # migrates; nothing new has settled since the old code's last run
     had = store.paper_trades(OLD_HUNT_ID)
     freeze_at = START + 55 * 60
-    again = paper.freeze(store, _cfg(), top=4, triggers=[SKIP], now=freeze_at)
+    lab_tape = _upto(store, freeze_at)  # (the tape as it stood at the freeze, coins 0 to 54: paper#1)
+    again = paper.freeze(store, _cfg(), top=4, triggers=[SKIP], now=freeze_at, tape=lab_tape)
     assert again["frozen"] == [] and again["kept"][0]["id"] == OLD_HUNT_ID
     assert any(OLD_HUNT_ID in x["why"] and "already in the paper test" in x["why"] for x in again["skipped"])
-    fresh = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=freeze_at)
+    fresh = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=freeze_at, tape=lab_tape)
     (new,) = fresh["frozen"]
     assert new["id"] != OLD_HUNT_ID and new["trigger"]["crew"] == "" and new[paper.EVERY_COIN] is True
     assert new["id"] == paper.sid_of(new) and paper.not_as_live(new) is None
-    assert new["lab"]["crew"]["moments"] == 25 and new["lab"]["crew"]["of"] == 75
+    # (the lab of the tape up to the freeze: 54 moments, every third a crew's coin; it read all 75 until paper#1)
+    assert new["lab"]["crew"]["moments"] == 18 and new["lab"]["crew"]["of"] == 54
     # the old rule is named among the records that are not as live, with the reason
     (stale,) = [x for x in fresh["not_as_live"] if x["id"] == OLD_HUNT_ID]
     assert "without serial crews' coins" in stale["why"] and stale["research_only"] is True
     ids = [s["id"] for s in store.coverage("paper_strategies")["strategies"]]
     assert ids[0] == OLD_HUNT_ID and ids[-1] == new["id"] and len(ids) == len(set(ids)) == 5
-    third = paper.freeze(store, _cfg(), top=4, triggers=[HUNT, SKIP], now=freeze_at)
+    third = paper.freeze(store, _cfg(), top=4, triggers=[HUNT, SKIP], now=freeze_at, tape=lab_tape)
     assert third["frozen"] == []  # both are under test now: one forward record a rule
     paper.run(store, _cfg(), now=NOW)
     assert store.paper_trades(OLD_HUNT_ID)[: len(had)] == had
@@ -672,7 +682,8 @@ def _frozen_default(store: Store) -> tuple[dict, set[str]]:
     55 by today's code (X), and one run of today's code over the launches of minutes 55 to 61."""
     crew = set(world(store, 75, tuple(range(0, 75, 3))))
     paper.migrate_crew(store, now=START + 50 * 60)
-    (x,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 55 * 60)["frozen"]
+    freeze_at = START + 55 * 60  # (its lab reads the tape up to the freeze: paper#1)
+    (x,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=freeze_at, tape=_upto(store, freeze_at))["frozen"]
     paper.run(store, _cfg(), now=START + 62 * 60 + paper.SETTLE_SECS)
     assert {t["mint"] for t in store.paper_trades(x["id"])} == {addr(f"cal-{k}") for k in range(55, 62)}
     return x, crew
@@ -827,7 +838,8 @@ def test_the_reports_text_lists_research_records_apart_and_the_run_does_not_coun
     run` counted their new trades "at the live landing". They have a group of their own, as the rules at a place
     asked for have, and the run counts their trades apart."""
     store, _crew, _rules = _legacy_store()
-    (new,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 55 * 60)["frozen"]
+    freeze_at = START + 55 * 60  # (its lab reads the tape up to the freeze: paper#1)
+    (new,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=freeze_at, tape=_upto(store, freeze_at))["frozen"]
     out = paper.run(store, _cfg(), now=NOW)
     assert out["new_trades"] == 17 + 20 and out["new_trades_research"] == 17
     line = R.render_paper("run", out).splitlines()[0]
@@ -1140,8 +1152,11 @@ def test_a_rule_stored_after_the_old_run_began_was_never_read_by_it():
     paper.migrate_crew(store, now=START + 40 * 60)
     old_began = START + 60 * 60 + paper.SETTLE_SECS
     store.set_coverage("paper", {"done_until": START + 60 * 60, "last_run": old_began})  # the old code's run
-    # the search began at minute 50 and writes its rule after its lab, at minute 68: after the old run began
-    (x,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 50 * 60, stored_at=START + 68 * 60)["frozen"]
+    # the search began at minute 50 and writes its rule after its lab, at minute 68: after the old run began (its lab
+    # read the tape up to minute 50: paper#1)
+    lab_tape = _upto(store, START + 50 * 60)
+    (x,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 50 * 60, stored_at=START + 68 * 60,
+                        tape=lab_tape)["frozen"]  # fmt: skip
     assert (x["from_ts"], x[paper.STORED_AT]) == (START + 50 * 60, START + 68 * 60)
     assert store.paper_trades(x["id"]) == [] and paper.frozen(store)["strategies"][-1] == x  # not marked
     window = (0, START + 60 * 60)
@@ -1151,7 +1166,8 @@ def test_a_rule_stored_after_the_old_run_began_was_never_read_by_it():
     bare = {k: v for k, v in x.items() if k != paper.STORED_AT}  # no time of writing: its freeze time, as before
     assert paper.as_frozen(bare, window, old_began)[paper.OLD_CODE] == [START + 50 * 60, START + 60 * 60]
     # a freeze that is told no time says the time on its own clock: `now` and what it took
-    (y,) = paper.freeze(store, _cfg(), top=4, triggers=[replace(HUNT, sol=3.0)], now=START + 50 * 60)["frozen"]
+    (y,) = paper.freeze(store, _cfg(), top=4, triggers=[replace(HUNT, sol=3.0)], now=START + 50 * 60,
+                        tape=lab_tape)["frozen"]  # fmt: skip
     assert START + 50 * 60 <= y[paper.STORED_AT] < START + 52 * 60
     store.close()
 
@@ -1189,7 +1205,8 @@ def test_a_marked_record_is_scored_no_more_once_its_rule_was_made_again():
     for _round in range(3):  # every ten minutes: the old code scores the newest record, then today's code runs
         _old_code_run(store, ids[-1], now)
         paper.run(store, _cfg(), now=now + 60)
-        (new,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=now + 120)["frozen"]
+        at = now + 120  # (its lab reads the tape up to the freeze: paper#1)
+        (new,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=at, tape=_upto(store, at))["frozen"]
         ids.append(new["id"])
         now += 600
     assert [s.get(paper.AGAIN) for s in store.coverage("paper_strategies")["strategies"]] == [None, 1, 2, 3]

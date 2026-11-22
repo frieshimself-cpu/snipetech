@@ -6,6 +6,7 @@ import time
 import pytest
 
 from snipetech.analysis.lab import TRIGGERS, Trigger, _fire, collect, rank
+from snipetech.analysis.lab_window import until_tape
 from snipetech.config import Config
 from snipetech.sim.market import MarketPath
 from snipetech.store import Store
@@ -72,7 +73,8 @@ def test_paper_scores_only_triggers_after_the_freeze_once_each():
     cfg = Config()
     cfg.verdict.bootstrap_samples = 200
     frozen_at = NOW - 3500  # tokens 25..39 come after this
-    rep = paper.freeze(store, cfg, top=3, position="+1", now=frozen_at)
+    # (its lab reads the tape up to the freeze; until paper#1 of the audit of 22 Nov it read tokens 25..39 too)
+    rep = paper.freeze(store, cfg, top=3, position="+1", now=frozen_at, tape=lambda: until_tape(store, frozen_at - 1))
     assert rep["frozen"], "the whale world has strategies with a positive lower bound"
     whale = rep["frozen"][0]  # the best one (in this world: buying at the launch)
     first = paper.run(store, cfg, now=NOW)
@@ -752,7 +754,9 @@ def test_the_paper_test_skips_a_serial_crews_coins_too():
     cfg = Config()
     cfg.verdict.bootstrap_samples = 200
     rules = [Trigger("launch", crew="skip"), Trigger("launch")]
-    rep = paper.freeze(store, cfg, top=3, position="+1", now=NOW - 3500, triggers=rules)
+    # (its lab reads the tape up to the freeze: paper#1 of the audit of 22 Nov)
+    rep = paper.freeze(store, cfg, top=3, position="+1", now=NOW - 3500, triggers=rules,
+                       tape=lambda: until_tape(store, NOW - 3501))  # fmt: skip
     skip, every = sorted(rep["frozen"], key=lambda s: s["trigger"]["crew"] != "skip")
     assert (skip["trigger"]["crew"], every["trigger"]["crew"]) == ("skip", "")
     crew = [addr(f"lab-{i}") for i in range(30, 34)]  # four of the coins after the freeze

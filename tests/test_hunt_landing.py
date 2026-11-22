@@ -380,22 +380,29 @@ def test_freeze_keeps_a_hunt_at_the_landing_asked_as_a_rule_of_its_own():
     there, under an id of its own (`rule_key` holds the landing), so the same hunt at +3@1 is another record and both
     run forward side by side. The forward run scores each at its own landing and never moves the asked one to the
     live place; the report never calls it the live landing, so it cannot go to a live test by itself."""
+    from snipetech.analysis.lab_window import until_tape
+
     store = Store(":memory:")
     busy_world(store, 80)
     freeze_at = NOW - 3000  # the freeze reads the tape so far; the forward run then scores what came after it
-    seven = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], hunt_landing=(1, "+7"), now=freeze_at)
+
+    def so_far():  # (until paper#1 of the audit of 22 Nov the lab read the whole tape, the forward run's part too)
+        return until_tape(store, freeze_at - 1)
+
+    seven = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], hunt_landing=(1, "+7"), now=freeze_at, tape=so_far)
     (s7,) = seven["frozen"]
     assert (s7["latency"], s7["position"], s7["lab"]["landing"], s7.get("landing_asked")) == (1, "+7", "+7@1", True)
     assert s7["landing_words"] == ("+7: 7 trades into the slot after the trigger, behind everything in the trigger's "
                                    "own slot (asked for at the freeze: not where live hunt buys landed)")  # fmt: skip
-    plain = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=freeze_at)
+    plain = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=freeze_at, tape=so_far)
     (s3,) = plain["frozen"]  # not "already under test": another landing is another rule
     assert (s3["latency"], s3["position"], s3["lab"]["landing"], s3.get("landing_asked")) == (1, "+3", "+3@1", None)
     assert s3["id"] != s7["id"] and paper._rule_of(s3) != paper._rule_of(s7)
-    again = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], hunt_landing=(1, "+7"), now=freeze_at)
+    again = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], hunt_landing=(1, "+7"), now=freeze_at, tape=so_far)
     assert again["frozen"] == []  # the same landing again is the record that already runs
     # the landing asked for at +3@1 is the plain rule, not a second record of it
-    live = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], hunt_landing=paper.HUNT_LANDING, now=freeze_at)
+    live = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], hunt_landing=paper.HUNT_LANDING, now=freeze_at,
+                        tape=so_far)  # fmt: skip
     assert live["frozen"] == []
     paper.run(store, _cfg(), now=NOW)
     kept = {s["id"]: s for s in store.coverage("paper_strategies")["strategies"]}
