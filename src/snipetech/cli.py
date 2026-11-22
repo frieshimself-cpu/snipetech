@@ -2506,9 +2506,9 @@ UPDATE_WAIT_MINUTES = 20.0
 
 def _job_limit(rest: list[str], minutes: float | None) -> int | None:
     """The time limit (seconds) to ask for a remote job: `--timeout` minutes when given; for `oktech cycle`, what its own
-    flags need (its wait for SOL, its minutes, the watch after its end with --sweep-after, and 10 minutes over: killed at
-    its limit a runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); else None, the
-    server's default."""
+    flags need (its wait for SOL, its minutes, the watch after its end, and 10 minutes over: killed at its limit a
+    runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); else None, the server's
+    default."""
     if minutes is not None:
         return int(float(minutes) * 60)
     if rest[:2] != ["oktech", "cycle"]:
@@ -2519,11 +2519,11 @@ def _job_limit(rest: list[str], minutes: float | None) -> int | None:
         a = build_parser().parse_args(rest)
     except SystemExit:  # not a command this version reads: the server says why
         return None
-    need = float(a.max_minutes) * 60 + 600
+    need = (
+        float(a.max_minutes) * 60 + 600 + END_WATCH_SECS
+    )  # the watch after the end runs with or without --sweep-after
     if a.wait_for_sol is not None:
         need += float(a.wait_minutes) * 60
-    if a.sweep_after is not None:
-        need += END_WATCH_SECS
     return int(need)
 
 

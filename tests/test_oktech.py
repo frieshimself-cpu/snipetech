@@ -1152,7 +1152,8 @@ def test_a_cycle_under_its_floor_leaves_nothing_armed(monkeypatch):
 def test_the_cap_counts_the_coins_the_wallet_bought_when_the_tape_misses_them(monkeypatch):
     """The cap was counted on the tape alone: with the recorder missing our buys the cycler re-armed until its time
     limit (a probe: 118 buys under --max-fills 10). Each coin seen in the wallet is a buy too, and the larger count is
-    the one capped. At the cap the last coin is still held, so its sniper keeps running to sell it."""
+    the one capped. At the cap the last coin is still held, so its sniper keeps running to sell it, and the watch after
+    the end stops it once the coin is gone (with or without --sweep-after: review of 22 Nov)."""
     flag = {"stop": False}
     clock = {"t": 1_794_045_600.0}
     bought: list[float] = []  # each start buys a new coin at once; it is held 30 s, then sold
@@ -1165,7 +1166,8 @@ def test_the_cap_counts_the_coins_the_wallet_bought_when_the_tape_misses_them(mo
     svc, store = _cycle_svc(monkeypatch, client, flag, coins=coins, clock=clock)
     rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120, max_fills=3))
     assert len(bought) == 3 and rep["fills"] == 3 and rep["reason"].startswith("cap reached")
-    assert client.calls[-1] == ("start", "a") and "held" in rep["reason"] and rep["left_running"] == ["a"]
+    assert client.calls[-2:] == [("start", "a"), ("stop", "a")] and "left the wallet" in rep["reason"]
+    assert rep["left_running"] == []
     store.close()
 
 

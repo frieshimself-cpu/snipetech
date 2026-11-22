@@ -97,8 +97,9 @@ def test_one_empty_reply_at_the_end_stops_nothing(monkeypatch):
         return _coin()
 
     rep, client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0, coins=coins, stop_at=T0 + 110)
-    assert not [t for kind, _i, t in client.timed if kind == "stop" and t >= T0 + 100]
-    assert "a coin is held" in rep["reason"] and sorted(rep["left_running"]) == sorted(SNIPER_IDS)
+    assert not [t for kind, _i, t in client.timed if kind == "stop" and T0 + 100 <= t < T0 + 200]
+    # the watch after the end stops them once the coin has gone (its sniper's own exit)
+    assert "left the wallet" in rep["reason"] and rep["left_running"] == []
 
 
 def test_a_run_told_to_stop_stops_its_spare_snipers_before_it_goes(monkeypatch):
@@ -422,7 +423,8 @@ def test_an_end_right_after_a_buy_the_tape_writes_late_stops_nothing(monkeypatch
     late = [(T0 + 108, _buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0)), (T0 + 108, _buy(T0 + 100, W6, 1.0, pos=1))]
     rep, client = _run(monkeypatch, lambda now: 10.0, coins=lambda now: _coin() if T0 + 113 <= now < T0 + 400 else [],
                        payload=pay, tape=late, stop_at=T0 + 101, minutes=5)  # fmt: skip
-    assert not _stops(client, A, since=T0 + 100) and "a coin is held" in rep["reason"]
+    assert not [t for t in _stops(client, A, since=T0 + 100) if t < T0 + 400]  # none while its coin is held
+    assert "left the wallet" in rep["reason"]
 
 
 def test_a_coin_bought_again_by_the_other_sniper_is_not_placed_by_the_old_buy(monkeypatch):
@@ -447,3 +449,61 @@ def test_a_coin_bought_again_by_the_other_sniper_is_not_placed_by_the_old_buy(mo
     _rep, client = _run(monkeypatch, lambda now: 10.0, coins=coins, payload=pay, tape=tape, stop_at=T0 + 405,
                         minutes=10)  # fmt: skip
     assert not _stops(client, B, since=T0 + 400)
+
+
+def _late_copy():
+    """LEAD_A buys M1 at 99 s and A's copy follows at 100 s; the recorder writes both at 109 s."""
+    return [(T0 + 109, _buy(T0 + 99, LEAD_A, 3.0, priority=50_000, tip=0)), (T0 + 109, _buy(T0 + 100, W6, 1.0, pos=1))]
+
+
+def _own_leader(i):
+    return _payloads() | {"ctbotWallets": [{"address": LEAD_A if i == A else LEAD_B}]}
+
+
+def test_a_fills_cap_end_without_sweep_after_still_stops_the_spare_sniper(monkeypatch):
+    """Review of 22 Nov: without --sweep-after the end read the wallet once and went. --max-fills 1: A's copy shows at
+    104 s and the cap ends the run there, 5 s before the recorder writes its buy, so the coin cannot be placed yet, and
+    B, which bought nothing, was left armed with nobody watching (one more buy: no floor, no cap, no time limit). The
+    watch after the end runs with or without --sweep-after: B is stopped once the buy is on the tape, A once its coin
+    is gone, and without --sweep-after the run sells nothing itself."""
+    sweeps: list = []
+    rep, client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0,
+                       coins=lambda now: _coin() if T0 + 104 <= now < T0 + 300 else [], payload=_own_leader,
+                       tape=_late_copy(), spent=lambda i, now, last_start: i == A and now >= T0 + 101, max_fills=1,
+                       minutes=30, sweeps=sweeps)  # fmt: skip
+    assert _stops(client, B) and min(_stops(client, B)) < T0 + 130
+    assert not [t for t in _stops(client, A) if t < T0 + 300]
+    assert rep["left_running"] == [] and sweeps == []
+
+
+def test_a_stop_signal_just_after_a_copy_the_tape_writes_late_still_stops_the_spare(monkeypatch):
+    """Review of 22 Nov: told to stop at 106 s, 2 s after A's copy showed and 3 s before the recorder wrote its buy,
+    the way out placed the coin once, could not, and left B armed. It tries again every few seconds while the job's
+    30 s grace lasts."""
+    import asyncio
+
+    import pytest
+
+    from tests import test_oktech
+
+    clients, told = [], {"done": False}
+    real_init = test_oktech._SpentClient.__init__
+
+    def init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        clients.append(self)
+
+    monkeypatch.setattr(test_oktech._SpentClient, "__init__", init)
+
+    def coins(now):
+        if now >= T0 + 106 and not told["done"]:
+            told["done"] = True
+            raise asyncio.CancelledError
+        return _coin() if now >= T0 + 104 else []
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0, coins=coins, payload=_own_leader,
+             tape=_late_copy(), spent=lambda i, now, last_start: i == A and now >= T0 + 101, sweep_after=600,
+             minutes=30)  # fmt: skip
+    (client,) = clients
+    assert _stops(client, B, since=T0 + 106) and not _stops(client, A, since=T0 + 106)
