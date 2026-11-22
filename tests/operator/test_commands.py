@@ -526,6 +526,42 @@ def test_book_bar_from_telegram(tmp_path):
     assert effective_min_score(ctx["cfg"], ctx["paths"]) == ctx["cfg"].book.min_score
 
 
+def _sent_at(name, *args, age):
+    return Command(name=name, args=list(args), chat_id=7, update_id=1, date=int(NOW - age))
+
+
+def test_a_resume_that_waited_in_telegrams_queue_lifts_no_stop(tmp_path):
+    """Audit of 22 Nov (livetest#4): /sell, /test and a /risk change older than SELL_MAX_AGE_SECS are refused, as "a
+    change that waited in Telegram's queue may loosen the guard after the moment it was meant for"; a /resume three hours
+    old still lifted the kill switch. /stop is obeyed whatever its age."""
+    ctx, sent = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    ctx["paths"].stop_flag.write_text(str(NOW - 4 * 3600))
+    reply = asyncio.run(handle_command(_sent_at("resume", age=3 * 3600), **ctx))
+    assert ctx["paths"].stop_flag.exists() and "180 min old" in reply and "again" in reply and sent == [reply]
+    assert "180 min old" in ctx["paths"].notes.read_text()
+    reply = asyncio.run(handle_command(_sent_at("resume", age=60), **ctx))
+    assert not ctx["paths"].stop_flag.exists() and reply.startswith("resumed")
+    asyncio.run(handle_command(_sent_at("stop", age=6 * 3600), **ctx))
+    assert ctx["paths"].stop_flag.exists()
+
+
+def test_a_book_on_or_bar_that_waited_is_refused_and_book_off_never_is(tmp_path):
+    """Audit of 22 Nov (round#10): a /book on that waited out an outage (12 Nov: 12 hours) switched the live book on when
+    it was read. /book off, which only halts, is obeyed whatever its age."""
+    from snipetech.book.switch import book_live, effective_min_score
+
+    ctx, _sent = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    bar = effective_min_score(ctx["cfg"], ctx["paths"])
+    reply = asyncio.run(handle_command(_sent_at("book", "on", age=6 * 3600), **ctx))
+    assert not book_live(ctx["cfg"], ctx["paths"]) and "360 min old" in reply, reply
+    reply = asyncio.run(handle_command(_sent_at("book", "bar", "0.0001", age=6 * 3600), **ctx))
+    assert effective_min_score(ctx["cfg"], ctx["paths"]) == bar and "360 min old" in reply, reply
+    asyncio.run(handle_command(_sent_at("book", "on", age=30), **ctx))
+    assert book_live(ctx["cfg"], ctx["paths"])
+    asyncio.run(handle_command(_sent_at("book", "off", age=6 * 3600), **ctx))
+    assert not book_live(ctx["cfg"], ctx["paths"])
+
+
 def test_book_status_reports_the_last_run(tmp_path):
     from snipetech.book.state import record_run
 

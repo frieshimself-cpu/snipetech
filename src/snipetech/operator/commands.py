@@ -75,6 +75,21 @@ READ_SECS = 20
 SELL_SECS = 60
 
 
+def _waited(cmd: Command, now: float) -> int | None:
+    """The minutes a command waited in Telegram's queue (an outage, a restart) when that is past SELL_MAX_AGE_SECS, else
+    None."""
+    if cmd.date is None or now - cmd.date <= SELL_MAX_AGE_SECS:
+        return None
+    return int((now - cmd.date) // 60)
+
+
+def _book_loosens(cmd: Command) -> bool:
+    """/book on, or /book bar with a value: the owner's book switch or its bar changed, not only shown. /book off only
+    halts."""
+    arg = cmd.args[0].lower() if cmd.args else ""
+    return arg == "on" or (arg == "bar" and len(cmd.args) > 1)
+
+
 def _late(exc: BaseException, secs: float, what: str) -> str:
     """An error in plain words for the owner: no answer within `secs`, or the error's kind."""
     return f"{what} did not answer in {secs:g} s" if isinstance(exc, TimeoutError) else type(exc).__name__
@@ -504,6 +519,14 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = _status(cfg, snap, paths, now, store=getattr(svc, "store", None))
     elif cmd.name == "stop":
         reply = await _stop(svc, cfg, paths, notes, now)
+    elif cmd.name in ("resume", "book") and (cmd.name == "resume" or _book_loosens(cmd)) and _waited(cmd, now):
+        # the rule of /sell, /test and /risk: one that waited in Telegram's queue would lift the kill switch, or switch
+        # the live book on, after the moment it was meant for (audit of 22 Nov). /stop and /book off are obeyed whatever
+        # their age. A bar's value is not repeated
+        mins, said = _waited(cmd, now), f"/{cmd.name}" + (f" {cmd.args[0].lower()}" if cmd.name == "book" else "")
+        notes.write(f"owner's {said} from Telegram was {mins} min old when read: nothing changed", "decision")
+        reply = (f"Nothing changed: this {said} is {mins} min old (it waited while the bot was not reading). Send it "
+                 "again if you still mean it.")  # fmt: skip
     elif cmd.name == "resume":
         try:
             paths.expected.unlink()  # whatever a live test expected before the stop no longer holds
