@@ -840,6 +840,40 @@ def test_no_job_starts_while_a_code_update_goes_out(env, monkeypatch):
     assert ops.op_run(["rescore"])["argv"] == ["rescore"]
 
 
+def test_two_updates_asked_at_once_never_both_go_out(env, monkeypatch):
+    """22 Nov audit (ops#4): "never while another update is going out" was a check, then systemctl's answer for eight
+    units and the start, then the mark: two asks that came together (two clients on --when-quiet, each asking every
+    15 s) both passed the check, and two updates reset and reinstalled the checkout under each other."""
+    ops, key = env
+    started: list[list[str]] = []
+
+    def start(cmd, argv, timeout):
+        started.append(argv)
+        return {"id": f"20261122-1200{len(started):02d}-aaaaa{len(started)}", "argv": argv}
+
+    def systemctl(cmd):
+        time.sleep(0.05)  # `systemctl is-active` of eight units: tens of milliseconds on the server
+        return "".join("inactive\n" for _ in cmd[2:])
+
+    monkeypatch.setattr(ops, "_start", start)
+    monkeypatch.setattr(ops, "_run", systemctl)
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": []})
+    go, refused = threading.Barrier(2), []
+
+    def ask():
+        go.wait()
+        try:
+            req(ops, key, "update")
+        except O.OpsError as e:
+            refused.append(e)
+
+    threads = [threading.Thread(target=ask) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(started) == 1 and len(refused) == 1
+    assert refused[0].code == 409 and "going out" in str(refused[0])
+
+
 def test_the_database_copy_holds_no_deploy(env, monkeypatch):
     """20 Nov audit (server health 2): the 3-hourly copy took 41 to 69 minutes on 18-20 Nov, longer than the deploy
     hold (DEPLOY_HOLD_MAX_SECS, half an hour) and the client's wait, so a deploy asked during one gave up after holding

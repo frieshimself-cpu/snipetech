@@ -369,6 +369,7 @@ class Ops:
     jobs: dict[str, Job] = field(default_factory=dict)
     _nonces: dict[str, float] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _update_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)  # op_update: check, start, mark
     _asked: threading.local = field(default_factory=threading.local, repr=False)  # .remote: inside a signed request
 
     def __post_init__(self):
@@ -636,7 +637,12 @@ class Ops:
         """Bring the checkout to the branch's tip and restart the recorder and this endpoint. Refused (409) while a job
         or a timer-run unit is mid-run that would go on with part old and part new code (`deploy_waits_for`), with
         each named; `force` deploys all the same. Never while another update is going out (`update_going_out`), force
-        or not: two at once would reset and reinstall the checkout under each other."""
+        or not: two at once would reset and reinstall the checkout under each other. The check, the start and the mark
+        are one step (`_update_lock`): 22 Nov audit, two asks that came together both passed the check."""
+        with self._update_lock:
+            return self._update(force)
+
+    def _update(self, force: bool) -> dict[str, Any]:
         if self.update_going_out():
             raise OpsError(409, "a code update is going out right now: this one waits until it is out (seconds)")
         held = [] if force else self.deploy_waits_for()
