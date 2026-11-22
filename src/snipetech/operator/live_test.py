@@ -387,16 +387,26 @@ def _tape_lag(svc, now: float) -> str | None:
     return None
 
 
-async def _other_snipers(svc) -> list[dict]:
-    """The snipers active on OKTech now that are not the book's: an earlier test's left armed, or one started by hand.
-    One test at a time is counted there too, not only in our own files: two snipers on one wallet can buy two coins
-    at once. The book's snipers trade from the same wallet by design (their buys count toward the cap). Waited for
-    WALLET_READ_SECS at most; raises when OKTech does not answer."""
+async def _armed_snipers(svc) -> tuple[list[dict], list[dict]]:
+    """The snipers active on OKTech now: those that are not the book's (an earlier test's left armed, or one started by
+    hand), and the book's own. One test at a time is counted there too, not only in our own files: two snipers on one
+    wallet can buy two coins at once. And a test runs alone in the wallet, the book's snipers included: its cycler
+    sells, counts and floors every buy in the wallet as its own, and refuses to start beside an armed sniper (`oktech
+    cycle`, one driver per wallet). The book's were let through here until 22 Nov: the test's sniper was created, its
+    cycler refused, and autotest filed the refusal as a dead cycler (review of 22 Nov). Waited for WALLET_READ_SECS at
+    most; raises when OKTech does not answer."""
     from ..book.policy import BOOK_NAME_RE
 
     st = await asyncio.wait_for(svc.oktech_status(), WALLET_READ_SECS)
-    return [s for s in (st or {}).get("snipers") or [] if is_active(s.get("status"))
-            and not BOOK_NAME_RE.match(str(s.get("name") or ""))]  # fmt: skip
+    others: list[dict] = []
+    book: list[dict] = []
+    for s in (st or {}).get("snipers") or []:
+        if is_active(s.get("status")):
+            (book if BOOK_NAME_RE.match(str(s.get("name") or "")) else others).append(s)
+    return others, book
+
+
+BOOK_ALONE = "a test runs alone in the wallet (its cycler would sell, count and floor the book's buys as its own)"
 
 
 def _sniper_words(s: dict) -> str:
@@ -696,13 +706,16 @@ async def _go(sid: str, *, svc, cfg: Config, paths: OperatorPaths, snap, notes: 
     if lag:
         return no + f"{lag}, and the test's buys are counted on it. Send /test {sid} go again in a few minutes."
     try:
-        others = await _other_snipers(svc)
+        others, book = await _armed_snipers(svc)
     except Exception as exc:  # noqa: BLE001 - the owner hears it and sends it again
         return no + f"I could not read OKTech's snipers ({type(exc).__name__}). Try again in a minute."
     if others:
         return no + (f"{_sniper_words(others[0])} and is not the book's: one live test at a time (an earlier test's "
                      f"sniper, or one started by hand). /stop stops every sniper that holds nothing; then /resume and "
                      f"send /test {sid} go again.")  # fmt: skip
+    if book:
+        return no + (f"{_sniper_words(book[0])}: the book's, and {BOOK_ALONE}. /book off first (it stops the book's "
+                     f"snipers), then send /test {sid} go again.")  # fmt: skip
     try:
         held = await _held(svc, cfg, wallet)
     except Exception as exc:  # noqa: BLE001 - the owner hears it and sends it again
@@ -848,8 +861,8 @@ async def _check(
 ) -> tuple[str | None, bool, str | None]:
     """Why the requested test must not start now (None: it may), whether that may pass by itself before the request
     expires, and what kind of refusal it is (autotest.py tells an execution fault from a wait: "stop", "request",
-    "auto", "wallet", "paper", "size", "job", "tape", "oktech", "sniper", "balance", "room", "coins", "held", "guard",
-    "guard-unknown"). The request file is checked against the caps too: only /test go and the automatic test write it,
+    "auto", "wallet", "paper", "size", "job", "tape", "oktech", "sniper", "book", "balance", "room", "coins", "held",
+    "guard", "guard-unknown"). The request file is checked against the caps too: only /test go and the automatic test write it,
     and nothing above them is ever started. An automatic request starts only while the owner's standing yes still
     covers it (autotest.holds)."""
     if paths.stop_flag.exists():
@@ -887,11 +900,13 @@ async def _check(
     if lag:  # the recorder catching up is the usual end of it
         return lag, True, "tape"
     try:
-        others = await _other_snipers(svc)
+        others, book = await _armed_snipers(svc)
     except Exception as exc:  # noqa: BLE001 - the next round reads it again
         return f"OKTech's snipers could not be read ({type(exc).__name__})", True, "oktech"
     if others:
         return f"{_sniper_words(others[0])} and is not the book's", False, "sniper"
+    if book:  # the owner's book trades the wallet: a wait, said in the log only (autotest._refused)
+        return f"{_sniper_words(book[0])}: the book's, and {BOOK_ALONE}", False, "book"
     eq = equity_now(snap, now, t["wallet"])
     if eq is None:
         return "the wallet's balance is not known this round", True, "balance"

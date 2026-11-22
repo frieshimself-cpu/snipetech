@@ -1710,3 +1710,24 @@ def test_the_agents_code_never_loads_the_automatic_test():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
                          env=os.environ | {"PYTHONPATH": src})  # fmt: skip
     assert out.stdout.strip() == "False"
+
+
+def test_the_runners_own_start_refusals_are_not_a_dead_cycler():
+    """`oktech cycle` refuses at its start beside an armed sniper and while another runner drives the wallet (22 Nov).
+    Those are refusals, not deaths: before, they were filed as "died", the owner was told the cycler died, and from the
+    second a 4 h backoff that doubles held every test (review of 22 Nov). A cycler killed mid-run is still a death."""
+    from snipetech.operator.autotest import end_kind
+
+    def ended(log):
+        reason = f"the cycler ended without its report (exit 1): {log}"
+        return {"state": "done", "started": True, "report": {"reason": reason}}
+
+    beside = ("OKTech has ffff01 (snipetech copy book 6VFrZ1 arm:a1) armed beside this run: its buys would land in the "
+              "same wallet, and the run would sell, count and floor them as its own. Stop it first (one driver per "
+              "wallet); not cycling")  # fmt: skip
+    lock = ("another oktech cycle drives SNIPER… now (driver-SNIPER.lock): one runner per wallet (its coins, fills and "
+            "floor are its own); nothing cycled")  # fmt: skip
+    assert end_kind(ended(beside), 10, [])[0] != "died"
+    assert end_kind(ended(lock), 10, [])[0] != "died"
+    killed = "the job was told to stop (its time limit, a kill or a restart): stopping"
+    assert end_kind(ended(killed), 10, [])[0] == "died"

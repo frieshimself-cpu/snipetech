@@ -537,8 +537,8 @@ def test_go_refuses_while_an_oktech_cycler_or_guard_runs(env):
 
 def test_go_refuses_while_a_sniper_that_is_not_the_books_runs_on_oktech(env):
     """One live test at a time, counted on OKTech itself and not only on our own files: an earlier test's sniper left
-    armed, or one started by hand, refuses a new test (two snipers on one wallet can buy two coins at once). The book's
-    own snipers trade from the same wallet by design and do not; OKTech not answering refuses too."""
+    armed, or one started by hand, refuses a new test (two snipers on one wallet can buy two coins at once); OKTech not
+    answering refuses too."""
     _freeze(env.store, BEST, pnl=0.02)
     env.svc.oktech_down = True
     assert "OKTech" in _refused(env, BEST, "go")
@@ -547,9 +547,30 @@ def test_go_refuses_while_a_sniper_that_is_not_the_books_runs_on_oktech(env):
     reply = _refused(env, BEST, "go")
     assert "f00dcafe01" in reply and "/stop" in reply
     env.svc.tasks = [{"id": "f00dcafe01", "name": f"snipetech strategy {BEST} hunt", "status": "idle"},
-                     {"id": "b00c", "name": "snipetech copy book 6VFrZ1 arm:fast", "status": "running"}]  # fmt: skip
+                     {"id": "b00c", "name": "snipetech copy book 6VFrZ1 arm:fast", "status": "stopped"}]  # fmt: skip
     _send(env, BEST, "go")
     assert LT.load(env.paths)["state"] == "requested"
+
+
+def test_a_test_waits_while_the_books_snipers_are_armed_in_the_wallet(env):
+    """A test runs alone in the wallet: its cycler sells, counts and floors every buy there as its own, and refuses to
+    start beside an armed sniper (`oktech cycle`, one driver per wallet). Before 22 Nov the book's snipers were let
+    through here "by design", the test's sniper was created, its cycler refused, and the refusal was filed as a dead
+    cycler (review of 22 Nov). Now /test go says so and names /book off, and a request waits with nothing created."""
+    _freeze(env.store, BEST, pnl=0.02)
+    book = {"id": "b00c", "name": "snipetech copy book 6VFrZ1 arm:fast", "status": "running"}
+    env.svc.tasks = [book]
+    reply = _refused(env, BEST, "go")
+    assert "b00c" in reply and "the book's" in reply and "/book off" in reply
+    env.svc.tasks = []
+    _send(env, BEST, "go")
+    assert LT.load(env.paths)["state"] == "requested"
+    env.svc.tasks = [book]  # the book armed one before the round
+    t = {**LT.load(env.paths)}
+    why, _passes, kind = asyncio.run(LT._check(env.svc, env.cfg, env.paths, t, env.snap, NOW))
+    assert kind == "book" and "b00c" in why and "the book's" in why
+    _round(env)
+    assert env.svc.created == [] and env.started == []
 
 
 def test_go_and_the_round_wait_for_the_tape_to_catch_up(env):

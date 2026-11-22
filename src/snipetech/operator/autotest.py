@@ -115,7 +115,8 @@ RENT_SOL = (
 # why a next block cannot start (live_test._check's kinds): an execution fault holds the strategy and the owner hears it
 # once when it starts and once when it clears; a refusal of these kinds ends the strategy's run without a drop (the
 # config names another wallet, it no longer passes on paper, its size changed); any other waits, said in the log only
-# (the owner's /stop, the guard, which tells the owner itself, the recorder catching up, the book's coin being sold)
+# (the owner's /stop, the guard, which tells the owner itself, the recorder catching up, the book's coin being sold, the
+# book's snipers armed in the wallet: a test runs alone there)
 FAULTS = frozenset({"job", "oktech", "sniper", "balance", "coins", "guard-unknown"})
 ENDS = frozenset({"wallet", "paper", "size"})
 CLOSING_FAULTS = ("oktech", "stop", "wallet")  # a block still closing on these: its sniper may still be armed
@@ -125,9 +126,12 @@ CLOSING_FAULTS = ("oktech", "stop", "wallet")  # a block still closing on these:
 # deploy changes the code (review of 7 Nov: every round made a new sniper and a new cycler)
 CYCLER_BACKOFF_SECS = 4 * 3600
 CYCLER_BACKOFF_MAX_SECS = 86400
-# a cycler that ended without its report, refusing at its start (oktech_cycle's own words): what that end is
+# a cycler that ended without its report, refusing at its start (oktech_cycle's own words): what that end is. A sniper
+# armed beside the run and another runner on the wallet are refusals too, never a death (review of 22 Nov: filed as
+# "died", the owner was told the cycler died, and a backoff held every test after the second)
 REFUSED_AT_START = (("at or below the floor", "floor"), ("/stop flag is set", "stop"), ("wallet-wide guard", "guard"),
-                    ("behind", "early"), ("the wallet holds", "early"))  # fmt: skip
+                    ("behind", "early"), ("the wallet holds", "early"), ("armed beside this run", "early"),
+                    ("one runner per wallet", "early"))  # fmt: skip
 
 
 def autotest_file(paths: OperatorPaths) -> Path:
