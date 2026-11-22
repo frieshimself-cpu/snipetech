@@ -714,3 +714,74 @@ def test_measure_9_a_stale_trade_of_0_sol_in_the_lookback_is_read_again(tmp_path
         assert st.fill(dust) is None
     finally:
         st.close()
+
+
+# -- measure#7: the sale's failed tries before it landed are charged to its trip ---------------------------------------
+
+M8 = "8MTKG4zoNeiRNG9p83mZCxDSzrCDLUsMrCEkEixepump"
+
+
+def _failed(sig, ts, slot, tip=0, sells_ix=True):
+    return {"sig": sig, "ts": ts, "slot": slot, "mint": M8, "side": "failed", "priority_lamports": 1_000_000,
+            "tip_lamports": tip, "is_sell": True, "sells_ix": sells_ix}  # fmt: skip
+
+
+def test_measure_7_the_failed_tries_before_the_landed_sale_are_charged_to_it():
+    """measure#7: 8MTKG4 (20 Nov 18:05), bought at slot 471831292: nine curve sales failed (Custom 6005) in the eleven
+    slots before its PumpSwap sale landed at 471831354, two failed after it. twin_sells tied only the two after it
+    ("a twin never lands before its winner"), so the copy read -0.005702 where it made -0.014747. A failed send that
+    carries a sale of the coin, after the buy the sale closes and before the sale, is one of its failed tries."""
+    from snipetech.measure.run import twin_fees_by_sell, twin_sells
+
+    before = [_failed(f"b{k}", 1795197912 + k // 3, 471831343 + k) for k in range(9)]
+    after = [_failed("a0", 1795197915, 471831357, tip=2_000_000), _failed("a1", 1795197915, 471831361)]
+    sale = {"sig": "AgpEJWjp", "ts": 1795197914, "slot": 471831354, "mint": M8, "side": "sell"}
+    bought = {"AgpEJWjp": {"sig": "L6zJJ2ss", "ts": 1795197903, "slot": 471831292}}
+    assert round(twin_fees_by_sell(before + after, [sale])["AgpEJWjp"], 6) == 0.00201  # the twins alone, as before
+    assert round(twin_fees_by_sell(before + after, [sale], bought=bought)["AgpEJWjp"], 6) == round(11 * 0.001005, 6)
+    # a failed send before the buy is an older holding's; one with no sale instruction read is no try of this sale
+    older = _failed("old", 1795197890, 471831200)
+    unread = _failed("unread", 1795197913, 471831350, sells_ix=False)
+    assert set(twin_sells([older, unread, *before], [sale], bought=bought)) == {f["sig"] for f in before}
+
+
+def test_measure_7_the_failed_tries_reach_the_trip_the_day_and_the_breakdown(tmp_path):
+    """measure#7, end to end: run_measure writes the tries into the sale's twin_fee_sol, so the day stop and the
+    post-mortem's breakdown charge them once, and the breakdown counts them among the sale's failed sends."""
+    from snipetech.measure.attribution import break_down
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _sniper(st, tip=0.002)
+        m = Market(st, addr("audit-tries"), D, NOW - 3000, SLOT)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 1.0, 10)
+        buy = m.buy(W, 0.5, 11)
+        sale = m.sell(W, 1.0, 40)
+        m.commit()
+        metas = {buy.sig: _meta(buy.sig, (1_000_000, 2_000_000)), sale.sig: _meta(sale.sig, BOT_SALE_FEES)}
+        sends = []
+        for k, slot in enumerate((30, 33, 36, 42)):  # three tries before the sale landed, one twin after it
+            name = f"try{k}"
+            meta = _meta(name, (1_000_000, 0))
+            meta.pump_ixs = [PumpIx("pump", "sell", W, {}, None, m.mint)]
+            metas[name] = meta
+            sends.append({"signature": name, "blockTime": m._ts(SLOT + slot), "slot": SLOT + slot,
+                          "err": {"InstructionError": [2, {"Custom": 6005}]}})  # fmt: skip
+
+        async def ensure(sigs):
+            st.add_tx_meta([metas[s] for s in sigs if s in metas])
+            return len(sigs)
+
+        async def failed(wallet, since):
+            return sends
+
+        asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=ensure, failed_sigs=failed))
+        row = st.fill(sale.sig)
+        assert row["twin_fee_sol"] == pytest.approx(4 * 0.001005)
+        assert realised_today(st, W, NOW) == pytest.approx(row["pnl_sol"] - 4 * 0.001005)
+        trip = break_down(st, W, [row], per_tx_sol=0.0035)[sale.sig]
+        assert trip["dups"] == 4 and trip["dup_fee_sol"] == pytest.approx(4 * 0.001005)
+    finally:
+        st.close()

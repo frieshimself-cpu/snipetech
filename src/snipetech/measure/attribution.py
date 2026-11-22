@@ -11,7 +11,8 @@ them. Its whole result splits into parts that add up exactly:
 - buy fees and sell fees: the priority fee, the tip and the 5,000-lamport base fee of the buy and the sell that landed;
 - failed duplicate sells: OKTech signs every exit up to three times and the copies that lose the race fail on chain
   (pump error 6023, NotEnoughTokensToSell), each still paying its priority fee and the base fee (measure's
-  twin_fee_sol, what twin_sells ties to the sell).
+  twin_fee_sol, what twin_sells ties to the sell), and the sale's own tries that failed before one landed (8MTKG4,
+  20 Nov: nine curve sales failed on the completed curve before its PumpSwap sale).
 
 The measure stage keeps the landed trip in fills.pnl_sol and the duplicates beside it in twin_fee_sol, by design: a
 reader that summed pnl_sol alone left the duplicates out (7 Nov: the post-mortem's own tool said -1.0419 SOL over the
@@ -245,7 +246,7 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     charged a fill whose fee is unknown ([costs], CostConfig.per_tx_sol())."""
     from .classify import pair_round_trips
     from .ours import bot_fill, fee_marks
-    from .run import failed_is_sell, twin_sells
+    from .run import _sells_a_coin, failed_is_sell, twin_sells
 
     out: dict[str, dict | None] = {s["sig"]: None for s in sells}
     todo = [s for s in sells if s.get("pnl_sol") is not None and s.get("mint") and float(s.get("tokens") or 0) > 0]
@@ -263,12 +264,18 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     marks = fee_marks(store)  # a sale closes its own maker's lots first, the bot's or the owner's, as measure pairs
     for lot in pair_round_trips(buys, landed, per_tx_l / 1e9, whose=lambda r: bot_fill(r, marks))["trips"]:
         lots.setdefault(lot["sell_sig"], []).append(lot)
-    failed = [r for r in rows if r.get("side") == "failed" and first - TWIN_PAD_SECS <= int(r["ts"] or 0)]
+    buy_by_sig = {b["sig"]: b for b in buys}
+    # the buy each sell closes: a sell's tries that failed before it landed came after it (measure's twin_sells)
+    bought = {s: buy_by_sig[ls[0]["buy_sig"]] for s, ls in lots.items() if ls[0]["buy_sig"] in buy_by_sig}
+    since_buy = min([int(b["ts"]) for b in bought.values()], default=first)
+    failed = [r for r in rows if r.get("side") == "failed"
+              and min(first - TWIN_PAD_SECS, since_buy) <= int(r["ts"] or 0)]  # fmt: skip
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
     by_sig = {f["sig"]: f for f in failed}
     dups: dict[str, list[dict]] = {}
-    flagged = [f | {"is_sell": failed_is_sell(f, metas.get(f["sig"]))} for f in failed]
-    for fsig, ssig in twin_sells(flagged, landed).items():
+    flagged = [f | {"is_sell": failed_is_sell(f, metas.get(f["sig"])), "sells_ix": _sells_a_coin(metas.get(f["sig"]))}
+               for f in failed]  # fmt: skip
+    for fsig, ssig in twin_sells(flagged, landed, bought=bought).items():
         dups.setdefault(ssig, []).append(by_sig[fsig])
     replays: dict[str, dict[str, float]] = {}
     buy_sigs = sorted({s["buy_sig"] for s in todo if s.get("buy_sig")})
@@ -276,7 +283,6 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
         if r.get("sim_pnl_sol") is not None:
             replays.setdefault(r["buy_sig"], {})[r["exit_name"]] = float(r["sim_pnl_sol"])
     legs = _tape_legs(store, wallet, since)
-    buy_by_sig = {b["sig"]: b for b in buys}
     for s in todo:
         if lots.get(s["sig"]):
             out[s["sig"]] = _trip(s, lots[s["sig"]], buy_by_sig, legs, dups.get(s["sig"], []), replays, per_tx_l)
