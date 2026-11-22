@@ -1,7 +1,7 @@
 """Owner commands over Telegram: /status /stop /resume /book /sell /test /risk. Polled once per round and every minute
 (`operate --commands`); only the owner's chat is obeyed.
-/stop never strands a coin: a running sniper is left alone while the wallet holds a coin (it is the only thing that sells),
-one on the owner's [operator] ignore_mints aside (no sniper manages those).
+/stop never strands a coin: a running sniper is left alone while the wallet holds a coin (it is the only thing that
+sells), one on the owner's [operator] ignore_mints aside (no sniper manages those).
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py: on the pump.fun curve, or on PumpSwap once the coin has left it, since 7 Nov), never buys, and never

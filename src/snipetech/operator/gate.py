@@ -283,9 +283,9 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     if len(bots) > allowed_held:
         states.append(f"{len(bots)} coin(s) held, expected {allowed_held}")
     # the watchdog's coins nobody is selling (written by the one-minute pass), while the wallet still holds them: a
-    # decision now, reminded hourly, whatever the book expects to hold. A coin the watch calls a stray (no buy of ours on
-    # the tape) counts only when a buy of the bot's is on record after all: a PumpSwap copy the tape never holds, which
-    # the measure stage's fills do (`whose` "ours"; server#1)
+    # decision now, reminded hourly, whatever the book expects to hold. A coin the watch calls a stray (no buy of ours
+    # on the tape) counts only when a buy of the bot's is on record after all: a PumpSwap copy the tape never holds,
+    # which the measure stage's fills do (`whose` "ours"; server#1)
     held_mints = {str(h.get("mint")) for h in bots if h.get("mint")}
     bought = {str(h.get("mint")) for h in bots if h.get("whose") == "ours"}
     nobody = [h for h in current_hits(paths, now) if str(h.get("mint")) in held_mints
@@ -311,8 +311,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     # money on there", 9 Nov; 22 Nov 02:13 a 2.01 SOL withdrawal was paged as a loss). The alert is on the bot's own
     # result since the baseline (`bot_result`: its trades' SOL, fees in, and its coins' worth); the rest of the move is
     # the owner's, never news (review of 22 Nov: a withdrawal beside one small copy paged in full). It needs the bot's
-    # own coins valued, not the whole wallet: a coin of someone else's with no price (an airdrop) kept it off for as long
-    # as it was held (audit 22 Nov, round#0); the whole move is then said not to be known.
+    # own coins valued, not the whole wallet: a coin of someone else's with no price (an airdrop) kept it off for as
+    # long as it was held (audit 22 Nov, round#0); the whole move is then said not to be known.
     own = bot_result(snap, prev)
     if own is not None:
         if abs(own) > cfg.equity_alert_sol:
@@ -320,7 +320,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
                      else "(the whole move is not known: a coin that is not the bot's has no price)")  # fmt: skip
             rest = " (the rest is the owner's)" if total is not None and ref is not None else ""
             events.append(f"equity moved {whole}, {own:+.3f} SOL of it by the bot's own trades and coins{rest}")
-    elif total is not None and ref is not None:
+    elif total is not None and ref is not None and not getattr(snap, "tape_behind", False):
+        # (a round whose tape is behind the wallet tells nothing: what its balances show may not be on the tape yet)
         move = total - ref
         # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the whole
         # move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;

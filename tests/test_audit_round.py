@@ -467,3 +467,74 @@ def test_round13_the_digest_reports_no_wallet_change_the_owner_made(world):
     snap = Snapshot(ts=NOW, native_sol=0.0027, wsol=0.0538, snipers=[], held=[])
     text = digest_text(snap, [], Ledger(paths.spend, {}), st, NOW, paths=paths)
     assert "since the last digest" not in text and "wallet: 0.057 SOL, 0 coin(s) held" in text, text
+
+
+# -- round#3: a trade the tape writes after the round read it is counted, once ----------------------------------------
+
+
+def sig(name, ts, err=None):
+    return {"signature": name, "blockTime": ts, "err": err}
+
+
+def take_rpc(st, cfg, paths, prev, now, rpc):
+    return asyncio.run(take_snapshot(Svc(st, rpc), paths, cfg, prev=prev, now=now, services=lambda: UP))
+
+
+def test_round3_a_sale_written_after_the_round_read_the_tape_is_counted_by_a_later_round(book):
+    """The fills were read by block time since the last round's start, with no lookback and no record of what was
+    counted: a sale whose block time fell just before the round, and which the tape wrote after the round read it, was
+    counted by no round. Each round reads an hour back and skips what an earlier round counted."""
+    st, cfg, paths = book
+    trade(st, "buy1", 1000, COIN, True, 1.0, BOT_BUY_FEES)
+    tick(st, 1095)
+    a = take(st, cfg, paths, None, 1100.4, 4.0, [coin(COIN, 1.0)])
+    tick(st, 1993)  # the tape is 6.6 s behind round B, as on the server
+    b = take(st, cfg, paths, a, 1999.6, 5.0, [])  # the wallet shows the sale; the tape does not have it yet
+    trade(st, "sell1", 1997, COIN, False, 1.0, BOT_SELL_FEES)
+    tick(st, 2895)
+    c = take(st, cfg, paths, b, 2899.0, 5.0, [])
+    assert (b.bot_cash or 0) == 0.0 and c.bot_cash == pytest.approx(0.996995)
+    assert [f["side"] for f in c.fills] == ["sell"]
+    tick(st, 3795)
+    d = take(st, cfg, paths, c, 3800.0, 5.0, [])
+    assert d.fills == [] and d.bot_cash == 0.0  # counted once
+
+
+def test_round3_a_round_whose_tape_is_behind_the_wallet_carries_its_baseline(book):
+    """The same sale, read through the node: the wallet's newest transaction (its signatures, at 'confirmed') is newer
+    than anything the tape has written, so the round cannot tell the bot's result yet. It pages nothing and carries the
+    baseline, and the next round, with the sale on the tape, finds the bot's result whole (about 0)."""
+    st, cfg, paths = book
+    trade(st, "buy1", 1000, COIN, True, 1.0, BOT_BUY_FEES)
+    tick(st, 1095)
+    a = take_rpc(st, cfg, paths, None, 1100.4, Rpc(4_000_000_000, {COIN: 1_000_000_000}, [sig("buy1", 1000)]))
+    assert a.tape_behind is False and a.ref_ours_sol == pytest.approx(1.0)
+    tick(st, 1993)
+    rpc = Rpc(5_000_000_000, {}, [sig("sell1", 1997), sig("buy1", 1000)])
+    b = take_rpc(st, cfg, paths, a, 1999.6, rpc)
+    assert b.tape_behind is True and not b.bot_valued
+    assert b.ref_ours_sol == pytest.approx(1.0) and b.equity_ref == a.equity_ref
+    assert [p[-1] for m, p in rpc.calls if m == "getSignaturesForAddress"] == [{"limit": 50, "commitment": "confirmed"}]
+    assert not bot_lines(paths, b, a, 1999.6) and not [
+        r for r in decide_in(paths, b, a, 1999.6).reasons if "equity" in r
+    ]
+    trade(st, "sell1", 1997, COIN, False, 1.0, BOT_SELL_FEES)
+    tick(st, 2895)
+    c = take_rpc(st, cfg, paths, b, 2899.0, Rpc(5_000_000_000, {}, [sig("sell1", 1997), sig("buy1", 1000)]))
+    assert c.tape_behind is False and not bot_lines(paths, c, b, 2899.0)
+    assert c.ref_ours_sol == 0.0 and c.bot_cash_since_ref == 0.0  # valued: the baseline is this round
+
+
+def test_round3_a_snapshot_from_before_the_record_is_not_counted_twice(book):
+    """A snapshot written before the record of counted trades counted every trade up to its own time: the first round
+    after it reads from there, not an hour back."""
+    from snipetech.operator.snapshot import Snapshot
+
+    st, cfg, paths = book
+    trade(st, "buy1", 1000, COIN, True, 1.0, BOT_BUY_FEES)
+    tick(st, 1095)
+    legacy = Snapshot(ts=1100.0, wallet=W, native_sol=4.0, wsol=0.0, equity_ref=5.0, ref_ours_sol=1.0,
+                      bot_cash_since_ref=0.0, held=[coin(COIN, 1.0) | {"since": 1100.0, "ours": True}])  # fmt: skip
+    tick(st, 1995)
+    b = take(st, cfg, paths, legacy, 2000.0, 4.0, [coin(COIN, 1.0)])
+    assert b.fills == [] and b.bot_cash == 0.0 and b.counted == {}

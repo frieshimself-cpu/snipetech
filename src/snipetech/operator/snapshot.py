@@ -68,6 +68,11 @@ class Snapshot:
     bot_cash_since_ref: float | None = None  # the same since the round that set equity_ref (carried with it)
     ref_ours_sol: float | None = None  # what the bot's own coins were worth in the round that set equity_ref
     held_ts: float | None = None  # when `held` was read from the wallet (a round that could not read it keeps the last)
+    # the wallet's trades counted into bot_cash ("sig:ev" -> block time) since `counted_from`: a round reads back to
+    # there and skips these, so a trade the tape writes late is counted by a later round, and once (round#3)
+    counted: dict[str, int] | None = None
+    counted_from: float | None = None
+    tape_behind: bool = False  # the wallet has a transaction newer than anything the tape had written when it was read
 
     @property
     def equity(self) -> float | None:
@@ -92,8 +97,10 @@ class Snapshot:
     def bot_valued(self) -> bool:
         """Whether this round can value what the bot holds: the balances were read and every coin of the bot's (`ours`)
         has a price. A coin that is not the bot's (an airdrop the tape never priced, the owner's coin on a venue it does
-        not record) leaves the whole wallet unvalued, never the bot's own result (audit 22 Nov, round#0)."""
-        if self.native_sol is None or self.wsol is None:
+        not record) leaves the whole wallet unvalued, never the bot's own result (audit 22 Nov, round#0). Nor can it
+        while the tape is behind the wallet (`tape_behind`): a trade the balances show may not be on the tape yet
+        (round#3)."""
+        if self.native_sol is None or self.wsol is None or self.tape_behind:
             return False
         return all(h.get("priced") is not False and h.get("value_sol") is not None
                    for h in self.held or [] if h.get("ours", True))  # fmt: skip
@@ -231,15 +238,25 @@ def systemd_services(units: tuple[str, ...] | None = None) -> dict[str, str]:
     return out
 
 
-async def transaction_counts(svc, wallet: str, now: float, window: int = 3600) -> tuple[int | None, int | None]:
-    """(failed, landed) transactions of the wallet inside `window` seconds; (None, None) when the RPC does not answer."""
+async def wallet_signatures(svc, wallet: str, now: float,
+                            window: int = 3600) -> tuple[int | None, int | None, int | None]:  # fmt: skip
+    """(failed, landed) transactions of the wallet inside `window` seconds, and the block time of its newest landed one
+    (any age), read at "confirmed" as the balances are (the node's default, finalized, misses the last 13 s); Nones when
+    the RPC does not answer."""
     try:
-        sigs = await svc.rpc.call("getSignaturesForAddress", [wallet, {"limit": 50}])
+        sigs = await svc.rpc.call("getSignaturesForAddress", [wallet, {"limit": 50, "commitment": "confirmed"}])
     except Exception:  # noqa: BLE001
-        return None, None
+        return None, None, None
     recent = [s for s in sigs or [] if (s.get("blockTime") or 0) >= now - window]
     failed = sum(1 for s in recent if s.get("err") is not None)
-    return failed, len(recent) - failed
+    landed = [int(s["blockTime"]) for s in sigs or [] if s.get("err") is None and s.get("blockTime") is not None]
+    return failed, len(recent) - failed, max(landed, default=None)
+
+
+async def transaction_counts(svc, wallet: str, now: float, window: int = 3600) -> tuple[int | None, int | None]:
+    """(failed, landed) transactions of the wallet inside `window` seconds; (None, None) when the RPC does not answer."""
+    failed, landed, _newest = await wallet_signatures(svc, wallet, now, window)
+    return failed, landed
 
 
 async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) -> int | None:
@@ -357,8 +374,9 @@ def fills_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str,
     if not marks["buy"]:
         return "ours"
     try:
-        rows = store._q("SELECT side, sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills WHERE wallet=? "
-                        "AND mint=? AND ts>=? AND side IN ('buy', 'sell') ORDER BY ts DESC, slot DESC LIMIT 1",
+        rows = store._q("SELECT side, sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills "
+                        "WHERE wallet=? AND mint=? AND ts>=? AND side IN ('buy', 'sell') ORDER BY ts DESC, slot DESC "
+                        "LIMIT 1",
                         (wallet, mint, int(since_ts)))  # fmt: skip
     except Exception:  # noqa: BLE001 - not readable now: the next round asks again
         return None
@@ -408,6 +426,21 @@ def mark_held(store, wallet: str, held: list[dict], prev: Snapshot | None = None
     return out
 
 
+FILLS_LOOKBACK_SECS = 3600  # a round reads the wallet's trades this far back: one the tape writes late is still counted
+
+
+def fills_window(prev: Snapshot | None, now: float) -> tuple[float, dict[str, int]]:
+    """Where this round reads the wallet's trades from (block time, after it) and which of them are counted already:
+    back to the previous snapshot's `counted_from`, skipping its `counted`; from the previous round's own time for a
+    snapshot written before that record existed (it had counted every trade up to then); an hour back with none."""
+    if prev is None:
+        return now - 3600, {}
+    if getattr(prev, "counted", None) is None:
+        return float(prev.ts), {}
+    start = prev.counted_from if getattr(prev, "counted_from", None) is not None else prev.ts
+    return float(start), dict(prev.counted)
+
+
 def carry_since(held: list[dict], prev: Snapshot | None, now: float) -> list[dict]:
     """Each held coin keeps the time it was first seen (from the previous snapshot when it was held then too), so
     the gate can tell a stuck position from one the book bought minutes ago."""
@@ -448,58 +481,79 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"tape: {exc}")
     if wallet:
+        store = getattr(svc, "store", None)
+        held: list[dict] | None = None  # the wallet's coins as read this round; None when the read failed
         try:
-            # the owner's ignored coins are no holding here either (audit 22 Nov, round#5: the watch offers that list for
-            # a stray coin, and the round kept counting it)
+            # the owner's ignored coins are no holding here either (audit 22 Nov, round#5: the watch offers that list
+            # for a stray coin, and the round kept counting it)
             ignore = tuple(str(m) for m in cfg.operator.ignore_mints or ())
             res = balances(wallet) if balances else rpc_balances(svc, wallet, ignore=ignore)
             if hasattr(res, "__await__"):
                 res = await res
-            snap.native_sol, snap.wsol, held = res
-            snap.held = mark_held(getattr(svc, "store", None), wallet, carry_since(list(held or []), prev, now), prev,
-                                  now)  # fmt: skip
-            snap.held_ts = now
-            total = snap.total_equity
-            snap.equity_ref = total if total is not None else getattr(prev, "equity_ref", None)
-            clear_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, now)
+            snap.native_sol, snap.wsol, read = res
+            held, snap.held_ts = carry_since(list(read or []), prev, now), now
+            clear_refusal(store, RPC_REFUSED_KEY, now)
         except Exception as exc:  # noqa: BLE001
             if refusal_status(exc) is not None:  # Helius turned the key away: an alert once it lasts (resources)
-                note_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, exc, now)
+                note_refusal(store, RPC_REFUSED_KEY, exc, now)
             snap.errors.append(scrub(f"balances: {exc}"))
-            snap.equity_ref = (
-                getattr(prev, "equity_ref", None) if prev is not None else None
-            )  # keep the last valued equity
-            # and the coins as last read (`stale`), with their answers and that read's time: a snapshot with none made
-            # the next round date every coin "first seen now", and the owner's coin read as the bot's (round#1)
+            # the coins as last read (`stale`), with their answers and that read's time: a snapshot with none made the
+            # next round date every coin "first seen now", and the owner's coin read as the bot's (round#1)
             snap.held = [h | {"stale": True} for h in (prev.held if prev is not None else None) or []]
             snap.held_ts = last_read(prev)
-        if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
-            snap.failed_tx_1h, snap.ok_tx_1h = await transaction_counts(svc, wallet, now)
+        newest = None
+        if balances is None:  # the real RPC path also counts failed transactions and dates the wallet's newest one
+            snap.failed_tx_1h, snap.ok_tx_1h, newest = await wallet_signatures(svc, wallet, now)
+        # the wallet's trades since the window's start, less those an earlier round counted: one the tape writes after
+        # a round read it is counted by a later round, once (audit 22 Nov, round#3: such a sale was counted by none)
+        start, counted = fills_window(prev, now)
+        rows, frontier = None, None
         try:
-            rows = svc.store._q("select ts, mint, is_buy, quote, priority, tip, fee, slot, pos from trades where user=? "
-                                "and ts>? order by ts", (wallet, since))  # fmt: skip
-            snap.fills = mark_ours(svc.store, [
-                {"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4), "priority": pr,
-                 "tip": tp, "slot": sl, "pos": po} for ts, m, b, q, pr, tp, _fe, sl, po in rows], prev, wallet)  # fmt: skip
-            snap.bot_cash = round(sum(trade_cash(b, q, fe, pr, tp) for (_ts, _m, b, q, pr, tp, fe, _sl, _po), f
-                                      in zip(rows, snap.fills, strict=True) if f.get("ours", True)), 9)  # fmt: skip
+            frontier = svc.store._q("select max(ts) from trades")[0][0]
+            rows = svc.store._q("select sig, ev, ts, mint, is_buy, quote, priority, tip, fee, slot, pos from trades "
+                                "where user=? and ts>? order by ts", (wallet, start))  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
             snap.fills_unread, snap.bot_cash = True, None
+        # the wallet's newest transaction (a trade, a deposit) no older than the newest trade on the tape: what the
+        # balances show may not be on the tape yet, so this round cannot tell the bot's result and carries its baselines
+        snap.tape_behind = (held is not None and rows is not None and newest is not None
+                            and (frontier is None or int(newest) >= int(frontier)))  # fmt: skip
+        if held is not None:  # whose each coin is, asked after the trades were read: a buy counted below is seen there
+            try:
+                snap.held = mark_held(store, wallet, held, prev, now)
+            except Exception as exc:  # noqa: BLE001 - the coins still count; whose they are is asked again next round
+                snap.errors.append(f"whose: {exc}")
+                snap.held = held
+        if rows is not None:
+            new = [r for r in rows if f"{r[0]}:{r[1]}" not in counted]
+            trades = [{"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4),
+                       "priority": pr, "tip": tp, "slot": sl, "pos": po}
+                      for _s, _e, ts, m, b, q, pr, tp, _fe, sl, po in new]  # fmt: skip
+            snap.fills = mark_ours(svc.store, trades, prev, wallet)
+            snap.bot_cash = round(sum(trade_cash(b, q, fe, pr, tp) for (_s, _e, _ts, _m, b, q, pr, tp, fe, _sl, _po), f
+                                      in zip(new, snap.fills, strict=True) if f.get("ours", True)), 9)  # fmt: skip
+            counted |= {f"{s}:{e}": int(ts) for s, e, ts, *_rest in new}
+            snap.counted_from = max(start, now - FILLS_LOOKBACK_SECS)
+            snap.counted = {k: ts for k, ts in counted.items() if ts > snap.counted_from}
+        else:  # nothing read: the next round reads from the same place
+            snap.counted, snap.counted_from = counted, start
         # the gate measures the move from equity_ref, which a round with an unpriced coin carries from an older round:
         # the bot's trades since then are carried with it, or a loss read later with no trade in that round is missed
+        valued = snap.total_equity is not None and not snap.tape_behind
+        snap.equity_ref = snap.total_equity if valued else getattr(prev, "equity_ref", None)
         ours_now = snap.fills_unread or any(f.get("ours", True) for f in snap.fills)
-        snap.bot_since_ref = snap.total_equity is None and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)
-        # and the bot's own result since then (the gate's alert, review of 22 Nov): its trades' SOL and its coins' worth,
-        # whose baseline moves whenever the bot's own coins are valued, whatever else the wallet holds (round#0)
-        if snap.bot_valued:  # this round values the bot's coins: the baseline is this round
+        snap.bot_since_ref = not valued and (bool(getattr(prev, "bot_since_ref", False)) or ours_now)
+        # and the bot's own result since then (the gate's alert, review of 22 Nov): its trades' SOL and its coins'
+        # worth, whose baseline moves whenever the bot's own coins are valued, whatever else the wallet holds (round#0),
+        # and its trades were read (unread ones are counted by a later round, from the same window)
+        if snap.bot_valued and not snap.fills_unread:  # this round values the bot's coins: the baseline is this round
             snap.ref_ours_sol = round(sum(float(h["value_sol"]) for h in snap.held if h.get("ours", True)), 9)
             snap.bot_cash_since_ref = 0.0
         else:
             snap.ref_ours_sol = getattr(prev, "ref_ours_sol", None)
             before = getattr(prev, "bot_cash_since_ref", None)
-            snap.bot_cash_since_ref = (None if before is None or snap.bot_cash is None
-                                       else round(float(before) + snap.bot_cash, 9))  # fmt: skip
+            snap.bot_cash_since_ref = None if before is None else round(float(before) + float(snap.bot_cash or 0), 9)
     try:
         st = await svc.oktech_status()
         snap.snipers = [
