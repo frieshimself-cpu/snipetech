@@ -530,7 +530,7 @@ failed duplicates 25 paid the buy priority and 3 an older sniper's 0.002; not on
 under the buy's is not used, and the duplicate sells were never made free. The same claim stood in the code's own
 texts: `config.py` and `fees.py`'s module text were corrected on 12 Nov; `fees.RULE` and the sell priority's reason,
 `playbook.py` (item 4, which every deciding agent reads), `oktech.autosell`, `read_fee_policy` and the strategist's
-prompt by the audit of 22 Nov. Every sell (23) and failed send (48) on `fills` since 20 Nov paid 1,000,000 lamports of
+prompt by the audit of 22 Nov. Every sell (23) and failed send (50) on `fills` since 20 Nov paid 1,000,000 lamports of
 priority, the buy's.
 
 **What it costs the ladder.** At a buy priority of 0.005 SOL every landed sell pays 0.005 again, and every tipped

@@ -36,7 +36,7 @@ STALE_SELL_PRIORITY = ("what each twin pays", "what each failed twin pays", "the
 def test_no_agent_text_says_the_failed_twins_pay_the_sell_priority():
     """docs#3: config.py and docs/oktech-playbook.md (1d) were corrected on 12 Nov: OKTech does not charge the sell
     priority we send; 18 of 19 landed sells and 25 of 28 failed twins of 8-12 Nov paid the sniper's buy priority, and
-    every sell (23) and failed send (48) since 20 Nov paid 1,000,000 lamports, the buy's. The playbook every deciding
+    every sell (23) and failed send (50) since 20 Nov paid 1,000,000 lamports, the buy's. The playbook every deciding
     agent reads, the fee policy's rule and reasons, read_fee_policy and the strategist still said the sell priority is
     near zero and is what each failed twin pays: a cap on it changes nothing, and twins were priced at a tenth."""
     import inspect
