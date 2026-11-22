@@ -50,11 +50,12 @@ LANDING_KEY = "measure:landing_pos"
 LANDING_OFFSET = 3  # lab position = buys behind the leader + 3 (calibrated on the 6 Nov copy test)
 BASE_FEE_LAMPORTS = 5000
 SHADOW_MAX_PER_RUN = 200  # buys replayed in one run at most, newest first (a replay reads the coin's tape)
-# What a replay charges changed: since the 22 Nov audit each sale pays a sale's own fee and the buy's bid is paid once
-# (exits._sale_fee_sol). A replay made before the version below is made again, newest first, as a new one is (a new
-# EXIT_MENU_VERSION would reset the verdicts' exits too); the record says from when the replays are of this version.
-SHADOW_COST_KEY = "measure:shadow_costs"
-SHADOW_COST_VERSION = 2
+# What a replay is changed with the 22 Nov audit: each sale pays a sale's own fee and the buy's bid is paid once
+# (exits._sale_fee_sol), and the exit the buying sniper ran is replayed beside the menu (exits.exit_that_ran: hold12). A
+# replay made before the version below is made again, newest first, as a new one is (a new EXIT_MENU_VERSION would reset
+# the verdicts' exits too); the record says from when the replays are of this version.
+SHADOW_VERSION_KEY = "measure:shadow_version"
+SHADOW_VERSION = 2
 
 
 def shadow_new_buys(store: Store, cfg: Config, wallet: str, now: float, since_ts: int,
@@ -65,10 +66,10 @@ def shadow_new_buys(store: Store, cfg: Config, wallet: str, now: float, since_ts
     for all of them. Only the bot's buys (measure/ours.bot_buy, by `marks`): an owner's hand buy right after a copied
     wallet's is no copy of ours."""
     marks = fee_marks(store) if marks is None else marks
-    mark = store.coverage(SHADOW_COST_KEY)
-    if mark.get("version") != SHADOW_COST_VERSION or mark.get("ts") is None:
-        mark = {"version": SHADOW_COST_VERSION, "ts": int(now)}
-        store.set_coverage(SHADOW_COST_KEY, mark)
+    mark = store.coverage(SHADOW_VERSION_KEY)
+    if mark.get("version") != SHADOW_VERSION or mark.get("ts") is None:
+        mark = {"version": SHADOW_VERSION, "ts": int(now)}
+        store.set_coverage(SHADOW_VERSION_KEY, mark)
     done = {r[0] for r in store._q("SELECT DISTINCT buy_sig FROM exit_shadow WHERE menu_version=? AND computed_at>=?",
                                    (EXIT_MENU_VERSION, int(mark["ts"])))}  # fmt: skip
     due = [b for b in store.fills(wallet=wallet, since_ts=int(since_ts), side="buy", limit=100_000)
@@ -79,9 +80,13 @@ def shadow_new_buys(store: Store, cfg: Config, wallet: str, now: float, since_ts
     due.sort(key=lambda b: (-float(b["ts"]), b["sig"]))
     newest = int(float(due[0]["ts"]))
     slot_secs = span_slot_secs(store, newest - 1800, newest + SHADOW_AFTER_SECS)
-    rows = copy_sniper_rows(store)  # the buying sniper's config: what each replayed sale pays
-    return sum(1 for b in due[:limit] if shadow_exits(store, b, cfg=cfg, now=now, slot_secs=slot_secs,
-                                                      payload=(buying_sniper(rows, b) or {}).get("payload")))  # fmt: skip
+    rows = copy_sniper_rows(store)  # the buying sniper's config: what each replayed sale pays, the exit it ran
+
+    def payload(b: dict) -> dict | None:
+        return (buying_sniper(rows, b) or {}).get("payload")
+
+    return sum(1 for b in due[:limit]
+               if shadow_exits(store, b, cfg=cfg, now=now, slot_secs=slot_secs, payload=payload(b)))  # fmt: skip
 
 
 def _weights(ts_list: list[float], now: float, half_life_days: float) -> list[float]:
@@ -741,6 +746,14 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     # three hand buys were 3 of the paid arm's 8 fills)
     bot_buys = [b for b in all_buys if bot_buy(b, marks)]
     bot_sigs = {b["sig"] for b in bot_buys}
+    # a buy named 'custom' before its sniper's exit had a name (holdN: 22 Nov audit, every copy since 20 Nov 23:03) is
+    # named again, and the sales that close it below with it
+    for b in bot_buys:
+        if b.get("exit_name") == "custom" and b.get("wallet_copied"):
+            named = preset_name((buying_sniper(copy_rows, b) or {}).get("payload"))
+            if named and named != "custom":
+                b["exit_name"] = named
+                store.put_fill(b)
     # failed twins of each landed sell: their cost is the trip's too, so the live expectancy per wallet includes it
     all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
     bot_failed = [f for f in all_failed if bot_send(f, marks)]

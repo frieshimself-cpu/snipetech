@@ -141,9 +141,9 @@ def arm_for(store: Store, sniper_id: str | None) -> str:
 
 
 # The copied buy is looked for this far before ours (a minute), by the tape reading as by the chain reading
-# (chain_landing). A copy lands in the copied wallet's block or the next; a buy of the coin by a copied wallet minutes or
-# hours before ours is not what ours copied (22 Nov audit: with no limit the owner's hand buy 2.8 hours after one became
-# a live copy of that wallet, 40 trades behind it).
+# (chain_landing). A copy lands in the copied wallet's block or the next; a buy of the coin by a copied wallet
+# minutes or hours before ours is not what ours copied (22 Nov audit: with no limit the owner's hand buy 2.8 hours
+# after one became a live copy of that wallet, 40 trades behind it).
 LEADER_WINDOW_SLOTS = 150
 
 

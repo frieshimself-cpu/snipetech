@@ -306,8 +306,9 @@ def test_measure_2_the_fee_policys_evidence_is_the_bots_own_fills():
                             "trades_behind": 2, "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
         st.put_fill(base | {"sig": "bot-s", "ts": NOW - 888, "side": "sell", "sol": 0.19, "buy_sig": "bot-b",
                             "pnl_sol": -0.01, "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
-        st.put_fill(base | {"sig": "hand-b", "ts": NOW - 600, "side": "buy", "sol": 2.5, "wallet_copied": LEAD,
-                            "trades_behind": 0, "priority_lamports": HAND_FEES[0], "tip_lamports": HAND_FEES[1]})  # fmt: skip
+        hand = {"priority_lamports": HAND_FEES[0], "tip_lamports": HAND_FEES[1]}
+        st.put_fill(base | hand | {"sig": "hand-b", "ts": NOW - 600, "side": "buy", "sol": 2.5, "wallet_copied": LEAD,
+                                   "trades_behind": 0})  # fmt: skip
         st.put_fill(base | {"sig": "hand-s", "ts": NOW - 500, "side": "sell", "sol": 2.4, "buy_sig": "hand-b",
                             "pnl_sol": -0.1, "priority_lamports": HAND_FEES[0], "tip_lamports": 0})  # fmt: skip
         assert sorted(r["sig"] for r in fees.evidence_fills(st, W, NOW)) == ["bot-b", "bot-s"]
@@ -478,8 +479,8 @@ def test_measure_6_a_bigger_buy_tip_lowers_each_replay_by_the_tip_once():
     try:
         buy = _shadow_world(st)
         low = {r["exit_name"]: r["sim_pnl_sol"] for r in shadow_exits(st, buy, now=NOW + 400, slot_secs=0.214)}
-        high = {r["exit_name"]: r["sim_pnl_sol"]
-                for r in shadow_exits(st, buy | {"tip_lamports": 199_000_000}, now=NOW + 400, slot_secs=0.214)}  # fmt: skip
+        tipped = buy | {"tip_lamports": 199_000_000}
+        high = {r["exit_name"]: r["sim_pnl_sol"] for r in shadow_exits(st, tipped, now=NOW + 400, slot_secs=0.214)}
         assert low and set(low) == set(high)
         assert all(abs(low[n] - high[n] - 0.197) < 1e-6 for n in low), {n: low[n] - high[n] for n in low}
     finally:
@@ -490,7 +491,7 @@ def test_measure_6_a_replay_made_at_the_old_costs_is_made_again_once(tmp_path):
     """measure#6: the replays on record were made at the old costs; each is made again once, newest first (a marker of
     the costs' version, not a new menu version, which would reset the verdicts' exits too)."""
     from snipetech.exits_menu import EXIT_MENU_VERSION
-    from snipetech.measure.run import SHADOW_COST_KEY, SHADOW_COST_VERSION, shadow_new_buys
+    from snipetech.measure.run import SHADOW_VERSION, SHADOW_VERSION_KEY, shadow_new_buys
 
     st, cfg = _svc(tmp_path)[1:]
     try:
@@ -499,8 +500,58 @@ def test_measure_6_a_replay_made_at_the_old_costs_is_made_again_once(tmp_path):
         st.put_exit_shadow([{"buy_sig": buy["sig"], "exit_name": "lab", "menu_version": EXIT_MENU_VERSION,
                              "sim_pnl_sol": -9.0, "sim_reason": "timer", "computed_at": NOW + 100}])  # fmt: skip
         assert shadow_new_buys(st, cfg, W, NOW + 400, NOW - 3600) == 1
-        assert st.coverage(SHADOW_COST_KEY)["version"] == SHADOW_COST_VERSION
+        assert st.coverage(SHADOW_VERSION_KEY)["version"] == SHADOW_VERSION
         assert {r["exit_name"]: r["sim_pnl_sol"] for r in st.exit_shadow([buy["sig"]])}["lab"] != -9.0
         assert shadow_new_buys(st, cfg, W, NOW + 500, NOW - 3600) == 0  # once
+    finally:
+        st.close()
+
+
+# -- measure#5: the live exit hold12 has its name and its replay -------------------------------------------------------
+
+
+def _hold12_payload():
+    from snipetech.oktech import list_copy_sniper
+
+    return list_copy_sniper(LEAD, "Decu", 2.0, 3.5, cfg=Config(), exit_name="hold12").config
+
+
+def test_measure_5_the_live_hold12_exit_is_named():
+    """measure#5: preset_name knew only oktech.EXITS and the menu (lab, hold60, ride): every live copy since 20 Nov
+    23:03 ran hold12 (oktech.named_exit "holdN", the money step's exit) and was recorded as 'custom'."""
+    from snipetech.measure.exits import preset_name
+
+    assert preset_name(_hold12_payload()) == "hold12"
+    timer = {"autoSell": {"enabled": True, "sellAfterSeconds": 30, "sellPercent": 50}}  # half at 30 s: no holdN
+    assert preset_name(timer) == "custom"
+
+
+def test_measure_5_the_exit_that_ran_is_replayed_and_compared(tmp_path):
+    """measure#5: the shadow replayed the menu only, so the exit that ran (hold12) was never replayed: _exit_block had
+    no replay of it, _copy_exits dropped every such copy, and the exit lever, exit_record and the post-mortem's exit
+    comparison held none of the size copies. A buy named 'custom' before is named again, its sales too."""
+    from snipetech.exits_menu import COPY_EXIT_MENU
+    from snipetech.measure.attribution import exit_record
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        payload = _hold12_payload()
+        st.add_oktech_sniper({"id": "cs1", "external_id": "cs1", "kind": "copy", "source": LEAD, "name": "copy lead",
+                              "config_hash": "h", "created_at": NOW - 86400, "payload": payload})  # fmt: skip
+        buy = _shadow_world(st)
+        metas = {buy["sig"]: _meta(buy["sig"], (1_000_000, 2_000_000))}
+        sale = next(t for t in st.trades_for_mint(buy["mint"]) if t.user == W and not t.is_buy)
+        metas[sale.sig] = _meta(sale.sig, BOT_SALE_FEES)
+        _measure(svc, cfg, metas, now=NOW + 400, since=NOW - 600)
+        assert st.fill(buy["sig"])["exit_name"] == "hold12" and st.fill(sale.sig)["exit_name"] == "hold12"
+        replays = {r["exit_name"] for r in st.exit_shadow([buy["sig"]])}
+        assert replays == {m.name for m in COPY_EXIT_MENU} | {"hold12"}
+        record = exit_record(st, W)
+        assert len(record) == 1 and record[0]["ran"] == "hold12" and record[0]["gain_sol"] is not None
+        # a buy recorded as 'custom' before the name existed is named again by the next run, and so are its sales
+        st.put_fill(st.fill(buy["sig"]) | {"exit_name": "custom"})
+        st.put_fill(st.fill(sale.sig) | {"exit_name": "custom"})
+        _measure(svc, cfg, metas, now=NOW + 500, since=NOW + 450)
+        assert st.fill(buy["sig"])["exit_name"] == "hold12" and st.fill(sale.sig)["exit_name"] == "hold12"
     finally:
         st.close()

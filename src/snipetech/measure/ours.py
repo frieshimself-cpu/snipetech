@@ -6,10 +6,11 @@ the bot's loss and stopped every live trade for the day). None of that is the bo
 
 A buy is the bot's when the measure stage tied it to a sniper, or when it paid the fees one of our snipers pays (the
 payloads we sent OKTech: its priority and tip on a buy, and the same priority with no tip, as a copy of 22 Nov 00:19
-went out). A copied wallet on the buy says nothing alone: the owner's own tool pays the snipers' priority too. A sale is the bot's when it closes such a buy, or when it paid a sniper's sale fees (OKTech
-pays a sale the buy's priority: every sale since 20 Nov paid 0.001 SOL and its 0.002 tip under a sellPriorityFeeSol of
-0.0001) or the fees of the run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees
-not known, nothing tells a hand trade apart, and the trade counts as the bot's, as before.
+went out). A copied wallet on the buy says nothing alone: the owner's own tool pays the snipers' priority too. A sale
+is the bot's when it closes such a buy, or when it paid a sniper's sale fees (OKTech pays a sale the buy's priority:
+every sale since 20 Nov paid 0.001 SOL and its 0.002 tip under a sellPriorityFeeSol of 0.0001) or the fees of the
+run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees not known, nothing tells a
+hand trade apart, and the trade counts as the bot's, as before.
 
 `RunCoins` asks the same of a coin the wallet holds, for one run of the runner (service.oktech_cycle), live: the tape's
 buy of it since it showed, or the chain's when the tape has none.
