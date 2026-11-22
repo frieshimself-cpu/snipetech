@@ -38,6 +38,20 @@ def _tx(sig, payer, priority, pre, post):
                  "preTokenBalances": bal(pre) if pre else [], "postTokenBalances": bal(post)}}  # fmt: skip
 
 
+LEARNED = "Learned" + "3" * 37  # a tip account the recorder learned from amounts, outside the fixed list
+
+
+def _tx_tipped(sig, payer, priority, tip_to, lamports):
+    """A getTransaction answer as `_tx` makes it, and a transfer of `lamports` from the payer to `tip_to`."""
+    from snipetech.solana.base58 import b58encode
+
+    tx = _tx(sig, payer, priority, 0, 1_000_000)
+    tx["transaction"]["message"]["accountKeys"] += [tip_to, "11111111111111111111111111111111"]
+    data = (2).to_bytes(4, "little") + int(lamports).to_bytes(8, "little")
+    tx["transaction"]["message"]["instructions"] = [{"programIdIndex": 3, "accounts": [0, 2], "data": b58encode(data)}]
+    return tx
+
+
 class _Rpc:
     """The chain as the runner's RPC reads it: the token account's signatures, newest first, and each transaction."""
 
@@ -169,6 +183,20 @@ def test_a_chain_read_that_never_answers_tells_nothing_yet(monkeypatch):
     monkeypatch.setattr(O, "CHAIN_READ_SECS", 0.05)
     rpc = Hung({})
     assert _whose(RunCoins(Store(":memory:"), rpc, W, RUN)) is None and rpc.reads == 1
+
+
+def test_the_chain_read_counts_a_tip_paid_to_a_learned_account(monkeypatch):
+    """Review of 22 Nov: the chain read knew only the fixed list of landing services' tip accounts, while the tape reads
+    a trade's tip with the accounts the recorder learned too. A hand buy at our snipers' priority (0.001 SOL) whose tip
+    went to a learned account read as untipped, one of the run's own marks: the run would have sold the owner's coin."""
+    from tests.test_tip_learned import applied
+
+    store = Store(":memory:")
+    applied(store, LEARNED)
+    hand = {"hand": _tx_tipped("hand", W, 1_000_000, LEARNED, 30_000_000)}
+    assert _whose(RunCoins(store, _Rpc(hand), W, RUN)) == "owner"
+    ours = {"ours": _tx_tipped("ours", W, 1_000_000, LEARNED, 199_000_000)}  # the run's own tip, to the same account
+    assert _whose(RunCoins(store, _Rpc(ours), W, RUN)) == "ours"
 
 
 def test_a_coin_with_no_token_account_known_waits_for_the_tape():

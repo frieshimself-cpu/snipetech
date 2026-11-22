@@ -352,6 +352,25 @@ def test_a_copy_buy_is_the_bots_whatever_its_fees(env):
     assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)["realised_sol"] == pytest.approx(-0.025)
 
 
+def test_a_hand_buy_after_a_copied_wallets_is_no_result_of_the_bot(env):
+    """Review of 22 Nov: the measure stage writes the copied wallet on every buy of the wallet that came after one of
+    its buys of the coin, the owner's hand buys too, and that alone made a buy the bot's. A copied wallet counts only on
+    a buy whose priority is a sniper's (a copy whose tip changed since its payload was recorded is still ours)."""
+    _paths, store, _cfg = env
+    _measured(store, NOW - 60)
+    _sniper(store)
+    cented = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"
+    store.put_fill({"sig": "hand", "ts": NOW - 900, "wallet": W, "mint": M2, "side": "buy", "sol": 4.95,
+                    "tokens": 1_000_000, "priority_lamports": 6121, "tip_lamports": 52_000_000,
+                    "wallet_copied": cented})  # fmt: skip
+    _sell(store, "hand-s", NOW - 800, M2, pnl=-2.0, buy_sig="hand")
+    store.put_fill({"sig": "copy", "ts": NOW - 700, "wallet": W, "mint": M1, "side": "buy", "sol": 1.0,
+                    "tokens": 1_000_000, "priority_lamports": 1_000_000, "tip_lamports": 99_000_000,
+                    "wallet_copied": cented})  # fmt: skip
+    _sell(store, "copy-s", NOW - 688, M1, pnl=-0.1, buy_sig="copy")
+    assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)["realised_sol"] == pytest.approx(-0.1)
+
+
 def test_a_sale_with_no_buy_tied_to_it_is_the_bots_by_the_fees_oktech_really_pays(env):
     """Every sale of our snipers on record since 20 Nov paid 0.001 SOL priority and its 0.002 tip (19 of them), not the
     0.0001 SOL their payloads' sellPriorityFeeSol names: OKTech pays a sale the buy's priority. A sale the measure stage

@@ -84,13 +84,21 @@ def _paid(priority: Any, tip: Any, marks: frozenset[tuple[int, int]]) -> bool | 
 
 
 def bot_buy(row: dict, marks: dict[str, frozenset]) -> bool:
-    """Whether a buy in `fills` is the bot's (the module's rule)."""
-    if row.get("wallet_copied") or row.get("sniper_id"):
+    """Whether a buy in `fills` is the bot's (the module's rule): one tied to a sniper, or one whose fees are a
+    sniper's or unknown; a copied wallet on it (`wallet_copied`) counts only with a sniper's priority: the measure
+    stage writes it on every buy of the wallet that came after a copied wallet's buy of the coin, the owner's hand buys
+    too (22 Nov review), and a copy whose tip changed since its payload was recorded is still ours."""
+    if row.get("sniper_id"):
         return True
     if not marks["buy"]:
         return True
     paid = _paid(row.get("priority_lamports"), row.get("tip_lamports"), marks["buy"])
-    return True if paid is None else paid
+    if paid is None or paid:
+        return True
+    try:
+        return bool(row.get("wallet_copied")) and int(row["priority_lamports"]) in {p for p, _t in marks["buy"]}
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def bot_sale_fees(row: dict, marks: dict[str, frozenset]) -> bool:
@@ -193,16 +201,26 @@ class RunCoins:
             return None
         return self._verdict(rows[0][0], rows[0][1]) if rows else None
 
+    def _learned(self) -> dict[str, str]:
+        """The tip accounts the recorder learned and reads the tape's tips with (`Store.tip_accounts`, the marked ones,
+        as `Service.learned_tip_accounts`): the chain read counts a tip to one of them as the tape does (22 Nov review:
+        with the fixed list alone a hand buy at our priority whose tip went to one read as untipped, a mark of ours)."""
+        try:
+            return {a: "learned" for a, since in self.store.tip_accounts().items() if since}
+        except Exception:  # noqa: BLE001 - none readable: the fixed list alone, as before
+            return {}
+
     async def _chain(self, mint: str, account: str) -> str | None:
         from ..solana.txmeta import extract_tx_meta
 
+        learned = self._learned()
         for s in await self.rpc.get_signatures(account, limit=CHAIN_SIGS):
             if s.get("err"):
                 continue
             tx = await self.rpc.get_transaction(s["signature"])
             if not tx or not _brought_in(tx, self.wallet, mint):
                 continue
-            m = extract_tx_meta(tx, s["signature"])
+            m = extract_tx_meta(tx, s["signature"], services=learned)
             if m.fee_payer != self.wallet:
                 return "owner"  # another wallet sent it in: no buy of the run's
             return self._verdict(m.priority_lamports, m.tip_lamports)
