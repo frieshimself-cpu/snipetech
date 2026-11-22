@@ -6,6 +6,42 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 22 Nov, 03:00 UTC: the night's mistakes, each with its fix; the goal is now 100 SOL a day
+
+- **The goal (the owner, 22 Nov ~02:20 UTC: "not 100 sol a week 100 sol a day").** That is about what the best bot on
+  our tape makes: 6Z91 about +93 SOL a day after its bids (the section below: about 500 buys a day at about 3 SOL,
+  behind hundreds of wallets, paying for its place). Our best evidence is far below it: the big wallets' first buys
+  made money on paper every day 15-21 Nov (+42.5 SOL over 246 copies at 2 SOL with a landing up to 6 behind; +63
+  over 158 at 5 SOL), about 6-9 SOL a day before any live haircut, and no copy of ours has held its paper number live
+  yet. Getting from there to 100 needs what 6Z91 has: many more wallets copied at once, bigger buys with the bid
+  that buys the place, and the speed to land first.
+- **Live, 21-22 Nov.** 8 copies of Cented and Decu at 3.5 SOL (21 Nov 22:25 to 22 Nov 00:54): -3.6 SOL against
+  +0.08 to +0.35 a copy on paper. **A mistake of choice:** the rule was started on its positive newer days while its
+  older days and the repeat week of 7-14 Nov lost at every exit (the exit analyst's table, 22 Nov 01:32). Then the
+  1 SOL day behind Gake Side and Cooker started three times (01:54, 02:14, 02:32) and ended three times on its floor
+  with no fill, each time when SOL left the wallet without a trade.
+- **The mistakes, each with its fix** (docs/live-recipe.md has the detail):
+  1. OKTech left copy 6 unsold (its known fault: the buy that uses up a one-shot sniper can get no exit) and the
+     runner ended on its floor 9 s before its own sale (`--sweep-after 45`): about 1.3 SOL lost to it. Fixed: the
+     runner keeps watching after any end and sells what is still held (3ac64c5, deployed); the sale comes at 20 s
+     after the coin shows now, not 45.
+  2. The runner's floor counted SOL the owner took out as a trading loss: the three ends without a trade. Fixed in
+     e2cb3bc (the floor moves with SOL that leaves with no coin bought or comes in with no coin sold); its deploy
+     waits on routine jobs.
+  3. That deploy waited over 40 minutes and gave up: routine jobs (qualify, discover) hold every deploy, a live-safety
+     fix included. In the audit.
+  4. `landing` crashed on a coin move, a fill side the night's own change added (KeyError 'transfer'): fixed 6ef6dc7.
+  5. The agents could never score a momentum exit: their job tool read the "/" in MOM2%/s as a file path. Fixed
+     bceef37; the exit analyst can score momentum holds and timer extensions now.
+  6. Wrong numbers in the record: copies 4 and 5 were written as sold at the 12 s timer; they sold at 6 s and 9 s,
+     with neither of the snipers' exits due (asked of OKTech, I571). The agents had taken this session's hand sales
+     for late OKTech sales. Corrected, on the server too.
+  7. A docs-only commit was pushed after a full suite with one flaky test failing: a push now runs only after a
+     green suite (chained with &&); the flaky test has a task card.
+- **What runs on it.** A full audit of every component, each finding checked against the code and the data before
+  it is fixed (workflow of 22 Nov 02:5x), and a sweep of our data for the strategies that can scale (02:0x). Fixes
+  go in test-first and out with `remote update --when-quiet`.
+
 ## 20 Nov, 20:00 UTC: what we were missing is size, and the speed to use it
 
 - **The finding (the owner, 19:2x: "there's something we are missing, and you have to find it").** The winning copy
