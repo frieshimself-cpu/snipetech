@@ -1214,6 +1214,28 @@ def test_a_wallet_past_the_counts_reach_is_measured_only_with_enough_buys_at_the
         st.close()
 
 
+def test_a_wallet_past_the_second_reads_reach_is_measured_without_that_read(tmp_path, monkeypatch):
+    """Review of 22 Nov (qualify#4): the second read of the count reads up to PROBE_SCAN of a wallet's trades, each
+    from the table (on the live database when the hourly copy is stale), and a wallet with more trades than that is
+    measured whatever the read finds. It was made before the look through the wallet index that says so: for a bot
+    past PROBE_SCAN, 200,000 rows read for nothing. Past that reach, the wallet is measured without it."""
+    st = Store(tmp_path / "t.db")
+    try:
+        D = addr("dev")
+        for k in range(8):  # 8 trades, every buy under the floor
+            m = Market(st, addr(f"dust{k}"), D, NOW - 9000 + k * 10, SLOT + k * 25)
+            m.buy("BOT", 0.05, 1)
+            m.commit()
+        st.PROBE_SCAN = 6  # the second read would reach its first 6 trades only
+        asked: list[str] = []
+        real = st._q
+        monkeypatch.setattr(st, "_q", lambda sql, params=(): asked.append(sql) or real(sql, params))
+        assert st.coins_bought("BOT", round(0.3 * 1e9), scan=5, need=10) == (0, True)  # measured, as before
+        assert not [sql for sql in asked if "DISTINCT" in sql], asked  # without the second read
+    finally:
+        st.close()
+
+
 def test_the_count_before_the_lab_takes_only_coins_a_copy_sniper_would_buy(tmp_path):
     """20 Nov audit (pipeline 5): 11,364 of 18,266 lab verdicts had fewer than 20 copies, about half of every lab's
     4 to 19 minutes. The count before the lab took every coin bought with 0.1 SOL or more, while the lab copies a

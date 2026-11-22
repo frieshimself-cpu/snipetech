@@ -1045,15 +1045,19 @@ class Store:
         )
         more = len(rows) > scan
         if more and need is not None and coins < need:
-            on = f" AND t.venue IN ({','.join('?' * len(venues))})" if venues else ""
-            hits = self._q("SELECT DISTINCT t.mint FROM (SELECT mint, is_buy, quote, venue FROM trades WHERE user=? "
-                           "LIMIT ?) t LEFT JOIN launches l ON l.mint = t.mint WHERE t.is_buy=1 AND t.quote>=?" + on +
-                           " AND coalesce(l.user, '') <> ? AND coalesce(l.creator, '') <> ? LIMIT ?",
-                           (wallet, int(self.PROBE_SCAN), int(min_quote), *(venues or ()), wallet, wallet,
-                            int(need)))  # fmt: skip
+            # past the second read's reach a wallet is measured whatever that read finds: the wallet index says so
+            # first, without reading a row (review of 22 Nov: a bot's 200,000 trades were read first, for nothing)
             past = self._q("SELECT 1 FROM trades WHERE user=? LIMIT 1 OFFSET ?", (wallet, int(self.PROBE_SCAN)))
-            if len(hits) < need and not past:
-                return len(hits), False
+            if not past:
+                on = f" AND t.venue IN ({','.join('?' * len(venues))})" if venues else ""
+                hits = self._q("SELECT DISTINCT t.mint FROM (SELECT mint, is_buy, quote, venue FROM trades "
+                               "WHERE user=? LIMIT ?) t LEFT JOIN launches l ON l.mint = t.mint WHERE t.is_buy=1 "
+                               "AND t.quote>=?" + on + " AND coalesce(l.user, '') <> ? "
+                               "AND coalesce(l.creator, '') <> ? LIMIT ?",
+                               (wallet, int(self.PROBE_SCAN), int(min_quote), *(venues or ()), wallet, wallet,
+                                int(need)))  # fmt: skip
+                if len(hits) < need:
+                    return len(hits), False
         return coins, more
 
     def first_trade_ts(self, wallet: str) -> int | None:
