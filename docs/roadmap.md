@@ -50,8 +50,24 @@ first on the server's recording and only then run live in capped batches.
   live gap. 100 SOL a day stays unmeasured until that route is found. This bullet said before that taking the place
   needs a sender of our own with a high bid and a dozen sends a moment: the tape says a faster send or a bid alone
   does not take it; speed still counts on the 22-31 % of moments with nobody within 5 to 15 places. Any sender is
-  the owner's decision. The next facts for it: I615 (the bot's filter and what its send ladder costs) and I610 (the
-  tester scores the place on every first buy).
+  the owner's decision. The next facts for it: the route check (next), I615 (the bot's filter and what its send
+  ladder costs) and I610 (the tester scores the place on every first buy).
+- **Before any sender: the route check** (the audit of 22 Nov). Whether the place right behind these leaders exists
+  for us depends on how the closest buyers get the leader's transaction before it runs. If a validator group, or the
+  leaders' landing service, sells a place right behind that anyone can bid for, the place has a price (8r6N8w pays
+  0.48-1.0 SOL a landed buy) and the thing to build is a bundle client on that route. If the flow is private (Cented
+  and Decu pay the same trading platform's fee accounts), no sender of ours reaches +0 behind them, and the studies
+  of 8r6N8w's filter (I605-I622) answer the wrong question. Built 22 Nov, not yet run: `sends` lists every moment
+  with the first other buyer within 3 places, and `--validators` splits the moments by the block's leader (a few
+  hundred Helius credits). Still to build: reading a few of the blocks themselves (what sits at the leader's place +1
+  to +3 when it is no pump.fun trade, and where 8r6N8w's failed sends stand); then the fee analyst runs it.
+- **What a sender of our own would be** (the audit of 22 Nov): a new buy path, not a setting. A builder for pump.fun's
+  buy_exact_quote_in, pinned by a test on our own landed 3.5 SOL buy the way the sales are pinned
+  (tests/test_sell_pumpswap.py); a send path outside the RPC client's shared limit of 8 requests a second, through
+  several landing services at once, with a blockhash kept fresh by the stream; a trigger from the processed or shred
+  feed; and rule 1's caps and the guard. Today the repo signs only sales, each 4-5 requests one after another. Build
+  it only once the route check and a lab copy scored K block places after the leader show a place that clears the
+  live gap.
 - **Since 06:15.** The review of 22 Nov ended with 35 confirmed findings, all fixed test-first except low ones the
   runner's second loss check bounds; deployed a26aeee at 07:21, 4773984 at 07:40 (the loss alert on the bot's own
   trades and coins, never the owner's moves) and 226ea5e at 07:41 (`sends`). docs/autopilot.md lists each fix.
