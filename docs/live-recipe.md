@@ -4,7 +4,12 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
-## The 1 SOL day behind Gake Side and Cooker, RESUMED 22 Nov ~02:10 UTC (written before it starts)
+## The 1 SOL day behind Gake Side and Cooker, LIVE since 22 Nov 01:54:27 UTC (runner 20261122-015426-5c79d7; written before it started)
+
+**Started 01:54:27:** the runner read 8.3793 plain and 3.8500 wrapped SOL (12.2293; the wrapped is what OKTech kept beside the 3.5 SOL snipers of the night), floor 10.2293, cap 100 fills, 1,440 minutes; both snipers started 01:54:28 (Gake Side 8e3467, Cooker 8e3473). It ends by 01:54 UTC on 23 Nov at the latest. Watched in the background (`bash scratchpad/watch_runner.sh 20261122-015426-5c79d7 20`).
+
+| # | time (UTC) | wallet | coin | its buy | our place / the paper's | price vs the wallet | sold | result (SOL) |
+|---|---|---|---|---|---|---|---|---|
 
 **Under which yes.** The owner, 22 Nov ~01:55-02:00 UTC: "You can lose all the money in the wallets that's fine. Just make sure to be smart and use it properly", then "Aight I left 10 sol in the wallet". And the step itself was the owner's yes of 20 Nov 19:2x (below: "the sniper wallet, 1 SOL a copy, a day, stopped at 2 SOL lost, the paper's exit and floor"), the ladder's own step (CLAUDE.md rule 1), which ran 6 hours and one fill before the owner's own trades took the wallet under its floor (21 Nov 01:49): it never had its day. Read as: run that step now, nothing bigger; 2 SOL copies (the size the paper scored) only on the owner's word or after a day that makes money.
 
