@@ -43,6 +43,7 @@ from .exits import (
     preset_name,
     shadow_exits,
 )
+from .ours import bot_fill, fee_marks
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
@@ -712,10 +713,12 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                "venue": venue}  # fmt: skip
         store.put_fill(row)
         failed_rows.append(row)
-    # round trips over the lookback window
+    # round trips over the lookback window; a sale closes the lots of its own maker first, the bot's or the owner's
+    # (the owner trades by hand in the same wallet: measure/ours.py)
     all_buys = store.fills(wallet=wallet, since_ts=look, side="buy", limit=100_000)
     all_sells = store.fills(wallet=wallet, since_ts=look, side="sell", limit=100_000)
-    paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol())
+    marks = fee_marks(store)
+    paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol(), whose=lambda r: bot_fill(r, marks))
     buy_by_sig = {b["sig"]: b for b in all_buys}
     # failed twins of each landed sell: their cost is the trip's too, so the live expectancy per wallet includes it
     all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)

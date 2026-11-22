@@ -119,6 +119,13 @@ def bot_tape_buy(t, marks: dict[str, frozenset]) -> bool:
     return True if paid is None else paid
 
 
+def bot_fill(row: dict, marks: dict[str, frozenset]) -> bool:
+    """Whether a buy or a sale in `fills` is the bot's by its own record, before any pairing: a buy by `bot_buy`, a
+    sale by its own fees (`bot_sale_fees`). What the measure stage pairs each sale's lots by
+    (classify.pair_round_trips: a sale closes the lots of its own maker first)."""
+    return bot_buy(row, marks) if row.get("side") == "buy" else bot_sale_fees(row, marks)
+
+
 def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None) -> list[dict]:
     """The sales among `rows` (fills) that are the bot's: each closes a buy of the bot's (its `buy_sig`), or, with no
     buy on record, paid a sniper's or the fallback sale's fees."""

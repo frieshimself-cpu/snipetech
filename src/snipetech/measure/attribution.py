@@ -244,6 +244,7 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     (which are duplicates of which sell) and measure's exit replays; every read is short. `per_tx_sol`: what measure
     charged a fill whose fee is unknown ([costs], CostConfig.per_tx_sol())."""
     from .classify import pair_round_trips
+    from .ours import bot_fill, fee_marks
     from .run import failed_is_sell, twin_sells
 
     out: dict[str, dict | None] = {s["sig"]: None for s in sells}
@@ -259,7 +260,8 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     buys = _usable([r for r in rows if r.get("side") == "buy"])
     landed = _usable([r for r in rows if r.get("side") == "sell"])
     lots: dict[str, list[dict]] = {}
-    for lot in pair_round_trips(buys, landed, per_tx_l / 1e9)["trips"]:
+    marks = fee_marks(store)  # a sale closes its own maker's lots first, the bot's or the owner's, as measure pairs
+    for lot in pair_round_trips(buys, landed, per_tx_l / 1e9, whose=lambda r: bot_fill(r, marks))["trips"]:
         lots.setdefault(lot["sell_sig"], []).append(lot)
     failed = [r for r in rows if r.get("side") == "failed" and first - TWIN_PAD_SECS <= int(r["ts"] or 0)]
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
