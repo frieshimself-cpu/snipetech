@@ -321,9 +321,12 @@ def on_resume(paths: OperatorPaths, now: float | None = None) -> str | None:
     seq = load_seq(paths)
     if seq and seq.get("state") == "running":
         hold = seq.get("hold") or {}
-        dead = int(hold.get("deaths") or 0) if hold.get("kind") == "cycler" else 0
-        again = (f"; its cycler died {dead} times in a row, and your /resume tries one block again" if dead > 1
-                 else "")  # fmt: skip
+        # the faults in a row that back it off (_cycler_wait): dead cyclers and starts that left a sniper idle, one
+        # streak (_streak); /resume lifts the back-off whichever came last (review of 22 Nov: a start's went unsaid)
+        dead = int(hold.get("deaths") or 0) if hold.get("kind") in ("cycler", "start") else 0
+        told = (f"its cycler died {dead} times in a row" if hold.get("kind") == "cycler" else
+                f"its blocks failed {dead} times in a row (the last could not start and left its sniper idle)")  # fmt: skip
+        again = f"; {told}, and your /resume tries one block again" if dead > 1 else ""
         return (f"The automatic live test goes on with {_label(seq)} at the next round, if it still passes on paper "
                 f"(the same floor as before){again}.")  # fmt: skip
     if read_autotest(paths)["on"]:
@@ -493,20 +496,23 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     part of it. Each reading also pays the block's failed sends that are no sale's twin (OKTech's buys that fail on
     chain anyway, about 0.001 SOL each: paper does not model them; a twin is already in its sale's result, unless the
     sale has none because its buy is not on record): every one for `all`, all but those in the coins of the copies for
-    `own`. Only our own trades are read: a deposit or a
-    withdrawal is in none of it."""
+    `own`. Only the test's own sniper's trades are read, told by the fees it pays (live_test.own_marks; measure/ours.py,
+    as the guard and the runner tell them): a deposit, a withdrawal or the owner's hand trades in the wallet (22 Nov
+    02:40) are in none of it."""
     from ..measure.attribution import trip_result_sol
     from ..measure.classify import _fill_fee_sol, pair_round_trips
+    from ..measure.ours import bot_buy, bot_sells, bot_tape_buy
     from ..measure.run import BASE_FEE_LAMPORTS, _sells_a_coin, twin_sells
 
+    marks = live_test.own_marks(store, t)
     start, end, settled = _window(t, now)
     tape: dict[str, dict] = {}
-    for tr in store.trades_for_user(wallet, start):
-        if tr.is_buy and tr.ts <= end:
+    for tr in store.trades_for_user(wallet, start, fees=True):
+        if tr.is_buy and tr.ts <= end and bot_tape_buy(tr, marks):
             tape.setdefault(tr.sig, {"mint": tr.mint, "cost": (int(tr.quote) + int(tr.fee)) / 1e9 + per_tx_sol})
     rows = store.fills(wallet=wallet, since_ts=start, limit=100_000)
-    buys = {f["sig"]: f for f in rows if f.get("side") == "buy"}
-    sells = [f for f in rows if f.get("side") == "sell"]
+    buys = {f["sig"]: f for f in rows if f.get("side") == "buy" and bot_buy(f, marks)}
+    sells = bot_sells(store, rows, marks)
     usable = [b | {"sol": float(b.get("sol") or 0), "tokens": float(b["tokens"])} for b in buys.values()
               if b.get("mint") and float(b.get("tokens") or 0) > 0]  # fmt: skip
     paired = [x | {"sol": float(x.get("sol") or 0), "tokens": float(x.get("tokens") or 0)} for x in sells
@@ -540,8 +546,8 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     own_mints = {b["mint"] for b in out_buys if not b["copy"]}
     copy_mints = {b["mint"] for b in out_buys if b["copy"]}
     failed = [f for f in store.fills(wallet=wallet, since_ts=start, side="failed", limit=100_000)
-              if float(f.get("ts") or 0) <= end
-              or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled)]  # fmt: skip
+              if _sniper_send(f, marks) and (float(f.get("ts") or 0) <= end
+                                             or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled))]  # fmt: skip
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
     twins = twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], sells)
     with_result = {x["sig"] for x in paired}
@@ -556,6 +562,18 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
         charged.append({"sig": f["sig"], "mint": f.get("mint"), "fee": fee})
     return {"buys": out_buys, "failed": charged, "own_mints": sorted(own_mints), "copy_mints": sorted(copy_mints),
             "settled": settled, "copies": sum(1 for b in out_buys if b["copy"])}  # fmt: skip
+
+
+def _sniper_send(row: dict, marks: dict[str, frozenset]) -> bool:
+    """Whether a failed send in the fills may be the test's own sniper's: it paid one of its priorities (a buy's or a
+    sale's: measure/ours.sniper_marks), or a priority not recorded; with no marks, every one is."""
+    prio = row.get("priority_lamports")
+    if not marks["buy"] or prio is None:
+        return True
+    try:
+        return int(prio) in {p for p, _tip in marks["buy"] | marks["sell"]}
+    except (TypeError, ValueError):
+        return True
 
 
 def _reading(live: dict, own: bool, *, final: bool) -> dict[str, Any]:
@@ -1050,9 +1068,10 @@ async def _advance(r: _Round, seq: dict) -> dict:
             error = str(t.get("error") or "no reason known").removeprefix("not started: ")
             hold = seq.get("hold") or {}
             # a start that left its sniper idle on OKTech counts toward the back-off (review of 7 Nov: a cycler that
-            # could not start made a new idle sniper every round); a create that failed left nothing behind
+            # could not start made a new idle sniper every round), in one streak with the cycler deaths before it; a
+            # create that failed left nothing behind, and keeps the streak as it was (audit of 22 Nov)
             idle = bool(t.get("oktech_id"))
-            faults = int(hold.get("deaths") or 0) + 1 if hold.get("kind") == "start" and idle else int(idle)
+            faults = _streak(hold) + int(idle)
             _hold(r, seq, "start", f"block {cur['n']} did not start: {error}",
                   extra={"deaths": faults, "last": int(r.now), "code": CODE_ID})  # fmt: skip
         else:
@@ -1066,7 +1085,7 @@ async def _advance(r: _Round, seq: dict) -> dict:
         cur["outcome"] = {"kind": kind, "why": why}
         hold = seq.get("hold")
         if kind == "died":  # its sniper stayed armed until this round closed the block: never a block in this round
-            deaths = int(hold.get("deaths") or 1) + 1 if hold and hold.get("kind") == "cycler" else 1
+            deaths = _streak(hold) + 1
             again = f": {deaths} times in a row" if deaths > 1 else ""
             _hold(r, seq, "cycler", f"block {cur['n']}'s cycler died ({why}){again}",
                   extra={"deaths": deaths, "last": int(r.now), "code": CODE_ID})  # fmt: skip
@@ -1082,6 +1101,16 @@ async def _advance(r: _Round, seq: dict) -> dict:
     if verdict is not None:
         return verdict
     return await _next_block(r, seq)
+
+
+def _streak(hold: dict | None) -> int:
+    """The execution faults in a row so far that each left a sniper behind: a cycler that died (its sniper armed, nobody
+    watching) and a start that left its sniper idle count in one streak, whichever came first (audit of 22 Nov: the
+    count restarted at each change of kind, and a deploy failing both ways in turn never reached the back-off)."""
+    if not hold or hold.get("kind") not in ("cycler", "start"):
+        return 0
+    deaths = int(hold.get("deaths") or 0)
+    return max(deaths, 1) if hold["kind"] == "cycler" else deaths
 
 
 def _live(r: _Round, t: dict) -> dict:
@@ -1353,12 +1382,14 @@ async def _next_block(r: _Round, seq: dict) -> dict:
                                      f"under {live_test.MIN_FLOOR_SOL:g} SOL, a buy of {size:g} SOL and its fees)",
                      daily=True)  # fmt: skip
     native = r.snap.native_sol if r.snap is not None else None
-    if native is not None and float(native) <= p["floor"] + 1e-9:
-        # the cycler reads the SOL without the wrapped SOL and refuses to start at or below its floor (oktech_cycle): a
-        # block asked for now makes a sniper that never runs, every round (the floor end is judged, never a drop)
-        return _hold(r, seq, "room", f"the wallet's SOL is {float(native):.2f} without its wrapped SOL, as the cycler "
-                                     f"reads it, at or below the block's {p['floor']:.2f} SOL floor, so the cycler "
-                                     "would not start", daily=True)  # fmt: skip
+    if native is not None and float(native) + 1e-9 < room:
+        # a curve buy is paid in plain SOL only: with less of it than one buy, its fees and the token account's rent, the
+        # block's sniper would only send buys that fail and pay their fees. The cycler's own start reads plain and wrapped
+        # SOL together against the floor since 1d327ca (21 Nov 21:18): wrapped SOL never held a block there (audit of 22
+        # Nov: it was held here as "the cycler reads the SOL without the wrapped SOL")
+        return _hold(r, seq, "room", f"the wallet's plain SOL is {float(native):.2f} and a curve buy is paid in plain SOL "
+                                     f"only: one buy of {size:g} SOL with its fees and rent needs {room:.2f} SOL",
+                     daily=True)  # fmt: skip
     if live_test.in_progress(r.paths, r.now):
         return _wait(r, seq, "another live test is in progress")
     n = int(seq["blocks"][-1]["n"]) + 1 if seq["blocks"] else 1
@@ -1433,8 +1464,10 @@ def _wait(r: _Round, seq: dict, why: str) -> dict:
 def _hold(r: _Round, seq: dict, kind: str, why: str, *, daily: bool = False, coins: list[str] | None = None,
           extra: dict | None = None) -> dict:  # fmt: skip
     """An execution fault (or a wallet with no room) holds new blocks: the owner hears it once when it starts (`daily`:
-    once a day), and once when it clears (_clear); the strategy is not dropped and keeps its record. `extra`: what the
-    hold keeps besides (a dead cycler's deaths in a row, when the last was, the code it ran)."""
+    once a day), and once when it clears (_clear); the strategy is not dropped and keeps its record. A fault that fails
+    another way from round to round (FAULTS: the balance unreadable, then the coins, then OKTech) is the same hold, said
+    again at most once a day (audit of 22 Nov: a line every round). `extra`: what the hold keeps besides (a dead
+    cycler's deaths in a row, when the last was, the code it ran)."""
     day = _day(r.now)
     hold = seq.get("hold")
     if hold and hold.get("kind") == kind:
@@ -1442,6 +1475,11 @@ def _hold(r: _Round, seq: dict, kind: str, why: str, *, daily: bool = False, coi
             hold["why"] = why
         hold.update(extra or {})
         if daily and hold.get("told_day") != day:
+            hold["told_day"] = day
+            r.say(_hold_words(seq, hold))
+    elif hold and hold.get("kind") in FAULTS and kind in FAULTS:
+        hold.update({"kind": kind, "why": why} | (extra or {}))
+        if hold.get("told_day") != day:
             hold["told_day"] = day
             r.say(_hold_words(seq, hold))
     else:
@@ -1462,8 +1500,9 @@ def _hold_words(seq: dict, hold: dict) -> str:
     if hold["kind"] == "cycler":
         return (f"{what} An execution fault, not the strategy's: its trades count (a buy its sniper made after the "
                 "cycler died too) and it is not dropped. One more block is tried at the next round; if its cycler dies "
-                f"as well, no block starts for {CYCLER_BACKOFF_SECS // 3600} hours, then for twice as long after each "
-                "death in a row (a day at most), and a deploy, or your /stop then /resume, tries again at once. You "
+                "as well, or it cannot start and leaves its sniper idle, no block starts for "
+                f"{CYCLER_BACKOFF_SECS // 3600} hours, then for twice as long after each fault in a row (a day at most), "
+                "and a deploy, or your /stop then /resume, tries again at once. You "
                 "hear again once a block runs to its end.")  # fmt: skip
     tail = ", said once a day" if hold["kind"] == "room" else ""
     sell = "".join(f" /sell {m} sells {m[:6]}… now." for m in hold.get("coins") or [])

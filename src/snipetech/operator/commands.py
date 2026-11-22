@@ -1,6 +1,7 @@
 """Owner commands over Telegram: /status /stop /resume /book /sell /test /risk. Polled once per round and every minute
 (`operate --commands`); only the owner's chat is obeyed.
-/stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
+/stop never strands a coin: a running sniper is left alone while the wallet holds a coin one of ours may hold (it is the only
+thing that sells); the owner's ignored coins, the owner's own and strays no buy of ours explains are no sniper's.
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py: on the pump.fun curve, or on PumpSwap once the coin has left it, since 7 Nov), never buys, and never
@@ -17,6 +18,7 @@ plan ran out unseen on 19 Nov)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -66,6 +68,32 @@ class Command:
 
 
 SELL_MAX_AGE_SECS = 300  # a /sell older than this (it waited out an outage) is refused: send it again
+# how long /stop and /sell wait for one wallet read or one OKTech call (READ_SECS) and for a whole sale (SELL_SECS): the
+# one-minute pass is killed at 2 minutes (snipetech-commands.service) once its Telegram offset has moved past the
+# command, and the RPC client retries one call for minutes (7 Nov: about 250 s). Past it the owner hears so and asks again
+READ_SECS = 20
+SELL_SECS = 60
+STOPS_SECS = 40  # all of /stop's stop calls together: six book snipers at READ_SECS each would outlast the pass
+
+
+def _waited(cmd: Command, now: float) -> int | None:
+    """The minutes a command waited in Telegram's queue (an outage, a restart) when that is past SELL_MAX_AGE_SECS, else
+    None."""
+    if cmd.date is None or now - cmd.date <= SELL_MAX_AGE_SECS:
+        return None
+    return int((now - cmd.date) // 60)
+
+
+def _book_loosens(cmd: Command) -> bool:
+    """/book on, or /book bar with a value: the owner's book switch or its bar changed, not only shown. /book off only
+    halts."""
+    arg = cmd.args[0].lower() if cmd.args else ""
+    return arg == "on" or (arg == "bar" and len(cmd.args) > 1)
+
+
+def _late(exc: BaseException, secs: float, what: str) -> str:
+    """An error in plain words for the owner: no answer within `secs`, or the error's kind."""
+    return f"{what} did not answer in {secs:.3g} s" if isinstance(exc, TimeoutError) else type(exc).__name__
 
 
 def parse_updates(updates: list[dict], owner_chat_id: int) -> tuple[list[Command], int | None]:
@@ -185,13 +213,61 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
     except Exception as exc:  # noqa: BLE001 - the flag still holds every start until /resume
         auto = (f"(the automatic test's record could not be read: {type(exc).__name__}; nothing starts while the "
                 "/stop flag is set, and /test auto off turns it off)")  # fmt: skip
-    reply = await _stop_snipers(svc, cfg, notes)
+    reply = await _stop_snipers(svc, cfg, notes, paths, now)
     return "\n".join(x for x in (reply, test, auto) if x)
 
 
-async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
+HAND_BOUGHT = "your own (bought by hand)"  # why a coin of the owner's keeps no sniper of ours running (_not_ours)
+
+
+def _not_ours(svc, wallet: str, held: list[dict], paths: OperatorPaths, now: float) -> dict[str, str]:
+    """The held coins no sniper of ours holds, each with why in the owner's words: the owner's own (every buy of it
+    since its last sale paid fees none of our snipers pays: measure/ours.owner_coins; 22 Nov 02:40 the owner bought a
+    coin by hand in this wallet) and strays (no buy of ours explains it and the unsold-coin watch has seen it 10 minutes:
+    book/run._strays; 8 Nov a dust airdrop). Stopping a sniper beside them strands nothing. Empty when the store cannot
+    say: every coin then keeps the snipers running, as before."""
+    store = getattr(svc, "store", None)
+    if store is None or not held:
+        return {}
+    from ..book.run import _strays
+    from ..measure.ours import fee_marks, owner_coins
+
     try:
-        held = await svc.open_positions(cfg.operator.wallet)
+        owners = owner_coins(store, wallet, held, fee_marks(store))
+        strays = _strays(store, wallet, held, paths, now)
+    except Exception:  # noqa: BLE001 - not known: each coin may be ours
+        return {}
+    return dict.fromkeys(owners, HAND_BOUGHT) | {m: "no buy of ours explains it" for m in strays if m not in owners}
+
+
+def _unrecorded(svc, running: list[dict]) -> set[str]:
+    """The running snipers whose fees the bot has no record of (no payload of theirs on record names a priority: one made
+    in OKTech's app). The owner's coins are told by the fees of the snipers on record, so one of these may have bought
+    one (review of 22 Nov). Every one when the record cannot be read."""
+    from ..measure.ours import sniper_marks
+
+    ids = {str(s.get("id")) for s in running}
+    try:
+        payloads = {str(r["id"]): r.get("payload") for r in svc.store.oktech_snipers(active=False)}
+    except Exception:  # noqa: BLE001 - not known: each may have bought it
+        return ids
+    return {i for i in ids if not sniper_marks([payloads.get(i)])["buy"]}
+
+
+async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths, now: float) -> str:
+    """Stop every sniper OKTech runs, unless the wallet holds a coin one of ours may hold: a stopped sniper strands its
+    coin. The coins the owner ignores, the owner's own and strays (_not_ours) are no sniper's: beside only them every
+    sniper is stopped (audit of 22 Nov: /stop stopped nothing while the owner's hand-bought coin sat in the wallet), but
+    one whose fees the bot has no record of (_unrecorded), which may have bought the owner's coin."""
+    try:  # the owner's ignored coins are left out, as the book, the watch and the runner leave them out
+        held = await asyncio.wait_for(
+            svc.open_positions(cfg.operator.wallet, ignore=list(cfg.operator.ignore_mints or ())), READ_SECS
+        )
+    except TimeoutError:  # the pass must still answer before it is killed (audit of 22 Nov, round#9)
+        notes.write(f"stopped by owner: flag set, but the wallet did not answer in {READ_SECS:g} s; no sniper stopped",
+                    "decision")  # fmt: skip
+        return (f"stop flag set (no new snipers expected), but the wallet did not answer in {READ_SECS:g} s, so no sniper "
+                "was stopped: send /stop again.")  # fmt: skip
     except Exception as exc:  # noqa: BLE001
         notes.write(
             f"stopped by owner: flag set, but holdings could not be read ({type(exc).__name__}); no sniper stopped",
@@ -199,38 +275,60 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
         )
         return "stop flag set (no new snipers expected), but I could not read the wallet's holdings, so no sniper was stopped. Try again in a minute."
     try:
-        st = await svc.oktech_status()
+        st = await asyncio.wait_for(svc.oktech_status(), READ_SECS)
         running = [s for s in st.get("snipers", []) if is_active(s.get("status"))]
     except Exception as exc:  # noqa: BLE001
-        notes.write(f"stopped by owner: flag set, but OKTech did not answer ({type(exc).__name__})", "decision")
+        why = _late(exc, READ_SECS, "OKTech")
+        notes.write(f"stopped by owner: flag set, but OKTech did not answer ({why})", "decision")
+        if isinstance(exc, TimeoutError):
+            return f"stop flag set, but {why}; nothing stopped: send /stop again."
         return "stop flag set, but OKTech did not answer; nothing stopped. Try again in a minute."
     if not running:
         notes.write("stopped by owner: flag set, no sniper was running", "decision")
         return "stop flag set; no sniper was running."
-    if held:
-        coins = ", ".join(f"{h.get('mint', '?')[:4]}… ({h.get('amount')})" for h in held[:5])
+    theirs = _not_ours(svc, cfg.operator.wallet, held, paths, now)
+    mine = [h for h in held if str(h.get("mint")) not in theirs]
+    if mine:
+        coins = ", ".join(f"{h.get('mint', '?')[:4]}… ({h.get('amount')})" for h in mine[:5])
         ids = ", ".join(str(s.get("id")) for s in running)
         notes.write(
             f"stopped by owner: flag set; {len(running)} sniper(s) left running because coins are held: {coins}",
             "decision",
         )
         return f"stop flag set, but {len(running)} sniper(s) left running ({ids}) because coins are held: {coins}. A stopped sniper strands its coin; stop again once they are sold."
+    # an owner's coin is told by the fees of the snipers on record: one the bot has no record of may have bought it
+    own = [m for m, why in theirs.items() if why == HAND_BOUGHT]
+    unknown = _unrecorded(svc, running) if own else set()
+    kept = [str(s.get("id")) for s in running if str(s.get("id")) in unknown]
+    running = [s for s in running if str(s.get("id")) not in unknown]
+    still = (f"; left running: {', '.join(kept)} (no record here of the fees it pays, so {', '.join(m[:6] + '…' for m in own[:5])} "
+             "may be its own: a stopped sniper strands its coin; stop it in OKTech once that is sold)" if kept else "")  # fmt: skip
     stopped, failed = [], []
+    loop = asyncio.get_running_loop()
+    until = loop.time() + STOPS_SECS
     for s in running:
+        left = min(READ_SECS, until - loop.time())
+        if left <= 0:
+            failed.append(f"{s.get('id')} (not asked: OKTech was too slow; send /stop again)")
+            continue
         try:
-            await svc.oktech_task("stop", str(s.get("id")))
+            await asyncio.wait_for(svc.oktech_task("stop", str(s.get("id"))), left)
             stopped.append(str(s.get("id")))
         except Exception as exc:  # noqa: BLE001
-            failed.append(f"{s.get('id')} ({type(exc).__name__})")
+            failed.append(f"{s.get('id')} ({_late(exc, left, 'OKTech')})")
+    beside = "; ".join(f"{m[:6]}… {why}" for m, why in list(theirs.items())[:5])
+    beside = f" (the wallet holds only coins no sniper of ours holds: {beside})" if beside else ""
     notes.write(
         f"stopped by owner: stopped {', '.join(stopped) or 'none'}"
-        + (f"; failed {', '.join(failed)}" if failed else ""),
+        + (f"; failed {', '.join(failed)}" if failed else "")
+        + beside
+        + still,
         "decision",
     )
     return (
         f"stopped {len(stopped)} sniper(s): {', '.join(stopped) or 'none'}"
         + (f"; failed: {', '.join(failed)}" if failed else "")
-        + ". No new snipers are expected until /resume."
+        + f"{beside}{still}. No new snipers are expected until /resume."
     )
 
 
@@ -274,6 +372,8 @@ def _why(exc: Exception) -> str:
     error's text carries the RPC address, and with it the provider's key)."""
     from ..solana.rpc import RpcError
 
+    if isinstance(exc, TimeoutError):  # the sale's own limit (SELL_SECS): it may have gone out all the same
+        return f"Solana did not answer in {SELL_SECS:g} s"
     if isinstance(exc, RpcError):
         said = (exc.error or {}).get("message") if isinstance(exc.error, dict) else None
         what = "Solana refused the sale" if exc.method == "sendTransaction" else "Solana did not answer"
@@ -310,9 +410,9 @@ async def _sell_list(svc, cfg: Config) -> str:
             + warn
         )
     try:
-        held = await svc.open_positions(wallet)
+        held = await asyncio.wait_for(svc.open_positions(wallet), READ_SECS)
     except Exception as exc:  # noqa: BLE001 - the owner hears it; the pass goes on
-        failed = f"I could not read the sniper wallet's coins ({type(exc).__name__}); nothing was sold."
+        failed = f"I could not read the sniper wallet's coins ({_late(exc, READ_SECS, 'it')}); nothing was sold."
         return f"{failed} Try /sell again in a minute.{warn}"
     coins: dict[str, float | None] = {}
     for h in held or []:
@@ -425,7 +525,7 @@ async def _sell(args: list[str], *, svc, cfg: Config, notes: NoteSink, sweep: Ca
     if sweep is None:
         from ..solana.sell import sweep
     try:  # the tape: a coin that left its curve is sold on the PumpSwap pool its migration record names
-        res = await sweep(svc.rpc, mints, SELL_SLIPPAGE, store=getattr(svc, "store", None))
+        res = await asyncio.wait_for(sweep(svc.rpc, mints, SELL_SLIPPAGE, store=getattr(svc, "store", None)), SELL_SECS)
     except Exception as exc:  # noqa: BLE001 - the owner hears what happened; the pass goes on
         why = _why(exc)
         notes.write(f"owner's {said} from Telegram stopped with an error ({why}); it may not have sold", "decision")
@@ -450,13 +550,20 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = _status(cfg, snap, paths, now, store=getattr(svc, "store", None))
     elif cmd.name == "stop":
         reply = await _stop(svc, cfg, paths, notes, now)
+    elif cmd.name in ("resume", "book") and (cmd.name == "resume" or _book_loosens(cmd)) and _waited(cmd, now):
+        # the rule of /sell, /test and /risk: one that waited in Telegram's queue would lift the kill switch, or switch
+        # the live book on, after the moment it was meant for (audit of 22 Nov). /stop and /book off are obeyed whatever
+        # their age. A bar's value is not repeated
+        mins, said = _waited(cmd, now), f"/{cmd.name}" + (f" {cmd.args[0].lower()}" if cmd.name == "book" else "")
+        notes.write(f"owner's {said} from Telegram was {mins} min old when read: nothing changed", "decision")
+        reply = (f"Nothing changed: this {said} is {mins} min old (it waited while the bot was not reading). Send it "
+                 "again if you still mean it.")  # fmt: skip
     elif cmd.name == "resume":
         try:
-            paths.expected.unlink()  # whatever a live test expected before the stop no longer holds
-        except FileNotFoundError:
-            pass
-        try:
             paths.stop_flag.unlink()
+            # whatever a live test expected before the stop no longer holds; with no stop set, a running test's
+            # expectation is left as it is (audit of 22 Nov: it was deleted first, and its sniper woke the agents)
+            paths.expected.unlink(missing_ok=True)
             notes.write(
                 "resumed by owner: stop flag removed; expected state back to none running, none held", "decision"
             )

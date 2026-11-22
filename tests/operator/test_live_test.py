@@ -168,7 +168,8 @@ def make_env(tmp_path):
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(LT, "SECOND_READ_SECS", 0.0)  # the close reads an empty wallet again: no wait in a test
     e = make_env(tmp_path)
     yield e
     e.store.close()
@@ -869,6 +870,120 @@ def test_a_test_that_ends_holding_a_coin_closes_once_the_coin_is_sold(env):
     assert "closed" in msg and OK_ID in msg
     history = [json.loads(x) for x in LT.history_path(env.paths).read_text().splitlines()]
     assert [(h["id"], h["state"]) for h in history] == [(BEST, "done")]
+
+
+def _sniper_on_record(e):
+    """svc.oktech_strategy(create=True) records the test's sniper with its payload: the fees its trades pay."""
+    e.store.add_oktech_sniper({"id": OK_ID, "kind": "strategy", "source": "live-test",
+                               "payload": {"priorityFee": 0.001, "tipAmount": 0.0, "singleSnipe": True}})  # fmt: skip
+
+
+def _buy_at(e, sig, ts, prio, tip, mint=MINT):
+    e.store.add_trades([Trade(sig=sig, ev=0, slot=7_000 + len(sig), pos=0, ts=int(ts), mint=mint, venue="curve", user=W,
+                              is_buy=True, quote=1_000_000_000, base=1_000_000, fee=10_000_000, fee_bps=100, q_after=1,
+                              b_after=1, priority=prio, tip=tip)])  # fmt: skip
+
+
+def _stops_beside_the_owners_coin(e):
+    """OKTech's stop of the test's own sniper, taken while the wallet holds only coins its sniper never bought."""
+
+    async def oktech_task(action, task_id):
+        assert action == "stop" and task_id == OK_ID, (action, task_id)
+        e.svc.stops.append(task_id)
+        _armed(e, status="idle")
+        return {"success": True}
+
+    e.svc.oktech_task = oktech_task
+
+
+def test_a_closing_test_beside_the_owners_own_coin_stops_its_sniper(env):
+    """Audit of 22 Nov (livetest#2): the owner's hand-bought coin (fees the test's sniper never pays) was the test's in
+    its close: it kept the test closing and its sniper armed until the owner sold it, and was named as the test's coin
+    "nothing sells". It is the owner's: the sniper is stopped (it holds nothing of its own) and the coin is named as
+    one this test did not buy."""
+    _started(env)
+    _sniper_on_record(env)
+    _buy_at(env, "hand", LT.load(env.paths)["started_at"] + 600, 8_175, 27_000_000)  # in Axiom, mid-test
+    env.svc.held = [{"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 1.0, "priced": True}]
+    _stops_beside_the_owners_coin(env)
+    _cycler_ends(env, TIME_UP)  # its sniper left running
+    _round(env, NOW + 7300)
+    t = LT.load(env.paths)
+    assert env.svc.stops == [OK_ID] and t["state"] == "done" and t["held_own"] == [] and t["held_at_end"] == [MINT]
+    assert "did not buy" in env.sent[-1] and "nothing sells it" not in env.sent[-1], env.sent
+
+
+def test_a_closing_test_keeps_its_sniper_for_a_coin_its_sniper_bought(env):
+    _started(env)
+    _sniper_on_record(env)
+    started = LT.load(env.paths)["started_at"]
+    _buy_at(env, "hand", started + 300, 8_175, 27_000_000)  # the owner's, then the sniper's own buy of the same coin
+    _buy_at(env, "ours", started + 600, 1_000_000, 0)
+    env.svc.held = [{"mint": MINT, "amount": 2.0, "raw": 2_000_000, "decimals": 6, "value_sol": 2.0, "priced": True}]
+    _cycler_ends(env, TIME_UP)
+    _round(env, NOW + 7300)
+    assert LT.load(env.paths)["state"] == "closing" and env.svc.stops == []
+
+
+def test_one_wallet_reply_that_leaves_the_coin_out_never_stops_the_sniper_that_holds_it(env):
+    """Audit of 22 Nov (livetest#1): a node can leave a coin out of one reply (the runner's rule since d1f39c6: a second
+    must agree), and the round's close stopped the test's sniper on one empty reply: a stopped sniper strands its coin.
+    The close reads the wallet again before it stops anything."""
+    coin = {"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 0.07, "priced": True}
+    _started(env)
+    _cycler_ends(env, TIME_UP | {"reason": "time limit; still held 15 min after the end", "held": [coin]})
+    env.svc.held = [coin]
+    _round(env, NOW + 3600)
+    assert LT.load(env.paths)["state"] == "closing"
+    replies = [[]]  # the next round's first reply leaves the coin out; the wallet still holds it
+    real = env.svc.open_positions
+
+    async def flaky(address, ignore=None, unknown=None):
+        return replies.pop(0) if replies else await real(address, ignore=ignore)
+
+    async def stop(action, task_id):  # OKTech takes the stop, whatever the wallet holds
+        env.svc.stops.append(task_id)
+        _armed(env, status="idle")
+        return {"success": True}
+
+    env.svc.open_positions, env.svc.oktech_task = flaky, stop
+    _round(env, NOW + 4500)
+    assert env.svc.stops == [] and LT.load(env.paths)["state"] == "closing"
+
+
+def test_a_second_reading_with_more_of_the_owners_coin_keeps_the_sniper_running(env):
+    """Review of 22 Nov (livetest#1): the close reads the wallet twice before it stops the test's sniper, and weighed a
+    coin both readings showed by the first one's amount. More of the owner's coin in the second than their buys explain
+    (a buy of the sniper's between the two, not on the tape yet) is a coin the sniper may hold."""
+    _started(env)
+    _sniper_on_record(env)
+    _buy_at(env, "hand", LT.load(env.paths)["started_at"] + 600, 8_175, 27_000_000)  # the owner's 1,000,000 units
+    coin = {"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 1.0, "priced": True}
+    more = coin | {"amount": 2.0, "raw": 2_000_000}
+    replies = [[coin]]  # the first reading; every later one shows the sniper's buy too
+
+    async def readings(address, ignore=None, unknown=None):
+        return replies.pop(0) if replies else [more]
+
+    env.svc.open_positions = readings
+    _stops_beside_the_owners_coin(env)
+    _cycler_ends(env, TIME_UP)  # its sniper left running
+    _round(env, NOW + 7300)
+    assert env.svc.stops == [] and LT.load(env.paths)["state"] == "closing"
+
+
+def test_a_buy_of_the_tests_sniper_on_its_way_keeps_it_running_until_its_coin_shows(env):
+    """The coin shows in the wallet a second or so after its buy (21 Nov): a buy of the sniper's on the tape whose coin
+    no reply showed yet, and that no sale followed, keeps the sniper running; the round looks again."""
+    _started(env)
+    _sniper_on_record(env)
+    _cycler_ends(env, TIME_UP)  # its sniper left running
+    _buy_at(env, "fresh", NOW + 7300 - 3, 1_000_000, 0)  # 3 s before the round's read
+    _round(env, NOW + 7300)
+    t = LT.load(env.paths)
+    assert env.svc.stops == [] and t["state"] == "closing" and MINT in t["closing_why"], t
+    _round(env, NOW + 8200)  # 15 minutes on, the coin never showed: no buy on its way, nothing held
+    assert env.svc.stops == [OK_ID] and LT.load(env.paths)["state"] == "done"
 
 
 def test_a_test_whose_sniper_cannot_be_stopped_yet_stays_closing_and_says_so(env):

@@ -32,7 +32,8 @@ HOUR = 3600
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(LT, "SECOND_READ_SECS", 0.0)  # the close reads an empty wallet again: no wait in a test
     e = LTT.make_env(tmp_path)
     e.sol = 11.8  # the wallet's SOL as each round's snapshot reads it (plus 0.1 wrapped)
     e.k = 0  # trades put on the tape so far
@@ -734,21 +735,35 @@ def test_a_withdrawal_never_drops_a_strategy_and_its_floor_moves_with_the_wallet
     assert not _said(env, "Automatic live test dropped") and AT.read_autotest(env.paths)["on"] is True
 
 
-def test_a_block_whose_cycler_would_refuse_its_floor_holds_and_never_loops(env):
-    """The cycler reads the wallet's SOL without its wrapped SOL and refuses to start at or below its floor. With 1.5 SOL
-    of the wallet wrapped, the next block's floor (10.90, from the wallet's 12.1 SOL in all) is above the 10.6 SOL the
-    cycler would read: no block is asked for (each would make a sniper that never runs), the wallet holds it like one
-    with no room, said once a day, and the block starts once the SOL is unwrapped."""
+def test_a_block_whose_plain_sol_pays_a_curve_buy_starts_though_part_of_the_wallet_is_wrapped(env):
+    """Audit of 22 Nov (livetest#6): this block was held, as "the cycler reads the SOL without the wrapped SOL", but the
+    cycler reads both at its start since 1d327ca (21 Nov 21:18): with 10.6 SOL and 1.5 wrapped, the next block's floor
+    (10.90, from the wallet's 12.1 SOL in all) is under what it reads, and 10.6 SOL pays a 0.2 SOL curve buy many times
+    over. The block starts at its floor."""
     _start(env)
     _play(env, [0.02] * 10)  # 12.0 SOL and 0.1 wrapped
     env.sol -= 1.4  # OKTech wrapped 1.4 SOL more
     _round(env, NOW + 60 + 2 * HOUR, wsol=1.5)
     _round(env, NOW + 60 + 2 * HOUR + 900, wsol=1.5)
+    t = LT.load(env.paths)
+    assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
+    assert not _seq(env).get("hold") and not _said(env, "Automatic live test holds")
+
+
+def test_a_block_whose_plain_sol_cannot_pay_a_curve_buy_holds_and_never_loops(env):
+    """A curve buy is paid in plain SOL only: with nearly all of the wallet wrapped, no block is asked for (its sniper's
+    buys would fail and pay their fees), the wallet holds it like one with no room, said once a day, and the block
+    starts once the SOL is unwrapped."""
+    _start(env)
+    _play(env, [0.02] * 10)  # 12.0 SOL and 0.1 wrapped
+    env.sol -= 11.9  # OKTech wrapped nearly all of it
+    _round(env, NOW + 60 + 2 * HOUR, wsol=12.0)
+    _round(env, NOW + 60 + 2 * HOUR + 900, wsol=12.0)
     seq = _seq(env)
     assert len(env.svc.created) == 1 and seq["state"] == "running" and seq["hold"]["kind"] == "room"
     (held,) = _said(env, "Automatic live test holds")
-    assert "wrapped" in held and "10.90" in held
-    env.sol += 1.4
+    assert "plain SOL" in held and "0.10" in held and "0.25" in held
+    env.sol += 11.9
     _round(env, NOW + 60 + 2 * HOUR + 1800)
     t = LT.load(env.paths)
     assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
@@ -876,6 +891,75 @@ def test_a_book_coin_held_when_the_test_closes_does_not_end_a_complete_block(env
     env.svc.held = []  # the book's sniper sold its coin
     _round(env, NOW + 60 + 2 * HOUR + 900)
     assert LT.load(env.paths)["sequence"]["block"] == 2 and LT.load(env.paths)["state"] == "running"
+
+
+SNIPER_PRIO, SNIPER_TIP = 1_000_000, 0  # what the test's own hunt sniper pays (its payload: 0.001 priority, no tip)
+AXIOM_PRIO, AXIOM_TIP = 300_000, 1_000_000  # what an owner's hand trade in Axiom paid
+
+
+def _paid(e, sig, ts, mint, buy, sol, prio, tip, pnl=None, buy_sig=None):
+    """One trade of the wallet on the tape and in the fills, with the fees its transaction paid."""
+    fee = 2_000_000
+    e.store.add_trades([Trade(sig=sig, ev=0, slot=5_000 + e.k, pos=0, ts=int(ts), mint=mint, venue="curve", user=W,
+                              is_buy=buy, quote=round(sol * 1e9) + (-fee if buy else fee), base=1_000_000, fee=fee,
+                              fee_bps=100, q_after=1, b_after=1, priority=prio, tip=tip)])  # fmt: skip
+    e.k += 1
+    e.store.put_fill({"sig": sig, "ts": int(ts), "wallet": W, "mint": mint, "side": "buy" if buy else "sell", "sol": sol,
+                      "tokens": 1_000_000.0, "priority_lamports": prio, "tip_lamports": tip, "pnl_sol": pnl,
+                      "buy_sig": buy_sig})  # fmt: skip
+
+
+def _block_with_an_owner_trade(e, owner_pnl=-0.9, owner_sells=True):
+    """Block 1 makes one round trip of its own (+0.01, at its sniper's fees) while the owner trades by hand in the same
+    wallet (22 Nov 02:40: hand buys in Axiom, at other fees); its cycler then ends on its time limit."""
+    _start(e)
+    # svc.oktech_strategy(create=True) records the sniper it made with its payload: the fees that mark its trades
+    e.store.add_oktech_sniper({"id": OK_ID, "kind": "strategy", "source": "live-test",
+                               "payload": {"priorityFee": SNIPER_PRIO / 1e9, "tipAmount": SNIPER_TIP / 1e9,
+                                           "singleSnipe": True}})  # fmt: skip
+    t = LT.load(e.paths)
+    LTT._armed(e)
+    start = int(t["started_at"])
+    _paid(e, "tbuy", start + 60, "TestCoin1", True, 0.202, SNIPER_PRIO, SNIPER_TIP)
+    _paid(e, "tsell", start + 80, "TestCoin1", False, 0.212, SNIPER_PRIO, SNIPER_TIP, pnl=0.01, buy_sig="tbuy")
+    _paid(e, "obuy", start + 300, "OwnerCoin", True, 1.0, AXIOM_PRIO, AXIOM_TIP)
+    if owner_sells:
+        _paid(e, "osell", start + 400, "OwnerCoin", False, 1.0 + owner_pnl, AXIOM_PRIO, AXIOM_TIP, pnl=owner_pnl,
+              buy_sig="obuy")  # fmt: skip
+    rep = {"start_sol": 11.8, "end_sol": 11.8 + 0.01 + owner_pnl, "reason": TIME, "fills": 1, "restarts": 3,
+           "held": [], "left_running": []}  # fmt: skip
+    _cycler_ended(e, t, rep, start + 7200)
+    return start
+
+
+def test_an_owner_hand_trade_during_a_block_is_never_the_strategys_result(env):
+    """Audit of 22 Nov (livetest#2): every buy of the wallet in the block's window was the strategy's, the owner's hand
+    trades too: one hand loss of 0.9 SOL dropped a strategy for good "at its floor". Only its own sniper's trades count,
+    told by the fees it pays (measure/ours.py), as the guard and the runner tell them."""
+    start = _block_with_an_owner_trade(env)
+    _round(env, start + 7200 + 600)  # closes the block
+    _round(env, start + 7200 + 1500)  # judges it (the measure stage ran past it)
+    seq = _seq(env)
+    live = seq["blocks"][0].get("live") or {}
+    assert seq["state"] == "running", seq.get("why")
+    assert live.get("n") == 1 and live.get("n_all") == 1 and abs(live["sum"] - 0.01) < 0.005, live
+    assert abs(live["sum_all"] - 0.01) < 0.005, live
+
+
+def test_an_owner_coin_held_at_a_blocks_end_is_not_the_tests_coin(env):
+    """The owner keeps their hand-bought coin past the block's end: the block is no "coin" hold, and the owner is never
+    told to /sell their own coin as the test's."""
+    start = _block_with_an_owner_trade(env, owner_sells=False)
+    env.svc.held = [{"mint": "OwnerCoin", "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 1.0,
+                     "priced": True}]  # fmt: skip
+    LTT._armed(env, status="idle")  # the runner stopped the test's sniper: it held nothing of its own
+    env.sent.clear()
+    _round(env, start + 7200 + 600)
+    _round(env, start + 7200 + 1500)
+    seq = _seq(env)
+    assert not any("/sell OwnerCoin" in s for s in env.sent), env.sent
+    assert (seq.get("hold") or {}).get("kind") != "coin" and seq["blocks"][0].get("decision") == "next", seq
+    assert "OwnerCoin" in LT.find(env.paths, BEST, seq["blocks"][0]["requested_at"])["held_at_end"]
 
 
 def test_a_buy_whose_sales_cover_only_part_of_it_waits_for_the_rest(env):
@@ -1251,6 +1335,53 @@ def test_a_cycler_that_cannot_start_leaves_an_idle_sniper_a_round_at_most_and_ba
     assert len(env.svc.created) == 4 and len(_said(env, "Automatic live test holds")) == 1
 
 
+def test_a_dead_cycler_then_a_start_that_left_a_sniper_idle_back_off_like_two_deaths(env):
+    """Audit of 22 Nov (livetest#7): a bad deploy that fails one way, then the other (a cycler that dies, then a start
+    that leaves its sniper idle) restarted the count of faults in a row at each change of kind and never reached the
+    4-hour back-off: every other round made a new sniper, and each dead cycler left its own armed, nobody watching."""
+    _start(env)
+    real = env.jobs.ops.op_run
+
+    def cannot_start(argv, timeout=0):
+        raise RuntimeError("ImportError after a deploy")
+
+    t = LT.load(env.paths)
+    LTT._armed(env)
+    at = NOW + 60 + 900
+    _cycler_ended(env, t, None, at - 600, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+    _round(env, at)  # block 1's cycler died: no block in this round
+    env.jobs.ops.op_run = cannot_start
+    _round(env, at + 900)  # the one try: block 2's sniper is made, and its cycler cannot start
+    env.jobs.ops.op_run = real
+    for k in range(2, 16):  # three and a half hours on: two faults in a row, nothing more is made
+        _round(env, at + 900 * k)
+    assert len(env.svc.created) == 2
+    seq = _seq(env)
+    assert seq["hold"]["kind"] == "start" and seq["hold"]["deaths"] == 2 and "tried at" in seq["waiting"]["why"]
+
+
+def test_a_fault_that_fails_another_way_each_round_is_said_once(env):
+    """Audit of 22 Nov (livetest#7): "the owner hears it once when it starts holding and once when it clears". One RPC
+    and OKTech wobble that failed another way each round (the balance unreadable, then the coins, then OKTech) replaced
+    the hold with one of another kind and said it again: a line every 15 minutes."""
+    _start(env)
+    _play(env, [0.02] * 10)
+    env.store.set_coverage("measure:last_ts", {"ts": NOW + 60 + 100})
+    at = NOW + 60 + 2 * HOUR
+    _round(env, at, measure=False)  # closes block 1, which waits for the measure stage
+    env.sent.clear()
+    for what in ["balance", "coins", "oktech", "balance", "coins", "oktech"]:
+        at += 900
+        env.svc.unreadable, env.svc.oktech_down = what == "coins", what == "oktech"
+        _round(env, at, readable=what != "balance")
+    assert len(_said(env, "Automatic live test holds")) == 1 and _seq(env)["hold"]["kind"] == "oktech"
+    env.svc.unreadable = env.svc.oktech_down = False
+    _round(env, at + 900)  # it clears: block 2 starts
+    _round(env, at + 1800)
+    assert LT.load(env.paths)["sequence"]["block"] == 2 and len(_said(env, "Automatic live test goes on")) == 1
+    assert len(_said(env, "Automatic live test holds")) == 1
+
+
 def test_an_oktech_create_that_fails_leaves_nothing_idle_and_is_tried_each_round(env):
     """A create OKTech refuses leaves no sniper behind, so it holds without the back-off: every round tries again,
     whatever the number in a row."""
@@ -1289,6 +1420,31 @@ def test_the_owners_resume_tries_a_block_again_after_its_cycler_died_twice(env):
     assert "goes on with" in reply and "died 2 times in a row" in reply and "tries one block" in reply
     _round(env, at + 900)
     assert len(env.started) == 3 and LT.load(env.paths)["state"] == "running"
+
+
+def test_the_owners_resume_after_starts_that_left_their_snipers_idle_says_it_tries_again(env):
+    """Review of 22 Nov (livetest#7): starts that left their sniper idle back off as dead cyclers do, and /resume lifts
+    that back-off as well, but its reply counted only a dead cycler's faults: after two such starts it said nothing of
+    trying a block again."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    real = env.jobs.ops.op_run
+
+    def cannot_start(argv, timeout=0):
+        raise RuntimeError("no space left on device")
+
+    env.jobs.ops.op_run = cannot_start
+    at = NOW + 60
+    for _k in range(4):  # two starts that each left a sniper idle, each found a round later
+        _round(env, at)
+        at += 900
+    assert len(env.svc.created) == 2 and "tried at" in _seq(env)["waiting"]["why"]
+    env.jobs.ops.op_run = real
+    LTT._send(env, name="stop", at=at + 60)
+    reply = LTT._send(env, name="resume", at=at + 120)
+    assert "goes on with" in reply and "2 times in a row" in reply and "tries one block" in reply, reply
+    _round(env, at + 900)
+    assert len(env.svc.created) == 3 and LT.load(env.paths)["state"] == "running"
 
 
 def test_a_buy_the_sniper_made_after_its_cycler_died_counts_against_the_strategy(env):

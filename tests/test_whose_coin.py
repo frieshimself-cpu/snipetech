@@ -251,3 +251,16 @@ def test_a_sale_pays_the_buys_priority_so_that_is_a_sale_mark_too():
                            "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}])  # fmt: skip
     assert {(1_000_000, 2_000_000), (100_000, 2_000_000), (1_000_000, 0)} <= marks["sell"]
     assert marks["buy"] == {(1_000_000, 199_000_000), (1_000_000, 0)}
+
+
+def test_a_coin_in_two_token_accounts_is_the_owners_only_when_their_buys_explain_both():
+    """Review of 22 Nov (livetest#0): the wallet read gives a row per token account, and one coin can sit in two (a seed
+    account, as /sell counts both). The owner's buys must explain what the wallet holds of the coin in all: a buy of ours
+    the records lack may be in the second account, and /stop would strand it."""
+    from snipetech.measure.ours import owner_coins
+
+    store = Store(":memory:")
+    _buy(store, "hand", NOW - 600, 8_175, 27_000_000)  # the owner's buy in Axiom: 1,000,000 units
+    one = {"mint": MINT, "raw": 1_000_000}
+    assert owner_coins(store, W, [one], RUN) == {MINT}
+    assert owner_coins(store, W, [one, dict(one)], RUN) == set()
