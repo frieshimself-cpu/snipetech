@@ -50,6 +50,7 @@ def test_a_mint_backfill_keeps_the_recorders_places_in_the_block_and_fetches_not
     # the recorder's rows of block S: coin A at block indices 100 and 902; tx2 also trades coin B, whose other trade
     # stands at index 600
     st.add_trades([_t("tx1", "A", 100), _t("tx2", "A", 902), _t("tx2", "B", 902, ev=1), _t("tx3", "B", 600)])
+    st.set_coverage("tape", {"spans": [[TS - 3600, TS + 3600]]})  # the recorder's stretch holds them (review 22 Nov)
     rpc = FakeRpc(_listed("tx2", "tx1"))
     res = asyncio.run(Ingestor(st, rpc).backfill_mint_window("A", TS - 1000, TS + 100))
     assert [(t.sig, t.pos) for t in st.trades_for_mint("A")] == [("tx1", 100), ("tx2", 902)]  # was 0 and 1
@@ -76,6 +77,45 @@ def test_a_transaction_the_backfill_fetches_is_placed_at_its_index_in_the_block(
     asyncio.run(Ingestor(st, rpc).backfill_mint_window(mint, t1["blockTime"] - 5, t2["blockTime"] + 5))
     places = {t.sig: t.pos for t in st.trades_for_mint(mint)}
     assert places == {s1: 315, s2: 0}  # was 0 for both: each one's ordinal among the coin's transactions of its slot
+
+
+def test_a_transaction_the_prune_cut_short_is_fetched_whole_again():
+    """Review of the fix above: the prune deletes a transaction's rows wallet by wallet. Past the tape's cutoff a listed
+    wallet's buy stays while the create and the other buyer's trade of the same transaction go, so a stored curve row
+    there says nothing about the rest of its transaction. Inside the tape's spans the recorder wrote each transaction
+    whole and nothing of it is deleted: only there does a stored row mean the transaction is held."""
+    from snipetech.solana.normalize import normalize
+    from snipetech.solana.tx import extract_from_transaction
+
+    sig, tx = _fixture("2kHVrerh")  # a create and two other wallets' buys, one transaction
+    norm = normalize(extract_from_transaction(tx, sig), tx["transactionIndex"], {}, foreign=True)
+    (launch,) = norm.launches
+    listed, other = (t.user for t in norm.trades)
+    st = Store(":memory:")
+    st.add_launches(norm.launches)
+    st.add_trades(norm.trades)
+    st.list_add(listed, "copy_target")
+    cut = tx["blockTime"] + 3600
+    st.set_coverage("tape", {"spans": [[tx["blockTime"] - 600, cut + 600]]})
+    st.prune(cut)  # the create and the other buyer's trade go; the record now starts at the cutoff
+    assert [t.user for t in st.trades_for_mint(launch.mint)] == [listed] and st.launch(launch.mint) is None
+    rpc = FakeRpc(_listed(sig, slot=tx["slot"], ts=tx["blockTime"]), {sig: tx})
+    res = asyncio.run(Ingestor(st, rpc).backfill_mint_window(launch.mint, tx["blockTime"] - 5, tx["blockTime"] + 5))
+    assert rpc.asked == [sig] and res.held == 0  # was not fetched: the listed wallet's row read as the whole of it
+    assert st.launch(launch.mint) is not None
+    assert sorted(t.user for t in st.trades_for_mint(launch.mint)) == sorted([listed, other])
+
+
+def test_only_a_curve_row_inside_the_tapes_spans_says_its_transaction_is_held():
+    from dataclasses import replace
+
+    st = Store(":memory:")
+    st.set_coverage("tape", {"spans": [[TS - 100, TS - 50], [TS, TS + 100], [TS + 50, TS + 200]]})
+    rows = [("in", TS - 60), ("hole", TS - 10), ("overlap", TS + 150), ("after", TS + 201), ("before", TS - 101)]
+    st.add_trades(
+        [replace(_t(sig, "A", 1), ts=ts) for sig, ts in rows] + [replace(_t("amm", "A", 2, venue=AMM), ts=TS)]
+    )
+    assert st.held_whole([sig for sig, _ts in rows] + ["amm", "unknown"]) == {"in", "overlap"}
 
 
 def test_a_transaction_of_which_only_a_pumpswap_row_is_stored_is_still_fetched():

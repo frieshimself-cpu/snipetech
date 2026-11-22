@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import functools
 import json
 import logging
@@ -769,16 +770,31 @@ class Store:
         return [s for s in sigs if s not in seen]
 
     def held_whole(self, sigs: list[str]) -> set[str]:
-        """The signatures whose transaction the tape already holds whole: a curve or LaunchLab trade of it is stored.
-        Only the recorder and `ingest` write those, and both decode and store a transaction whole; the recorder writes
-        no seen_sigs. A PumpSwap row says nothing: the PumpSwap backfill (amm_backfill.py) stores some of a
-        transaction's PumpSwap trades only. A primary-key lookup a signature, 900 a read."""
+        """The signatures whose transaction the tape already holds whole: a curve or LaunchLab trade of it is stored,
+        at a time inside the tape's spans. Only the recorder and `ingest` write those, and both decode and store a
+        transaction whole; the recorder writes no seen_sigs. A PumpSwap row says nothing: the PumpSwap backfill
+        (amm_backfill.py) stores some of a transaction's PumpSwap trades only. Nor does a row before the record's
+        spans: the prune deletes a transaction's rows wallet by wallet, and a listed wallet's stays while the create and
+        the other wallets' trades of its transaction go (review of 22 Nov). A primary-key lookup a signature, 900 a
+        read."""
+        spans: list[list[int]] = []
+        for a, b in sorted(self.tape_spans()):  # merged, so each time falls in at most one
+            if spans and a <= spans[-1][1]:
+                spans[-1][1] = max(spans[-1][1], b)
+            else:
+                spans.append([a, b])
+        if not spans:
+            return set()
+        starts = [a for a, _b in spans]
         held: set[str] = set()
         for i in range(0, len(sigs), 900):
             chunk = sigs[i : i + 900]
-            rows = self._q(f"SELECT DISTINCT sig FROM trades WHERE sig IN ({','.join('?' * len(chunk))}) AND venue!=?",
+            rows = self._q(f"SELECT sig, ts FROM trades WHERE sig IN ({','.join('?' * len(chunk))}) AND venue!=?",
                            [*chunk, AMM])  # fmt: skip
-            held.update(r[0] for r in rows)
+            for sig, ts in rows:
+                k = bisect.bisect_right(starts, ts) - 1
+                if k >= 0 and ts <= spans[k][1]:
+                    held.add(sig)
         return held
 
     def launch(self, mint: str) -> Launch | None:
