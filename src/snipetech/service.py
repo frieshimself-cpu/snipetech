@@ -1593,6 +1593,9 @@ class Service:
         # when each coin's next sale may go: a minute after one that failed, SWEEP_SOON_SECS after one that did not go
         # out or did not land
         sweep_due: dict[str, float] = {}
+        # each coin's sales by the run itself that landed, (signature, tokens), until the tape has them (`unwritten_sold`)
+        unwritten: dict[str, list[tuple[str, float]]] = {}
+        rest_said: set[str] = set()  # the coins said to hold none of the run's tokens any more, once each holding
         sight: dict[str, float] = {}  # each coin held now, anyone's, and when this holding of it was first seen
         owner_val: dict[str, float] = {}  # the owner's own coins held now, at their value when first known as theirs
         owner_coins: list[str] = []  # each coin of the owner's the run has left alone, in the order first known
@@ -1621,6 +1624,7 @@ class Service:
                 del sight[m]
                 coins.forget(m)
                 unsure_said.discard(m)
+                rest_said.discard(m)
             run_coins, new_owner = [], []
             for h in held_all:
                 m = str(h.get("mint") or "")
@@ -1672,6 +1676,23 @@ class Service:
                     return None
                 await asyncio.sleep(2.0)
 
+        def unwritten_sold(mint: str) -> float:
+            """The tokens of `mint` the run's own sales sold (each landed) that the tape has no trade of yet: the
+            recorder can write a sale more than a minute late (the tape counts as current up to TAPE_STALE_SECS
+            behind), and until it does, the run's tokens on the tape are that many too high. Each sale is dropped from
+            the count once the tape has it."""
+            out = 0.0
+            for sig, n in list(unwritten.get(mint, [])):
+                try:
+                    written = bool(self.store._q("SELECT 1 FROM trades WHERE sig=? LIMIT 1", (sig,)))
+                except Exception:  # noqa: BLE001 - not known: still counted as sold
+                    written = False
+                if written:
+                    unwritten[mint].remove((sig, n))
+                else:
+                    out += n
+            return out
+
         async def sweep_stuck(held: list[dict], now: float) -> None:
             """Sell each coin of the run's held `sweep_after` seconds since this holding of it began, and each copy of
             an own launch or bait at once (`sell_now`), when its next try is due (`sweep_due`). A coin nobody can tell
@@ -1686,15 +1707,26 @@ class Service:
                     continue
                 if now < sweep_due.get(mint, -1e18):
                     continue
-                sweep_due[mint] = now + SWEEP_RETRY_SECS
                 # the run's own tokens only, when the wallet holds more of the coin than they are: the owner bought into
                 # it by hand, and the sale would sell their tokens too (22 Nov review)
                 try:
                     mine = run_tokens()[0].get(mint)
                 except Exception:  # noqa: BLE001 - the tape cannot say: the holding is the run's, as it was known
                     mine = None
+                if mine is not None:
+                    # less what its own sales sold that the tape has not written yet, and none at all once its buys of
+                    # the coin on the tape are all sold: what the wallet still holds is the owner's (22 Nov audit, runner
+                    # finding 0: the run sold the owner's whole holding, at --sweep-after and every minute after)
+                    mine -= unwritten_sold(mint)
+                    if mine < 1:
+                        if mint not in rest_said:
+                            rest_said.add(mint)
+                            log(f"the run's own tokens of {mint} are all sold (its trades of it on the tape): what the "
+                                "wallet still holds of it is not the run's, and the run does not sell it")  # fmt: skip
+                        continue
+                sweep_due[mint] = now + SWEEP_RETRY_SECS
                 raw = int(h.get("raw") or 0)
-                part = int(mine) if mine is not None and 0 < mine < raw else None
+                part = int(mine) if mine is not None and mine < raw else None
                 sale = self.sweep_coin(mint) if part is None else self.sweep_coin(mint, amount=part)
                 try:
                     result = await asyncio.wait_for(sale, SALE_SECS)
@@ -1723,6 +1755,8 @@ class Service:
                         + ("failed on chain" if landed is False else f"was not seen landed in {SALE_LAND_SECS:g} s")
                         + f": not counted sold; tried again in {SWEEP_SOON_SECS:g} s while it is held")  # fmt: skip
                     continue
+                if mine is not None:  # sold: no longer the run's, whenever the recorder writes it
+                    unwritten.setdefault(mint, []).append((sig, float(part if part is not None else max(raw, mine))))
                 swept.append({"mint": mint, "held_secs": round(age, 1), "signature": sig, "result": result})
                 if quick:
                     log(f"swept {mint} at once, held {age:.0f} s: a copy of an own launch or of bait (the kinds of "

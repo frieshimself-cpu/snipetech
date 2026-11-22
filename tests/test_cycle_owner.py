@@ -11,6 +11,7 @@ import itertools
 
 import pytest
 
+from snipetech.measure.ours import SWEEP_FEES
 from snipetech.models import Trade
 from tests.test_cycle_floor import T0, _run
 from tests.test_oktech import SNIPER_IDS, W6
@@ -237,6 +238,121 @@ def test_the_runs_own_sale_sells_only_its_own_tokens_of_a_coin_the_owner_bought_
          payload=FEES, tape=[_copy(T0 + 100, sol=1.0), _hand(T0 + 110, mint=OURS, sol=1.0)], sweeps=sweeps,
          sold_amounts=sold, sweep_after=20, minutes=3)  # fmt: skip
     assert sold and sold[0] == (OURS, 1_000_000)
+
+
+def _oktech_sale(ts, mint=OURS, base=1_000_000):
+    """OKTech's 12 s exit of a copy of the run's: the buy's priority (0.001) and the sell tip (0.002), as on the tape."""
+    from dataclasses import replace
+
+    return replace(_copy(ts, mint=mint), sig=f"oksale{next(_sigs)}", is_buy=False, base=base, quote=900_000_000,
+                   priority=1_000_000, tip=2_000_000)  # fmt: skip
+
+
+# the live payloads' sale fees: OKTech's sale pays the buy's priority with the sell tip (tape, 22 Nov)
+PAY = FEES | {"autoSell": {"sellTipAmount": 0.002, "sellPriorityFeeSol": 0.0001}}
+
+
+def _owner_keeps(now):
+    """The run's copy (1,000,000) shows at 102 s; the owner buys 1,000,000 more by hand at 106 s; OKTech sells the
+    run's 1,000,000 at 112 s; the owner's 1,000,000 stay in the wallet to the end."""
+    if now < T0 + 102:
+        return []
+    if now < T0 + 106:
+        return [_coin(OURS, 1.0)]
+    if now < T0 + 112:
+        return [{"mint": OURS, "amount": 2.0, "raw": 2_000_000, "value_sol": 2.0, "priced": True}]
+    return [_coin(OURS, 1.0)]
+
+
+def _sol_owner_keeps(now):
+    if now < T0 + 100:
+        return 10.0
+    if now < T0 + 106:
+        return 9.0  # the copy's 1 SOL
+    return 8.0 if now < T0 + 112 else 8.9  # the owner's hand buy of 1 SOL; OKTech's sale of the run's part
+
+
+def _owner_keeps_tape():
+    return [_copy(T0 + 100), _hand(T0 + 106, mint=OURS, sol=1.0), _oktech_sale(T0 + 112)]
+
+
+def test_the_runs_sale_never_sells_the_owners_tokens_once_its_own_are_gone(monkeypatch):
+    """Audit of 22 Nov, runner finding 0: the owner bought into a copy's coin by hand and OKTech's exit sold the copy.
+    The coin was still the run's by its first buy, and the run's tokens of it on the tape came to 0, so its own sale
+    took the whole holding, the owner's tokens, at --sweep-after and every minute after."""
+    sold, sweeps = [], []
+    rep, _client = _run(monkeypatch, _sol_owner_keeps, coins=_owner_keeps, payload=PAY, tape=_owner_keeps_tape(),
+                        sweeps=sweeps, sold_amounts=sold, sweep_after=20, minutes=4)  # fmt: skip
+    assert sold == [], f"the run sold the owner's tokens: {sold} at {[t - T0 for _m, t in sweeps]}; {rep['reason']}"
+
+
+def test_after_the_runs_own_sale_of_its_part_the_owners_rest_is_never_sold(monkeypatch):
+    """Runner finding 0, the skeptic's case: OKTech leaves the copy unsold, the run's own sale sells exactly its own
+    1,000,000 (f44d826), and the recorder writes that sale at the sale's own fees. The wallet still holds the owner's
+    1,000,000: the run sold those too, one SWEEP_RETRY_SECS later."""
+    box, sold, sold_amounts = {}, [], []
+    left = {"raw": None}  # the wallet's raw holding of OURS once the sales start (None: by the clock)
+
+    def coins(now):
+        if now < T0 + 102:
+            return []
+        raw = left["raw"] if left["raw"] is not None else (1_000_000 if now < T0 + 108 else 2_000_000)
+        return [{"mint": OURS, "amount": raw / 1e6, "raw": raw, "value_sol": raw / 1e6, "priced": True}] if raw else []
+
+    def sweep_answer(mint):  # the chain sells what was asked, and the recorder writes the sale at once
+        amount = sold_amounts[-1][1]
+        now = box["store"]._q("SELECT MAX(ts) FROM trades")[0][0]
+        held = left["raw"] if left["raw"] is not None else 2_000_000
+        n = held if amount is None else min(held, int(amount))
+        sold.append((now - T0, amount))
+        left["raw"] = held - n
+        box["store"].add_trades([Trade(sig=f"runsale{len(sold)}", ev=0, slot=100_000 + int(now - T0) + 1, pos=5,
+                                       ts=int(now), mint=OURS, venue="curve", user=W6, is_buy=False,
+                                       quote=int(n / 1e6 * 0.95e9), base=n, fee=0, fee_bps=100, q_after=1, b_after=1,
+                                       priority=SWEEP_FEES[0], tip=SWEEP_FEES[1])])  # fmt: skip
+        return {"wallet": W6, "holdings": 1, "results": [{"mint": mint, "signature": f"sig{len(sold)}"}]}
+
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else (9.0 if now < T0 + 106 else 8.0),
+                        coins=coins, payload=FEES, before=lambda store: box.update(store=store),
+                        tape=[_copy(T0 + 100), _hand(T0 + 106, mint=OURS, sol=1.0)], sold_amounts=sold_amounts,
+                        sweep_answer=sweep_answer, sweep_after=20, minutes=5)  # fmt: skip
+    assert sold and sold[0][1] == 1_000_000, sold  # f44d826: the first sale sells the run's own tokens only
+    assert sold[1:] == [], f"the run sold the owner's tokens after its own part was gone: {sold}; {rep['reason']}"
+
+
+def test_the_runs_sale_of_its_part_goes_once_until_the_tape_has_it(monkeypatch):
+    """The recorder can write a sale more than a minute late (the tape counts as current up to 120 s behind). The run
+    sold its part, and a minute later its tape still showed its tokens unsold, now as many as the wallet held: the
+    second try sold the whole holding, the owner's tokens. A sale of the run's part goes out again only once the tape
+    has moved since the last one."""
+    clock, box, sold, late = {"now": T0}, {}, [], []
+
+    def coins(now):
+        clock["now"] = now
+        for at, trade in list(late):  # the recorder writes the run's sale 90 s after it
+            if now >= at:
+                box["store"].add_trades([trade])
+                late.remove((at, trade))
+        if now < T0 + 102:
+            return []
+        raw = 1_000_000 if now < T0 + 108 or sold else 2_000_000
+        return [{"mint": OURS, "amount": raw / 1e6, "raw": raw, "value_sol": raw / 1e6, "priced": True}]
+
+    def sweep_answer(mint):
+        now = clock["now"]
+        sold.append(now)
+        late.append((now + 90, Trade(sig=f"latesale{len(sold)}", ev=0, slot=100_000 + int(now - T0) + 1, pos=5,
+                                     ts=int(now), mint=OURS, venue="curve", user=W6, is_buy=False, quote=950_000_000,
+                                     base=1_000_000, fee=0, fee_bps=100, q_after=1, b_after=1, priority=SWEEP_FEES[0],
+                                     tip=SWEEP_FEES[1])))  # fmt: skip
+        return {"wallet": W6, "holdings": 1, "results": [{"mint": mint, "signature": f"sig{len(sold)}"}]}
+
+    amounts: list = []
+    _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else (9.0 if now < T0 + 106 else 8.0), coins=coins,
+         payload=FEES, before=lambda store: box.update(store=store),
+         tape=[_copy(T0 + 100), _hand(T0 + 106, mint=OURS, sol=1.0)], sold_amounts=amounts, sweep_answer=sweep_answer,
+         sweep_after=20, minutes=6)  # fmt: skip
+    assert amounts == [(OURS, 1_000_000)], amounts
 
 
 def test_no_rearm_while_the_run_holds_tokens_of_a_coin_the_owner_holds_too(monkeypatch):
