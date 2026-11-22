@@ -1660,6 +1660,8 @@ def test_the_agents_are_told_what_a_launch_rules_record_means_and_which_labs_wer
                   "THE COST A LAB CHARGES (14 Nov):", "is NOT refuted, test it again", 'per_tx_source "estimate"',
                   "+0.013 without its five best trades"):
         assert words in text, words
+    # (paper#3 of the audit of 22 Nov: "freeze it again" works, and the agents are told what it makes)
+    assert "per_tx_sol 0.0062 to 0.0093" in text and "the freeze makes a new record of it at today's cost" in text
     cuts = [(tags, words) for tags, words in roles.cut_job_help(full) if not isinstance(tags, str)]
     for head in ("SERIAL CREWS' COINS (14 Nov):", "THE COST A LAB CHARGES (14 Nov):"):
         assert any(head in words and {"lab", "paper"} <= set(tags) for tags, words in cuts), head

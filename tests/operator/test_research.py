@@ -419,15 +419,19 @@ def test_the_search_tells_the_freeze_when_its_rules_are_written(env, monkeypatch
     of old code that began while the lab ran is not taken to have read a rule that was not stored yet."""
     from snipetech.analysis import paper
     from snipetech.service import Service
+    from tests.test_lab import NOW as TAPE_END
     from tests.test_lab import whale_world
 
     st, cfg, data = env
     whale_world(st)
     clock = iter([1000.0, 1600.0])  # the search's own clock: ten minutes from its start to its freeze
     monkeypatch.setattr(RS, "_elapsed_clock", lambda: next(clock))
-    RS.search(Service(cfg, store=st), cfg, data, NOW)
+    # the search starts a minute after the tape it reads ends, as on the server (until paper#1 of the audit of 22 Nov
+    # it started at this file's NOW, 6 Nov, on a tape that ran on to today, and its rules were tested from there)
+    start = TAPE_END + 60
+    RS.search(Service(cfg, store=st), cfg, data, start)
     frozen = st.coverage("paper_strategies")["strategies"]
-    assert frozen and all((s["from_ts"], s[paper.STORED_AT]) == (NOW, NOW + 600) for s in frozen)
+    assert frozen and all((s["from_ts"], s[paper.STORED_AT]) == (start, start + 600) for s in frozen)
 
 
 def test_the_search_reads_only_the_newest_tape_so_its_cost_stays_flat(env):

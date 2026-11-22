@@ -66,7 +66,9 @@ from .lab import (
     LAUNCH_KINDS,
     MIG_CAP,
     MIG_LAND_SLOTS,
+    OUTSIDE_WORDS,
     REPEATS_ALSO_FROZEN,
+    SIZE_FLOOR_SHARE,
     SIZE_WORDS,
     SKIP_WORDS,
     SNIPER_NOTE,
@@ -99,6 +101,7 @@ from .lab import (
     rank,
     recipes_own,
     research_only_why,
+    rule_wallets,
     size_gap,
     sniper_rule,
     span_slot_secs,
@@ -540,9 +543,10 @@ def _crew_reason(strategy: dict) -> str:
 def row_note(strategy: dict) -> str | None:
     """What a row says of a record that is not what its sniper would trade: why its exit is not the sniper's
     (`exit_not_as_live`), and in a few words which coins it was scored on (`crew_note`), or that it holds one trade a
-    coin where its copy sniper takes every buy (`research_note`); both when both."""
-    exit_why, short = exit_not_as_live(strategy), research_note(strategy)
-    return f"{exit_why}. Also {short}" if exit_why and short else exit_why or short
+    coin where its copy sniper takes every buy (`research_note`); each that applies. And of a record charged the
+    doubled cost of 12-14 Nov (`cost_note`), which no longer stands for its rule."""
+    parts = [x for x in (exit_not_as_live(strategy), research_note(strategy), cost_note(strategy)) if x]
+    return ". Also ".join(parts) or None
 
 
 def sid_of(strategy: dict, **over) -> str:
@@ -558,6 +562,66 @@ def rule_costs(strategy: dict) -> Costs:
     (`bid_of`, paid once on every buy: a recipe's, `freeze`), none on a rule frozen without one."""
     return Costs(per_tx_lamports=float(strategy["per_tx_sol"]) * LAMPORTS,
                  entry_bid_lamports=bid_of(strategy) * LAMPORTS)  # fmt: skip
+
+
+# -- the doubled cost of 12-14 Nov 2026 (audit of 22 Nov) ---------------------------------------------------------------
+# From 12 Nov 17:24 to 14 Nov 18:26 UTC the measured cost of a transaction counted four tip-test buys at 0.035 SOL and
+# 50 failed sends of one USDC swap (qualify.run.lab_tx_cost_info): every freeze then charged 0.0062 to 0.0093 SOL a
+# transaction, where one costs about 0.0045 (what the labs charge since, qualify.run.LIVE_TX_SOL). A record frozen
+# then is charged that forward for good, about 0.004 to 0.01 SOL a round trip too much (24 running records on 22 Nov).
+# Such a record no longer stands for its rule, like one a run of other code scored in part: the same rule frozen again
+# is a new making of it (AGAIN) under an id of its own, charged what a transaction costs now, and the old record keeps
+# its id, its trades and its place. The agents were told to freeze such a rule again, and until 22 Nov the freeze
+# found it "already in the paper test".
+OVERCHARGED_FROM, OVERCHARGED_UNTIL = 1_794_504_240, 1_794_680_760  # 12 Nov 17:24 and 14 Nov 18:26 UTC
+OVERCHARGED_SOL = 0.006  # a cost a transaction at or above this, in a record frozen then, is the doubled one
+
+
+def overcharged(strategy: dict) -> bool:
+    """Whether a stored rule was frozen while the measured cost of a transaction was doubled (OVERCHARGED_FROM to
+    OVERCHARGED_UNTIL) and is charged that cost (OVERCHARGED_SOL or more) on every forward trade. A rule another job
+    feeds is none: its feeder charges its trades."""
+    if fed(strategy):
+        return False
+    try:
+        at, cost = int(strategy.get("from_ts") or 0), float(strategy.get("per_tx_sol") or 0)
+    except (TypeError, ValueError):
+        return False
+    return OVERCHARGED_FROM <= at < OVERCHARGED_UNTIL and cost >= OVERCHARGED_SOL
+
+
+def overcharge_sol(strategy: dict) -> float:
+    """SOL a round trip of a record frozen at the doubled cost is charged too much: what it pays a transaction over
+    what one costs now, on its buy and on each of its sales; 0 for any other record."""
+    if not overcharged(strategy):
+        return 0.0
+    from ..qualify.run import LIVE_TX_SOL
+
+    try:
+        sales = max(1, int((strategy.get("exit") or {}).get("sell_parts") or 1))
+    except (TypeError, ValueError):
+        sales = 1
+    return max(0.0, float(strategy["per_tx_sol"]) - LIVE_TX_SOL) * (1 + sales)
+
+
+def cost_note(strategy: dict) -> str | None:
+    """Why a record frozen at the doubled cost is no longer its rule's record, in plain words; None for any other."""
+    if not overcharged(strategy):
+        return None
+    return (f"charged {float(strategy['per_tx_sol']):g} SOL a transaction: frozen while the measured cost was doubled "
+            f"(12 Nov 17:24 to 14 Nov 18:26 UTC), about {overcharge_sol(strategy):.4f} SOL a round trip more than a "
+            "trade costs now, so its record is harsher than live. The same rule frozen again is charged today's cost, "
+            "as a record of its own")  # fmt: skip
+
+
+def refuted_at_cost(strategy: dict) -> bool:
+    """Whether a stored record is refuted and would be at today's cost too: one charged the doubled cost of 12-14 Nov
+    (`overcharged`) only when it lost by more than it was overcharged a round trip (`overcharge_sol`). What a refuted
+    record holds back in a freeze asks here: its own rule (`freeze`) and its default twin (`refuted_skip_twins`)."""
+    gone = strategy.get("refuted")
+    if not gone:
+        return False
+    return not overcharged(strategy) or float((gone or {}).get("mean_sol") or 0) + overcharge_sol(strategy) < 0
 
 
 def copy_landing(store: Store, cfg: Config, now: float) -> str:
@@ -1018,7 +1082,9 @@ def refuted_skip_twins(strategies: Sequence[dict], now: float) -> dict[str, list
     held none of their default twins; so it was before 14 Nov too, when the search was free to freeze them again
     with the watch delay. Looked up this way, the server's rules of 14 Nov hold ten default rules back. Why hold:
     a rule refuted forward without crews' coins is not made better by also buying them, and they lost on the one
-    rule where it was measured (lab.CREW_SHARE_WORDS); that is one rule, and the words of the hold say so."""
+    rule where it was measured (lab.CREW_SHARE_WORDS); that is one rule, and the words of the hold say so. A record
+    refuted at the doubled cost of 12-14 Nov counts only when it lost by more than it was overcharged
+    (`refuted_at_cost`, as for the rule itself in `freeze`; review of 22 Nov)."""
     by: dict[str, list[dict]] = {}
     for s in strategies:
         if not isinstance(s, dict) or fed(s):
@@ -1031,7 +1097,7 @@ def refuted_skip_twins(strategies: Sequence[dict], now: float) -> dict[str, list
         return int((s.get("refuted") or {}).get("at") or 0)
 
     return {key: sorted(rs, key=at) for key, rs in by.items()
-            if all(s.get("refuted") for s in rs) and now - max(at(s) for s in rs) < RETEST_AFTER_SECS}  # fmt: skip
+            if all(refuted_at_cost(s) for s in rs) and now - max(at(s) for s in rs) < RETEST_AFTER_SECS}  # fmt: skip
 
 
 def _closed(strategies: Sequence[dict]) -> list[str]:
@@ -1202,7 +1268,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     strategy it freezes, so a cost that was not measured is never read as one that was. `tape`: gives the store the
     lab reads the tape from, asked once the lab lock is held (the CLI's gives `Service.tape_store`, the hourly copy,
     as `lab` and the strategy search read theirs: a lab's reads held the live WAL back for as long as they took); the
-    frozen strategies are written to `store`.
+    frozen strategies are written to `store`. Each is scored forward from `now`, or from the second after the tape its
+    lab read when that tape ends later (`from_ts`; its `lab.window` says which window and file the lab read).
 
     A launch-type rule (launch, hunt, whale, burst) is scored on every coin the live sniper would buy, serial crews'
     coins too, unless its trigger says crew "skip" or "only" (14 Nov; lab.Trigger.crew). One frozen with crew ""
@@ -1335,6 +1402,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                            sell_parts=sell_parts)  # fmt: skip
     every = rank(data, cfg, top=50)
     ranked = [r for r in every if (r["test"].get("ev_lower") or 0) > 0]
+    # Each record's forward trades start after the tape its lab read (audit of 22 Nov). `now` is taken before the
+    # lab lock is waited for and the tape is resolved only once it is held, so that tape can end after `now` (the live
+    # store when the hourly copy is stale or lacks a deploy's schema, a copy renamed over the path during the wait):
+    # its newest moments, the lab's test part where the rule's lower bound was found, were scored again as forward
+    # trades. The lab's tape holds its last second (`Store.trades_for_mint` reads up to it): the record starts after it
+    window_end = (data.get("window") or {}).get("until_ts")
+    start = max(int(now), int(window_end) + 1) if window_end is not None else int(now)
 
     def scored_at(r: dict) -> tuple[int, str]:  # the landing the lab scored this row at (per kind since 7 Nov)
         lat, pos = r.get("landing") or (latency, position)
@@ -1352,14 +1426,18 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     records: dict[str, list[dict]] = {}  # rule -> the strategies frozen on it, oldest first
     for s in old:
         # (a rule another job feeds carries no lab trigger; a record a run of other code scored in part, OLD_CODE,
-        # no longer stands for its rule: the same rule frozen again is a new making of it, below)
-        if not fed(s) and _sells_as_live(s) and not s.get(OLD_CODE):
+        # no longer stands for its rule, nor does one charged the doubled cost of 12-14 Nov: the same rule frozen
+        # again is a new making of it, below)
+        if not fed(s) and _sells_as_live(s) and not s.get(OLD_CODE) and not overcharged(s):
             records.setdefault(_rule_of(s), []).append(s)
     # ... but once such a record is refuted (on a record that was kinder than live) it holds its rule back like any
-    # refuted record: kept for the refuted hold alone
+    # refuted record: kept for the refuted hold alone. A record charged the doubled cost was harsher than live: it
+    # holds its rule back only when it lost by more than it was overcharged (`refuted_at_cost`: so at today's cost)
     spoilt: dict[str, list[dict]] = {}
     for s in old:
-        if not fed(s) and _sells_as_live(s) and s.get(OLD_CODE) and s.get("refuted"):
+        if fed(s) or not _sells_as_live(s) or not s.get("refuted"):
+            continue
+        if s.get(OLD_CODE) or (overcharged(s) and refuted_at_cost(s)):
             spoilt.setdefault(_rule_of(s), []).append(s)
     # the rules scored without serial crews' coins whose every record is refuted, the newest within the hold: each
     # holds back its default twin (`refuted_skip_twins`: among ALL records, whatever exit they were frozen with)
@@ -1478,12 +1556,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 "coins, which lost on the one rule measured: not frozen again for "
                                 f"{RETEST_AFTER_SECS // 86400} days"})  # fmt: skip
                 continue
-        # the very strategy is stored, but a run of other code scored its record in part (OLD_CODE): this is a new
-        # making of the same rule, under an id of its own (`strategy_id`: again), with a record that starts empty
+        # the very strategy is stored, but a run of other code scored its record in part (OLD_CODE), or it is charged
+        # the doubled cost of 12-14 Nov (`overcharged`): this is a new making of the same rule, under an id of its own
+        # (`strategy_id`: again), with a record that starts empty
         again = 0
         while sid in have:
             same = next((s for s in old + new if s["id"] == sid), None)
-            if same is None or not same.get(OLD_CODE):
+            if same is None or not (same.get(OLD_CODE) or overcharged(same)):
                 break
             again += 1
             sid = strategy_id(spec, r["exit_params"], pos, lat, buy_sol, bid, asked, again)
@@ -1507,8 +1586,10 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         counts = {key: r[key] for key in ("moments", "exit_moments") if key in r}
         new.append({"id": sid, "label": label, "trigger": spec, "exit": r["exit_params"],
                     "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol,
-                    "per_tx_source": per_tx_source, "from_ts": int(now),
+                    "per_tx_source": per_tx_source, "from_ts": start,
                     "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r), bid), **counts,
+                            # from when to when its lab read, and which file: where its forward record may start
+                            **({"window": dict(data["window"])} if data.get("window") else {}),
                             **({"places": r["places"]} if r.get("places") else {}),
                             # how many of its moments were serial crews' coins, known with hindsight (lab.crew_block)
                             **({"crew": {k: v for k, v in r["crew"].items() if k != "line"}} if r.get("crew") else {}),
@@ -1600,10 +1681,11 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
     priced on the curve tape, as the lab scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is
     left out, as in the lab. So is a buy too large for its pool to be replayed, at any rule (`lab.size_gap`: it would
     end its curve, or is most of what the curve still takes or of the pool's coins): its reason is a key of
-    lab.SIZE_WORDS."""
+    lab.SIZE_WORDS. The third value is the position's share of the pool's coins at its entry (None with no position):
+    what says whether a sale priced past the curve counts as outside the model (`outside_marks`)."""
     gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
     gap = migration_sell_gap(amm_cov, path, e, mig, exits_horizon([ex])) if gated else None
-    res = None
+    res, share = None, None
     if gap is None or trig.kind in LAUNCH_KINDS:
         # the path as far as its exit can sell, every index the same: the same numbers at the cost of its own hold
         # (`sim.exits.held_path`; until 22 Nov every state to the end of the run's tape was built and read)
@@ -1614,11 +1696,36 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
         if prep is not None:
             sized = size_gap(prep)  # a buy this size against this pool: left out and counted, as in the lab
             if sized is not None:
-                return None, sized
-            res = run_exit(prep, ex, costs, end_ts=float(end))
+                return None, sized, None
+            res, share = run_exit(prep, ex, costs, end_ts=float(end)), float(prep.pool_share)
             if gated and trig.kind in LAUNCH_KINDS:
                 gap = exit_gap(amm_cov, path, prep, res, ex, mig)
-    return res, gap
+    return res, gap, share
+
+
+def outside_marks(res, share: float | None) -> dict[str, Any]:
+    """What a forward trade's data says of the prices its result rests on (audit of 22 Nov), as the lab marks a scored
+    exit (`lab.exit_pnls`): the position's share of the pool's coins at its entry (`pool_share`), `past_curve` when the
+    replay, with our coins out of the pool, ran past the end of the curve before its last sale, and `fallback` when our
+    coins became more than half the pool's on the way (`SimResult`). Only the marks that hold are written. A trade
+    written before carries none of them (`outside_model` counts it as not known)."""
+    marks: dict[str, Any] = {} if share is None else {"pool_share": round(float(share), 6)}
+    if getattr(res, "past_curve", False):
+        marks["past_curve"] = True
+    if getattr(res, "fallback", False):
+        marks["fallback"] = True
+    return marks
+
+
+def outside_model(data: dict) -> str | None:
+    """Which price outside the model a forward trade rests on, by the lab's own rule (`lab.exit_pnls`): "fallback",
+    or "past_curve" for a position of SIZE_FLOOR_SHARE of the pool or more (under it our own effect on any later price
+    is under 2 %); None for a trade priced by the model, or one that carries no marks."""
+    if data.get("fallback"):
+        return "fallback"
+    if data.get("past_curve") and float(data.get("pool_share") or 0) >= SIZE_FLOOR_SHARE:
+        return "past_curve"
+    return None
 
 
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
@@ -1705,6 +1812,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     # later: its window is the run's, moved back by its lag. The one mark `done_until` serves every rule: both ends of
     # each run's window move back by the same lag, so a rule's windows follow one another with no moment left between
     lag = {s["id"]: math.ceil(settle_secs(ex) - SETTLE_SECS) for s, _, ex, _ in parsed}
+    # the wallets each wallet rule fires on (`rule_wallets`, as `_fire` reads them): a coin none of them traded gives
+    # it no moment, and is not walked for it (audit of 22 Nov: 70 wallet rules walked each of 1,354 coins a run)
+    follows = {s["id"]: rule_wallets(trig, kols) for s, trig, _, _ in parsed if trig.kind == "kol"}
     added = own_added = research_added = 0
     research = {s["id"] for s, *_ in parsed if research_note(s)}  # records no sniper trades: counted apart
     passed: dict[str, int] = {}  # strategy -> coins its crew choice passed over in this run's window (`crew_skips`)
@@ -1734,6 +1844,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             if path.n < min_trades or implausible_coin(path):
                 continue
             paid = dev_paid_earlier(store, in_span) if paid_runs and mint in migs else None
+            traders = frozenset(path.users) if follows else frozenset()  # everyone who traded the coin
             for s, trig, ex, costs in parsed:
                 if mint not in in_window.get(lag[s["id"]], ()):
                     continue  # nothing of the coin traded in this rule's window
@@ -1745,6 +1856,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     # crews known now, where a crew is one once its third coin has launched (lab.CREW_FORWARD_WORDS)
                     passed[s["id"]] = passed.get(s["id"], 0) + 1
                     continue
+                if trig.kind == "kol" and traders.isdisjoint(follows[s["id"]]):
+                    continue  # none of the wallets it copies traded the coin: `_fire` would walk it for nothing
                 i = _fire(trig, path, in_span, kols, mig=migs.get(mint), paid=paid)
                 if i is None:
                     continue
@@ -1783,9 +1896,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 mig = migs.get(mint)
                 # a copy that buys on PumpSwap: only where the tape holds the stretch whole, as in the lab
                 gap = wallet_amm_gap(store, amm_cov, backfill.get(mint), path, trig, ex, i, e, mig, mint)
-                res = None
+                res = share = None
                 if gap is None:
-                    res, gap = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
+                    res, gap, share = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
                 if gap is not None:
                     skipped.setdefault(s["id"], {})
                     skipped[s["id"]][gap] = skipped[s["id"]].get(gap, 0) + 1
@@ -1803,7 +1916,10 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                              **({"mates": len(own or ())} if trig.kind == "kol" else {}),
                              # the bid this buy paid once, and at a bid landing the place it got
                              **({"buy_bid_sol": bid_of(s)} if bid_of(s) > 0 else {}),
-                             **({"place": placed["place"]} if placed else {})},
+                             **({"place": placed["place"]} if placed else {}),
+                             # its share of the pool at the entry, and whether a sale rests on a price outside the
+                             # model, as the lab marks it (rows without `pool_share` were written before 22 Nov)
+                             **outside_marks(res, share)},
                 })  # fmt: skip
                 added += wrote
                 if s["id"] in research:  # a research record: never counted as a trade at the live landing
@@ -1984,16 +2100,19 @@ def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy
                 continue
             if priced:
                 continue
-            res, gap = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
+            res, gap, share = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
             if gap is not None or res is None:
                 leave(sid, "size" if gap in SIZE_WORDS else "gap" if gap is not None else "position", row)
                 continue
             tally[sid]["rescored"] += 1
             tally[sid]["after"] += float(res.pnl_sol)
+            # (the marks of the prices it rests on, as today's simulator reads them: `outside_marks`)
+            kept = {k: v for k, v in data.items() if k not in ("pool_share", "past_curve", "fallback")}
             updates[sid].append({
                 "strategy": sid, "mint": mint, "trigger_ts": row["trigger_ts"], "exit_ts": res.exit_ts,
                 "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
-                "data": data | {"hold_secs": res.hold_secs, "model": FILL_MODEL, "pnl_old": row["pnl"]},
+                "data": kept | {"hold_secs": res.hold_secs, "model": FILL_MODEL, "pnl_old": row["pnl"],
+                                **outside_marks(res, share)},
             })  # fmt: skip
     for rows in updates.values():
         store.update_paper_trades(rows)
@@ -2034,7 +2153,15 @@ def _robust(pnl: np.ndarray, buy_sol: float, conf: float, samples: int) -> dict:
 # trades), while 17 strategies with 6,200 trades between them had had a trade in two hours. The live page shows the
 # same kept numbers (dash._paper): a rule's record, never every row of it.
 REPORT_CACHE_KEY = "paper:report"
-REPORT_VERSION = 1
+REPORT_VERSION = 2  # 2 (22 Nov): `outside_model`, the trades of a record that rest on a price outside the model
+
+
+def _outside_count(kept: list[dict]) -> dict[str, Any]:
+    """Of a record's trades, how many rest on a price outside the model (`outside_model`) and what they made, out of
+    how many say (`of`: the trades that carry the marks, written since 22 Nov; the older ones are not known)."""
+    known = [r for r in kept if "pool_share" in (r.get("data") or {})]
+    out = [r for r in known if outside_model(r.get("data") or {})]
+    return {"trades": len(out), "sol": round(sum(float(r["pnl"]) for r in out), 6), "of": len(known)}
 
 
 def _numbers(store: Store, strategy: dict, conf: float, samples: int, bounds: bool, counted: int) -> tuple[dict, bool]:
@@ -2053,7 +2180,8 @@ def _numbers(store: Store, strategy: dict, conf: float, samples: int, bounds: bo
     if bounds:
         st = summarize(pnl, conf, samples) if len(pnl) else {}
         nums |= {"mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"),
-                 "other_venue": other, **_robust(pnl, strategy["buy_sol"], conf, samples)}  # fmt: skip
+                 "other_venue": other, **_robust(pnl, strategy["buy_sol"], conf, samples),
+                 "outside_model": _outside_count(kept)}  # fmt: skip
     else:
         nums["mean"] = float(pnl.mean()) if len(pnl) else None
     return nums, not asks_tape and len(rows) == counted
@@ -2107,7 +2235,11 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "ev_lower": nums["ev_lower"], "total": nums["total"], "win_rate": nums["win_rate"],
                     "per_hour": n / hours if hours else None, "lab_mean": s["lab"].get("mean"),
                     "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing"),
-                    "venue": strategy_venue(s), "other_venue": other, **robust})  # fmt: skip
+                    "venue": strategy_venue(s), "other_venue": other, **robust,
+                    # its trades that rest on a price outside the model, as the lab counts them (`_outside_count`)
+                    "outside_model": nums.get("outside_model")})  # fmt: skip
+        if s.get("refuted"):  # dropped by the paper test (`retire_refuted`): its row and numbers stay, scored no more
+            out[-1]["refuted"] = s["refuted"]
         if any_buyer(s.get("trigger")):  # why its place is no live landing, in the row itself
             out[-1]["landing_note"] = ANY_BUYER_NOTE
         if sniper_rule(s.get("trigger")):
@@ -2134,6 +2266,9 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
             store.set_coverage(REPORT_CACHE_KEY, {"rows": fresh})
         except sqlite3.Error:
             pass  # a store that cannot be written (a read-only copy): the report is the same, computed each time
+    # what a price outside the model is, said once when a record holds trades priced there
+    outside = any(((r.get("outside_model") or {}).get("trades") or 0) > 0 for r in out)
     return {"strategies": out, "scored_until": done_until, "landing": landings(copy_pos),
             "landing_note": landing_note(copy_pos), "superseded": superseded,
-            **({"research_only_why": whys} if whys else {})}  # fmt: skip
+            **({"research_only_why": whys} if whys else {}),
+            **({"outside_why": dict(OUTSIDE_WORDS)} if outside else {})}  # fmt: skip

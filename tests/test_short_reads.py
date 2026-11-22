@@ -341,7 +341,9 @@ def test_paper_freeze_runs_its_lab_on_the_hourly_copy(tmp_path, monkeypatch, cap
                 "--only-live", "--json"]  # fmt: skip
         assert cli.main(argv) == 0
         rep = json.loads(capsys.readouterr().out)
-        return [(s["id"], s["label"], s["lab"]) for s in rep["frozen"]]
+        # (since paper#1 of the audit of 22 Nov a record also names the window and the file its lab read: the same
+        # strategies, the one from the live file, the other from the copy)
+        return [(s["id"], s["label"], {k: v for k, v in s["lab"].items() if k != "window"}) for s in rep["frozen"]]
 
     on_live = freeze(_freeze_db(tmp_path, "live"))  # no copy: the lab reads the live file
     db = _freeze_db(tmp_path, "copied")

@@ -30,6 +30,11 @@ ONESHOT_UNITS = (
     "snipetech-daily", "snipetech-operator", "snipetech-discover", "snipetech-qualify",
     "snipetech-measure", "snipetech-book", "snipetech-strategist", "snipetech-commands", "snipetech-snapshot",
 )  # fmt: skip
+# What the snapshot keeps of each paper report row: its record (n, mean, bound, total) and where it was scored, its size,
+# the bid it pays and whether that is where our trades land live, with the landing's key beside them (`take_snapshot`).
+# A paper result names its landing and the bid that buys it (CLAUDE.md rule 2). Until the audit of 22 Nov the row kept
+# the numbers alone, and all six best totals the agents read as `paper_top` were rules at a bid landing
+PAPER_ROW_KEYS = ("id", "label", "n", "mean", "ev_lower", "total", "buy_sol", "buy_bid_sol", "live_landing")
 
 
 def book_fill_sol(cfg: Config) -> float:
@@ -676,10 +681,15 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
 
         rep = paper.report(svc.store, cfg, now=now)
         snap.paper = {"scored_until": rep.get("scored_until"),
-                      "strategies": [{k: s.get(k) for k in ("id", "label", "n", "mean", "ev_lower", "total")}
+                      "strategies": [{k: s.get(k) for k in PAPER_ROW_KEYS}
+                                     # where it was scored, by its key: "+6@0", "bid-@0.05" (a place the bid buys)
+                                     | {"landing": paper.landing_key(int(s.get("latency") or 0), str(s.get("position")),
+                                                                     float(s.get("buy_bid_sol") or 0))}
                                      # a record no sniper would trade says so, in a few words (paper.row_note)
                                      | ({"research_only": True, "exit_note": str(s.get("exit_note") or "")[:120]}
                                         if s.get("research_only") else {})
+                                     # a rule the paper test dropped: scored no more (its row and numbers stay)
+                                     | ({"refuted": True} if s.get("refuted") else {})
                                      for s in rep.get("strategies", [])]}  # fmt: skip
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"paper: {exc}")
