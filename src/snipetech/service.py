@@ -86,6 +86,10 @@ FLOOR_READINGS = 2
 FRESH_BUY_SOL = 0.05
 # and an owner's own coin is gone from the wallet only when this many readings in a row leave it out (one reply can)
 OWNER_GONE_READINGS = 2
+# A coin of the run's becomes the owner's own when this many readings in a row find the run's tokens of it all sold on
+# the tape and the owner's own buys of it explaining what the wallet holds (22 Nov audit, runner finding 0: the owner had
+# bought into a copy's coin; one reading can come before the tape has another buy of the run's)
+OWNER_REST_READINGS = 2
 # The run's own result by its trades on the tape (`run_result`, beside the floor on the wallet's equity): a coin of the
 # run's that no reading shows this long after its last buy, with no sale of the run's on the tape and no price on it,
 # counts as lost
@@ -1253,8 +1257,10 @@ class Service:
         (measure/ours.RunCoins: the tape's buy since the coin showed, else the chain's); the owner's own coins are left
         alone, never sold by the run, counted as its fills, placed as its copies, or a reason to hold a re-arm back or
         keep a sniper running, and the floor counts each at its worth when first known as theirs and moves with it
-        when it leaves (`owner_coins` in the report). A coin nobody can tell yet is held as the run's but never sold
-        by it. The run starts beside the owner's coins; only one of its snipers' refuses the start.
+        when it leaves (`owner_coins` in the report). A coin of the run's the owner bought into by hand is sold by the
+        run only for the run's own tokens of it, and is theirs once the tape shows those all sold and their own buys
+        explain the rest (OWNER_REST_READINGS). A coin nobody can tell yet is held as the run's but never sold by it.
+        The run starts beside the owner's coins; only one of its snipers' refuses the start.
 
         Every read of the loop has READ_SECS (one that does not answer is a failed reading, said), every stop at the
         end is tried STOP_TRIES times, a sniper counts as armed from the moment its start is sent (a lost answer), and
@@ -1596,6 +1602,8 @@ class Service:
         # each coin's sales by the run itself that landed, (signature, tokens), until the tape has them (`unwritten_sold`)
         unwritten: dict[str, list[tuple[str, float]]] = {}
         rest_said: set[str] = set()  # the coins said to hold none of the run's tokens any more, once each holding
+        # the readings in a row that found a coin of the run's all the owner's (`owners_rest`)
+        rest_n: dict[str, int] = {}
         sight: dict[str, float] = {}  # each coin held now, anyone's, and when this holding of it was first seen
         owner_val: dict[str, float] = {}  # the owner's own coins held now, at their value when first known as theirs
         owner_coins: list[str] = []  # each coin of the owner's the run has left alone, in the order first known
@@ -1625,6 +1633,7 @@ class Service:
                 coins.forget(m)
                 unsure_said.discard(m)
                 rest_said.discard(m)
+                rest_n.pop(m, None)
             run_coins, new_owner = [], []
             for h in held_all:
                 m = str(h.get("mint") or "")
@@ -1636,7 +1645,11 @@ class Service:
                 first = m not in sight
                 sight.setdefault(m, now)
                 w = await coins.whose(h, sight[m] - WHOSE_MARGIN_SECS if since is None else since, now)
-                if w != "owner":
+                # a coin of the run's whose own tokens are all sold, the rest the owner's (`owners_rest`), is theirs
+                # from the reading OWNER_REST_READINGS agree: one can come before the tape has a buy of the run's
+                rest_n[m] = rest_n.get(m, 0) + 1 if w == "ours" and owners_rest(h) else 0
+                handed = rest_n[m] >= OWNER_REST_READINGS
+                if w != "owner" and not handed:
                     if w is None and m not in unsure_said:
                         unsure_said.add(m)
                         log(f"{m}: no buy of it read yet, on the tape or the chain, so whose coin it is cannot be told: "
@@ -1648,6 +1661,13 @@ class Service:
                 new_owner.append((m, v, first))
                 if m not in owner_coins:
                     owner_coins.append(m)
+                if handed:  # a buy of the run's it was (its fill stays counted); what is left of it is the owner's
+                    del rest_n[m]
+                    log(f"{m}: the run's own tokens of it are all sold (its trades of it on the tape), and the owner's "
+                        f"own buys of it explain the {int(h.get('raw') or 0):,} the wallet still holds: the rest is the "
+                        "owner's own coin, left alone by the run from here (never sold, waited on or kept armed for); "
+                        f"the floor counts it at {v:.4f} SOL while it is held")  # fmt: skip
+                    continue
                 if m in held_since:  # counted as the run's while nobody could tell: it was no buy of the run's
                     del held_since[m]
                     arrivals = max(0, arrivals - 1)
@@ -1826,13 +1846,16 @@ class Service:
             except Exception:  # noqa: BLE001 - no reading: the equity floor holds as before
                 return None
 
-        def run_tokens() -> tuple[dict[str, float], dict[str, float], float]:
-            """By the run's own trades on the tape since its start: its tokens of each coin (its buys less its sales; a
-            sale at the owner's own fees is theirs), each coin's last buy, and what those trades came to in SOL."""
+        def run_tokens() -> tuple[dict[str, float], dict[str, float], float, dict[str, float]]:
+            """By the wallet's trades on the tape since the run's start: the run's tokens of each coin (its buys less
+            its sales; a sale at the owner's own fees is theirs), each coin's last buy of the run's, what the run's
+            trades came to in SOL, and the owner's own tokens of each coin bought since then (their buys, less what of
+            each sale the run's tokens do not explain)."""
             from .measure.ours import _paid
 
             trades = self.store.trades_for_user(address, int(t0), fees=True)
             left: dict[str, float] = {}
+            owner: dict[str, float] = {}
             last_buy: dict[str, float] = {}
             total = 0.0
             for t in trades:
@@ -1840,31 +1863,53 @@ class Service:
                 fees = (int(prio or 0) + int(tip or 0) + 5000) / 1e9
                 if t.is_buy:
                     if not bot_tape_buy(t, run_marks):
+                        owner[t.mint] = owner.get(t.mint, 0.0) + float(t.base)
                         continue
                     left[t.mint] = left.get(t.mint, 0.0) + float(t.base)
                     last_buy[t.mint] = float(t.ts)
                     total -= (int(t.quote) + int(t.fee)) / 1e9 + fees
-                elif left.get(t.mint, 0.0) > 0 and float(t.base) > 0:
-                    if run_marks["sell"] and _paid(prio, tip, run_marks["sell"]) is False:
-                        continue  # the owner's own sale of their part of the coin
-                    take = min(float(t.base), left[t.mint])
-                    total += (int(t.quote) - int(t.fee)) / 1e9 * take / float(t.base) - fees
+                    continue
+                n = float(t.base)
+                if n <= 0:
+                    continue
+                theirs = bool(run_marks["sell"]) and _paid(prio, tip, run_marks["sell"]) is False  # the owner's sale
+                if left.get(t.mint, 0.0) > 0 and not theirs:
+                    take = min(n, left[t.mint])
+                    total += (int(t.quote) - int(t.fee)) / 1e9 * take / n - fees
                     left[t.mint] -= take
-            return left, last_buy, total
+                    n -= take
+                if n > 0 and t.mint in owner:  # what the run's tokens do not explain came out of the owner's
+                    owner[t.mint] = max(0.0, owner[t.mint] - n)
+            return left, last_buy, total, owner
+
+        def owners_rest(h: dict) -> bool:
+            """Whether all the wallet holds of a coin of the run's is the owner's: the tape has the run's buys of it,
+            all of them sold (its own landed sales the tape has not written yet counted), and the owner's own buys of it
+            explain the wallet's amount (22 Nov audit, runner finding 0: the owner bought into a copy's coin by hand;
+            once the copy was sold the coin stayed the run's by its first buy, so nothing was re-armed while the owner
+            kept it and the end left both snipers armed). False when the tape cannot say."""
+            m, raw = str(h.get("mint") or ""), int(h.get("raw") or 0)
+            try:
+                left, _last, _total, owner = run_tokens()
+            except Exception:  # noqa: BLE001 - the tape cannot say: the coin stays the run's
+                return False
+            if m not in left or raw <= 0:
+                return False
+            return left[m] - unwritten_sold(m) < 1 and raw <= owner.get(m, 0.0) + 1
 
         def run_still_holds(held_all: list[dict], now: float) -> bool:
             """Whether the tape says the run still holds tokens of a coin the wallet holds, bought RUN_HOLD_MAX_SECS
             ago at most: a copy into a coin the owner holds is their coin by its first buy, and the run's count of
             its own coins sees nothing (22 Nov review). False when the tape cannot say."""
             try:
-                left, last_buy, _total = run_tokens()
+                left, last_buy, _total, _owner = run_tokens()
             except Exception:  # noqa: BLE001 - the tape cannot say: the run's count of its coins alone, as before
                 return False
             shown = {str(h["mint"]) for h in held_all if h.get("mint")}
             return any(n > 0 and m in shown and now - last_buy.get(m, now) < RUN_HOLD_MAX_SECS for m, n in left.items())
 
         def _run_result(held_all: list[dict], now: float) -> float | None:
-            left, last_buy, total = run_tokens()
+            left, last_buy, total, _owner = run_tokens()
             shown = {str(h["mint"]): h for h in held_all if h.get("mint")}
             for m, n in left.items():
                 if n <= 0:

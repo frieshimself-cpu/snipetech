@@ -355,6 +355,44 @@ def test_the_runs_sale_of_its_part_goes_once_until_the_tape_has_it(monkeypatch):
     assert amounts == [(OURS, 1_000_000)], amounts
 
 
+def test_the_owners_tokens_left_after_the_runs_sale_keep_no_sniper_armed_at_the_end(monkeypatch):
+    """Runner finding 0: the coin stayed the run's by its first buy after OKTech sold the run's part, so the end found
+    a coin held, could not place its 2,000,000 by the run's 1,000,000, stopped no sniper and left both armed after its
+    15 min watch. Once the run's tokens are all sold and the owner's own buys explain the rest, the coin is theirs."""
+    rep, _client = _run(monkeypatch, _sol_owner_keeps, coins=_owner_keeps, payload=PAY, tape=_owner_keeps_tape(),
+                        minutes=4)  # fmt: skip
+    assert rep["left_running"] == [], (rep["reason"], rep["left_running"])
+    assert rep["owner_coins"] == [OURS] and rep["held"] == [] and rep["fills"] == 1
+    assert any("the owner's own buys of it explain" in e for e in rep["events"]), rep["events"]
+
+
+def test_the_owners_tokens_left_after_the_runs_sale_hold_back_no_rearm(monkeypatch):
+    """Runner finding 0: nothing was re-armed for as long as the owner kept the coin, and nothing said why."""
+    rep, client = _run(monkeypatch, _sol_owner_keeps, coins=_owner_keeps, payload=PAY, tape=_owner_keeps_tape(),
+                       minutes=4, rearm_after=60)  # fmt: skip
+    assert _starts(client, T0 + 112), f"nothing re-armed after the run's coin was sold at 112 s: {rep['events'][-6:]}"
+    assert not _starts(client, T0 + 100, T0 + 112)  # never while the run's copy was held
+    assert rep["floor_moves"] == []  # the owner's buy went into the coin, counted at its worth: no move of theirs
+
+
+def test_a_coin_the_owners_buys_do_not_explain_stays_the_runs(monkeypatch):
+    """The run's tokens of a coin on the tape are all sold, but the wallet holds more of it than the owner's own buys
+    explain: a buy of the run's the recorder has not written (here the other sniper's, at 113 s). The coin is not handed
+    to the owner: nothing is re-armed while it is held, and the run does not sell it until the tape can say how much
+    of it is the run's."""
+    sold = []
+
+    def coins(now):
+        if T0 + 114 <= now:  # the other sniper's 1,000,000 show beside the owner's
+            return [{"mint": OURS, "amount": 2.0, "raw": 2_000_000, "value_sol": 2.0, "priced": True}]
+        return _owner_keeps(now)
+
+    rep, client = _run(monkeypatch, _sol_owner_keeps, coins=coins, payload=PAY, tape=_owner_keeps_tape(),
+                       sold_amounts=sold, sweep_after=20, rearm_after=60, minutes=4)  # fmt: skip
+    assert rep["owner_coins"] == [] and sold == []
+    assert not [t for kind, _i, t in client.timed if T0 + 100 <= t < T0 + 240]  # no sniper touched while it is held
+
+
 def test_no_rearm_while_the_run_holds_tokens_of_a_coin_the_owner_holds_too(monkeypatch):
     """Review of 22 Nov: a copy into a coin the owner already holds (paid from wrapped SOL: no fall of the plain SOL to
     hold the re-arms back) left the coin the owner's, so the run held nothing by its count and re-armed the sniper that
