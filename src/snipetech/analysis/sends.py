@@ -143,23 +143,36 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
     per_leader: dict[str, dict[str, int]] = {
         lead: dict.fromkeys(("moments", "tried", *OUTCOMES), 0) for lead in leaders
     }
-    placed_fee = 0
+    # the failed sends at each outcome's moments and what they paid: those beside a buy that landed are part of what
+    # winning the place cost, and only the "failed" ones are moments the bot tried and lost (22 Nov: the verdict put
+    # every placed send's fee on the failed moments)
+    sends_at = {k: 0 for k in OUTCOMES if k != "none"}
+    fee_at = dict(sends_at)
     for i, m in enumerate(moments):
         where = _place(tape, m, buys_by_mint.get(m["mint"], []))
         if where is None:
             where = "failed" if tries.get(i) else "none"
-        placed_fee += sum(f["fee"] for f in tries.get(i, []))
+        if where != "none":
+            sends_at[where] += len(tries.get(i, []))
+            fee_at[where] += sum(f["fee"] for f in tries.get(i, []))
         outcomes[where] += 1
         row = per_leader.setdefault(m["leader"], dict.fromkeys(("moments", "tried", *OUTCOMES), 0))
         row["moments"] += 1
         row[where] += 1
         row["tried"] += where != "none"
     tried = sum(outcomes[k] for k in OUTCOMES if k != "none")
+    placed_fee = sum(fee_at.values())
+    landed_fee = placed_fee - fee_at["failed"]
     fee_sol = round(sum(f["fee"] for f in fails) / LAMPORTS, 9)
     verdict = (f"tried {tried} of {len(moments)} first buys of {min_sol:g} SOL or more: right behind on "
                f"{outcomes['adjacent']}, behind other buyers in the block on {outcomes['block']}, later on "
-               f"{outcomes['later']}; {outcomes['failed']} with only failed sends ({placed_fee / LAMPORTS:.4f} SOL in "
-               f"their fees); {outcomes['none']} with nothing seen. {UNSEEN}")  # fmt: skip
+               f"{outcomes['later']}; {outcomes['failed']} with only failed sends ({fee_at['failed'] / LAMPORTS:.4f} "
+               f"SOL in their fees); {outcomes['none']} with nothing seen.")  # fmt: skip
+    if placed:
+        verdict += (f" The {placed} failed sends at its tries cost {placed_fee / LAMPORTS:.4f} SOL, "
+                    f"{placed_fee / placed / LAMPORTS:.4f} a send, {landed_fee / LAMPORTS:.4f} of it beside the buys "
+                    "that landed.")  # fmt: skip
+    verdict += f" {UNSEEN}"
     if stopped:
         verdict += f"; stopped at the {max_credits:g} credit limit, so the failed sends are counted in part"
     return {"wallet": wallet, "hours": float(hours), "window": [int(since), int(end)], "leaders": list(leaders),
@@ -167,6 +180,8 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
             "per_leader": per_leader, "signatures": len(listed),
             "failed": {"sends": len(failed_sigs), "fetched": len(txs), "placed": placed, "fee_sol": fee_sol,
                        "placed_fee_sol": round(placed_fee / LAMPORTS, 9),
+                       "by_outcome": {k: {"sends": sends_at[k], "fee_sol": round(fee_at[k] / LAMPORTS, 9)}
+                                      for k in sends_at},
                        "priority_sol": round(sum(f["priority"] for f in fails) / LAMPORTS, 9),
                        "errors": dict(Counter(f["err"] for f in fails).most_common())},
             "credits": meter.credits, "stopped": stopped, "unseen": UNSEEN, "verdict": verdict}  # fmt: skip

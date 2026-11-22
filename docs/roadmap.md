@@ -14,9 +14,12 @@ first on the server's recording and only then run live in capped batches.
   72 hours: +100 SOL on 47 closed coins, 89 % of them wins.
 - **It picks its moments; it does not race them all** (the new `sends` command, deployed 07:41, job
   20261122-074139-296636). Of 406 such first buys in 72 hours it tried 62, and landed right behind on 46 of them (3 in
-  4 of its tries). On the other 344 nothing of it reached the chain. When it goes, it sends about a dozen copies. The
-  failed ones cost about 0.0008 SOL each (3.8 SOL for all 5,425), so only the send that lands pays the big bid. A send
-  that never landed leaves nothing, so these are the fewest tries it made.
+  4 of its tries). On the other 344 nothing of it reached the chain. When it goes, it sends about a dozen copies: 764
+  failed sends at its 62 tries, about 0.0027 SOL each and 0.033 a tried moment (2.05 SOL in all), so only the send
+  that lands pays the big bid. (Corrected by the audit of 22 Nov: this said 0.0008 SOL each and 3.8 SOL for all 5,425.
+  3.8 SOL is what the 4,900 failed sends read before the credit cap paid, most of them at no moment, and 0.0008 their
+  average. The job's own summary line put the 2.05 SOL on the 15 moments with only failed sends; `sends` now gives
+  each outcome its own.) A send that never landed leaves nothing, so these are the fewest tries it made.
 - **What the place is worth** (the fee analyst, I609: paper, the place assumed). Every first buy of 1.9 SOL or more,
   copied at 6 SOL right behind with 0.6 SOL charged for the bid: +1.32 SOL a copy behind Cented (311 copies in 7 days,
   lower bound +1.19) and +1.07 behind Decu (339, lower +0.98). Two places further back the same copies lose 0.48 and

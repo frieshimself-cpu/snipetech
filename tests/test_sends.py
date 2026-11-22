@@ -96,6 +96,37 @@ def test_a_failed_send_pays_its_priority_and_says_its_error():
     assert f["errors"] == {json.dumps({"InstructionError": [3, {"Custom": 6002}]}, separators=(",", ":")): 2}
 
 
+def test_each_outcome_carries_only_the_fees_of_its_own_failed_sends():
+    """22 Nov, job 20261122-074139-296636 read "15 with only failed sends (2.0497 SOL in their fees)": the 2.0497 SOL
+    was what all 764 failed sends at the 62 tried moments paid, those beside the 46 buys that landed right behind
+    included. The record then quoted 0.0008 SOL a failed send, the average over every failed send read, most of them at
+    no moment; at the tries a failed send cost 0.0027. Each outcome now carries its own failed sends and their fees,
+    and the verdict says what a failed send at a try cost."""
+    store = Store(":memory:")
+    store.add_trades([
+        _t(LEAD, "M1", 1100, 0, 2.5), _t(BOT, "M1", 1100, 1, 6.0),  # landed right behind, two sends lost beside it
+        _t(LEAD, "M2", 1200, 0, 3.0),  # only one failed send here
+    ])  # fmt: skip
+    entries = [
+        {"signature": "f2", "slot": 1201, "err": {"x": 1}, "blockTime": int(T0 + 201 * 0.4)},
+        {"signature": "f1b", "slot": 1101, "err": {"x": 1}, "blockTime": int(T0 + 101 * 0.4)},
+        {"signature": "f1a", "slot": 1100, "err": {"x": 1}, "blockTime": int(T0 + 100 * 0.4)},
+        {"signature": "ok1", "slot": 1100, "err": None, "blockTime": int(T0 + 100 * 0.4)},
+    ]
+    txs = {"f1a": _failed("f1a", 1100, "M1", 1_000_000), "f1b": _failed("f1b", 1101, "M1", 1_000_000),
+           "f2": _failed("f2", 1201, "M2", 1_000_000)}  # fmt: skip
+    out = _run(store, Chain(entries, txs))
+    f = out["failed"]
+    assert out["outcomes"]["adjacent"] == 1 and out["outcomes"]["failed"] == 1
+    assert f["placed"] == 3 and f["placed_fee_sol"] == pytest.approx(0.003)
+    assert f["by_outcome"]["adjacent"] == {"sends": 2, "fee_sol": pytest.approx(0.002)}
+    assert f["by_outcome"]["failed"] == {"sends": 1, "fee_sol": pytest.approx(0.001)}
+    assert f["by_outcome"]["block"] == f["by_outcome"]["later"] == {"sends": 0, "fee_sol": 0.0}
+    assert "1 with only failed sends (0.0010 SOL in their fees)" in out["verdict"]
+    assert ("The 3 failed sends at its tries cost 0.0030 SOL, 0.0010 a send, 0.0020 of it beside the buys that "
+            "landed.") in out["verdict"]  # fmt: skip
+
+
 def test_only_the_failed_transactions_are_fetched_and_every_request_is_counted():
     store, chain = _world()
     out = _run(store, chain)
