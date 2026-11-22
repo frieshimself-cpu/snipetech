@@ -6,6 +6,34 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 22 Nov, 07:50 UTC: what the place right behind costs, and how its bot takes it (I605, I608, I609, `sends`)
+
+- **The bot's rule** (the scout, I605). 8r6N8w copies only the first buy of a coin by Cented, Decu or theo side
+  (Bi4rd5), and only one of 1.9 SOL or more: 0 of their 115 repeat buys, 0 of 4,073 smaller ones. It lands right
+  behind, buys about 6-7 SOL at a bid of about 0.59 SOL, and sells in about 8 parts from slot 15 to slot 87. Over
+  72 hours: +100 SOL on 47 closed coins, 89 % of them wins.
+- **It picks its moments; it does not race them all** (the new `sends` command, deployed 07:41, job
+  20261122-074139-296636). Of 406 such first buys in 72 hours it tried 62, and landed right behind on 46 of them (3 in
+  4 of its tries). On the other 344 nothing of it reached the chain. When it goes, it sends about a dozen copies. The
+  failed ones cost about 0.0008 SOL each (3.8 SOL for all 5,425), so only the send that lands pays the big bid. A send
+  that never landed leaves nothing, so these are the fewest tries it made.
+- **What the place is worth** (the fee analyst, I609: paper, the place assumed). Every first buy of 1.9 SOL or more,
+  copied at 6 SOL right behind with 0.6 SOL charged for the bid: +1.32 SOL a copy behind Cented (311 copies in 7 days,
+  lower bound +1.19) and +1.07 behind Decu (339, lower +0.98). Two places further back the same copies lose 0.48 and
+  0.75. So the place itself is worth about 1.8 SOL a copy. The bot's own picks did no better than all the moments, so
+  its filter is not explained yet (I615).
+- **OKTech cannot take it** (I608). Our 13 tipped buys were never first. OKTech charges the buy's bid again on every
+  sell and every failed send: about 1.6 SOL a round trip with one sell, 4.8 with 8 parts, against 2.13 SOL a coin. And
+  selling in timed parts is not an OKTech exit.
+- **What it means for 100 a day.** On paper, about 650 such copies a week at +1.1 to +1.3 SOL each is about 100 SOL
+  a day, at 6 SOL a buy. That is paper with the place assumed, and 8r6N8w already takes the place on the moments it
+  wants. Taking it ourselves needs a sender of our own: our code signing the buys, a high bid, a dozen sends a moment,
+  and sells in parts at almost no bid. That decision is the owner's. The next facts for it: I615 (the bot's filter
+  and what its send ladder costs) and I610 (the tester scores the place on every first buy).
+- **Since 06:15.** The review of 22 Nov ended with 35 confirmed findings, all fixed test-first except low ones the
+  runner's second loss check bounds; deployed a26aeee at 07:21, 4773984 at 07:40 (the loss alert on the bot's own
+  trades and coins, never the owner's moves) and 226ea5e at 07:41 (`sends`). docs/autopilot.md lists each fix.
+
 ## 22 Nov, 06:15 UTC: who holds the place right behind the big wallets (I603, answered)
 
 - **The table** (the fee analyst, 22 Nov 05:50; first buys of 15-21 Nov: Cented 351, Decu 351, Cupseyy 164, Cooker
