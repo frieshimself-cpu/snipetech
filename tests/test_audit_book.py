@@ -158,3 +158,103 @@ def test_book0_the_watch_tells_the_owners_own_coin_once_a_day_never_as_nobody_se
         assert any("Nobody is selling coin " + bot in t and t.endswith(f"/sell {bot}") for t in sent), sent
     finally:
         st.close()
+
+
+# -- book#1: a retire undone by a coin bought while it stopped, and a start again that fails -------------------------
+
+LATE = [{"mint": "Late" + "n" * 40, "amount": 1.0, "value_sol": 0.2, "priced": True}]
+
+
+class _LateCoin(FakeSvc):
+    """The coin shows on the third holdings read: bought while the retire's stop was on its way."""
+
+    async def open_positions(self, address, ignore=()):
+        self._reads += 1
+        return list(LATE) if self._reads >= 3 else []
+
+
+class _FlakyStart(_LateCoin):
+    """The first start of a sniper fails (a gateway error), the next one goes."""
+
+    async def oktech_task(self, action, task_id):
+        if action == "start" and ("start", task_id) not in self.calls:
+            self.calls.append((action, task_id))
+            raise RuntimeError("502 Bad Gateway")
+        return await super().oktech_task(action, task_id)
+
+
+def _tape_now(st, ts):
+    from tests.synth import Market, addr
+
+    m = Market(st, addr(f"beat{ts}"), addr(f"dev-beat{ts}"), int(ts), 401_000_000 + int(ts) % 100_000)
+    m.buy(addr("someone"), 0.1, 0)
+    m.commit()
+
+
+def test_book1_a_failed_start_after_an_undone_retire_is_told_and_the_next_run_starts_it(tmp_path, monkeypatch):
+    """A retire stops k1 and a coin shows that was bought meanwhile, so k1 is started again to sell it. When that start
+    failed (OKTech refused, did not answer, or rate-limited past its retries) the owner was told it was started again,
+    and the next run kept the stopped sniper stopped "until the wallet holds nothing": nothing sold the coin. The start
+    is tried twice; a failure is told with the coin's /sell line, and the next run starts k1 while the coin is held."""
+    from snipetech.book import run as R
+    from tests.test_book_run import _made_its_buy
+
+    monkeypatch.setattr(R, "RESTART_PAUSE_SECS", 0.0)
+    st, cfg, _ = _made_its_buy(tmp_path)
+    svc = _LateCoin(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], cfg=cfg, fail={("start", "k1")})
+    sent: list[str] = []
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=_notifier(sent), balances=lambda w: (10.0, 0.0, [])))
+        assert svc.calls.count(("start", "k1")) == 2 and ("delete", "k1") not in svc.calls, svc.calls
+        (told,) = [t for t in sent if "retire" in t and "k1" in t]
+        assert "started again" not in told and "failed" in told and told.endswith(f"/sell {LATE[0]['mint']}"), told
+        _tape_now(st, NOW + 295)  # the next run five minutes on, the tape current
+        nxt = FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "idle"}], held=LATE, cfg=cfg)
+        asyncio.run(run_book(nxt, cfg, NOW + 300, notifier=_notifier(sent), balances=lambda w: (10.0, 0.0, LATE)))
+        assert ("start", "k1") in nxt.calls, nxt.calls
+        _tape_now(st, NOW + 595)
+        later = FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], held=LATE, cfg=cfg)
+        asyncio.run(run_book(later, cfg, NOW + 600, notifier=_notifier(sent), balances=lambda w: (10.0, 0.0, LATE)))
+        assert not (st.coverage(R.RESTART_KEY) or {}), "running again: nothing is left to start"
+    finally:
+        st.close()
+
+
+def test_book1_a_start_that_goes_on_its_second_try_is_told_as_started_and_leaves_nothing_to_start(
+    tmp_path, monkeypatch
+):
+    from snipetech.book import run as R
+    from tests.test_book_run import _made_its_buy
+
+    monkeypatch.setattr(R, "RESTART_PAUSE_SECS", 0.0)
+    st, cfg, _ = _made_its_buy(tmp_path)
+    svc = _FlakyStart(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], cfg=cfg)
+    sent: list[str] = []
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=_notifier(sent), balances=lambda w: (10.0, 0.0, [])))
+        assert svc.calls.count(("start", "k1")) == 2 and ("delete", "k1") not in svc.calls, svc.calls
+        (told,) = [t for t in sent if "retire" in t and "k1" in t]
+        assert "started again so it can sell it" in told, told
+        assert not (st.coverage(R.RESTART_KEY) or {})
+    finally:
+        st.close()
+
+
+def test_book1_the_plan_starts_such_a_sniper_only_while_a_coin_is_held():
+    """While a coin is held it is started; with the wallet holding nothing it is retired as any spent sniper is; a
+    stopped sniper that made its buy and has no failed start on record stays stopped, as before."""
+    from snipetech.book.policy import RESTART_REASON, BookInputs, plan_book
+    from snipetech.config import Config
+
+    def plan(restart, holdings):
+        inp = BookInputs(equity_sol=10, day_realised_sol=0, day_risk_used_sol=0,
+                         qualified=[{"wallet": L1, "score": 0.03, "copy_plan": {"min_leader_sol": 0.3}}], live={},
+                         bid_model={}, snipers=[{"id": "k1", "name": K1, "status": "idle"}], holdings=holdings,
+                         now=NOW, holdings_known=True, buys_by_sniper={"k1": 1}, native_sol=10, wsol=0,
+                         restart=restart)  # fmt: skip
+        return [(a.kind, a.reason) for a in plan_book(inp, Config().book).actions if a.sniper_id == "k1"]
+
+    coin = [{"mint": LATE[0]["mint"], "amount": 1.0, "value_sol": 0.2}]
+    assert plan({"k1"}, coin) == [("start", RESTART_REASON)]
+    assert [k for k, _ in plan({"k1"}, [])] == ["retire"]
+    assert [k for k, _ in plan(set(), coin)] == ["keep"]

@@ -160,6 +160,9 @@ class BookInputs:
     # and cannot be told not to (14 Nov: 50 failed sends), so such a wallet gets no sniper and the one it has is
     # stopped like any wallet that left the ranking (never while our wallet holds a coin). {}: none known
     non_coin: dict[str, str] = field(default_factory=dict)
+    # book snipers a retire stopped while a coin came into the wallet and that could not be started again (run._retire,
+    # run.RESTART_KEY): a stopped sniper sells nothing, so each is started while the wallet holds a coin
+    restart: set[str] = field(default_factory=set)
 
 
 GUARD_KILL = "wallet-wide guard"  # the kill reason while the owner's guard holds (its own line says why)
@@ -193,6 +196,7 @@ def actor_members(actors: dict[str, list[str]], wallets: list[str],
 
 
 RETIRE_REASON = "made its buy and holds nothing: replaced so its spare buys are never needed"
+RESTART_REASON = "its retire stopped it as a coin came in and the start after failed: started so it can sell the coin"
 SPENT_REASON = "spent; a new sniper replaces it"
 # 17-19 Nov: the wallet was empty and the owner's floor off. The book made a sniper for each ranked wallet about every
 # ten minutes; each ended within minutes without a buy (OKTech: "finished") and the next run made another: 165 snipers
@@ -542,9 +546,14 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 # a part-used cap (a retire whose delete failed leaves it idle)
                 plan.actions.append(Action("retire", wallet, s["arm"], None, s["id"], RETIRE_REASON))
             elif status == "idle" and inp.buys_by_sniper.get(s["id"], 0) >= relied:
-                # never restarted with a part-used cap, and no second sniper for its wallet while it waits
-                plan.actions.append(Action("keep", wallet, s["arm"], None, s["id"],
-                                           "made its buy: stays stopped until the wallet holds nothing, then replaced"))  # fmt: skip
+                if s["id"] in inp.restart and holding:
+                    # its retire was undone by a coin it may hold, and the start after failed (22 Nov audit): a
+                    # stopped sniper strands its coin, so it runs again until the wallet holds nothing, then is retired
+                    plan.actions.append(Action("start", wallet, s["arm"], None, s["id"], RESTART_REASON))
+                else:
+                    # never restarted with a part-used cap, and no second sniper for its wallet while it waits
+                    plan.actions.append(Action("keep", wallet, s["arm"], None, s["id"],
+                                               "made its buy: stays stopped until the wallet holds nothing, then replaced"))  # fmt: skip
                 seen_w6.add(w6)
             elif status in ("running", "starting") and s["arm"] == arm:
                 plan.actions.append(Action("keep", wallet, arm, None, s["id"], f"ranked and {status} on its arm"))
