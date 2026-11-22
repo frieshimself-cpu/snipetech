@@ -192,11 +192,12 @@ def size_scores(svc, cfg: Config, tape, wallets: list[str], kols: dict, mates: d
 def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
     """When the wallet was picked: (its first pick, its latest), each None when there is none. A pick is a verdict
     every in-sample gate passed: one qualified before 7 Nov, as every such verdict was, or one that carries a forward
-    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one). Its latest pick
-    starts its latest run of such verdicts; a verdict that failed an in-sample gate ends the run (review of 7 Nov: a
-    wallet that lost and qualified again on a new streak counted that streak, the copies that made it qualify again, as
-    forward copies of its first pick), so the latest is None when the wallet's latest verdict failed one. Research
-    round 2 scored the 27 wallets from the 04:15 and 14:30 verdicts from those verdicts the same way."""
+    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one), dated where the tape
+    its look read ended (`_pick_record`). Its latest pick starts its latest run of such verdicts; a verdict that
+    failed an in-sample gate ends the run (review of 7 Nov: a wallet that lost and qualified again on a new streak
+    counted that streak, the copies that made it qualify again, as forward copies of its first pick), so the latest is
+    None when the wallet's latest verdict failed one. Research round 2 scored the 27 wallets from the 04:15 and 14:30
+    verdicts from those verdicts the same way."""
     first, latest, _ = _pick_record(store, wallet)
     return first, latest
 
@@ -211,10 +212,12 @@ def armed_since(store, wallet: str) -> int | None:
 
 
 def _pick_record(store, wallet: str) -> tuple[int | None, int | None, int | None]:
-    """(first pick, latest pick, armed since) from the wallet's verdicts in order: `pick_times`, `armed_since`. A
-    verdict that says the wallet went cold since it was armed (forward "cold", gates.forward_gate) ends the arming and
-    starts a new pick itself, at the end of the tape it read: the copies from the stop on count toward the 20 the
-    wallet needs to come back (started at the next look, a day of copies counted for nothing)."""
+    """(first pick, latest pick, armed since) from the wallet's verdicts in order: `pick_times`, `armed_since`. Each
+    of the three starts where the tape ended that its look read (the verdict's own time when it does not say): a pick
+    dated at the clock time left the copies between the two in no look's sample and in no forward check (audit of 22
+    Nov: 2.5 h on average). A verdict that says the wallet went cold since it was armed (forward "cold",
+    gates.forward_gate) ends the arming and starts a new pick itself, there: the copies from the stop on count toward
+    the 20 the wallet needs to come back (started at the next look, a day of copies counted for nothing)."""
     rows = store._q("SELECT computed_at, status, forward, kept_armed IS NOT NULL FROM verdicts "
                     "WHERE wallet=? ORDER BY computed_at, id", (wallet,))  # fmt: skip
     first = latest = armed = None
@@ -227,13 +230,14 @@ def _pick_record(store, wallet: str) -> tuple[int | None, int | None, int | None
         except ValueError:
             fwd = {}
         fwd = fwd if isinstance(fwd, dict) else {}
-        first = int(at) if first is None else first
+        start = int(fwd.get("tape_end") or at)  # the last moment this look saw
+        first = start if first is None else first
         if fwd.get("cold"):
-            latest, armed = int(fwd.get("tape_end") or at), None
+            latest, armed = start, None
             continue
-        latest = int(at) if latest is None else latest
+        latest = start if latest is None else latest
         if armed is None and fwd.get("status") == "passed":
-            armed = int(fwd.get("tape_end") or at)
+            armed = start
     return first, latest, armed
 
 
@@ -502,8 +506,8 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
             v = forward_gate(v, copies, latest, spans, q_eff, now, conf=cfg.verdict.confidence,
                              samples=cfg.verdict.bootstrap_samples, first_picked_at=first, armed_at=armed)  # fmt: skip
         v = same_actor(v, act, q_eff, now)  # `v` itself unless it yields
-        if first is None and v.get("forward") is not None:
-            first = int(now)  # picked for the first time now
+        if first is None and v.get("forward") is not None:  # picked for the first time, where its lab's tape ended
+            first = int(v["forward"].get("picked_at") or now)
         if row is not None and first is not None:  # what the next run takes from the record once the tape drops it
             record = {"first_picked_at": first, "copies": [x for x in copies if x[0] > first]}
         prev = c.get("verdict")

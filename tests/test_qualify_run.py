@@ -965,15 +965,58 @@ def test_a_cold_verdict_starts_a_new_pick_from_the_tape_it_read_and_ends_the_arm
         assert armed_since(st, "W") is None
         put(200, "qualified", {"status": "passed", "tape_end": 180})
         put(300, "qualified", {"status": "passed", "tape_end": 290})
-        assert pick_times(st, "W") == (100, 100) and armed_since(st, "W") == 180  # the look that first passed
+        # the pick starts at 90 too, where its look's tape ended, not at the verdict's 100 (audit of 22 Nov, qualify#0)
+        assert pick_times(st, "W") == (90, 90) and armed_since(st, "W") == 180  # the look that first passed
         put(400, "candidate", {"status": "pending", "tape_end": 380, "cold": {"n": 10, "mean": -0.05, "upper": -0.01}})
-        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") is None
+        assert pick_times(st, "W") == (90, 380) and armed_since(st, "W") is None
         put(500, "candidate", {"status": "pending", "tape_end": 480})
-        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") is None
+        assert pick_times(st, "W") == (90, 380) and armed_since(st, "W") is None
         put(600, "qualified", {"status": "passed"})  # a verdict from before the tape end was kept: its own time
-        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") == 600
+        assert pick_times(st, "W") == (90, 380) and armed_since(st, "W") == 600
         put(700, "candidate")  # stopped in-sample: the pick is over, and so is the arming
-        assert pick_times(st, "W") == (100, None) and armed_since(st, "W") is None
+        assert pick_times(st, "W") == (90, None) and armed_since(st, "W") is None
+    finally:
+        st.close()
+
+
+def test_a_new_pick_starts_where_the_tape_its_lab_read_ended(tmp_path):
+    """Audit of 22 Nov (qualify#0): the lab reads the hourly copy of the tape, up to 5 h old (the picks of 20-22 Nov:
+    2.5 h on average, 4 h at the most), and a new pick was dated at the run's clock time. The wallet's copies between
+    the copy's end and that time were in nobody's forward check: W lost on its 10 copies there and qualified on the 20
+    after. A pick starts where the tape that look read ended, as the cold restart and the arming already did: those
+    10 are forward copies, and W is retired."""
+    from snipetech.qualify.run import pick_times
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W"])
+        st.upsert_candidate("W", "solanatracker", STRONG, NOW - 4 * 86400)
+        lag = 3 * 3600  # the copy the picking lab reads ends three hours before the run
+        streak = [[NOW - 30 * 3600 + 3600 * k, 0.02] for k in range(25)]  # what it is picked on
+        gap = [[NOW - lag + 600 * k + 60, -0.05] for k in range(10)]  # after that copy ends, before the run
+        after = [[NOW + 3600 + 4000 * k, 0.01] for k in range(20)]
+        seen = {"end": NOW - lag}
+
+        def runner(wallets, pos):  # the lab sees the copies on the tape it reads; all of them still pay in-sample
+            moments = [m for m in streak + gap + after if m[0] <= seen["end"]]
+            return [_row(w, len(moments), 0.012, 0.003, moments, 0.7) for w in wallets]
+
+        st.set_coverage("tape", {"spans": [[NOW - 3 * 86400, NOW - lag]]})
+        record_copying(st, set(), NOW - 60)
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner, early=True)
+        fwd = st.latest_verdicts()[0]["forward"]
+        assert fwd["status"] == "pending" and fwd["picked_at"] == fwd["first_picked_at"] == fwd["tape_end"] == NOW - lag
+        assert pick_times(st, "W") == (NOW - lag, NOW - lag)
+        assert st.get_score("qualify", "W")["record"]["first_picked_at"] == NOW - lag
+        later = NOW + 30 * 3600
+        seen["end"] = later - lag
+        st.set_coverage("tape", {"spans": [[NOW - 3 * 86400, later - lag]]})
+        record_copying(st, set(), later - 60)
+        run_qualify(svc, svc.cfg, data / "jobs", later, lab_runner=runner, early=True)
+        v = st.latest_verdicts()[0]
+        assert v["forward"]["picked_at"] == NOW - lag and v["forward"]["n"] == 30  # the gap's 10 copies count
+        assert v["forward"]["mean"] == pytest.approx((10 * -0.05 + 20 * 0.01) / 30)
+        assert v["status"] == "retired" and v["forward"]["status"] == "failed", v["reasons"]
     finally:
         st.close()
 
