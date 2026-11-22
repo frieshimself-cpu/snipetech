@@ -393,6 +393,109 @@ def test_a_coin_the_owners_buys_do_not_explain_stays_the_runs(monkeypatch):
     assert not [t for kind, _i, t in client.timed if T0 + 100 <= t < T0 + 240]  # no sniper touched while it is held
 
 
+C = T0 + 101.5  # a copy into the owner's coin that lands half a second before a reading
+
+
+def _owner_coin_with_copy(now):
+    """The owner's 1,000,000 of OWN since before the run; the run's copy of 1,000,000 more lands at C and shows a
+    second later, until OKTech's 12 s exit sells it."""
+    if C + 1 <= now < C + 12:
+        return [{"mint": OWN, "amount": 2.0, "raw": 2_000_000, "value_sol": 6.0, "priced": True}]
+    return [_coin(OWN, 3.0)]
+
+
+@pytest.mark.parametrize("stop_at", [C + 10, C + 0.4], ids=["end 10 s after the copy", "end right after the copy"])
+def test_an_end_after_a_copy_into_the_owners_coin_never_stops_its_sniper_before_its_exit(monkeypatch, stop_at):
+    """Audit of 22 Nov, runner finding 1: the coin is the owner's by its first buy, so the end saw nothing of the run's
+    held and stopped both snipers once its wait for a buy on its way was over. An end in the second after the copy,
+    before a reading saw its SOL leave, stopped them 11.5 s after it, before OKTech's 12 s exit: the run's 3 SOL of
+    tokens stranded (its auto-sell stops with its sniper). While the tape says the run holds tokens of a coin in the
+    wallet, the end stops no sniper."""
+    rep, client = _run(monkeypatch, lambda now: 7.0 if now < C else (4.0 if now < C + 12 else 6.9),
+                       coins=_owner_coin_with_copy, payload=FEES,
+                       tape=[_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(C, mint=OWN, sol=3.0)], floor=None,
+                       max_loss=5.0, stop_at=stop_at, minutes=10)  # fmt: skip
+    stops = sorted(t - C for kind, _i, t in client.timed if kind == "stop" and t > C)
+    assert not [s for s in stops if s < 12], f"stopped {stops} s after the copy, before its 12 s exit; {rep['reason']}"
+
+
+def _owners_coin_and_copy(now):
+    # the owner's 1,000,000 of OWN since before the run; the run's copy of 3 SOL into the same coin at 100 s
+    if now >= T0 + 102:
+        return [{"mint": OWN, "amount": 2.0, "raw": 2_000_000, "value_sol": 6.0, "priced": True}]
+    return [_coin(OWN, 3.0)]
+
+
+def _owners_coin_tape():
+    return [_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(T0 + 100, mint=OWN, sol=3.0)]
+
+
+def test_the_runs_tokens_in_the_owners_coin_are_sold_by_its_own_sale_when_oktech_leaves_them(monkeypatch):
+    """Runner finding 1: OKTech's known last-buy fault (a one-shot sniper's buy left with no exit) is what the run's own
+    sale is for, but it looked at the run's coins only, and a copy into a coin the owner holds stays the owner's coin:
+    nothing was sold in 4 minutes past --sweep-after 20. The run's own tokens of it are sold, once (the tape here never
+    writes the sale: a second try would sell the owner's), and never the owner's."""
+    sold, sweeps = [], []
+    rep, _client = _run(monkeypatch, lambda now: 7.0 if now < T0 + 100 else 4.0, coins=_owners_coin_and_copy,
+                        payload=FEES, tape=_owners_coin_tape(), floor=None, max_loss=5.0, sweeps=sweeps,
+                        sold_amounts=sold, sweep_after=20, minutes=4)  # fmt: skip
+    assert sold == [(OWN, 1_000_000)], sold
+    assert T0 + 120 <= sweeps[0][1] < T0 + 130, sweeps  # --sweep-after 20 from the run's buy of it
+    assert [s["mint"] for s in rep["swept"]] == [OWN] and rep["left_running"] == [], rep["reason"]
+
+
+def test_told_to_stop_after_a_copy_into_the_owners_coin_stops_no_sniper(monkeypatch):
+    """Runner finding 1, the way out (`last_stop`): told to stop 40 s after a copy into the owner's coin that OKTech
+    left unsold (past the 30 s a fall of the SOL counts as a buy on its way), it read two readings with nothing of the
+    run's held and stopped every sniper, the one holding the copy too."""
+    import asyncio
+
+    from tests import test_oktech
+
+    clients, told = [], {"done": False}
+    real_init = test_oktech._SpentClient.__init__
+
+    def init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        clients.append(self)
+
+    monkeypatch.setattr(test_oktech._SpentClient, "__init__", init)
+
+    def coins(now):
+        if now >= T0 + 140 and not told["done"]:  # the job's limit reaches the run at its read
+            told["done"] = True
+            raise asyncio.CancelledError
+        return _owners_coin_and_copy(now)
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(monkeypatch, lambda now: 7.0 if now < T0 + 100 else 4.0, coins=coins, payload=FEES,
+             tape=_owners_coin_tape(), floor=None, max_loss=5.0, minutes=10)  # fmt: skip
+    (client,) = clients
+    assert not [t for kind, _i, t in client.timed if kind == "stop" and t >= T0 + 140], client.timed
+
+
+def test_a_copy_into_the_owners_coin_during_the_watch_keeps_its_sniper_armed(monkeypatch):
+    """Runner finding 1, the watch after the end: /stop at 110 s with the run's copy M1 held (sold by its sniper at
+    140 s). At 120 s the other sniper, still armed, copies into the owner's coin; once M1 was gone the watch read the
+    wallet empty of the run's coins and stopped both, the one holding the new copy too."""
+
+    both = {"mint": OWN, "amount": 2.0, "raw": 2_000_000, "value_sol": 6.0, "priced": True}
+
+    def coins(now):
+        out = [_coin(OWN, 3.0)] if now < T0 + 122 else [both]
+        return out + ([_coin(OURS, 1.0)] if T0 + 104 <= now < T0 + 140 else [])
+
+    def sol(now):
+        if now < T0 + 100:
+            return 10.0
+        return 9.0 if now < T0 + 120 else (6.0 if now < T0 + 140 else 7.0)
+
+    rep, client = _run(monkeypatch, sol, coins=coins, payload=FEES,
+                       tape=[_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(T0 + 100), _copy(T0 + 120, mint=OWN, sol=3.0)],
+                       floor=None, max_loss=5.0, stop_at=T0 + 110, minutes=10)  # fmt: skip
+    assert not [t for kind, _i, t in client.timed if kind == "stop" and T0 + 110 <= t < T0 + 400], rep["reason"]
+
+
 def test_no_rearm_while_the_run_holds_tokens_of_a_coin_the_owner_holds_too(monkeypatch):
     """Review of 22 Nov: a copy into a coin the owner already holds (paid from wrapped SOL: no fall of the plain SOL to
     hold the re-arms back) left the coin the owner's, so the run held nothing by its count and re-armed the sniper that
