@@ -45,6 +45,11 @@ SWEEP_RETRY_SECS = 60.0
 # wallet holds nothing (22 Nov 00:54: the floor ended a run 36 s after a copy whose sniper read "finished" and never
 # sold; the run left at once, 9 s before --sweep-after 45, and nobody sold the coin). Still held then: left to them.
 END_WATCH_SECS = 900.0
+# At an end with a coin held, a sniper OKTech reads as still waiting to fire (one of these) holds nothing, and is stopped
+# at once, unless it copies a wallet a held coin's buy followed, or that buy cannot be placed and the coin showed less
+# than STATUS_SETTLE_SECS ago (OKTech read a sniper that bought "finished" 13 s later on 21 Nov 04:25)
+WAITING_STATUSES = frozenset({"running", "starting"})
+STATUS_SETTLE_SECS = 30.0
 # `oktech cycle --place-stop`: a buy of ours is placed this long after it ran (the recorder writes a block's trades in
 # batches; the buys between the copied one and ours ran before ours, so they are on the tape once ours is, and settled)
 PLACE_SETTLE_SECS = 10.0
@@ -1312,6 +1317,77 @@ class Service:
                 return True, g.reason
             return (None, g.reason) if not g.known else (False, "")
 
+        def leader_of(mint: str) -> str | None:
+            """The copied wallet whose buy the run's newest buy of `mint` followed (the measure stage's placing), or
+            None when it cannot be placed (no buy of the run's on the tape, a hunt sniper's coin)."""
+            from .measure.classify import classify_trade
+
+            try:
+                buys = [t for t in self.store.trades_for_user(address, int(t0), fees=True)
+                        if t.is_buy and t.mint == mint and bot_tape_buy(t, run_marks)]  # fmt: skip
+                if not buys or not copied:
+                    return None
+                return classify_trade(self.store, buys[-1], set(copied), None, mates=mates).get("wallet_copied")
+            except Exception:  # noqa: BLE001 - not placed: the sniper that bought it cannot be told
+                return None
+
+        async def stop_spare(held: list[dict], now: float) -> None:
+            """Stop each armed sniper that holds none of `held`: OKTech reads it still waiting to fire, and it copies
+            none of the wallets the held coins' buys followed. Stopping it strands nothing; left armed after the end it
+            buys once more with nobody watching (22 Nov 00:54: the Decu sniper held nothing and stayed armed until
+            stopped by hand). Nothing is stopped while a coin's buy cannot be placed and the coin is that young."""
+            waiting = [i for i in ids if i in armed]
+            if not waiting:
+                return
+            try:
+                states = {str(t.get("id")): str(t.get("status")) for t in await client.tasks()}
+            except Exception:  # noqa: BLE001 - OKTech cannot say: every sniper is left as it is, tried next reading
+                return
+            maybe: set[str] = set()  # the snipers that may hold a held coin
+            fired = {i for i in ids if states.get(i) not in WAITING_STATUSES}  # it fired, or OKTech has no word of it
+            unplaced = 0
+            for h in held:
+                m = str(h.get("mint") or "")
+                lead = leader_of(m)
+                if lead is not None:
+                    maybe |= {i for i in ids if lead in copies_of.get(i, set())}
+                elif now - sight.get(m, now) >= STATUS_SETTLE_SECS:
+                    maybe |= fired
+                    unplaced += 1
+                else:
+                    return
+            if unplaced > len(fired):  # a coin is held that no fired sniper explains: OKTech's word is stale
+                return
+            for i in waiting:
+                if i in maybe or states.get(i) not in WAITING_STATUSES:
+                    continue
+                try:
+                    await client.stop(i)
+                except OktechError as exc:
+                    if exc.code != "NOT_RUNNING":
+                        log(f"stop of {tag(i)} (it holds nothing) at the end failed: {exc}")
+                        continue
+                except Exception as exc:  # noqa: BLE001 - said; tried again at the next reading
+                    log(f"stop of {tag(i)} (it holds nothing) at the end failed: {exc}")
+                    continue
+                armed.discard(i)
+                log(f"stopped {tag(i)} at the end: OKTech reads it still waiting to fire and it copies none of the "
+                    "wallets the held coins followed, so it holds nothing (left armed it would buy again)")  # fmt: skip
+
+        def unseen_buy(now: float) -> bool:
+            """A buy of the run's on the tape in the last minute whose coin has not shown and has not been sold: on
+            its way, or left out of the wallet's last reply (a PumpSwap buy paid from wrapped SOL moves no plain SOL)."""
+            try:
+                trades = self.store.trades_for_user(address, int(now - 60), fees=True)
+                for t in trades:
+                    if not (t.is_buy and bot_tape_buy(t, run_marks)) or t.mint in sight:
+                        continue
+                    if not any(not u.is_buy and u.mint == t.mint and (u.slot, u.pos) > (t.slot, t.pos) for u in trades):
+                        return True
+            except Exception:  # noqa: BLE001 - the tape cannot say: the wallet's two readings decide alone
+                return False
+            return False
+
         async def disarm(why: str) -> tuple[str, list[dict] | None]:
             """How every run ends: with nothing held the snipers this run armed are stopped (a stopped sniper with
             nothing held strands nothing, and one left armed can still buy once); a coin held or an unreadable wallet
@@ -1319,9 +1395,15 @@ class Service:
             by its sniper or by the run, the snipers are stopped then. (The reason with what was done, the coins held
             or None when unreadable.)"""
             try:  # the run's coins only: one of the owner's own keeps no sniper of the run's running
-                held, _, _ = await sort_coins(await open_positions(), time.time())
-                # a buy on its way (the SOL left, its coin not shown yet) is a coin: wait for it before stopping any
-                while not held and fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS:
+                end_t = time.time()
+                held, _, _ = await sort_coins(await open_positions(), end_t)
+                if not held:  # one empty reply is no proof: a node can leave a coin out of one (a second must agree)
+                    await asyncio.sleep(5.0)
+                    held, _, _ = await sort_coins(await open_positions(), time.time())
+                # a buy on its way (the SOL left, or the tape has the buy, its coin not shown yet) is a coin: wait for
+                # it before stopping any
+                while not held and time.time() - end_t < FRESH_HOLD_SECS and (
+                        (fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS) or unseen_buy(time.time())):  # fmt: skip
                     await asyncio.sleep(3.0)
                     held, _, _ = await sort_coins(await open_positions(), time.time())
             except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
@@ -1330,6 +1412,8 @@ class Service:
                     f"{why}; the wallet could not be read, so the snipers are left running (one may hold a coin)",
                     None,
                 )
+            if held:  # the snipers that hold none of it are stopped now, not when it is gone
+                await stop_spare(held, time.time())
             if held and sweep_after is not None:
                 n0 = len(swept)
                 held = await watch_out(held)
@@ -1485,6 +1569,7 @@ class Service:
                     del held_since[m]
                 if held:
                     fresh_at, empty = None, 0
+                    await stop_spare(held, now)
                     await sweep_stuck(held, now)
                 else:
                     if prev is not None and b < prev - FRESH_BUY_SOL:
