@@ -649,3 +649,39 @@ def test_book7_our_copy_the_tape_does_not_hold_is_watched_as_ours_never_called_a
         assert hits[0]["stray"] and len(sent) == 1 and "your own" in sent[0] and "/sell" not in sent[0], sent
     finally:
         st.close()
+
+
+def test_book7_review_our_copy_the_fills_show_sold_is_never_told_as_unsold_every_15_minutes(tmp_path):
+    """Review of the book#7 fix: any buy of the bot's in fills kept its coin "ours", sold or not. A copy into an older
+    PumpSwap coin that OKTech sold (the sale in fills too, paired to the buy) and that left a few tokens the tape cannot
+    price, so they never fall under the dust line, was told "Nobody is selling ... Sell it now" every 15 minutes. Our
+    buy counts only while our sales paired to it in fills left it more than a few tokens; sold, the coin's line is said
+    once a day, in words that say our copy was sold. A part sold (a take-profit stage) is still a coin nobody may be
+    selling: the 15-minute alert, as before."""
+    from snipetech.book.watch import watch_pass
+
+    coin = "Sold" + "s" * 40
+    buy = "BUYSIG" + "b" * 80
+    held = [{"mint": coin, "amount": 1.0, "value_sol": None, "priced": False}]
+    for k, (sold_share, unsold) in enumerate(((0.999, False), (0.5, True))):
+        st, cfg = _env(tmp_path / str(k))
+        _book_sniper(st)
+        _fresh_tape(st)
+        st.put_fill({"sig": buy, "ts": int(NOW) - 900, "wallet": W, "wallet_copied": L1, "mint": coin, "side": "buy",
+                     "sol": 0.05, "tokens": 1e9, "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
+        st.put_fill({"sig": "SELLSIG" + "s" * 80, "ts": int(NOW) - 880, "wallet": W, "mint": coin, "side": "sell",
+                     "sol": 0.05, "tokens": sold_share * 1e9, "priority_lamports": 1_000_000,
+                     "tip_lamports": 2_000_000, "buy_sig": buy})  # fmt: skip
+        _seen(tmp_path / str(k), coin, NOW - 880)
+        sent: list[str] = []
+        try:
+            hits = watch_pass(cfg, st, _notifier(sent), W, held, [], NOW)
+            again = watch_pass(cfg, st, _notifier(sent), W, held, [], NOW + 15 * 60)
+            assert bool(hits[0]["stray"]) is not unsold and bool(again[0]["stray"]) is not unsold, (k, hits)
+            if unsold:
+                assert len(sent) == 2 and all("Nobody is selling" in t and t.endswith(f"/sell {coin}") for t in sent)
+            else:
+                assert len(sent) == 1 and "our copy of it was sold" in sent[0], sent
+                assert "Nobody is selling" not in sent[0] and "not a coin the book bought" not in sent[0], sent
+        finally:
+            st.close()
