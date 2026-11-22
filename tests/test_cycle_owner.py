@@ -486,6 +486,29 @@ def test_the_runs_tokens_in_the_owners_coin_are_sold_by_its_own_sale_when_oktech
     assert [s["mint"] for s in rep["swept"]] == [OWN] and rep["left_running"] == [], rep["reason"]
 
 
+def _owners_coin_copy_sold(now):
+    """The owner's 1,000,000 of OWN; the run's copy of 1,000,000 more shows at 102 s and OKTech sells it at 112 s."""
+    if T0 + 102 <= now < T0 + 112:
+        return [{"mint": OWN, "amount": 2.0, "raw": 2_000_000, "value_sol": 6.0, "priced": True}]
+    return [_coin(OWN, 3.0)]
+
+
+@pytest.mark.parametrize("payload,sale", [(FEES, _oktech_sale(T0 + 112, mint=OWN)),
+                                          (PAY, (T0 + 127, _oktech_sale(T0 + 112, mint=OWN)))],
+                         ids=["the tape reads its exit as the owner's", "the tape has its exit 15 s late"])  # fmt: skip
+def test_the_runs_sale_in_the_owners_coin_sells_none_of_theirs_when_the_tape_is_wrong(monkeypatch, payload, sale):
+    """Review of the runner fixes (22 Nov), runner finding 1: the run's own sale of its tokens in a coin of the owner's
+    sells as many as the tape says the run holds. OKTech's exit had sold them at 112 s, but the tape either read that
+    sale as the owner's (it paid fees the payload does not name: why a hold on the tape ends at RUN_HOLD_MAX_SECS) or
+    had it late, and past --sweep-after 20 the run sold 1,000,000 of the owner's own. It sells no more than the wallet
+    holds beyond the owner's tokens (as many as when the coin was first known as theirs, and their buys since)."""
+    sold = []
+    _run(monkeypatch, lambda now: 7.0 if now < T0 + 100 else (4.0 if now < T0 + 112 else 6.9),
+         coins=_owners_coin_copy_sold, payload=payload, tape=_owners_coin_tape() + [sale], floor=None, max_loss=5.0,
+         sold_amounts=sold, sweep_after=20, minutes=4)  # fmt: skip
+    assert sold == [], f"the run sold the owner's tokens: {sold}"
+
+
 def test_told_to_stop_after_a_copy_into_the_owners_coin_stops_no_sniper(monkeypatch):
     """Runner finding 1, the way out (`last_stop`): told to stop 40 s after a copy into the owner's coin that OKTech
     left unsold (past the 30 s a fall of the SOL counts as a buy on its way), it read two readings with nothing of the

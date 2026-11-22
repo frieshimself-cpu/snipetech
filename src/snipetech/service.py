@@ -1628,6 +1628,9 @@ class Service:
         rest_n: dict[str, int] = {}
         sight: dict[str, float] = {}  # each coin held now, anyone's, and when this holding of it was first seen
         owner_val: dict[str, float] = {}  # the owner's own coins held now, at their value when first known as theirs
+        # and how much of each the wallet held then, with their buys of it on the tape then (`owner_bought`): the run's
+        # tokens in one are at most what the wallet holds beyond these and their buys since
+        owner_base: dict[str, tuple[int, float | None]] = {}
         owner_coins: list[str] = []  # each coin of the owner's the run has left alone, in the order first known
         unsure_said: set[str] = set()  # the coins said to be nobody's known yet, once each holding
         # the owner's own coins missing from the readings in a row: one is gone only when two agree (a node can leave a
@@ -1650,6 +1653,7 @@ class Service:
             gone = [(m, owner_val.pop(m)) for m in list(owner_val) if owner_miss.get(m, 0) >= OWNER_GONE_READINGS]
             for m, _v in gone:
                 del owner_miss[m]
+                owner_base.pop(m, None)
             for m in [m for m in sight if m not in mints and m not in owner_val]:
                 del sight[m]
                 coins.forget(m)
@@ -1681,6 +1685,7 @@ class Service:
                     continue
                 v = float(h["value_sol"]) if h.get("value_sol") is not None else 0.0
                 owner_val[m] = v
+                owner_base[m] = (int(h.get("raw") or 0), owner_bought(m))
                 new_owner.append((m, v, first))
                 if m not in owner_coins:
                     owner_coins.append(m)
@@ -1739,9 +1744,9 @@ class Service:
         async def sweep_stuck(held: list[dict], now: float) -> None:
             """Sell each coin of the run's held `sweep_after` seconds since this holding of it began, and each copy of
             an own launch or bait at once (`sell_now`), when its next try is due (`sweep_due`); of a coin of the
-            owner's in `held` (`run_parts`) the run's own tokens only, `sweep_after` seconds after the run's last buy
-            of it. A coin nobody can tell is the run's yet is never sold: it may be the owner's. A sale counts once the
-            chain has it."""
+            owner's in `held` (`run_parts`) the run's own tokens only, and no more than the wallet holds beyond the
+            owner's (`owner_base`), `sweep_after` seconds after the run's last buy of it. A coin nobody can tell is the
+            run's yet is never sold: it may be the owner's. A sale counts once the chain has it."""
             for h in held:
                 mint = str(h.get("mint") or "")
                 theirs = mint in owner_val  # the owner's coin, the run's tokens in it
@@ -1780,6 +1785,24 @@ class Service:
                             log(f"the run's own tokens of {mint} are all sold (its trades of it on the tape): what the "
                                 "wallet still holds of it is not the run's, and the run does not sell it")  # fmt: skip
                         continue
+                    if theirs:
+                        # of a coin of the owner's, no more than the wallet holds beyond their own tokens (as many as
+                        # when it was first known as theirs, and their buys of it since): OKTech's exit of the run's
+                        # tokens that the tape has late, or reads as the owner's sale, would make it sell theirs (review
+                        # of the runner fixes, 22 Nov)
+                        base, bought_now = owner_base.get(mint), owner_bought(mint)
+                        if base is None or bought_now is None:
+                            continue  # the owner's part cannot be told now: nothing is sold, read again next time
+                        room = raw - base[0] - max(0.0, bought_now - (base[1] or 0.0))
+                        if room < 1:
+                            if mint not in rest_said:
+                                rest_said.add(mint)
+                                log(f"{mint}, a coin of the owner's: the wallet holds no more of it than their own "
+                                    f"({base[0]:,} when first known as theirs, and their buys since), so the run's "
+                                    f"{mine:,.0f} on the tape were sold (an exit the tape has late, or reads as theirs): "
+                                    "the run sells none of it")  # fmt: skip
+                            continue
+                        mine = min(mine, room)
                     # and less of it in the wallet than the run's tokens and the owner's own buys of it on the tape: a
                     # sale of it the recorder has not written yet (OKTech's exit of the run's part, or the owner's own),
                     # so the run's tokens may be all sold and the rest the owner's (review of the runner fixes, 22 Nov:
@@ -1931,6 +1954,15 @@ class Service:
                 if n > 0 and t.mint in owner:  # what the run's tokens do not explain came out of the owner's
                     owner[t.mint] = max(0.0, owner[t.mint] - n)
             return left, last_buy, total, owner
+
+        def owner_bought(mint: str) -> float | None:
+            """The owner's own buys of `mint` on the tape since the run's start, in raw units; their sales are left out
+            (a sale the tape reads as theirs can be OKTech's exit of the run's tokens). None when the tape cannot say."""
+            try:
+                return sum(float(t.base) for t in self.store.trades_for_user(address, int(t0), fees=True)
+                           if t.is_buy and t.mint == mint and not bot_tape_buy(t, run_marks))  # fmt: skip
+            except Exception:  # noqa: BLE001 - not known: the run's part of the owner's coin is then not sold
+                return None
 
         def owners_rest(h: dict) -> bool:
             """Whether all the wallet holds of a coin of the run's is the owner's: the tape has the run's buys of it,
