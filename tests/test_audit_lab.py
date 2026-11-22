@@ -401,3 +401,84 @@ def test_an_event_fires_in_its_own_stretch_of_tape_only():
     data = collect(st, cfg, 0.2, 1, "+3", 0.0045, groups=(), event_kinds=("graduating",), exits=[HOLD], workers=1)
     assert [r["ts"] - t0 < 60 for r in data["rows"]] == [True]  # the one moment, a few seconds after the event
     st.close()
+
+
+# -- goal#2: a copy that reacts to the leader's landed buy, K block places after it ----------------------------------
+# +0, +1x and the qualify landing +6 count trades, whenever they came; a reacting sender's place is set by time, which
+# on the chain is how many block places after the leader its transaction lands. "react:K": behind every trade of the
+# coin up to K places after the leader's own transaction, behind the whole block when K runs past its end.
+
+
+def _block_path():
+    """State 0: before; slot 100: the leader at block place 488 (state 1), a follower at 490 (state 2), another at 494
+    (state 3); slot 101: the next buyer at place 7 (state 4). Places as on the tape of slot 471375858 (Decu at 488, a
+    3.5 SOL buyer at 490, another at 494)."""
+    from snipetech.sim.market import MarketPath
+
+    p = MarketPath.__new__(MarketPath)
+    p.slot = np.array([99, 100, 100, 100, 101])
+    p.pos = np.array([-1, 488, 490, 494, 7])
+    p.n = 5
+    return p
+
+
+def test_plus0_stands_ahead_of_the_follower_two_places_behind():
+    assert int(_block_path().landing_index(100, "+0", 1)) == 1  # today's +0: the leader's own state
+
+
+def test_react_k_counts_block_places_after_the_leader():
+    p = _block_path()
+    assert int(p.landing_index(100, "react:1", 1)) == 1  # place 489: nobody of the coin between
+    assert int(p.landing_index(100, "react:2", 1)) == 2  # place 490: behind the follower
+    assert int(p.landing_index(100, "react:15", 1)) == 3  # place 503: behind both followers
+    assert int(p.landing_index(100, "react:5000", 1)) == 3  # past the block's end: behind its last trade
+    # in a later block: behind its first K places (0 to K-1), so its buyer at place 7 is ahead from react:8 on
+    assert int(p.landing_index(101, "react:8", 1)) == 4 and int(p.landing_index(101, "react:7", 1)) == 3
+
+
+def test_paper_and_the_lab_take_react_k():
+    from snipetech.analysis.paper import hypothesis_landing, landing_text
+
+    assert hypothesis_landing("+6", "react:15") == (0, "react:15")
+    for bad in ("react:", "react:x", "react:-1", "react15"):
+        with pytest.raises(ValueError, match="react:K"):
+            hypothesis_landing("+6", bad)
+    assert "15 block places after" in landing_text(0, "react:15")
+
+
+def test_a_copy_lands_k_block_places_after_the_leader_and_never_among_its_own():
+    from snipetech.analysis.lab import entry_at
+    from snipetech.sim.market import MarketPath
+
+    st = Store(":memory:")
+    m = Market(st, addr("rk-coin"), addr("rk-dev"), NOW - 3000, 70_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for j in range(3):
+        m.buy(addr(f"rk-early-{j}"), 0.3, 2 + j)
+    for who, sol, place in ((W1, 2.0, 488), (addr("rk-near"), 3.5, 490), (addr("rk-far"), 1.0, 494)):
+        m.buy(who, sol, 10).pos = place
+    m.buy(addr("rk-next"), 1.0, 11).pos = 7
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(addr("rk-coin")), st.launch(addr("rk-coin")))
+    st.close()
+    i = path.users.index(W1)
+
+    def behind(position, mates=None):
+        return path.users[entry_at("kol", path, i, int(path.slot[i]), 0, position, mates)]
+
+    assert behind("+0") == W1  # right behind the leader, ahead of the follower two places behind
+    assert behind("react:1") == W1 and behind("react:2") == addr("rk-near") and behind("react:6") == addr("rk-far")
+    assert behind("react:5000") == addr("rk-far")  # the block's end, never the next block
+    assert behind("react:1", frozenset({addr("rk-near")})) == addr("rk-near")  # never among the leader's own wallets
+
+
+def test_a_lab_scores_copies_at_react_k():
+    st = Store(":memory:")
+    _two_wallets(st)
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    trig = parse_trigger({"kind": "kol", "group": "wallet", "sol": 1, "only": W1})
+    data = collect(st, cfg, 0.2, 0, "react:15", 0.0045, triggers=[trig], kols={"wallet": {W1, W2}}, exits=[HOLD],
+                   mates={}, workers=1)  # fmt: skip
+    st.close()
+    assert len(data["rows"]) == 12 and {r["landing"] for r in data["rows"]} == {"react:15@0"}

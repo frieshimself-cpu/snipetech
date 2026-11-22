@@ -47,7 +47,7 @@ from ..amm_tape import AMM_RECENT_KEY, NO_BACKFILL, backfill_spans
 from ..config import Config
 from ..models import PUMPFUN
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
-from ..sim.market import FILL_MODEL, MarketPath, _fix_slot_order
+from ..sim.market import FILL_MODEL, MarketPath, _fix_slot_order, react_places
 from ..store import Store
 from .bid_landing import CAUTIOUS_WORDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
 from .bid_landing import SKIP_WORDS as BID_SKIP_WORDS
@@ -571,16 +571,18 @@ def copy_landing(store: Store, cfg: Config, now: float) -> str:
 def hypothesis_landing(copy_pos: str, override: str | None) -> tuple[int, str]:
     """(slots after the trigger, position in that slot) a `lab --trigger` hypothesis is scored at: the measured copy
     landing, or `--copy-position` when given: "+N" (N trades of the coin ahead of us in the followed wallet's slot,
-    "+0" right behind it), "+Nx" (behind the N-th buy after it, across slots), start, middle or end, or a place
-    that follows the bid: "bid" (where --buy-bid puts the copy among the buyers of the wallet's block) or "bid-"
-    (one buy further back, the cautious one; analysis.bid_landing). A fixed place closer than the measured one is
-    bought with a bid: charge it with --buy-bid or --per-tx, or the result is no evidence."""
+    "+0" right behind it), "+Nx" (behind the N-th buy after it, across slots), "react:K" (behind every trade of the
+    coin up to K block places after the followed buy's own transaction: where a sender that reacts to it lands,
+    `MarketPath.landing_index`), start, middle or end, or a place that follows the bid: "bid" (where --buy-bid puts
+    the copy among the buyers of the wallet's block) or "bid-" (one buy further back, the cautious one;
+    analysis.bid_landing). A fixed place closer than the measured one is bought with a bid: charge it with --buy-bid
+    or --per-tx, or the result is no evidence."""
     if override is None:
         return (0, copy_pos)
     pos = str(override).strip()
     plus = pos.startswith("+") and (pos[1:].isdigit() or (pos.endswith("x") and pos[1:-1].isdigit()))
-    if not plus and pos not in ("start", "middle", "end") and not is_bid(pos):
-        raise ValueError(f"--copy-position is +N, +Nx, bid, bid-, start, middle or end, not {override!r}")
+    if not plus and react_places(pos) is None and pos not in ("start", "middle", "end") and not is_bid(pos):
+        raise ValueError(f"--copy-position is +N, +Nx, react:K, bid, bid-, start, middle or end, not {override!r}")
     return (0, pos)
 
 
@@ -778,6 +780,11 @@ def landing_text(latency: int, position: str, kind: str | None = None, bid_sol: 
         return f"{position}: up to {position[1:]} trades behind the trigger, in its slot"
     if position.startswith("+") and position.endswith("x") and position[1:-1].isdigit():
         return f"{position}: behind the first {position[1:-1]} buys after the trigger, counted across slots"
+    if react_places(position) is not None:  # a reacting sender's place (`MarketPath.landing_index`)
+        k = react_places(position)
+        if latency == 0:
+            return f"{position}: behind every trade of the coin up to {k} block places after the trigger's, in its slot"
+        return f"{position}: behind the first {k} block places of the slot {latency} after the trigger"
     if latency >= 1 and position.startswith("+") and position[1:].isdigit():
         slot = "the slot after the trigger" if latency == 1 else f"the slot {latency} after the trigger"
         return f"{position[1:]} trades into {slot}, behind everything in the trigger's own slot"

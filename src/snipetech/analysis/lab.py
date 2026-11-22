@@ -70,7 +70,7 @@ from ..oktech import (
     _whole_secs,
 )
 from ..sim.exits import Costs, ExitParams, prepare, round_trip_pnl, run_exit
-from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, slot_secs_from
+from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, react_places, slot_secs_from
 from ..solana.programs import SOL_QUOTES
 from ..store import Store, file_identity
 from .bid_landing import FAST_TXS, NO_BIDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
@@ -1355,10 +1355,19 @@ def entry_at(kind: str, path: MarketPath, i: int, t_slot: int, latency: int, pos
     trade stood six of the pack's buys further on, on the curve, where the pack left the coin on PumpSwap). And no
     place stops inside a transaction or between transactions sent together, whoever sent them: where the last trade
     ahead of us is one of a pack, we stand behind that pack (`pack_end`). A place in a later block ("+3@1") counts
-    from that block's start as before, and stops behind a whole transaction too."""
+    from that block's start as before, and stops behind a whole transaction too.
+
+    "react:K" (22 Nov, the audit: a reacting sender's place is set by time, which in a block is how many places after
+    the trigger's own transaction it lands; `MarketPath.landing_index`): behind every trade of the coin up to K block
+    places after the trigger's transaction, counted from the trigger itself and not from its companions, never ahead
+    of its own entry (for a copy: its pack and its companions), and behind a whole transaction."""
     across = across_slots(position)
     if across is not None:
         return copy_entry(path, i, across, latency, mates if kind == "kol" else None)
+    if react_places(position) is not None:
+        floor = own_entry_end(path, i, mates) if kind == "kol" else pack_end(path, i)
+        e = pack_end(path, max(int(path.landing_index(t_slot + latency, position, i)), floor))
+        return create_block_entry(path, i, e, latency, position) if kind == "kol" else e
     # Counted from the end of the trigger's own entry: its pack, for a copy its companions too. Then behind the whole
     # transaction (and pack) of the last trade ahead of us: nobody buys inside one (`pack_end`).
     base = own_entry_end(path, i, mates) if kind == "kol" else pack_end(path, i)

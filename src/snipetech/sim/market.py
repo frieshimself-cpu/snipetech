@@ -49,6 +49,17 @@ from ..models import AMM, CURVE, LAUNCHLAB, PUMPFUN, Launch, Trade, coin_venue
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES
 
 POSITIONS = ("start", "middle", "end")
+# "react:K": the place of a sender that reacts to the trigger's transaction once it has landed, set by time, which in a
+# block is how many places after the trigger's own transaction it lands (audit of 22 Nov: +N counts trades whenever
+# they came, too kind behind a crowded leader and too harsh behind a quiet one). `MarketPath.landing_index`
+REACT = "react:"
+
+
+def react_places(position) -> int | None:
+    """K of a landing "react:K" (block places after the trigger's own transaction), or None for any other."""
+    p = str(position)
+    k = p[len(REACT) :]
+    return int(k) if p.startswith(REACT) and k.isdigit() else None
 # The name of the model a position is valued by after its entry (the module's account of it). A stored result says
 # which one priced it (a paper trade's `model`): one without a name, or with another, was priced by an earlier one.
 FILL_MODEL = "replay-1"
@@ -210,9 +221,15 @@ class MarketPath:
         """Index of the last recorded state that executes *before* a tx landing in
         `target_slot` at `position`: start / middle / end of that slot's trades, or "+N" — N trades in
         this token land ahead of you (counted from the trigger in its own slot, else from the slot's
-        start), never past the slot's last trade. "+1" is what OKTech measured on mainnet."""
+        start), never past the slot's last trade. "+1" is what OKTech measured on mainnet. Or "react:K" (one
+        target slot and trigger, `min_index`): behind every trade of the token up to K block places after the
+        trigger's own transaction (`pos`) when the trigger is in that slot, else up to K places into the slot; behind
+        the slot's last trade when K runs past it, never ahead of the trigger."""
         lo = np.searchsorted(self.slot, target_slot, side="left")
         hi = np.searchsorted(self.slot, target_slot, side="right")
+        k = react_places(position) if isinstance(position, str) else None
+        if k is not None:
+            return self._react_index(int(lo), int(hi), k, int(min_index))
         if isinstance(position, str) and position.startswith("+") and position[1:].isdigit():
             base = np.maximum(lo - 1, min_index)
             return np.maximum(np.minimum(base + int(position[1:]), np.maximum(hi - 1, base)), min_index)
@@ -223,8 +240,20 @@ class MarketPath:
         elif position == "middle":
             idx = lo + (hi - lo) // 2 - 1
         else:
-            raise ValueError(f"position must be one of {POSITIONS} or +N")
+            raise ValueError(f"position must be one of {POSITIONS}, +N or react:K")
         return np.maximum(idx, min_index)
+
+    def _react_index(self, lo: int, hi: int, k: int, trigger: int) -> int:
+        """`landing_index` at "react:K" in the slot whose states are [lo, hi): the last of the states, in the order they
+        ran, whose block place is at most K after the trigger's (`trigger`, when it is in the slot; else the slot's
+        start), never ahead of the trigger itself."""
+        pos = getattr(self, "pos", None)
+        if pos is None or len(pos) != len(self.slot):
+            raise ValueError("a react:K landing counts block places, and this path has none (built by hand)")
+        start = int(pos[trigger]) if lo <= trigger < hi else -1
+        ahead = np.asarray(pos[lo:hi]) <= start + k
+        j = hi - 1 if ahead.all() else lo + int(np.argmin(ahead)) - 1  # behind the run of places up to start + K
+        return max(j, trigger)
 
     def index_at_time(self, ts: float) -> int:
         """Last state with timestamp <= ts."""

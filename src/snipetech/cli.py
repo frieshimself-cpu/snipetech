@@ -706,7 +706,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--copy-position", metavar="POS",
                     help="with --trigger: score copies (kol, momentum) at this place in the followed wallet's slot "
                          "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
-                         "the N-th buy across slots. A closer place is bought with a bid: charge it with --buy-bid. Or "
+                         "the N-th buy across slots, react:K behind every trade up to K block places after the "
+                         "wallet's own transaction (where a sender that reacts to its landed buy stands). A closer "
+                         "place is bought with a bid: charge it with --buy-bid. Or "
                          "a place that follows the bid, for wallet rules: bid (behind the wallet's companions, every "
                          "outsider that bid at least --buy-bid and an outsider in the first two transactions behind "
                          "the wallet) or bid- (one buy further back: the cautious one). A model, not where our copies "
@@ -1045,8 +1047,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="freeze: keep only strategies the lab scored where they trade live")  # fmt: skip
     sp.add_argument("--copy-position", metavar="POS",
                     help="freeze, with --trigger or --recipe: score and freeze the hypotheses' copies (kol, momentum) at this "
-                         "place instead of the copy landing, as `lab --copy-position`: +0, +N, +Nx, or bid / bid- (the "
-                         "place --buy-bid buys among the buyers of the wallet's block; bid- one buy further back). "
+                         "place instead of the copy landing, as `lab --copy-position`: +0, +N, +Nx, react:K, or bid / "
+                         "bid- (the place --buy-bid buys among the buyers of the wallet's block; bid- one buy further "
+                         "back). "
                          "The rule keeps that landing: the forward run scores it there, under an id of its own, and it "
                          "is never shown as where our copies land live")  # fmt: skip
     sp.add_argument("--hunt-landing", type=_hunt_landing, default=None, metavar="+N@D",
