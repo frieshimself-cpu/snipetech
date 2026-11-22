@@ -100,6 +100,7 @@ from .lab import (
     rank,
     recipes_own,
     research_only_why,
+    rule_wallets,
     size_gap,
     sniper_rule,
     span_slot_secs,
@@ -1756,6 +1757,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     # later: its window is the run's, moved back by its lag. The one mark `done_until` serves every rule: both ends of
     # each run's window move back by the same lag, so a rule's windows follow one another with no moment left between
     lag = {s["id"]: math.ceil(settle_secs(ex) - SETTLE_SECS) for s, _, ex, _ in parsed}
+    # the wallets each wallet rule fires on (`rule_wallets`, as `_fire` reads them): a coin none of them traded gives
+    # it no moment, and is not walked for it (audit of 22 Nov: 70 wallet rules walked each of 1,354 coins a run)
+    follows = {s["id"]: rule_wallets(trig, kols) for s, trig, _, _ in parsed if trig.kind == "kol"}
     added = own_added = research_added = 0
     research = {s["id"] for s, *_ in parsed if crew_note(s)}  # records no sniper trades: counted apart
     passed: dict[str, int] = {}  # strategy -> coins its crew choice passed over in this run's window (`crew_skips`)
@@ -1785,6 +1789,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             if path.n < min_trades or implausible_coin(path):
                 continue
             paid = dev_paid_earlier(store, in_span) if paid_runs and mint in migs else None
+            traders = frozenset(path.users) if follows else frozenset()  # everyone who traded the coin
             for s, trig, ex, costs in parsed:
                 if mint not in in_window.get(lag[s["id"]], ()):
                     continue  # nothing of the coin traded in this rule's window
@@ -1796,6 +1801,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     # crews known now, where a crew is one once its third coin has launched (lab.CREW_FORWARD_WORDS)
                     passed[s["id"]] = passed.get(s["id"], 0) + 1
                     continue
+                if trig.kind == "kol" and traders.isdisjoint(follows[s["id"]]):
+                    continue  # none of the wallets it copies traded the coin: `_fire` would walk it for nothing
                 i = _fire(trig, path, in_span, kols, mig=migs.get(mint), paid=paid)
                 if i is None:
                     continue

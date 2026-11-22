@@ -244,3 +244,47 @@ def test_the_first_read_of_a_freeze_log_shows_what_was_frozen():
     text = render_paper("freeze", _freeze_answer(132, 45, skipped=45))
     first = read_job_output(text)
     assert "77c52b46f1" in first and "Frozen for forward testing" in first, first.splitlines()[0]
+
+
+# -- paper#4: the forward run asks a wallet rule only about coins one of its wallets traded ----------------------------
+# The run called `lab._fire` for every wallet rule on every coin active in its window, a walk over the coin's whole
+# history, though a wallet rule fires only on a buy by one of its wallets (`lab.rule_wallets`): on the server 70 wallet
+# rules over 1,354 coins and 2.85M trades of history a half-hourly run, about a minute of its 8 to 12. The lab's plan
+# reads no such coin (11 Nov); the run now passes over it for that rule, with the same trades.
+
+
+def test_a_wallet_rule_is_not_walked_over_a_coin_none_of_its_wallets_traded(monkeypatch):
+    from snipetech.analysis import lab as L
+    from tests.synth import Market
+
+    t0 = 1_795_000_000
+    store = Store(":memory:")
+    for k in range(20):
+        m = Market(store, addr(f"w-coin-{k}"), addr(f"w-dev-{k}"), t0 + 60 + k, 500_000_000 + k * 5_000)
+        m.buy(m.deployer, 0.3, 0, sig=m.create_sig)
+        if k == 7:
+            m.buy(addr("w-leader-0"), 1.5, 1)  # the one coin a followed wallet buys
+        for j in range(30):
+            m.buy(addr(f"w-crowd-{k}-{j}"), 0.05, 1 + j)
+        m.commit()
+    store.set_coverage("tape", {"spans": [[t0, t0 + 3 * 3600]]})
+    rules = []
+    for r in range(5):
+        trig = Trigger("kol", sol=1.0, only=addr(f"w-leader-{r}"))
+        sid = paper.strategy_id(trig.__dict__, COPY_EXIT.to_dict(), "+6", 0, 1.0)
+        rules.append({"id": sid, "label": trig.label(), "trigger": trig.__dict__, "exit": COPY_EXIT.to_dict(),
+                      "position": "+6", "latency": 0, "buy_sol": 1.0, "per_tx_sol": 0.0045, "from_ts": t0,
+                      "lab": {"mean": 0.1, "ev_lower": 0.05}})  # fmt: skip
+    store.set_coverage("paper_strategies", {"strategies": rules, "superseded": []})
+    walks, real = [], paper._fire
+
+    def fire(trig, path, *a, **k):
+        if trig.kind == "kol" and not set(L.rule_wallets(trig, a[1])) & set(path.users):
+            walks.append(path.mint)  # a wallet rule asked about a coin none of its wallets traded: it cannot fire
+        return real(trig, path, *a, **k)
+
+    monkeypatch.setattr(paper, "_fire", fire)
+    out = paper.run(store, Config(), now=t0 + 3 * 3600)
+    assert walks == [], f"{len(walks)} wallet-rule walks over coins none of the rule's wallets traded"
+    # the trades are the ones the walks gave: the leader's one coin, for its one rule
+    assert out["new_trades"] == 1 and [r["mint"] for r in store.paper_trades(rules[0]["id"])] == [addr("w-coin-7")]
