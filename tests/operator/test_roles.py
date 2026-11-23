@@ -44,7 +44,11 @@ def test_the_exit_analyst_scores_named_exits_at_a_named_place_and_freezes_nothin
     assert R.TABLES["exits"] == "exits-best"
     # every OKTech sell setting, one by one (the owner, 22 Nov: "make sure that agent goes through all the oktech
     # settings"), and the live runs' exits
-    assert R.ROLE_DOCS["exits"] == ("docs/oktech-settings.md", "docs/oktech-features.md", "docs/live-recipe.md")
+    # and the live runs' record of 11 Nov and earlier, moved out of docs/live-recipe.md on 23 Nov (the exits of the
+    # first live weeks: until then a read of it was refused), both newest first
+    assert R.ROLE_DOCS["exits"] == ("docs/oktech-settings.md", "docs/oktech-features.md", "docs/live-recipe.md",
+                                    "docs/live-recipe-2026-11-early.md")  # fmt: skip
+    assert {"docs/live-recipe.md", "docs/live-recipe-2026-11-early.md"} <= R.NEWEST_FIRST
     assert "exits" not in R.TABLE_DEAF  # the tester's rules and the fee analyst's places are its subject too
 
 
