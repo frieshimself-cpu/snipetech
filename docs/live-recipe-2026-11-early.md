@@ -403,13 +403,16 @@ in `operator/autotest.json`).
   holding and once when it clears, and the same strategy goes on. Since the audit of 22 Nov a fault that fails
   another way each round (the balance unreadable, then the coins, then OKTech) is one hold, said again at most once
   a day, not a line every round; and a dead cycler and a start that left its sniper idle count in one streak toward
-  the 4-hour back-off. A wallet without room for a block holds the same way,
+  the 4-hour back-off (since the audit's second round, 23 Nov, that streak is kept in the strategy's own record and
+  begins again only with a block that runs to its end: a fault of another kind between two deaths no longer clears
+  it). A wallet without room for a block holds the same way,
   said once a day: SOL under a buy, its fees and the coin account's rent (about 0.25 SOL; 10:59 that morning the wallet
   was emptied), a wallet too small for a floor of at least 1 SOL, or plain SOL that cannot pay one curve buy with its
   fees and rent (the same 0.25 SOL: a curve buy is paid in plain SOL only). That last rule is the audit's of 22 Nov.
   It used to read "SOL without its wrapped SOL at or below the block's floor (the cycler would not start)", which
   held blocks for nothing: the cycler reads plain and wrapped SOL together at its start since 21 Nov. The first block
-  of a strategy has no such plain-SOL check yet.
+  of a strategy has no such plain-SOL check yet. (Since the audit's second round, 23 Nov, it has: a strategy's first
+  block waits for that plain SOL as every later block does, said once a day.)
 - It never turns itself off: only `/test auto off` or `operate autotest --off` does, and a block running then runs to
   its end. `/stop` holds every start while its flag exists (a block running ends at once, its sniper stopped once the
   wallet holds nothing; a sniper holding a coin keeps running until the coin is sold); `/resume` lets the same strategy
