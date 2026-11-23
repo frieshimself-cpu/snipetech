@@ -160,12 +160,13 @@ LEADER_WINDOW_SLOTS = 150
 # the shape asks the buy's size too (COPY_SIZE_TOL).
 COPY_SHAPE_SLOTS = 3
 # and it spent what a sniper that follows that wallet is set to spend (its payload's buyAmount), to within this share
-# of it. OKTech sends BuyExactQuoteIn: the trade's quote and the venue's fee together are the buyAmount. Every buy of
-# 9-23 Nov with a copied wallet on record spent the buyAmount of a sniper alive then that followed that wallet (35 of
-# 35): to the lamport on the curve (987,654,320 + 12,345,680 for 1 SOL), one lamport short on PumpSwap (197,530,861
-# + 2,469,138 for 0.2 SOL); `fills.sol` keeps six decimals (500 lamports at the most: a 20,000th of the smallest
-# sniper, 0.01 SOL). The owner's hand buys were 1.485, 4.95, 2.475 and 2.97 SOL: each 1 % under a round size (Axiom
-# keeps 1 % of what is typed), ten times this far from any sniper's.
+# of it. OKTech sends BuyExactQuoteIn: the trade's quote and the venue's fee together are the buyAmount. Every buy on
+# record with a copied wallet (5-23 Nov) spent the buyAmount of a sniper alive then that followed that wallet (74 of
+# 74, asked of the server's fills and snipers with this rule's own code): to the lamport on the curve (987,654,320 +
+# 12,345,680 for 1 SOL), one lamport short on PumpSwap (197,530,861 + 2,469,138 for 0.2 SOL); `fills.sol` keeps six
+# decimals (500 lamports at the most: a 20,000th of the smallest sniper, 0.01 SOL). The owner's hand buys were 1.485,
+# 4.95, 2.475 and 2.97 SOL: each 1 % under a round size (Axiom keeps 1 % of what is typed), ten times this far from
+# any sniper's, and at a size no sniper alive then bought at.
 COPY_SIZE_TOL = 0.001
 
 
