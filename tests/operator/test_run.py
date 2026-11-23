@@ -503,8 +503,6 @@ def test_the_round_never_converts_while_the_owner_s_setting_is_zero(tmp_env, mon
 
 
 def test_the_round_turns_wrapped_sol_into_plain_sol_for_two_curve_buys(tmp_env, monkeypatch, capsys):
-    from snipetech.solana.unwrap import FEE_LAMPORTS
-
     asked: list[int] = []
     _unwrapper(monkeypatch, asked)
     tmp_env["cfg"].book.keep_curve_buys = 2
@@ -513,12 +511,14 @@ def test_the_round_turns_wrapped_sol_into_plain_sol_for_two_curve_buys(tmp_env, 
     assert asked == []  # a dry round shows what a round would see: it never touches the wallet
     capsys.readouterr()
     assert _op(tmp_env, balances=bal) == 0
-    assert asked == [2 * 205_000_000 - 1_224_377 + FEE_LAMPORTS]
-    assert "[info] turned 0.4088 wrapped SOL into plain SOL" in tmp_env["paths"].notes.read_text()
+    # item 7 of the audit's third round: of 0.4718 wrapped SOL the 0.22 OKTech keeps wrapped beside a 0.2 SOL sniper
+    # stays (it wraps that again within seconds); until then this asked for two buys' worth, 0.4088
+    assert asked == [471_817_213 - 220_000_000]
+    assert "[info] turned 0.2518 wrapped SOL into plain SOL" in tmp_env["paths"].notes.read_text()
     # the agents, the page and the next round read what the wallet holds after the conversion
     snap = json.loads(tmp_env["paths"].snapshot.read_text())
     assert (snap["native_sol"], snap["wsol"]) == (0.41, 0.063045213)
-    assert "plain SOL: converted 0.4088" in tmp_env["paths"].log.read_text()
+    assert "plain SOL: converted 0.2518" in tmp_env["paths"].log.read_text()
 
 
 def test_a_conversion_that_cannot_be_made_never_breaks_the_round(tmp_env, monkeypatch):

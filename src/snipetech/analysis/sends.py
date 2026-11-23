@@ -46,8 +46,8 @@ import json
 from collections import Counter, defaultdict
 from typing import Any
 
-from ..amm_backfill import MONTH_CREDITS, PAGE, SIGS, TX, Meter, _chunks
-from ..amm_backfill import USAGE as BACKFILL_USAGE
+from ..amm_backfill import MONTH_CREDITS, PAGE, SIGS, TX, Meter, _chunks, month_used
+from ..amm_backfill import SENDS_USAGE as USAGE  # `Store.usage_add`: the credits this command counted in the month
 from ..solana.tx import _account_keys
 
 LAMPORTS = 1e9
@@ -55,8 +55,6 @@ BASE_FEE_PER_SIGNATURE = 5000
 TRY_SLOTS = 3  # a send lands this many slots after the leader's buy at most to count as a try at it
 FIRST_LOOKBACK_SECS = 86400.0  # a leader's buy of a coin it bought in the day before is no first buy
 DEFAULT_MAX_CREDITS = 5000
-USAGE = "helius-sends"  # `Store.usage_add`: the credits this command counted in the month
-MONTH_USAGES = (BACKFILL_USAGE, USAGE)  # what counts into the month's limit together (as operator/jobs.py counts it)
 FETCH_CHUNK = 100
 OUTCOMES = ("adjacent", "block", "later", "failed", "none", "unread")
 UNTRIED = ("none", "unread")  # the outcomes not counted as tried: nothing seen, or nothing read
@@ -77,8 +75,9 @@ class OverMonth(ValueError):
 
 def month_left(store, now: float, month_credits: float = MONTH_CREDITS) -> int:
     """What is left of the month's Helius credits for chain reads: the limit less what the backfills and the runs of
-    sends have counted in `now`'s month (`Store.usage_month` of each of MONTH_USAGES), never under 0."""
-    return max(0, int(month_credits) - sum(int(store.usage_month(usage, now)) for usage in MONTH_USAGES))
+    sends have counted in `now`'s month (amm_backfill.month_used: MONTH_USAGES, kept there because this module imports
+    that one), never under 0."""
+    return max(0, int(month_credits) - month_used(store, now))
 
 
 def _err_text(err: Any) -> str:

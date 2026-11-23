@@ -413,12 +413,18 @@ class OperatorJobs:
     def _check_helius(self, argv: list[str], now: float) -> None:
         """What an agent's `sends` and `launch-tools` may ask of the Helius plan (AGENT_SENDS_CREDITS and the rest),
         read as the command line reads the words: the last value of a flag given twice, `--flag=value` as well. Words
-        the command line refuses start a job that ends before its first request."""
+        the command line refuses start a job that ends before its first request. `sends --over-month` is the owner's,
+        as --month-credits is for a backfill: it switches off the command's own check of what the month has left,
+        which is the one that still holds when the count below cannot be read (third round of the 22 Nov audit)."""
         if argv[:1] not in (["sends"], ["launch-tools"]):
             return
         said = as_run(argv)
         if said is None:
             return
+        if argv[0] == "sends" and said.get("over_month"):
+            raise PermissionError("--over-month is the owner's: a run of sends an agent starts stays inside what the "
+                                  "month has left of its Helius credits. No job started: if the month is used up, "
+                                  "say so in an idea with owner_needed")  # fmt: skip
         if argv[0] == "launch-tools":
             n, coins = said.get("max"), len(said.get("mint") or [])
             if not (isinstance(n, int) and 1 <= n <= AGENT_LAUNCH_TOOLS_MAX and coins <= AGENT_LAUNCH_TOOLS_COINS):
@@ -437,11 +443,10 @@ class OperatorJobs:
                                   f"{AGENT_SENDS_HOURS:g} hours (a send before the tape is near no moment it "
                                   "holds)")  # fmt: skip
         from .. import amm_backfill as ab
-        from ..analysis.sends import USAGE as SENDS_USAGE
 
-        counted = [ab.month_count(str(self.ops.db), now, usage) for usage in (ab.USAGE, SENDS_USAGE)]
-        if all(c is not None for c in counted):
-            left = max(0, ab.MONTH_CREDITS - sum(c or 0 for c in counted))
+        counted = ab.month_counted(str(self.ops.db), now)  # the backfills and the runs of sends together
+        if counted is not None:  # not readable now: the command's own check holds the run (analysis/sends.month_left)
+            left = max(0, ab.MONTH_CREDITS - counted)
             if credits > left:
                 raise PermissionError(f"--max-credits {credits:,} refused, no job started: {left:,} of the month's "
                                       f"{ab.MONTH_CREDITS:,} Helius credits are left (the backfills and the runs of "
@@ -526,13 +531,13 @@ class OperatorJobs:
         if stopped == "month_credits":
             from .. import amm_backfill as ab
 
-            counted = ab.month_count(str(self.ops.db), now)
+            counted = ab.month_counted(str(self.ops.db), now)  # as the backfill itself counts: the sends' too
             if counted is not None and counted < ab.MONTH_CREDITS:
                 return
-            raise PermissionError(f"job {dup.get('id')} stopped at the month's limit for backfills "
-                                  f"({ab.MONTH_CREDITS:,} credits) and nothing is left of it: the same run would stop "
-                                  "at its first request. The limit is the owner's to lift: say so in an idea "
-                                  "with owner_needed")  # fmt: skip
+            raise PermissionError(f"job {dup.get('id')} stopped at the month's limit ({ab.MONTH_CREDITS:,} Helius "
+                                  "credits, the backfills and the runs of sends together) and nothing is left of it: "
+                                  "the same run would stop at its first request. The limit is the owner's to lift: "
+                                  "say so in an idea with owner_needed")  # fmt: skip
         raise PermissionError(
             f"already ran: job {dup.get('id')} with {_same_words(dup.get('argv') or [], argv)} finished "
             f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead"

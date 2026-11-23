@@ -1143,6 +1143,27 @@ def test_an_agents_sends_never_asks_for_more_than_the_month_has_left(jobs):
     assert jobs.start(["sends", BOT, "--max-credits", "6000", "--json"], now=now, role="scout", idea=idea)["id"]
 
 
+@pytest.mark.parametrize("role", ["scout", "fees", None])
+def test_no_agent_runs_sends_past_the_month_on_the_owners_flag(jobs, role, monkeypatch):
+    """Round 3 of the 22 Nov audit: `sends --over-month` runs past what the month has left, on the owner's word. The
+    agents' runner let an agent say it. Its own count of the month still held the run, except when that count could
+    not be read (a database busy for five seconds): the run then started, and the flag had switched the command's own
+    check off. The flag is the owner's, as --month-credits is for a backfill, wherever it stands and with the count
+    read or not."""
+    from snipetech import amm_backfill
+
+    idea = _queue(jobs, role) if role else None
+    for argv in (["sends", BOT, "--over-month", "--json"], ["sends", BOT, "--max-credits", "100", "--over-month"],
+                 ["sends", "--over-month", BOT]):  # fmt: skip
+        with pytest.raises(PermissionError, match="--over-month is the owner's"):
+            jobs.start(argv, role=role, idea=idea)
+    monkeypatch.setattr(amm_backfill, "month_count", lambda *a, **k: None)  # the month's count cannot be read
+    with pytest.raises(PermissionError, match="--over-month is the owner's"):
+        jobs.start(["sends", BOT, "--max-credits", "200000", "--over-month"], role=role, idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["sends", BOT, "--max-credits", "200000", "--json"], role=role, idea=idea)["id"]  # without it
+
+
 def test_an_agents_launch_tools_reads_a_bounded_number_of_launches(jobs):
     """launch-tools fetches one create transaction a launch it has never read (14 days of tape hold about 600,000), and
     a coin not on the tape costs up to 500 pages of signatures: an agent's run reads at most 100,000 launches, or 50
@@ -1907,6 +1928,17 @@ def test_the_scout_and_the_fee_analyst_are_told_what_a_run_of_sends_may_ask_for(
         text = _help(tools(role)["start_job"])
         assert f"{J.AGENT_SENDS_CREDITS:,} at most" in text and f'"--hours" {J.AGENT_SENDS_HOURS:g} at most' in text
         assert "left of the month" in text
+
+
+def test_the_sends_help_says_the_command_refuses_a_run_past_the_month_and_whose_the_flag_is(rolebox):
+    """Round 3 of the 22 Nov audit: `sends` itself refuses, before its first request, a run whose --max-credits
+    passes what the month has left, and its --over-month is the owner's (the runner refuses it from an agent). The
+    help said only what the runner allows."""
+    tools, _, _ = rolebox
+    said = ('never more than the backfills and the earlier runs left of the month: the command refuses a run past '
+            'that before its first request, and "--over-month" is the owner\'s')  # fmt: skip
+    for role in (None, "scout", "fees"):
+        assert said in _help(tools(role)["start_job"]), role
 
 
 def test_the_agents_are_told_what_each_and_repeats_score_and_what_refuses_them(rolebox):

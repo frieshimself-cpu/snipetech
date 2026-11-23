@@ -93,7 +93,8 @@ SQL_TABLES: dict[str, str] = {
     "launches_untraded = launches left out for want of trading, each still counted at a round trip's cost in "
     "verdict.ev_every_launch_sol)",
     "fills": "every transaction of our own sniper wallet, the owner's hand trades in it too (read_fills marks each "
-    "row `ours`: the bot's own). side = buy, sell or failed (a send that did not land); "
+    "row `ours`: the bot's own, a buy by a sniper's fees or by a copy's place and size right behind a followed "
+    "wallet's buy: no column says it). side = buy, sell or failed (a send that did not land); "
     "wallet_copied = the wallet a copy followed; sol = SOL (not lamports); pos_in_slot = its place in the block; "
     "trades_behind = other wallets' buys between the copied buy and ours, the copied wallet's own pack left out (19 "
     "Nov: the buys sent with its own, in its transaction and in the transactions right behind it that each carry "
@@ -1658,7 +1659,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         is undone). It costs Helius credits: one a thousand signatures and one a failed send that landed within 3
         slots of such a buy, the only ones that can be tries
         ("--max-credits", 5000 unless told; 200,000 at most and "--hours" 336 at most from an agent, and never more
-        than the backfills and the earlier runs left of the month; a buy whose sends the limit left unread is counted
+        than the backfills and the earlier runs left of the month: the command refuses a run past that before its
+        first request, and "--over-month" is the owner's; a buy whose sends the limit left unread is counted
         "unread", not untried). A send that never landed (dropped, or a bundle that lost its auction) leaves nothing on
         chain, so the tries it counts are the least the bot made. Every moment is listed (moments_list: its outcome,
         the bot's failed sends at it, the first other buyer of 0.1 SOL or more within 3 block places after the leader)
@@ -2178,7 +2180,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         arm and the live expectancy per copied wallet. These are the truth for the live landing; paper numbers are
         provisional once a wallet's live n reaches 10. A sell's pnl_sol is its landed trip; its failed duplicate
         sends, and its own tries that failed before it landed, are beside it in twin_fee_sol; the summary counts the
-        bot's own fills (a row's `ours`; the owner's hand trades in the wallet are counted apart, in `owner`) and its
+        bot's own fills (a row's `ours`: a buy at a sniper's fees, or right behind a followed wallet's buy at its
+        sniper's size; the owner's hand trades in the wallet are counted apart, in `owner`) and its
         pnl_sol is the bot's sells' whole result, each cost once (a sell measure could not pair, counted in
         `unpriced`, pays its failed duplicate sends alone).
 

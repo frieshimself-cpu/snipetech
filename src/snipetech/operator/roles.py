@@ -436,20 +436,22 @@ def update_state(paths: OperatorPaths, role: str, **values: Any) -> dict[str, An
 
 def job_over(paths: OperatorPaths, jid: str) -> bool:
     """Whether the job has ended: it wrote its exit file, or its record says it no longer runs or its process is gone
-    (as `job_metas` reads it). False for a job without a record. read_job_log asks this BEFORE it reads the log: the
-    log of a job that had ended by then is whole."""
-    from ..ops import _pid_alive
+    (as `job_metas` reads it: `ops.job_alive`, so a record from before the machine's last boot is over whoever holds
+    its pid now). False for a job without a record. read_job_log asks this BEFORE it reads the log: the log of a job
+    that had ended by then is whole."""
+    from ..ops import job_alive
 
     jid = str(jid)
     if not jid or "/" in jid or "\\" in jid or ".." in jid:
         return False
+    record = paths.jobs / f"{jid}.json"
     try:
         if (paths.jobs / f"{jid}.exit").exists():
             return True
-        meta = json.loads((paths.jobs / f"{jid}.json").read_text())
+        meta = json.loads(record.read_text())
     except (OSError, ValueError):
         return False
-    return isinstance(meta, dict) and not (bool(meta.get("running")) and _pid_alive(meta.get("pid")))
+    return isinstance(meta, dict) and not (bool(meta.get("running")) and job_alive(meta, record))
 
 
 def _read_record(paths: OperatorPaths) -> dict[str, dict[str, float]]:
@@ -539,16 +541,18 @@ def role_lock(paths: OperatorPaths, role: str) -> Iterator[bool]:
 
 def job_metas(paths: OperatorPaths, now: float) -> list[dict[str, Any]]:
     """The records of the jobs that ran or ended in the last JOB_MEMORY_SECS, each with `running` true only while its
-    job has written no exit file and its process is alive, and `ended` and `exit_code` from the exit file where the
-    record has none (the process that started a job is usually gone when it ends). A job that left no exit file and
-    whose process is gone ended when its log was last written."""
+    job has written no exit file and its process is alive and its own (`ops.job_alive`: by the pid alone, a job a
+    restart of the machine had ended stayed running to its role while another process held its pid), and `ended` and
+    `exit_code` from the exit file where the record has none (the process that started a job is usually gone when it
+    ends). A job that left no exit file and whose process is gone ended when its log was last written."""
     from ..jobfiles import jobs_since
-    from ..ops import _pid_alive
+    from ..ops import job_alive
 
     out = []
     for jid in jobs_since(paths.jobs, now - JOB_MEMORY_SECS):
+        record = paths.jobs / f"{jid}.json"
         try:
-            meta = json.loads((paths.jobs / f"{jid}.json").read_text())
+            meta = json.loads(record.read_text())
         except (OSError, ValueError):
             continue
         if not isinstance(meta, dict):
@@ -564,7 +568,7 @@ def job_metas(paths: OperatorPaths, now: float) -> list[dict[str, Any]]:
                 code = int(exit_file.read_text().strip() or 0)  # the job's own word on how it ended
             except (OSError, ValueError):
                 pass
-        running = bool(meta.get("running")) and ended_at is None and _pid_alive(meta.get("pid"))
+        running = bool(meta.get("running")) and ended_at is None and job_alive(meta, record)
         ended = meta.get("ended") or ended_at
         if ended is None and not running and meta.get("running"):
             # killed with its wrapper (`remote kill` signals the whole group) or lost in a restart: no exit file was

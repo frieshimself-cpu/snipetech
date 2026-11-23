@@ -81,6 +81,12 @@ class OperatorPaths:
         return self.root / "STOP"
 
     @property
+    def stop_owed(self) -> Path:
+        """When the owner sent a /stop that a pass has read and not answered yet (unix seconds). A pass that is cut off
+        leaves it, and the next pass acts on that /stop (operator/run.py `run_commands`)."""
+        return self.root / "stop_owed"
+
+    @property
     def jobs(self) -> Path:
         return self.data / "jobs"
 

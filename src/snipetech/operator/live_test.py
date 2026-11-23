@@ -466,7 +466,10 @@ TEST_GRACE_SECS = 60  # our clock against block time, at the start of a test's w
 def own_marks(store, t: dict) -> dict[str, frozenset]:
     """The fees the test's own sniper pays (measure/ours.sniper_marks of its payload on record, by its OKTech id): its
     trades are told by them from the owner's hand trades in the same wallet (22 Nov 02:40), as the runner tells the
-    run's own (service.oktech_cycle). With its payload not on record, no mark at all: every trade counts, as before."""
+    run's own (service.oktech_cycle). With the store, as the runner builds its own: a test whose sniper follows a
+    wallet tells its copy by its place right behind that wallet's buy too (the copy's shape), whatever fees OKTech
+    paid for it; a hunt sniper follows none, and its fees stay the only mark. With its payload not on record, no mark
+    at all: every trade counts, as before."""
     from ..measure.ours import sniper_marks
 
     oid = str(t.get("oktech_id") or "")
@@ -474,7 +477,7 @@ def own_marks(store, t: dict) -> dict[str, frozenset]:
         rows = store.oktech_snipers(active=False) if oid and store is not None else []
     except Exception:  # noqa: BLE001 - not known: every trade counts
         rows = []
-    return sniper_marks([r.get("payload") for r in rows if str(r.get("id")) == oid])
+    return sniper_marks([r.get("payload") for r in rows if str(r.get("id")) == oid], store=store)
 
 
 def _bought(store, t: dict, now: float, marks: dict[str, frozenset] | None = None) -> set[str] | None:

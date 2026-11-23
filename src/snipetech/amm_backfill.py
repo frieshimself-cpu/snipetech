@@ -62,6 +62,11 @@ MONTH_CREDITS = 30_000_000
 # stretch through and stops the runaway one; a run with a long `--after-secs` has to raise it, and says so.
 MAX_STRETCH_TXS = 8000
 USAGE = "helius-backfill"  # `Store.usage_add`: the credits this job counted in the month
+SENDS_USAGE = "helius-sends"  # and those the runs of `sends` counted (analysis/sends.py, which imports this module)
+# What the month's limit is held against: every reader of the chain on the one Helius plan, together. `sends` and the
+# agents' job runner counted the two; a backfill subtracted its own alone, and ran for its whole --max-credits in a
+# month the runs of `sends` had used up (third round of the 22 Nov audit).
+MONTH_USAGES = (USAGE, SENDS_USAGE)
 USAGE_EVERY = 1000  # credits between two additions to that number while a run goes on
 WALLET_PREFIX = "amm_backfill:wallet:"  # coverage: where the scan of a wallet's history stands
 SIGS, TX = "getSignaturesForAddress", "getTransaction"
@@ -116,6 +121,19 @@ def stopped_in(log: str) -> str | None:
     the log does not say: the command's own line (`stop_line`), or the `stopped` of a result printed with --json."""
     found = _STOPPED.findall(log or "")
     return found[-1] if found else None
+
+
+def month_used(store: Store, now: float) -> int:
+    """What the chain reads of `now`'s month have counted so far, the backfills and the runs of `sends` together
+    (`Store.usage_month` of each of MONTH_USAGES)."""
+    return sum(int(store.usage_month(usage, now)) for usage in MONTH_USAGES)
+
+
+def month_counted(db_path: str, now: float) -> int | None:
+    """`month_used` for a caller that holds no Store (`month_count` of each of MONTH_USAGES); None when one of them
+    cannot be read."""
+    counts = [month_count(db_path, now, usage) for usage in MONTH_USAGES]
+    return None if any(c is None for c in counts) else sum(c or 0 for c in counts)
 
 
 def month_count(db_path: str, now: float, usage: str = USAGE) -> int | None:
@@ -514,11 +532,12 @@ async def backfill(store: Store, rpc, wallets: list[str], now: float, days: floa
     adds an `estimate`. Returns what was asked for and what it cost: `wallets` (one row each), `stretches` (counts by
     what became of them), `too_busy` (each stretch left out for holding more than `max_stretch_txs` transactions: its
     coin, its seconds, its size, its buys), `requests`, `credits` and `stopped` ("max_credits" when the run's limit
-    ended it, "month_credits" when the month's did: `month_credits` less what the runs of this month have counted so
-    far; `note` says which, and what was left out as too busy or as no coin)."""
+    ended it, "month_credits" when the month's did: `month_credits` less what the chain reads of this month have
+    counted so far, the backfills and the runs of `sends` together (`month_used`); `note` says which, and what was
+    left out as too busy or as no coin)."""
     if int(max_stretch_txs) < 1:
         raise ValueError("max_stretch_txs is 1 or more")
-    left = max(0.0, float(month_credits) - store.usage_month(USAGE, now))
+    left = max(0.0, float(month_credits) - month_used(store, now))
     by_month = left < float(max_credits)  # the month's limit is the nearer one
     run = _Run(store, rpc, now, days, after_secs, min_sol, dry_run, left if by_month else max_credits, names, progress,
                max_stretch_txs, tip_accounts=tip_accounts)  # fmt: skip
@@ -559,8 +578,9 @@ async def backfill(store: Store, rpc, wallets: list[str], now: float, days: floa
     notes = [out["note"]] if out["note"] else []
     if run.stopped and by_month:
         out["stopped"] = "month_credits"
-        notes.append(f"stopped at the month's limit of {month_credits:,.0f} credits for backfills ({left:,.0f} were "
-                     "left): the next request would have passed it. The owner lifts it with --month-credits.")
+        notes.append(f"stopped at the month's limit of {month_credits:,.0f} credits ({left:,.0f} were left: the "
+                     "backfills and the runs of sends count together): the next request would have passed it. The "
+                     "owner lifts it with --month-credits.")  # fmt: skip
     elif run.stopped:
         out["stopped"] = "max_credits"
         notes.append(f"stopped at the limit of {max_credits:,.0f} credits: the next request would have passed it. "
@@ -582,6 +602,6 @@ async def backfill(store: Store, rpc, wallets: list[str], now: float, days: floa
         out["estimate"] = run.estimate(wallets, rows, len(pieces))
     run.count_usage(final=True)
     out["credits"] = {"counted": round(run.meter.credits), "max": max_credits,
-                      "this_month": store.usage_month(USAGE, now), "month_max": month_credits,
+                      "this_month": month_used(store, now), "month_max": month_credits,
                       "prices": price_table()}  # fmt: skip
     return out

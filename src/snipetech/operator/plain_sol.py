@@ -8,11 +8,18 @@ its own wrapped-SOL account); this is when the round asks for one:
 
 * `[book] keep_curve_buys` says how many buys of plain SOL to keep (2 since the 0.05 SOL test of 12 Nov was read on
   the chain); 0 converts nothing;
-* only while something of ours can buy (the book is live, or a sniper of ours is running) and the kill switch is not
-  set, from the round's own reading of the wallet;
-* only when the wallet cannot pay one curve buy and its plain and wrapped SOL together can (`unwrap.plan_amount`);
-* at most MAX_PER_DAY conversions a day: if the two forms swing (OKTech wrapping again, say), it shows in the notes
-  and stops, and the rule is changed rather than left to flap.
+* only while something of ours can buy (the book is live, a sniper of ours is running, or the owner's automatic test
+  is on at the book's size or under: its block waits for plain SOL before any sniper of its runs, `autotest_room`) and
+  the kill switch is not set, from the round's own reading of the wallet;
+* only when the wallet cannot pay one curve buy and turning wrapped SOL back makes it able to (`unwrap.plan_amount`).
+  What a curve buy takes is one rule for every reader (positions.curve_buy_room): 0.205 SOL for a 0.2 SOL book copy,
+  as the agents' snapshot counts one (buys_payable), and what the automatic test's block waits for while that test
+  is on (0.252 SOL: its sniper's own costs). Until the third round of the 22 Nov audit the conversion counted 0.205
+  for both, and a test waited for good on 0.22 SOL plain beside wrapped SOL;
+* only the wrapped SOL above what OKTech keeps wrapped while a sniper runs (positions.spare_wsol: 1.1 times the buy,
+  wrapped again within seconds when turned back);
+* at most MAX_PER_DAY conversions a day: if the two forms swing all the same, it shows in the notes and stops, and
+  the rule is changed rather than left to flap.
 
 Every conversion is one line in the notes (our own act on the wallet, not the owner's move) and a row in
 operator/unwrap.json; a refusal is said once a day and is one row however many rounds repeat it.
@@ -28,6 +35,7 @@ from typing import Any
 
 from ..config import Config
 from ..ops import redact
+from ..positions import curve_buy_room, spare_wsol
 from ..solana.unwrap import LAMPORTS, Unwrapper, plan_amount
 from .paths import OperatorPaths
 from .snapshot import Snapshot, book_fill_sol
@@ -61,21 +69,42 @@ def can_buy(snap: Snapshot) -> bool:
     return any(str(s.get("status")) in BUYING for s in (snap.snipers or []) if isinstance(s, dict))
 
 
+def autotest_room(paths: OperatorPaths, fill_sol: float) -> float | None:
+    """The plain SOL a block of the owner's automatic test waits for (autotest._curve_room: one curve buy with its
+    sniper's fees, failed sends and rent), while that test is on and buys no more than the book's fill. None when it
+    is off, cannot be read, or buys more: the owner's yes of 11 Nov is for plain SOL for 0.2 SOL curve buys, and a
+    larger buy's is theirs to say."""
+    try:
+        from . import autotest
+
+        if not autotest.is_on(paths):
+            return None
+        seq = autotest.load_seq(paths)
+        running = bool(seq) and seq.get("state") == "running"
+        size = float(seq["buy_sol"] if running else autotest.read_autotest(paths)["buy_sol"])
+        return autotest._curve_room(size) if 0 < size <= float(fill_sol) + 1e-9 else None
+    except Exception:  # noqa: BLE001 - not known: the book's own rule alone, as before
+        return None
+
+
 async def keep_plain_sol(cfg: Config, paths: OperatorPaths, snap: Snapshot, now: float, notes, *, svc=None,
                          convert: Callable[[int], Awaitable[dict]] | None = None) -> dict[str, Any] | None:  # fmt: skip
     """Turn wrapped SOL into plain SOL when the rule above says so. None when there is nothing to do; else what the
     conversion returned (`signature`, `after`), {"refused": why} or {"held": why}. `convert`: the conversion (tests);
     by default the sniper wallet's own, through `svc.rpc`. A conversion that cannot be made is a refusal, never an
     exception: the round goes on."""
-    from .prompts import BUY_NATIVE_SOL
-
     keep = int(getattr(cfg.book, "keep_curve_buys", 0) or 0)
-    if keep <= 0 or paths.stop_flag.exists() or not can_buy(snap):
+    if keep <= 0 or paths.stop_flag.exists():
+        return None
+    fill = book_fill_sol(cfg)
+    waits = autotest_room(paths, fill)  # what the automatic test's block waits for, while that test is on
+    if not can_buy(snap) and waits is None:
         return None
     if snap.native_sol is None or snap.wsol is None:
         return None
-    need = round((book_fill_sol(cfg) + BUY_NATIVE_SOL) * LAMPORTS)
-    amount = plan_amount(round(float(snap.native_sol) * LAMPORTS), round(float(snap.wsol) * LAMPORTS), need, keep)
+    need = round(max(curve_buy_room(fill), waits or 0.0) * LAMPORTS)
+    spare = round(spare_wsol(float(snap.wsol), fill) * LAMPORTS)  # the rest OKTech wraps again within seconds
+    amount = plan_amount(round(float(snap.native_sol) * LAMPORTS), spare, need, keep)
     if amount <= 0:
         return None
     rows = _rows(paths)

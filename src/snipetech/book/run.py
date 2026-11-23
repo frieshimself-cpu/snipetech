@@ -112,9 +112,10 @@ def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = 
 
 def _bought_by_us(store, wallet: str, mint: str, marks: dict | None = None) -> bool:
     """Whether a buy of ours explains holding `mint`: a buy of the bot's by the wallet on the tape, or a buy fill of
-    the bot's in the wallet (measure/ours.py: the fees a sniper of ours pays, a sniper or copied wallet the measure stage
-    tied it to, or fees nobody recorded; `marks`: fee_marks, read here when not given). The owner's own buy at other
-    fees explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Each buy
+    the bot's in the wallet (measure/ours.py: the fees a sniper of ours pays, a sniper the measure stage tied it to,
+    fees nobody recorded, or at other fees a copy's shape right behind a followed wallet's buy; a copied wallet named
+    on a fill says nothing alone; `marks`: fee_marks, read here when not given). The owner's own buy at other fees
+    explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Each buy
     goes to that rule whole (`_tape_buy`: its signature, coin and place, not its fees alone), so that whatever else
     the rule tells a buy of ours by is asked here too. Any read that fails counts as ours (the coin then keeps equity
     unknown, as before)."""
@@ -388,6 +389,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     except Exception:  # noqa: BLE001 - unknown holdings count as holding: the policy then stops nothing
         holdings = held_from_balances or [{"mint": "unknown", "amount": 1}]
         holdings_known = False
+    read_at = asyncio.get_running_loop().time()  # the plan's reading: a stop reads again SECOND_READ_SECS after it
     # equity = SOL + wrapped SOL + the tape value of the coins held; a coin of ours the tape has not priced makes it
     # unknown (the kill path then creates nothing and stops nothing), never a false floor breach after the book's own
     # buys. An unpriced coin no buy of ours explains (the owner's own trade in another app, a dust airdrop: 8 Nov
@@ -596,8 +598,9 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                     notes.write(f"{sig}{size}{exit_} — {a.reason}", "info")
         if act_on_stops and plan.kill_reason:  # stops of non-holders are safety, not new money: on or off
             for a in stops:
-                if await _stop(svc, wallet, notifier, notes, a, store, now, strays, unrecorded) is None:
-                    break  # the wallet gave no answer: no further stop is tried this run
+                if await _stop(svc, wallet, notifier, notes, a, store, now, strays, unrecorded, cfg=cfg,
+                               read_at=read_at) is None:  # fmt: skip
+                    break  # the wallet gave no answer, or a buy is on its way: no further stop is tried this run
         record_run(store, plan, True, now, **seen)
         _watch(cfg, store, notifier, notes, wallet, holdings, snipers, now)
         return {
@@ -609,14 +612,17 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         }
     # live: stop → retire (stop, delete) → create → start
     for a in [a for a in plan.actions if a.kind == "stop" and a.sniper_id]:
-        if await _stop(svc, wallet, notifier, notes, a, store, now, strays, unrecorded) is None:
-            break  # the wallet gave no answer: no further stop is tried this run
+        if await _stop(svc, wallet, notifier, notes, a, store, now, strays, unrecorded, cfg=cfg,
+                       read_at=read_at) is None:  # fmt: skip
+            break  # the wallet gave no answer, or a buy is on its way: no further stop is tried this run
     not_replaced: set[str] = set()  # wallets whose old sniper is still there: no second one this run
     for a in plan.actions:
         if (
             a.kind == "retire"
             and a.sniper_id
-            and not await _retire(svc, wallet, notifier, notes, a, store, now, strays, unrecorded)
+            and not await _retire(
+                svc, wallet, notifier, notes, a, store, now, strays, unrecorded, cfg=cfg, read_at=read_at
+            )
         ):
             not_replaced.add(a.wallet or "")
     # the ended ones go before a new one is made: OKTech counts them against the key's 200 (19 Nov)
@@ -709,25 +715,25 @@ def _ignored(svc) -> list[str]:
 
 
 async def _wallet_now(svc, wallet: str, strays: set[str] | frozenset,
-                      store=None) -> tuple[list[dict], list[dict]] | None:  # fmt: skip
+                      store=None) -> tuple[list[dict], list[dict], list[dict]] | None:  # fmt: skip
     """The wallet's coins by its own balances now (the owner's ignored coins left out), in two parts: those a sniper of
     ours may hold, and (given the `store`) those that are the owner's own on this reading's amounts (`_owners_coins`).
-    A stray that is not the owner's is in neither. None when the wallet cannot be read."""
+    A stray that is not the owner's is in neither. Third: every coin the reading showed. None when the wallet cannot
+    be read."""
     try:
         held = list(await svc.open_positions(wallet, ignore=_ignored(svc)))
     except Exception:  # noqa: BLE001 - unknown holdings
         return None
     theirs = _owners_coins(store, wallet, held)
     own = [p for p in held if str(p.get("mint")) in theirs]
-    return [p for p in held if str(p.get("mint")) not in theirs and str(p.get("mint")) not in strays], own
+    return [p for p in held if str(p.get("mint")) not in theirs and str(p.get("mint")) not in strays], own, held
 
 
-async def _coins_held(svc, wallet: str, strays: set[str] | frozenset, store=None,
-                      blind: bool = False) -> list[dict] | None:  # fmt: skip
-    """The wallet's coins a sniper of ours may hold now (`_wallet_now`): the strays and the owner's own coins left out;
-    None when they cannot be read. `blind`: for a sniper the bot holds no fee record of (`_no_fee_record`), which may
-    have bought a coin read as the owner's: those stay in (as /stop keeps such a sniper running beside one)."""
-    got = await _wallet_now(svc, wallet, strays, store)
+def _may_hold(got: tuple[list[dict], list[dict], list[dict]] | None, blind: bool = False) -> list[dict] | None:
+    """Of a reading of the wallet (`_wallet_now`), the coins a sniper of ours may hold: the strays and the owner's own
+    coins left out; None for a wallet that could not be read. `blind`: for a sniper the bot holds no fee record of
+    (`_no_fee_record`), which may have bought a coin read as the owner's: those stay in (as /stop keeps such a sniper
+    running beside one)."""
     if got is None:
         return None
     return [*got[0], *got[1]] if blind else got[0]
@@ -741,44 +747,103 @@ def _tape_holds(store, wallet: str, now: float) -> bool:
         return True
 
 
-async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | frozenset,
-                       blind: bool = False) -> bool:  # fmt: skip
-    """Whether the wallet holds a coin a sniper of ours may hold now (`_coins_held`; `blind`: a sniper with no fee
-    record), by its own balances and by the tape (a buy seconds old); holdings that cannot be read count as held."""
-    coins = await _coins_held(svc, wallet, strays, store, blind)
-    return coins is None or bool(coins) or _tape_holds(store, wallet, now)
-
-
 STOP_READ_SECS = 20.0  # the wallet's reading before a stop, at most: past it the wallet is not known, and nothing stops
+# and that reading comes no sooner than this after the run's own (the plan's): a buy on its way shows in a second
+# reading only when it comes later. As long as /stop, the live test's close and the round's clean-up of a dead run wait
+# between their two (operator/live_test.SECOND_READ_SECS). A run waits it out once: its later stops are past it.
+SECOND_READ_SECS = 5.0
+
+
+async def _wallet_read(svc, wallet: str, strays: set[str] | frozenset,
+                       store=None) -> tuple[list[dict], list[dict], list[dict]] | None:  # fmt: skip
+    """`_wallet_now` in STOP_READ_SECS at most: None past it, or when the wallet cannot be read. A stop's or a retire's
+    reading that waited as long as the RPC client took (minutes on a refusal) let the machine end the book's unit in
+    the middle: once between a retire's stop and its next reading, the sniper stayed stopped with no record for a run
+    to start it again (third round of the 22 Nov audit). Unknown holdings never stop a sniper, and after a stop they
+    start it again."""
+    try:
+        return await asyncio.wait_for(_wallet_now(svc, wallet, strays, store), STOP_READ_SECS)
+    except Exception:  # noqa: BLE001 - no answer in time: not known
+        return None
+
+
+async def _settle(read_at: float | None) -> None:
+    """Wait out what is left of SECOND_READ_SECS since the run read the wallet (`read_at`, on the loop's clock; None:
+    no reading to count from, no wait)."""
+    if read_at is not None:
+        left = SECOND_READ_SECS - (asyncio.get_running_loop().time() - float(read_at))
+        if left > 0:
+            await asyncio.sleep(left)
+
+
+async def _buy_coming(svc, cfg: Config | None, wallet: str, shown: list[dict], now: float) -> dict[str, Any] | None:
+    """What the wallet bought moments ago that neither its readings nor the tape show: its `coins`, `why` no sniper
+    may be stopped yet (in plain words) and whether the look `failed`; None with nothing on its way. The look /stop
+    makes before it stops a sniper, reused whole (operator/commands._on_its_way): the wallet's own newest signatures
+    on the chain since moments before this run began (`now`), for a buy whose coin the reading did not show (`shown`:
+    what it did), or whose buy no record has weighed yet, and for a landed transaction the node cannot serve yet (it
+    may be the buy). A copy into a coin the tape does not follow (a PumpSwap coin past the tape's 30 minutes: three of
+    the six copies of 20 Nov) that lands within a second of a stop is in no reading and on no tape (third round of the
+    22 Nov audit). A chain that does not answer tells nothing new there, as for /stop: the readings and the tape
+    decide. A look that cannot be made at all is a wallet nobody looked at: it holds the stop, and says so. With no
+    clock to look back from (`now` 0: a caller outside a run), no look."""
+    if not now:
+        return None
+    try:
+        from ..operator.commands import _on_its_way
+
+        cfg = cfg if cfg is not None else svc.cfg
+        coming, unread = await _on_its_way(svc, cfg, wallet, {str(h.get("mint")) for h in shown}, float(now))
+    except Exception as exc:  # noqa: BLE001 - not looked at: unknown, and unknown holdings never stop a sniper
+        why = f"the chain could not be looked at for a buy on its way ({type(exc).__name__})"
+        return {"coins": [], "why": why, "failed": True}
+    why = []
+    if coming:
+        why.append(f"the wallet bought {', '.join(f'{m[:6]}…' for m in coming[:5])} moments ago and what it bought "
+                   "has not shown in the wallet yet")  # fmt: skip
+    if unread:
+        why.append(
+            f"{unread} transaction(s) of the wallet landed moments ago and cannot be read yet (one may be a buy)"
+        )
+    return {"coins": list(coming), "why": "; ".join(why), "failed": False} if why else None
 
 
 async def _stop(svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store, now: float,
                 strays: set[str] | frozenset = frozenset(),
-                unrecorded: set[str] | frozenset = frozenset()) -> bool | None:  # fmt: skip
+                unrecorded: set[str] | frozenset = frozenset(), *, cfg: Config | None = None,
+                read_at: float | None = None) -> bool | None:  # fmt: skip
     """Stop a sniper the plan found to hold nothing, once the wallet, read again now, says the same: True when it was
-    asked to stop, False when a coin holds the stop back, None when the wallet gave no answer. The plan's reading is
-    seconds old by then (OKTech, the tape and the records are read after it), and a copy that landed in between is held
-    by the very sniper about to be stopped: a stopped sniper sells nothing (rule 1). Since the owner's own coin keeps
-    no book sniper running, that gap is open beside it too (review of the second round of the 22 Nov audit). A wallet
-    that holds a coin one of ours may hold now (`_coins_held`, and the tape's buys), or that does not answer in
-    STOP_READ_SECS, stops nothing: the next run plans again, and the owner hears once a day that the sniper keeps
-    running (a kill's own line had just said its snipers are stopped). The caller ends its stops at the first reading
-    that got no answer: each further one would wait as long, and the machine ends the book's unit after four minutes."""
-    try:
-        coins = await asyncio.wait_for(
-            _coins_held(svc, wallet, strays, store, a.sniper_id in unrecorded), STOP_READ_SECS
-        )
-    except Exception:  # noqa: BLE001 - no answer in time: not known, and unknown holdings never stop a sniper
-        coins = None
+    asked to stop, False when a coin holds the stop back, None when the wallet gave no answer or a buy is on its way.
+    The plan's reading is seconds old by then (OKTech, the tape and the records are read after it), and a copy that
+    landed in between is held by the very sniper about to be stopped: a stopped sniper sells nothing (rule 1). Since
+    the owner's own coin keeps no book sniper running, that gap is open beside it too (review of the second round of
+    the 22 Nov audit). The second reading comes SECOND_READ_SECS after the run's own (`read_at`, `_settle`). A wallet
+    that holds a coin one of ours may hold now (`_may_hold`, and the tape's buys), or that does not answer in
+    STOP_READ_SECS, stops nothing; nor does one that bought moments ago a coin no reading shows yet, by the look
+    /stop makes at the chain (`_buy_coming`: a coin the tape does not follow). The next run plans again, and the
+    owner hears once a day that the sniper keeps running (a kill's own line had just said its snipers are stopped).
+    The caller ends its stops at the first None: each further one would wait as long, and the machine ends the book's
+    unit after four minutes."""
+    await _settle(read_at)
+    got = await _wallet_read(svc, wallet, strays, store)
+    coins = _may_hold(got, a.sniper_id in unrecorded)
+    waits, coming = None, None
     if coins is None or coins or _tape_holds(store, wallet, float(now or 0)):
-        line = (f"[book] stop {(a.wallet or '')[:6]} ({a.sniper_id}) waits: a coin came into the wallet as this run "
-                "went on (or the wallet could not be read again), and a stopped sniper sells nothing: it keeps "
-                "running, and a later run stops it once the wallet holds nothing")  # fmt: skip
+        waits = "a coin came into the wallet as this run went on (or the wallet could not be read again)"
+    else:
+        coming = await _buy_coming(svc, cfg, wallet, got[2], float(now or 0))
+        if coming is not None:  # in fixed words where a coin would be named: said once a day whatever the coin
+            waits = coming["why"] if coming["failed"] else (
+                "the wallet bought a coin moments ago that has not shown in it yet (or a transaction of moments ago "
+                "cannot be read yet)")  # fmt: skip
+    if waits:
+        line = (f"[book] stop {(a.wallet or '')[:6]} ({a.sniper_id}) waits: {waits}, and a stopped sniper sells "
+                "nothing: it keeps running, and a later run stops it once the wallet holds nothing")  # fmt: skip
         if store is not None and now:
             _tell_once_a_day(store, notifier, notes, line, float(now))
         else:
             notifier.send(notes.write(line, "decision"))
-        return None if coins is None else False
+        return None if coins is None or coming is not None else False
     await _do(svc, notifier, notes, "stop", a, store, now)
     return True
 
@@ -975,6 +1040,9 @@ async def _retire(
     now: float | None = None,
     strays: set[str] | frozenset = frozenset(),
     unrecorded: set[str] | frozenset = frozenset(),
+    *,
+    cfg: Config | None = None,
+    read_at: float | None = None,
 ) -> bool:
     """Stop and delete a sniper that made its relied-on buy, once the wallet holds nothing it may hold; True when it is
     gone. The holdings are read before the stop and again after it (with the tape): a coin bought in between gets its
@@ -983,19 +1051,35 @@ async def _retire(
     starts the sniper while the wallet holds a coin (RESTART_KEY), the book still copies its wallet and no stop holds
     (the plan's rule: running, it also buys). A start only OKTech's list vouches for is told as started, and stays on
     that record until a run finds the sniper running. The owner's own coins are none of its coins, each reading weighed
-    on its own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`)."""
+    on its own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`). Both readings are
+    followed by the look at the chain a plan's stop makes (`_buy_coming`: a buy into a coin the tape does not follow
+    is in neither): before the stop it makes the retire wait, after it the sniper is started again; the first reading
+    comes SECOND_READ_SECS after the run's own (`read_at`), the second as long after the stop."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
     now = float(now if now is not None else 0)
     blind = sid in unrecorded  # no fee record of it: a coin read as the owner's may be its own
 
-    if await _holds_a_coin(svc, wallet, store, now, strays, blind):
+    await _settle(read_at)
+    got = await _wallet_read(svc, wallet, strays, store)
+    coins = _may_hold(got, blind)
+    if coins is None or coins or _tape_holds(store, wallet, now):
         notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again (or could not be read)", "info")
+        return False
+    coming = await _buy_coming(svc, cfg, wallet, got[2], now)
+    if coming is not None:
+        notes.write(f"[book] retire {w6} ({sid}) waits: {coming['why']}", "info")
         return False
     with contextlib.suppress(Exception):  # an idle task may refuse a stop; the delete is what counts
         await svc.oktech_task("stop", sid)
-    coins = await _coins_held(svc, wallet, strays, store, blind)
-    if coins is None or coins or _tape_holds(store, wallet, now):
-        mints = [str(c["mint"]) for c in coins or [] if c.get("mint")]
+    # a buy the sniper sent just before its stop lands a moment after it: read at once, the wallet and the chain showed
+    # nothing yet and the sniper was deleted with its coin on the way (third round of the 22 Nov audit)
+    await asyncio.sleep(SECOND_READ_SECS)
+    got = await _wallet_read(svc, wallet, strays, store)
+    coins = _may_hold(got, blind)
+    held = coins is None or bool(coins) or _tape_holds(store, wallet, now)
+    coming = None if held else await _buy_coming(svc, cfg, wallet, got[2], now)
+    if held or coming is not None:
+        mints = [str(c["mint"]) for c in coins or [] if c.get("mint")] or list((coming or {}).get("coins") or [])
         if store is not None:
             _mark_restart(store, sid, now, mints, pending=True)
         failed = await _start_again(svc, sid)

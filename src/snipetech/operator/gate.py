@@ -361,7 +361,7 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
         # round#4)
         move = total - ref
         # what the snapshots cannot tell (a round whose trades could not be read, one taken before 22 Nov): the whole
-        # move, when the bot traded since the baseline (each fill marked by its fees, `snapshot.mark_ours`;
+        # move, when the bot traded since the baseline (each fill marked the bot's or not, `snapshot.mark_ours`;
         # `bot_since_ref` carried while a coin was unpriced; unread trades count as the bot's) or holds a coin
         # (`snapshot.mark_held`)
         bot_traded = (any(f.get("ours", True) for f in snap.fills or [])
