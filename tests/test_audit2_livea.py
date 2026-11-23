@@ -411,3 +411,20 @@ def test_the_measure_stage_counts_a_copy_at_fees_no_payload_names_and_says_it_on
         assert not [x for x in again.lines if "paid fees no sniper" in x]  # once a transaction
     finally:
         st.close()
+
+
+def test_the_day_guard_counts_such_a_copy_and_never_the_owners_hand_buy(tmp_path):
+    """A1, through a reader that only knows `bot_buy` and `fee_marks` (operator/risk_guard.py, the wallet-wide day
+    stop): the copy at fees no payload names is a trade of the bot's there too, bought today and gone from the wallet
+    with no sale seen, so its whole cost counts; the hand buy twenty slots behind the copied wallet never does."""
+    from snipetech.operator import risk_guard
+
+    svc, st, cfg, metas = _measured(tmp_path)
+    try:
+        _measure(svc, cfg, metas, _Notes())
+        copy = st.fill("odd-copy")
+        cost = copy["sol"] + (sum(ODD) + 5000) / 1e9
+        day = risk_guard.day_result(st, W, NOW + 3_600, [], per_tx_sol=0.0035)
+        assert day["total_sol"] == pytest.approx(-cost, abs=1e-6), day
+    finally:
+        st.close()
