@@ -38,6 +38,62 @@ STALE_LOCK_SECS = 2 * 3600
 WATCH_TIMEOUT_SECS = 20
 
 
+# What another stage writes to operator/notes.md that the owner must hear, each such line once. The measure stage (its
+# own unit, every five minutes) has no Telegram: its line for a copy at fees no sniper of ours is set to pay, counted
+# as the bot's by its place behind the copied wallet (measure/ours.odd_fees_line), reached the notes and the run's job
+# log only (23 Nov audit). A stage's own line: an info note that starts with its tag, never an agent's words about it,
+# nor a decision note (its writer sent that one).
+OWNER_HEARS = (("[measure] ", "paid fees no sniper of ours is set to pay"),)
+FORWARDED = "notes_forwarded.json"  # operator/: how far into notes.md the round has read: {"offset": bytes}
+FORWARD_MAX = 3  # such lines a round sends one by one; any more are one line with their count
+
+
+def _owner_hears(line: str) -> bool:
+    """Whether a line of the notes is one of OWNER_HEARS as its stage wrote it ("- <time> [info] <tag>...")."""
+    _head, mark, text = line.partition(" [info] ")
+    return bool(mark) and any(text.startswith(tag) and phrase in text for tag, phrase in OWNER_HEARS)
+
+
+def forward_notes(paths: OperatorPaths, notifier) -> int:
+    """Send the owner the notes' lines they must hear (OWNER_HEARS) that were written since the last round read the
+    notes; how many such lines were passed on. The first FORWARD_MAX go as they stand, the rest as a count. The round
+    reads on from where it stopped (FORWARDED): a line Telegram did not take is read again by the next round, a line a
+    writer has not finished is read once it is whole, and the first round to make this step starts at the notes' end
+    (what was written before is no news). Notes replaced by a shorter file are read from their start."""
+    state = paths.root / FORWARDED
+    try:
+        size = paths.notes.stat().st_size
+    except OSError:
+        size = 0
+    try:
+        offset = int(json.loads(state.read_text())["offset"])
+    except (OSError, ValueError, TypeError, KeyError):
+        offset = None
+    if offset is None or offset == size:
+        if offset is None:
+            state.write_text(json.dumps({"offset": size}))
+        return 0
+    offset = 0 if offset > size else offset
+    with paths.notes.open("rb") as f:
+        f.seek(offset)
+        raw = f.read(size - offset)
+    passed = more = 0
+    for chunk in raw[: raw.rfind(b"\n") + 1].splitlines(keepends=True):
+        line = chunk.decode(errors="replace").rstrip("\n")
+        if _owner_hears(line):
+            if passed < FORWARD_MAX:
+                if not notifier.send(line) and notifier.enabled:
+                    break  # Telegram did not take it: the next round reads from this line again
+                passed += 1
+            else:
+                more += 1
+        offset += len(chunk)
+    if more:
+        notifier.send(f"and {more} more such line(s) since the last round: operator/notes.md has each")
+    state.write_text(json.dumps({"offset": offset}))
+    return passed + more
+
+
 async def run_turn(*args, **kwargs):
     """A Claude turn (operator/turn.py), loaded when one runs. That module loads the Anthropic SDK: 3.3 s of processor
     on the server, which the commands pass (once a minute, "no Claude") and every quiet round paid for nothing."""
@@ -328,6 +384,13 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                     _log(paths, t0, redact("plain SOL: " + plain_sol.log_line(done)))
             except Exception as exc:  # noqa: BLE001 - the wallet's two kinds of SOL never break the round
                 _log(paths, t0, redact(f"plain SOL: failed: {type(exc).__name__}: {exc}"))
+            # what another stage wrote to the notes for the owner (a copy at fees no sniper of ours is set to pay)
+            try:
+                told = forward_notes(paths, notifier)
+                if told:
+                    _log(paths, t0, f"notes: {told} line(s) of another stage passed on to the owner")
+            except Exception as exc:  # noqa: BLE001 - the next round reads the notes again
+                _log(paths, t0, redact(f"notes: passing lines on failed: {type(exc).__name__}: {exc}"))
         if paths.stop_flag.exists():
             _log(paths, t0, "stopped by owner (/stop); no sniper expected until /resume")
         # Resources: checked by code, alerted once a day per resource, no model involved.

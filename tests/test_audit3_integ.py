@@ -373,3 +373,100 @@ def test_i3_a_retire_is_undone_when_the_chain_shows_a_buy_made_while_it_stopped(
         assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{BT.L2}:book:0.3:lab",)]
     finally:
         st.close()
+
+
+# -- I4: the owner hears of a copy at fees no sniper of ours is set to pay ---------------------------------------------
+
+ROUND = 1_795_400_000.0  # 23 Nov 2026 02:13 UTC
+
+
+def _odd_note(paths, at, coin="Coin11"):
+    """The measure stage's own line for such a copy, written to the notes as that stage writes it (an info line)."""
+    from snipetech.measure.run import _odd_fees_line
+    from snipetech.operator.tools import NoteSink
+
+    buy = {"mint": coin + "1" * 38, "ts": int(at), "priority_lamports": ODD[0], "tip_lamports": ODD[1]}
+    return NoteSink(paths, now=lambda: at).write(_odd_fees_line(buy, LEAD), "info")
+
+
+def _round(tmp_path, st, at, send):
+    """One round of the operator on a quiet wallet (as tests/operator/test_run.py runs one)."""
+    from snipetech.operator.run import operate
+
+    class Svc:
+        store = st
+
+        async def oktech_status(self):
+            return {"snipers": []}
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "snipetech.db")
+    cfg.operator.wallet = W
+    return asyncio.run(operate(cfg, Svc(), repo=tmp_path, branch="main", now=lambda: at, send=send,
+                               services=lambda: {"snipetech-tape": "active", "snipetech-ops": "active"},
+                               balances=lambda w: (1.0, 0.0, []), turn=lambda *a, **k: {"stopped": "end_turn"},
+                               disk_free_gb=lambda: 500.0))  # fmt: skip
+
+
+def test_i4_the_round_sends_the_owner_the_line_once_a_copy(tmp_path, monkeypatch):
+    """The line "a copy behind X… paid fees no sniper of ours is set to pay" reached the run's job log and the notes
+    only: the measure stage, which writes it, has no Telegram. The round sends each such line of the notes once."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    paths = OperatorPaths(tmp_path).ensure()
+    st = Store(tmp_path / "snipetech.db")
+    said: list[str] = []
+
+    def send(text):
+        said.append(text)
+        return True
+
+    def sent():  # what the owner was sent of such copies (the round's other lines, a resource's, are not looked at)
+        return [m for m in said if "paid fees" in m]
+
+    try:
+        _odd_note(paths, ROUND - 86400, coin="Older1")  # from before this step existed: no news
+        _round(tmp_path, st, ROUND, send)
+        assert sent() == [], said
+        line = _odd_note(paths, ROUND + 300)
+        _round(tmp_path, st, ROUND + 900, send)
+        assert sent() == [line] and "paid fees no sniper of ours is set to pay" in line, said
+        assert "a copy behind CyaE1V…" in line and "(coin Coin11…, " in line
+        _round(tmp_path, st, ROUND + 1800, send)
+        assert sent() == [line], said  # once
+    finally:
+        st.close()
+
+
+def test_i4_a_line_telegram_did_not_take_is_sent_by_the_next_round_and_many_are_said_as_a_count(tmp_path):
+    from snipetech.operator import run as OR
+    from snipetech.operator.notify import Notifier
+    from snipetech.operator.tools import NoteSink
+
+    paths = OperatorPaths(tmp_path).ensure()
+    sent: list[str] = []
+    up = Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
+
+    def refuse(u, d):
+        raise RuntimeError("telegram down")
+
+    down = Notifier("T", 7, post=refuse, log=lambda m: None)
+    assert OR.forward_notes(paths, up) == 0  # no notes yet: nothing, and from here on
+    NoteSink(paths, now=lambda: ROUND).write("[book] kill: book off", "decision")  # its writer sent it already
+    NoteSink(paths, now=lambda: ROUND).write(
+        "operator: measure says a copy paid fees no sniper of ours is set to pay", "info"
+    )  # an agent's own words about it: not the measure stage's line
+    first = _odd_note(paths, ROUND + 60)
+    assert OR.forward_notes(paths, down) == 0 and sent == []
+    assert OR.forward_notes(paths, up) == 1 and sent == [first]
+    with paths.notes.open("a") as f:  # a writer in the middle of a line: read once it is whole
+        f.write(first[: len(first) // 2])
+    assert OR.forward_notes(paths, up) == 0 and sent == [first]
+    with paths.notes.open("a") as f:
+        f.write(first[len(first) // 2 :] + "\n")
+    assert OR.forward_notes(paths, up) == 1 and sent == [first, first]
+    sent.clear()
+    many = [_odd_note(paths, ROUND + 120 + k, coin=f"Many{k:02d}") for k in range(OR.FORWARD_MAX + 4)]
+    assert OR.forward_notes(paths, up) == len(many)
+    assert sent[: OR.FORWARD_MAX] == many[: OR.FORWARD_MAX] and len(sent) == OR.FORWARD_MAX + 1, sent
+    assert "4 more" in sent[-1] and "operator/notes.md" in sent[-1], sent[-1]
+    assert OR.forward_notes(paths, up) == 0
