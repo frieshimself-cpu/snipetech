@@ -119,9 +119,11 @@ def test_a_file_is_read_whole_not_from_its_last_200_000_bytes(monkeypatch):
 
 
 def _server(con: sqlite3.Connection):
-    """The ops endpoint over a local database with the tables the snapshot reads, and the files it reads, empty."""
+    """The ops endpoint over a local database with the tables the snapshot reads, and the files it reads, empty
+    (coverage too: the paper tables are read off its rule records once the paper test's rules are on the page)."""
     for table in (("paper_trades (strategy TEXT, mint TEXT, trigger_ts INTEGER, entry_ts REAL, exit_ts REAL, "
                    "pnl REAL, roi REAL, reason TEXT, data TEXT)"),
+                  "coverage (key TEXT PRIMARY KEY, data TEXT, updated INTEGER)",
                   ("fills (sig TEXT, ts INTEGER, wallet_copied TEXT, mint TEXT, pnl_sol REAL, exit_reason TEXT, "
                    "trades_behind INTEGER, price_gap_pct REAL, side TEXT, buy_sig TEXT)"),
                   "wallet_live (wallet TEXT, n INTEGER, mean_sol REAL, lower_sol REAL, last_fill INTEGER, status TEXT)",
