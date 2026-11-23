@@ -1006,7 +1006,8 @@ async def _begin(r: _Round, at: dict) -> dict | None:
         if not r.notes.has_today(sig, now):
             r.say(f"{sig} {p['label']} ({best['id']}): the wallet's plain SOL is {float(native):.2f} and a curve buy "
                   f"is paid in plain SOL only: one buy of {p['buy_sol']:g} SOL with its fees and rent needs {room:.2f} "
-                  "SOL. It starts once the wallet has that in plain SOL (said once a day).")  # fmt: skip
+                  "SOL. It starts once the wallet has that in plain SOL: turn some of its wrapped SOL back into SOL, "
+                  "or add SOL (said once a day).")  # fmt: skip
         return wait(f"the wallet's plain SOL is {float(native):.2f}, under the {room:.2f} SOL one curve buy needs")
     req = live_test.request(p, best, r.cfg, now, by=BY, sequence={"id": seq["id"], "block": 1}, approved=at["approved"])
     save_seq(paths, seq)  # first: the round's own check asks that the request be the sequence's own
