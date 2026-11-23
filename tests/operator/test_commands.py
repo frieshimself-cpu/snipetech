@@ -335,6 +335,58 @@ def test_stop_leaves_a_sniper_whose_fees_are_not_on_record_running_beside_the_ow
     assert "app1" in ctx["paths"].notes.read_text()
 
 
+# -- round 2 of the audit (23 Nov), A1: a copy of ours that paid fees no payload names is no coin of the owner's -------
+
+LEADER = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"
+COPY = "Copy1" + "1" * 39
+ODD_PRIO, ODD_TIP = 1_500_000, 120_000_000  # a pair no payload on record names: OKTech changing what it pays
+
+
+def _odd_copy_held(tmp_path, slots_behind=1):
+    """A copy sniper of LEADER on record and running; the wallet holds COPY, bought `slots_behind` slots after
+    LEADER's buy of it at fees no payload names."""
+    from snipetech.models import Trade
+
+    svc = StoreSvc(tmp_path, [_coin(COPY)], snipers=[{"id": "c1", "name": "snipetech copy lead", "status": "running"}])
+    svc.store.add_oktech_sniper({"id": "c1", "kind": "copy", "source": LEADER, "created_at": NOW - 86_400,
+                                 "payload": {"priorityFee": 0.001, "tipAmount": 0.199, "singleSnipe": True,
+                                             "ctbotWallets": [{"address": LEADER}]}})  # fmt: skip
+    for sig, user, slot, pos, fees in (("lead", LEADER, 5_000, 196, (5_000, 0)),
+                                       ("copy", W, 5_000 + slots_behind, 12, (ODD_PRIO, ODD_TIP))):  # fmt: skip
+        svc.store.add_trades([Trade(sig=sig, ev=0, slot=slot, pos=pos, ts=NOW - 3600, mint=COPY, venue="curve",
+                                    user=user, is_buy=True, quote=1_000_000_000, base=1_000_000, fee=0, fee_bps=0,
+                                    q_after=1, b_after=1, priority=fees[0], tip=fees[1])])  # fmt: skip
+    return svc
+
+
+def test_stop_keeps_the_snipers_beside_a_copy_that_paid_fees_no_payload_names(tmp_path):
+    """A1: /stop reads whose each coin is by the fees our snipers pay. A copy at another pair read as "your own (bought
+    by hand)" and its sniper was stopped while it held the coin (CLAUDE.md rule 1). One slot behind the wallet our
+    sniper copies, it is a copy by its shape (measure/ours.CopyShape)."""
+    svc = _odd_copy_held(tmp_path)
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "Copy" in reply, reply
+
+
+def test_stop_keeps_them_once_the_watch_has_seen_that_copy_ten_minutes_too(tmp_path):
+    """A1: a coin no buy of ours explains, seen ten minutes by the unsold-coin watch, is a stray that keeps no sniper
+    running (book/run._strays, which reads a buy by its fees alone). A copy by its shape is explained by a buy of
+    ours, however long the watch has seen it."""
+    svc = _odd_copy_held(tmp_path)
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    (paths.root / "watch.json").write_text(json.dumps({"ts": NOW - 60, "first_seen": {COPY: NOW - 700}}))
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "Copy" in reply, reply
+
+
+def test_stop_still_stops_beside_the_owners_hand_buy_twenty_slots_behind_a_copied_wallet(tmp_path):
+    """A1 turns no hand buy into a copy: eight seconds behind the copied wallet, at fees no sniper pays, it is the
+    owner's own coin and keeps no sniper running."""
+    svc = _odd_copy_held(tmp_path, slots_behind=20)
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "c1")] and "your own" in reply, reply
+
+
 def test_resume_removes_flag_and_status_reports(tmp_path):
     svc = FakeSvc(held=[{"mint": "M1", "amount": 1}], snipers=[{"id": "s1", "name": "a", "status": "running"}])
     snap = Snapshot(ts=NOW - 600, wallet=W, native_sol=1.25, wsol=0.0, held=[{"mint": "M1"}], snipers=svc._snipers, spent_today=0.42,

@@ -222,19 +222,22 @@ HAND_BOUGHT = "your own (bought by hand)"  # why a coin of the owner's keeps no 
 
 def _not_ours(svc, wallet: str, held: list[dict], paths: OperatorPaths, now: float) -> dict[str, str]:
     """The held coins no sniper of ours holds, each with why in the owner's words: the owner's own (every buy of it
-    since its last sale paid fees none of our snipers pays: measure/ours.owner_coins; 22 Nov 02:40 the owner bought a
-    coin by hand in this wallet) and strays (no buy of ours explains it and the unsold-coin watch has seen it 10 minutes:
-    book/run._strays; 8 Nov a dust airdrop). Stopping a sniper beside them strands nothing. Empty when the store cannot
-    say: every coin then keeps the snipers running, as before."""
+    since its last sale paid fees none of our snipers pays, behind no wallet they copy: measure/ours.owner_coins; 22 Nov
+    02:40 the owner bought a coin by hand in this wallet) and strays (no buy of ours explains it and the unsold-coin
+    watch has seen it 10 minutes: book/run._strays; 8 Nov a dust airdrop). Stopping a sniper beside them strands
+    nothing. A stray is told by its buys' fees alone there: one a buy of ours explains by its shape (a copy right
+    behind the copied wallet at fees no payload names, measure/ours.bot_bought) is no stray (23 Nov audit). Empty when
+    the store cannot say: every coin then keeps the snipers running, as before."""
     store = getattr(svc, "store", None)
     if store is None or not held:
         return {}
     from ..book.run import _strays
-    from ..measure.ours import fee_marks, owner_coins
+    from ..measure.ours import bot_bought, fee_marks, owner_coins
 
     try:
-        owners = owner_coins(store, wallet, held, fee_marks(store))
-        strays = _strays(store, wallet, held, paths, now)
+        marks = fee_marks(store)
+        owners = owner_coins(store, wallet, held, marks)
+        strays = {m for m in _strays(store, wallet, held, paths, now) if not bot_bought(store, wallet, m, marks)}
     except Exception:  # noqa: BLE001 - not known: each coin may be ours
         return {}
     return dict.fromkeys(owners, HAND_BOUGHT) | {m: "no buy of ours explains it" for m in strays if m not in owners}
