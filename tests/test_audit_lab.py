@@ -656,10 +656,12 @@ def test_the_forward_run_hands_its_exit_the_cut_path_and_scores_the_same(monkeyp
     handed = []
     real = paper.prepare
     monkeypatch.setattr(paper, "prepare", lambda p, *a, **k: handed.append(p.n) or real(p, *a, **k))
-    cut, why = paper._position({}, path, {"buy_sol": 2.0}, trig, ex, costs, i, i + 2, None, float(path.ts[-1]))
+    # the third value is the position's share of the pool at its entry (the paper branch's outside-the-model mark)
+    cut, why, share = paper._position({}, path, {"buy_sol": 2.0}, trig, ex, costs, i, i + 2, None, float(path.ts[-1]))
     monkeypatch.setattr(paper, "held_path", lambda p, e, secs: p)
-    whole, why_whole = paper._position({}, path, {"buy_sol": 2.0}, trig, ex, costs, i, i + 2, None, float(path.ts[-1]))
-    assert why is None and why_whole is None and cut is not None
+    whole, why_whole, share_whole = paper._position({}, path, {"buy_sol": 2.0}, trig, ex, costs, i, i + 2, None,
+                                                    float(path.ts[-1]))  # fmt: skip
+    assert why is None and why_whole is None and cut is not None and share == share_whole
     assert handed[0] < handed[1] == path.n  # the forward run read its exit's own stretch, not the hour after it
     assert cut.exit_reason == whole.exit_reason and cut.to_dict() == whole.to_dict()
 
