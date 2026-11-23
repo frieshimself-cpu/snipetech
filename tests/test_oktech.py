@@ -397,8 +397,9 @@ def test_list_copy_sniper_fee_and_send_count_overrides():
     assert c["priorityFee"] == 0.02 and c["tipAmount"] == 0.02
     assert c["extraParams"]["globalSendCount"] == 1
     # exits do not follow the arm: every sell is sent 2-3 times on separate nonce accounts (the losers fail with 6023 and
-    # still pay the sell priority fee), so a 0.02 sell bid would cost 0.02 per twin; sells bid [oktech] sell_tip_sol as
-    # the tip (refunded on a failed send) and sell_priority_sol, near zero, as what each twin pays
+    # still pay a priority fee), so sells bid [oktech] sell_tip_sol as the tip (refunded on a failed send) and send
+    # sell_priority_sol near zero. That number was meant as what each twin pays; 12 Nov: OKTech does not use it under
+    # the buy priority, which the sale and its twins pay
     assert c["autoSell"]["sellPriorityFeeSol"] == 0.0001 and c["autoSell"]["sellTipAmount"] == 0.002
     assert "paid" in p.name and any("0.02" in s for s in p.summary)
     base = list_copy_sniper("4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku", "Gfree", 0.5, 0.2, 5)
