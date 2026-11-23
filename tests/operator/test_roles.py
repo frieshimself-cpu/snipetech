@@ -1002,6 +1002,31 @@ def test_a_job_that_was_killed_or_lost_in_a_restart_is_told(box, tmp_path):
         assert due == (True, f"a job of yours ended: {jid}"), (r, due)
 
 
+def test_a_job_record_from_before_the_last_boot_is_over_to_a_role_too(box, monkeypatch):
+    """Round 3 of the 22 Nov audit (the second round's I2, carried to the agents' readers): a restart of the machine
+    ends a job without a word, its record says it runs for good, and the new boot gives its pid to another process.
+    job_over and job_metas judged by the pid alone: the job stayed "running" to its role (never "a job of yours
+    ended", its log never a whole one to read, a slot of the role's held) until the round's snapshot wrote its exit
+    file. They ask ops.job_alive, as the snapshot does."""
+    from snipetech import ops as O
+
+    idea = _idea(box.paths, "scout", status="testing", now=NOW - 2 * H)
+    _state(box.paths, "scout", last=NOW - 900)
+    R.record_test(box.paths, NOW - 800, "scout", idea, "j1", ["winners", "--json"])
+    _job(box.data, "j1", ["winners", "--json"], NOW - 800, pid=os.getpid())  # a live pid, another process's
+    for name, at in (("j1.json", NOW - 800), ("j1.log", NOW - 700)):
+        (box.data / "jobs" / name).touch()
+        os.utime(box.data / "jobs" / name, (at, at))
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: int(NOW - 3600))  # no restart since the job started
+    assert not R.job_over(box.paths, "j1") and [m["running"] for m in R.job_metas(box.paths, NOW)] == [True]
+    assert _due(box, "scout") == (False, "nothing new")
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: int(NOW - 750))  # the machine restarted since
+    assert R.job_over(box.paths, "j1")
+    (meta,) = R.job_metas(box.paths, NOW)
+    assert (meta["running"], meta["ended"], meta["exit_code"]) == (False, NOW - 700, None)
+    assert _due(box, "scout") == (True, "a job of yours ended: j1")
+
+
 def test_a_good_read_stays_when_a_later_turn_that_read_the_job_again_is_cut(box):
     """The first read of a finished job is the one that counts: a later turn that looks at the same job again and is
     then refused or cut forgets its own reads, not the good one of the turn before."""
