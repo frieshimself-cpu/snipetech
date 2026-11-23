@@ -34,7 +34,10 @@ NON_COIN_MINTS: dict[str, str] = {
     "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB": "USD1",
 }
 ACTIVE_STATUSES = frozenset({"running", "starting", "stopping"})
-SPENT_STATUSES = frozenset({"finished", "stopped", "error", "completed"})  # a capped sniper that did its buys
+# a capped sniper that did its buys, or one OKTech gave up on: OKTech's own statuses are idle, starting, running,
+# stopping, finished and failed (docs/oktech-audit-2026-11-06.md); "failed" was missing until 23 Nov, so a failed
+# sniper waited for the runner's 30-minute timer and the book never retired it
+SPENT_STATUSES = frozenset({"finished", "failed", "stopped", "error", "completed"})
 DUST_SOL = 0.001
 
 

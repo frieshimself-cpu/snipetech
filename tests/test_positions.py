@@ -132,3 +132,15 @@ def test_what_a_curve_buy_takes_and_what_can_be_unwrapped_are_the_same_rule_for_
     for size in (0.05, 0.2, 0.5):
         assert autotest._curve_room(size) == round(curve_buy_room(size, costs), 4)
     assert autotest._curve_room(0.2) == 0.252
+
+
+def test_oktech_s_failed_status_is_a_spent_sniper():
+    """OKTech's task statuses are idle, starting, running, stopping, finished and failed (docs/oktech-audit-2026-11-06.md).
+    A sniper OKTech reads "failed" buys nothing more, but SPENT_STATUSES held "error" and not "failed", so the runner
+    left such a sniper unarmed until its 30-minute timer (`oktech cycle --rearm-after`) and the book never retired it
+    (the round-3 docs pass, 23 Nov). Every documented status is either active, spent, or idle (stopped by us)."""
+    from snipetech.positions import SPENT_STATUSES
+
+    assert "failed" in SPENT_STATUSES and not is_active("failed")
+    documented = {"idle", "starting", "running", "stopping", "finished", "failed"}
+    assert documented - ACTIVE_STATUSES - SPENT_STATUSES == {"idle"}
