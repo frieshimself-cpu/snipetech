@@ -731,6 +731,49 @@ def test_a_hand_buy_at_the_other_snipers_size_behind_this_ones_wallet_is_the_own
     assert sweeps == [] and rep["fills"] == 0 and rep["owner_coins"] == [OWN]
 
 
+def _both_in_one_coin(now):
+    """The wallet's holding of OURS: the run's copy (1,000,000 units) and the owner's hand buy (990,000) from 102 s
+    on; from 140 s on what the owner bought alone (the run's part is sold)."""
+    if now < T0 + 102:
+        return []
+    return [_coin(OURS, 1.99) | {"raw": 1_990_000}] if now < T0 + 140 else [_coin(OURS, 0.99) | {"raw": 990_000}]
+
+
+def test_the_owners_hand_buy_of_the_coin_the_run_copies_is_not_sold_with_the_copy(monkeypatch):
+    """S1 (review), the two in one coin: the owner buys 0.99 SOL of a coin right behind the wallet the run copies, and
+    a slot later the run's copy of that buy lands in the same coin. By its place alone the hand buy was a second copy:
+    two fills, and at --sweep-after the run sold all the wallet held of the coin, the owner's tokens with its own.
+    The hand buy is the owner's by its size: the run sells exactly its copy's tokens and hands the rest to them."""
+    from dataclasses import replace
+
+    sweeps, sold = [], []
+    hand = replace(_buy(T0 + 100, OURS, 0.99, 6121, 26_993_879), pos=4, base=990_000)
+    copy = replace(_copy(T0 + 100, OURS, 1.0), slot=hand.slot + 1)
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 8.0, coins=_both_in_one_coin,
+                        payload=COPIES, tape=[_lead(T0 + 100, OURS), hand, copy], sweeps=sweeps, sold_amounts=sold,
+                        sweep_after=20, rearm_after=60, minutes=6)  # fmt: skip
+    assert sold == [(OURS, 1_000_000)] and rep["fills"] == 1
+    assert rep["owner_coins"] == [OURS] and rep["left_running"] == []  # what is left is theirs, and keeps no sniper
+
+
+def test_a_hand_buy_right_after_the_runs_copy_of_the_same_coin_is_never_sold_by_the_run(monkeypatch):
+    """S1 (review), the other order: the run's copy lands first and the owner's hand buy of the same coin a slot
+    later, both before the wallet is read. By its place the hand buy was a copy too and the run sold the whole
+    holding. Now the coin is the owner's by its newest buy: none of their tokens is sold, the run's fill still
+    counts, and no sniper is re-armed or stopped while the tape says the run holds tokens of it."""
+    from dataclasses import replace
+
+    sweeps, sold = [], []
+    copy = _copy(T0 + 100, OURS, 1.0)
+    hand = replace(_buy(T0 + 100, OURS, 0.99, 6121, 26_993_879), slot=copy.slot + 1, pos=4, base=990_000)
+    rep, client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 8.0, coins=_both_in_one_coin,
+                       payload=COPIES, tape=[_lead(T0 + 100, OURS), copy, hand], sweeps=sweeps, sold_amounts=sold,
+                       sweep_after=20, rearm_after=60, minutes=6)  # fmt: skip
+    assert all(amount is not None and amount <= 1_000_000 for _mint, amount in sold), sold  # never the owner's tokens
+    assert rep["fills"] == 1 and rep["owner_coins"] == [OURS]
+    assert not [t for kind, _i, t in client.timed if kind in ("start", "stop") and T0 + 100 < t < T0 + 360]
+
+
 # -- round 2 of the audit (23 Nov), A3: the run's tokens in a coin of the owner's are held for the snipers' timer ------
 
 SLOW_SALE = {"sellTipAmount": 0.002, "sellPriorityFeeSol": 0.0001}
