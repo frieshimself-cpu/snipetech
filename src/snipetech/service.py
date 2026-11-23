@@ -1510,7 +1510,8 @@ class Service:
         longest exit timer and a margin, or --sweep-after and two tries of its sale, whichever is longest) no
         sniper is re-armed or stopped, at the end and on the way out too, and past --sweep-after the run sells its own
         tokens of it, never the owner's (`run_parts`; no more than the wallet holds beyond theirs).
-        A coin nobody can tell yet is held as the run's but never sold by it.
+        A coin nobody can tell yet is held as the run's but never sold by it, and is no fill for the cap until it is
+        told as the run's (`fills_now`); told as the owner's, its arrival re-arms nothing.
         The run starts beside the owner's coins; only one of its snipers' refuses the start. The start stops each
         sniper before it arms it, so when OKTech reads one of them armed already (a run that died left it so) the
         wallet is read a second time first, and the tape and the chain are asked for a buy on its way, as /stop asks
@@ -2643,7 +2644,8 @@ class Service:
 
             who = ", ".join(tag(i) for i in live)
             log(f"OKTech reads {who} armed already (a run that ended without its own end left it so): before it is "
-                "stopped the wallet is read a second time, and the tape and the chain for a buy on its way")  # fmt: skip
+                "stopped the wallet is read a second time, and the tape and the chain for a buy on its "
+                "way")  # fmt: skip
             await asyncio.sleep(SECOND_READ_SECS)
             again_all = await settled(open_positions)
             again, _, _ = await sort_coins(again_all, time.time(), since=0)
@@ -2826,8 +2828,8 @@ class Service:
                                  "cycling")  # fmt: skip
             # one of the run's own that OKTech reads armed (a run that died left it so) is stopped below before it is
             # armed again, and may have bought a second ago: one reading of the wallet does not show that yet
-            live0 = [i for i in ids if rests.get(i, 0.0) <= time.time()
-                     and any(str(t.get("id")) == i and str(t.get("status")) in ACTIVE_STATUSES for t in tasks0)]  # fmt: skip
+            armed0 = {str(t.get("id")) for t in tasks0 if str(t.get("status")) in ACTIVE_STATUSES}
+            live0 = [i for i in ids if i in armed0 and rests.get(i, 0.0) <= time.time()]
             if live0:
                 await second_look(live0, held0_all, began0)
             for i in ids:
