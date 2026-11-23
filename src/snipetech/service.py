@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from .analysis.audit import audit_report
@@ -39,6 +40,24 @@ PICKED_KIND = "cand"  # `label --kind cand`: a copy candidate picked by hand, qu
 # nothing held before it is re-armed ahead of its timer (20 Nov: copies of swaps into USDC spend a shot, buy nothing)
 TASKS_READ_SECS = 15.0
 SPENT_REARM_SECS = 30.0
+# and no longer than to the reading after the one that saw it spent when the chain says sooner that its shot bought
+# nothing (`failed_sends`): a transaction of the wallet's failed since the sniper's last start, and no buy of the
+# wallet's since that start is unsold (23 Nov smoke test: 24 copies refused at the market-cap ceiling in 32 minutes,
+# each kept its sniper out 47 to 62 s). Never in the reading that first sees it spent: OKTech's one buy a start is no
+# hard limit (a refused send and a buy 5 s apart from one start, 23 Nov 03:31), and a second send on its way needs this
+# long to land and show on the wallet's list of signatures
+FAILED_SEND_SETTLE_SECS = 5.0
+# and only once the wallet's coins were read, with nothing held, at a block this long after the newest of those failed
+# transactions (the slot that reading names against the failed one's, at the seconds a slot takes by the list's own
+# rows). A second send of the same start has landed and shows by then, whenever OKTech reads the sniper finished (23
+# Nov: 5, 5 and 14 s after a refused one), and a node that is behind tells of the past: its list and its coins alike
+# (review of 23 Nov: a node 20 s behind listed the failed send and not the buy that followed it)
+FAILED_SEND_AGE_SECS = 20.0
+SLOT_SPAN_SECS = 60.0  # the list's newest and oldest rows are this far apart, or it tells nothing of a slot's length
+FAILED_LOOK_SECS = 10.0  # that look at the chain, all of it: the list and each transaction on it not read before
+# how long before the reading of the SOL that came before the start the look asks the list back to (a block's time
+# against our clock; the slots decide, and a list that does not reach back past the start tells nothing)
+FAILED_LOOK_BACK_SECS = 30.0
 # `oktech cycle --sweep-after`: a sale of a coin OKTech left unsold that failed is tried again this many seconds later
 SWEEP_RETRY_SECS = 60.0
 # and one that did not go out (the sale answered "skipped": PumpSwap's pool not there yet, the chain refused it) or did
@@ -146,6 +165,30 @@ def run_hold_secs(payloads, sweep_after: float | None) -> float:
     return hold
 
 
+class _ListRead:
+    """The RPC as a look at the wallet's newest signatures asks it (`Service.oktech_cycle`, `failed_sends`): the list
+    is kept as it was read, and a transaction the node served is asked for once (`txs`, by signature, while the list
+    still holds it)."""
+
+    def __init__(self, rpc, txs: dict[str, dict]):
+        self.rpc, self.txs, self.rows = rpc, txs, []
+
+    async def get_signatures(self, address: str, **kw) -> list[dict]:
+        self.rows = list(await self.rpc.get_signatures(address, **kw) or [])
+        listed = {str(r.get("signature")) for r in self.rows}
+        for gone in [k for k in self.txs if k not in listed]:
+            del self.txs[gone]
+        return self.rows
+
+    async def get_transaction(self, signature: str) -> dict | None:
+        if signature not in self.txs:
+            tx = await self.rpc.get_transaction(signature)
+            if not tx:
+                return None
+            self.txs[signature] = tx
+        return self.txs[signature]
+
+
 class OverlapError(ValueError):
     """A create refused because an active sniper already copies that leader (OKTech buys once per signal per wallet;
     a second sniper only adds failed sells at its own fee and crossed exits)."""
@@ -221,6 +264,7 @@ class Service:
         self._rpc: SolanaRpc | None = None
         self._tape_store: Store | None = None
         self._tape_lock = threading.Lock()
+        self.holdings_slot: int | None = None  # the node's slot at the last reading of a wallet's tokens (`holdings`)
 
     # a copy every three hours (snapshot_db.SNAPSHOT_EVERY_SECS), its own writing and a missed round on top
     TAPE_COPY_MAX_AGE_SECS = 5 * 3600
@@ -1022,16 +1066,21 @@ class Service:
 
     async def holdings(self, address: str) -> list[dict]:
         """Every token the wallet holds (both token programs), WSOL aside: mint, amount (ui), raw, decimals, account.
-        Raises if the RPC can't answer: never 'nothing held' by mistake."""
+        Raises if the RPC can't answer: never 'nothing held' by mistake. `holdings_slot` keeps the slot the node
+        answered at (the older of the two answers'; None when one names none): how far the node that said so had
+        come (`oktech_cycle`, `failed_sends`)."""
         from .positions import WSOL
         from .solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 
-        out = []
+        out, slots = [], []
+        self.holdings_slot = None
         for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
             r = await self.rpc.call(
                 "getTokenAccountsByOwner",
                 [address, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}],
             )
+            context = r.get("context") if isinstance(r, dict) else None
+            slots.append(context.get("slot") if isinstance(context, dict) else None)
             for a in r["value"]:
                 info = a["account"]["data"]["parsed"]["info"]
                 ta = info["tokenAmount"]
@@ -1042,6 +1091,8 @@ class Service:
                     out.append(
                         {"mint": info["mint"], "amount": amt, "raw": raw, "decimals": decimals, "account": a["pubkey"]}
                     )
+        if all(isinstance(s, int) and not isinstance(s, bool) for s in slots):
+            self.holdings_slot = min(slots)
         return out
 
     async def open_positions(self, address: str, ignore: list[str] | tuple[str, ...] | None = None,
@@ -1474,12 +1525,27 @@ class Service:
         longest exit timer and a margin, or --sweep-after and two tries of its sale, whichever is longest) no
         sniper is re-armed or stopped, at the end and on the way out too, and past --sweep-after the run sells its own
         tokens of it, never the owner's (`run_parts`; no more than the wallet holds beyond theirs).
-        A coin nobody can tell yet is held as the run's but never sold by it.
-        The run starts beside the owner's coins; only one of its snipers' refuses the start.
+        A coin nobody can tell yet is held as the run's but never sold by it, and is no fill for the cap until it is
+        told as the run's (`fills_now`); told as the owner's, its arrival re-arms nothing.
+        The run starts beside the owner's coins; only one of its snipers' refuses the start. The start stops each
+        sniper before it arms it, so when OKTech reads one of them armed already (a run that died left it so) the
+        wallet is read a second time first, and the tape and the chain are asked for a buy on its way, as /stop asks
+        them (`second_look`): such a sniper may have bought a second ago, and a stopped sniper strands its coin.
 
         Every read of the loop has READ_SECS (one that does not answer is a failed reading, said), every stop at the
         end is tried STOP_TRIES times, a sniper counts as armed from the moment its start is sent (a lost answer), and
         an error out of the run ends it as a stop signal does: what strands nothing is stopped first (22 Nov audit).
+
+        A sniper OKTech reads spent with nothing held (a one-shot sniper is spent by any send, a refused one too) is
+        armed again after SPENT_REARM_SECS, or from the reading after the one that saw it spent when the chain says
+        sooner that its shot bought nothing (`failed_sends`: a transaction of the wallet's failed since the sniper's
+        last start, no buy of the wallet's since that start is unsold, and the reading of the wallet's coins that
+        showed nothing held was answered at a block FAILED_SEND_AGE_SECS after that failed transaction and after the
+        moment OKTech was first seen to read the sniper spent; 23 Nov smoke test: each copy refused at the market-cap
+        ceiling kept its sniper out about a minute). Anything else on the chain (a buy whose coin has not shown, a
+        transaction the node does not serve yet, a list that does not reach back to the start, a node that has not
+        come that far, or that does not say how far it has come) and a chain that cannot be read keep the
+        SPENT_REARM_SECS wait.
 
         `keep_plain` (SOL; None: off): one curve copy's plain SOL (the buy with pump.fun's fee inside, the bid, the
         token account's rent). OKTech keeps the wrapped SOL at 1.1 times the buy the whole time a sniper runs, whatever
@@ -1574,7 +1640,14 @@ class Service:
             return f"it did not answer in {READ_SECS:g} s" if isinstance(exc, TimeoutError) else str(exc)
 
         async def balance() -> float:
-            return (await bounded(self.rpc.call("getBalance", [address, {"commitment": "processed"}])))["value"] / 1e9
+            nonlocal slot_seen
+            asked = time.time()
+            res = await bounded(self.rpc.call("getBalance", [address, {"commitment": "processed"}]))
+            try:  # the node's slot at this reading: a start after it is after every transaction up to that slot
+                slot_seen = (int(res["context"]["slot"]), asked)
+            except (KeyError, TypeError, ValueError):
+                slot_seen = None
+            return res["value"] / 1e9
 
         def fills_since(ts: float) -> int:
             """The run's buys on the tape since `ts`, the owner's own left out (0 when the tape cannot be read: then
@@ -1599,7 +1672,11 @@ class Service:
             # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
             # ignore_mints: positions no sniper manages (to be sold by hand). A token the tape cannot price is held too
             # (positions.filter_positions keeps it, unpriced)
-            return await bounded(self.open_positions(address, ignore=ignore_mints))
+            nonlocal coins_slot
+            self.holdings_slot = coins_slot = None
+            held_now = await bounded(self.open_positions(address, ignore=ignore_mints))
+            coins_slot = self.holdings_slot  # the slot the node answered at: how far it had come (`failed_sends`)
+            return held_now
 
         def tag(i: str) -> str:
             # a sniper by its own end: OKTech's ids open with their creation second, the same for snipers made together
@@ -1626,6 +1703,92 @@ class Service:
                     spent_at.setdefault(i, now)
                 else:
                     spent_at.pop(i, None)
+
+        def mark_start(i: str) -> None:
+            """Sniper i is about to be started: keep the node's slot at the last reading of the SOL, the one its start
+            is told apart from the wallet's transactions by (`failed_sends`); none when that reading gave no slot."""
+            if slot_seen is None:
+                armed_slot.pop(i, None)
+            else:
+                armed_slot[i] = slot_seen
+
+        async def failed_sends() -> dict[str, float]:
+            """The snipers OKTech reads spent whose shot the chain says bought nothing, each with how many seconds ago
+            a transaction of the wallet's last failed. The wallet's newest signatures are read as /stop reads them
+            (operator/commands._landed_buys, the one reader of that list: the buys no sale followed, and the landed
+            transactions the node does not serve yet), once a tick, each transaction once a run. A sniper is in the
+            answer when a transaction of the wallet's failed in a slot after its last start (`armed_slot`), and
+            since that start no buy is unsold, no transaction is unserved or listed without its time, and the list
+            reaches back past the start. A failed transaction cannot be told to one sniper, and neither can a buy
+            (OKTech copies a copied wallet's failed sends and create-bait: no copied buy stands before those), so
+            each sniper is asked by its own start alone: one whose buy landed is never in the answer while that buy
+            is unsold. And only once this reading of the wallet's coins, which showed nothing held, was answered at
+            a block FAILED_SEND_AGE_SECS after the newest of those failed transactions (`coins_slot` against its
+            slot, at the seconds a slot takes by the list's own newest and oldest rows): a second send of the same
+            start has landed and shows by then, and a node that is behind has not come that far (review of 23 Nov).
+            And at a block past the moment OKTech was first seen to read the sniper spent (`spent_at`, against the
+            chain's clock at that block): every send of its start came before then, and the failed transaction need
+            not be one of them (the owner's own failed hand trade: a node 25 s behind showed it, and not the sniper's
+            buy of 17 s before, in the review of round 3). Empty when the chain cannot be read (said once): the
+            SPENT_REARM_SECS wait holds, as before."""
+            nonlocal look_said
+            asked = {i: armed_slot[i] for i in ids if i in spent_at and i in armed_slot}
+            if not asked or coins_slot is None:  # no slot on the coins' reading: how far that node had come is not told
+                return {}
+            since_ts = min(at for _slot, at in asked.values()) - FAILED_LOOK_BACK_SECS
+            reader = _ListRead(self.rpc, chain_txs)
+            unsold: list[tuple[str, str]] = []
+            unread: list[str] = []
+            out: dict[str, float] = {}
+            try:
+                from .operator.commands import CHAIN_LOOK_SIGS, _landed_buys
+
+                look = _landed_buys(SimpleNamespace(rpc=reader), address, since_ts, unsold, unread)
+                await asyncio.wait_for(look, FAILED_LOOK_SECS)
+                rows = [(str(r["signature"]), int(r["slot"]), r.get("blockTime"), r.get("err")) for r in reader.rows]
+                # what the reader looked at, newest first: up to the first row older than it was asked back to, or all
+                last = next((k for k, row in enumerate(rows) if row[2] is not None and int(row[2]) < since_ts),
+                            len(rows))  # fmt: skip
+                looked = rows[: last + 1]
+                whole = last == len(rows) and len(rows) < CHAIN_LOOK_SIGS  # the wallet's every transaction
+                slot_of = {sig: slot for sig, slot, _when, _err in rows}
+                maybe_held = [sig for _mint, sig in unsold] + unread  # each may be a coin a sniper still holds
+                # the seconds a slot takes, off the list's own newest and oldest rows (the chain's clock on both; 23
+                # Nov: 0.215 s): none from a list that spans under SLOT_SPAN_SECS
+                timed = [(slot, int(when)) for _sig, slot, when, _err in rows if when is not None]
+                slot_secs = None
+                if timed and timed[0][1] - timed[-1][1] >= SLOT_SPAN_SECS and timed[0][0] > timed[-1][0]:
+                    slot_secs = (timed[0][1] - timed[-1][1]) / (timed[0][0] - timed[-1][0])
+                    if not 0.05 <= slot_secs <= 1.0:  # no slot ever took that long or that little: nothing told
+                        slot_secs = None
+                for i, (start, _at) in asked.items():
+                    if not (whole or any(slot < start for _sig, slot, _when, _err in looked)):
+                        continue  # the look did not reach back past this start
+                    if any(when is None for _sig, slot, when, _err in rows if slot >= start):
+                        continue
+                    if any(slot_of.get(sig, start) >= start for sig in maybe_held):
+                        continue
+                    failed = [(slot, int(when)) for _sig, slot, when, err in rows if slot > start and err is not None]
+                    if not failed:
+                        continue
+                    # how far past the newest of them the node that showed nothing held had come, in seconds
+                    if slot_secs is None or (coins_slot - max(failed)[0]) * slot_secs < FAILED_SEND_AGE_SECS:
+                        continue
+                    # and that node had come past the moment OKTech was first seen to read this sniper spent, by the
+                    # chain's clock at its slot (off the list's newest timed row): every send of its start came before
+                    # that, and the failed one need not be one of them (the owner's own, a duplicate sale's)
+                    if timed[0][1] + (coins_slot - timed[0][0]) * slot_secs < spent_at[i]:
+                        continue
+                    out[i] = max(0.0, time.time() - max(failed)[1])
+            except Exception as exc:  # noqa: BLE001 - nothing told: the 30 s wait, as before
+                if not look_said:
+                    look_said = True
+                    why = (f"it did not answer in {FAILED_LOOK_SECS:g} s" if isinstance(exc, TimeoutError)
+                           else type(exc).__name__)  # fmt: skip
+                    log(f"the wallet's transactions could not be read for a failed send ({why}): a spent sniper "
+                        f"waits its {SPENT_REARM_SECS:g} s, as before")  # fmt: skip
+                return {}
+            return out
 
         async def guard_says(held: list[dict]) -> tuple[bool | None, str]:
             """The owner's wallet-wide guard now (operator/RISK: the day 1 SOL down or the wallet under 10 SOL), read at
@@ -1827,12 +1990,20 @@ class Service:
         # wallet bought it again: repeats are in the paper) is a new holding, a new buy, with its own sweep timer
         held_since: dict[str, float] = {}
         arrivals, last_arrival = 0, 0.0  # holdings seen begin since the start (each one a buy), and the latest
+        arrived: list[float] = []  # when each of them began: one told as the owner's own later is taken out again
         empty_n = 0  # readings in a row with nothing held and no buy on its way: a re-arm waits for two
         # when the SOL last fell with no coin seen held: a buy on its way (FRESH_HOLD_SECS)
         fresh_at: float | None = None
         w_last = 0.0  # the wrapped SOL as last read: a fall of the SOL into it is OKTech's top-up, not a buy
         spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
         tasks_read_at, tasks_unread = 0.0, False
+        # the node's slot at the last reading of the SOL and when it was asked (`balance`), and for each sniper the one
+        # before its last start: a transaction of the wallet's in a later slot ran after that start (`failed_sends`)
+        slot_seen: tuple[int, float] | None = None
+        armed_slot: dict[str, tuple[int, float]] = {}
+        coins_slot: int | None = None  # the slot the node answered the last reading of the wallet's coins at
+        chain_txs: dict[str, dict] = {}  # the wallet's transactions that look has read, each once
+        look_said = False  # the run has said that the chain could not be read for a failed send
         swept: list[dict] = []  # the coins this run sold itself (`sweep_after`): each sale the chain has
         # when each coin's next sale may go: a minute after one that failed, SWEEP_SOON_SECS after one that did not go
         # out or did not land
@@ -1874,7 +2045,7 @@ class Service:
             the owner's own coins gone since the last reading, each with the value the floor counted). Whose a coin is:
             measure/ours.RunCoins, by the buy since the coin first showed (or since `since`). 22 Nov: the owner buys,
             sells and sends coins by hand in this wallet while a run is on; the run sold, counted and waited on them."""
-            nonlocal arrivals
+            nonlocal arrivals, last_arrival
             mints = {str(h["mint"]) for h in held_all if h.get("mint")}
             for m in [m for m in owner_miss if m in mints]:  # back: one reply had left it out
                 del owner_miss[m]
@@ -1928,8 +2099,13 @@ class Service:
                         f"the floor counts it at {v:.4f} SOL while it is held")  # fmt: skip
                     continue
                 if m in held_since:  # counted as the run's while nobody could tell: it was no buy of the run's
-                    del held_since[m]
+                    came = held_since.pop(m)
                     arrivals = max(0, arrivals - 1)
+                    # nor a buy of the snipers armed before it: its arrival re-arms none of them (23 Nov audit: the
+                    # owner's hand buy, once told as theirs, had every sniper stopped and started as after a fill)
+                    if came in arrived:
+                        arrived.remove(came)
+                    last_arrival = max(arrived, default=0.0)
                     if first_seen.get(m, -1.0) >= sight[m]:
                         del first_seen[m]
                 log(f"{m} is the owner's own coin (the buy that brought it in paid none of this run's snipers' fees): "
@@ -2121,6 +2297,7 @@ class Service:
                     if m not in held_since:
                         held_since[m] = now
                         arrivals, last_arrival = arrivals + 1, now
+                        arrived.append(now)
                 for m in [m for m in held_since if m not in mints_now]:
                     del held_since[m]
                 if held:
@@ -2137,7 +2314,15 @@ class Service:
             return held
 
         def fills_now() -> int:
-            return max(fills_since(t0), arrivals, len(first_seen))
+            """The run's fills so far: the larger of its buys on the tape and the coins seen in the wallet. A coin held
+            now that nobody can tell yet (`sort_coins`: it may be the owner's own buy of seconds ago) is in neither
+            count of the wallet's coins until it is told as the run's (23 Nov audit: a run one fill short of its cap
+            ended on the owner's hand buy); one that left before anybody could tell counts, as before. Held now: by
+            the last reading (`sight`), the end's own too, which forgets a coin that has left without taking it off
+            `held_since` (review of 23 Nov: such a coin dropped out of the report's count)."""
+            unsure = [m for m in held_since if m in sight and coins.known(m) is None]
+            new = sum(1 for m in unsure if first_seen.get(m, -1.0) >= sight.get(m, 0.0))  # first seen in this holding
+            return max(fills_since(t0), arrivals - len(unsure), len(first_seen) - new)
 
         def run_result(held_all: list[dict], now: float) -> float | None:
             """The run's own result in SOL since its start by its trades on the tape: what its buys paid (the quote,
@@ -2478,6 +2663,72 @@ class Service:
                     log(f"a read at the start failed ({type(exc).__name__}); trying again")
                     await asyncio.sleep(2.0)
 
+        def held_refusal(held: list[dict]) -> SystemExit:
+            """Why a run does not start beside the coins `held` (the run's, or nobody's yet): its start stops each
+            sniper first, and a stopped sniper strands its coin."""
+            # a coin nobody can tell yet (no buy of it read; a buy of seconds ago, which a walk of the chain that
+            # finds no copied buy says nothing of: measure/ours.CHAIN_SETTLE_SECS) may be the owner's own
+            unsure0 = [f"{str(h['mint'])[:6]}…" for h in held
+                       if h.get("mint") and coins.known(str(h["mint"])) is None]  # fmt: skip
+            return SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({float(h.get('value_sol') or 0):.4f} SOL)"
+                                                              for h in held)
+                              + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
+                              "pass --ignore-mint MINT for a position no sniper manages."
+                              + (f" Whose coin {', '.join(unsure0)} is cannot be told yet (no buy of it is read, or "
+                                 "one of seconds ago): if it is the owner's own, start the run again in a minute."
+                                 if unsure0 else ""))  # fmt: skip
+
+        async def second_look(live: list[str], first: list[dict], began: float) -> None:
+            """OKTech reads the run's own snipers `live` armed at its start (a run that died left them so), and the
+            start stops each one before it arms it. One of them can have bought a second ago: its tokens are not in
+            the one reading yet (`first`, begun at `began`). So before that stop the wallet is read a second time
+            SECOND_READ_SECS later, and the tape and the wallet's newest signatures are asked for a buy whose coin
+            neither reading showed (operator/commands._on_its_way, the look /stop makes before it stops a sniper);
+            the owner's coins are then weighed once more by the tape, read last as /stop reads it (a copy into a
+            coin they hold, written while the wallet and the chain were read). A coin of the run's, a coin that came
+            in between the readings, a buy on its way or a landed transaction the node does not serve yet refuses
+            the start (SystemExit) with nothing touched (23 Nov review)."""
+            from .measure.ours import tape_whose
+            from .operator.commands import _on_its_way
+            from .operator.live_test import SECOND_READ_SECS
+
+            who = ", ".join(tag(i) for i in live)
+            log(f"OKTech reads {who} armed already (a run that ended without its own end left it so): before it is "
+                "stopped the wallet is read a second time, and the tape and the chain for a buy on its "
+                "way")  # fmt: skip
+            await asyncio.sleep(SECOND_READ_SECS)
+            again_all = await settled(open_positions)
+            again, _, _ = await sort_coins(again_all, time.time(), since=0)
+            if again:
+                raise held_refusal(again)
+            shown = {str(h.get("mint")) for h in first}
+            came = [str(h["mint"]) for h in again_all if h.get("mint") and str(h["mint"]) not in shown]
+            try:
+                coming, unread = await _on_its_way(self, self.cfg, address, shown | set(came), began)
+            except Exception as exc:  # noqa: BLE001 - not known is no ground for a stop
+                raise SystemExit(f"OKTech reads {who} armed already, and the tape and the chain could not be asked "
+                                 f"for a buy on its way ({type(exc).__name__}): not cycling (the start stops each "
+                                 "sniper before it arms it, and a stopped sniper strands its coin). Start the run "
+                                 "again in a minute.") from None  # fmt: skip
+            coming = [m for m in coming if m not in (ignore_mints or ())]
+            into = [m for m in owner_val if tape_whose(self.store, address, m, 0, run_marks) == "ours"]
+            why = []
+            if came:  # the owner's own, bought as the run began: the floor was read before it
+                why.append(f"{', '.join(m[:6] + '…' for m in came[:5])} came into the wallet as the run was starting")
+            if into:
+                why.append(f"a sniper bought into {', '.join(m[:6] + '…' for m in into[:5])}, a coin the owner holds "
+                           "too, moments ago")  # fmt: skip
+            if coming:
+                why.append(f"the wallet bought {', '.join(m[:6] + '…' for m in coming[:5])} moments ago and what it "
+                           "bought has not shown in the wallet yet")  # fmt: skip
+            if unread:
+                why.append(f"{unread} transaction(s) of the wallet landed moments ago and cannot be read yet (one may "
+                           "be a buy)")  # fmt: skip
+            if why:
+                raise SystemExit(f"OKTech reads {who} armed already, and {'; '.join(why)}: not cycling (the start "
+                                 "stops each sniper before it arms it, and a stopped sniper strands its coin). Start "
+                                 "the run again in a minute.")  # fmt: skip
+
         async def last_stop() -> None:
             """The job was told to stop (its time limit, a kill, a restart: SIGTERM, and SIGKILL 30 s on): stop what
             strands nothing, at once. With nothing held on two readings and no buy on its way, every sniper the run
@@ -2585,21 +2836,12 @@ class Service:
                 t0 = time.time()  # the run's minutes and fills count from its start, not from the wait
             b0 = await settled(balance)
             w0 = await wrapped_sol()
+            began0 = time.time()
             held0_all = await settled(open_positions)  # before any sniper is touched: a stopped sniper strands its coin
             # the owner's own coins strand nothing: the newest buy of each says whose it is
             held0, _, _ = await sort_coins(held0_all, time.time(), since=0)
             if held0:
-                # a coin nobody can tell yet (no buy of it read; a buy of seconds ago, which a walk of the chain that
-                # finds no copied buy says nothing of: measure/ours.CHAIN_SETTLE_SECS) may be the owner's own
-                unsure0 = [f"{str(h['mint'])[:6]}…" for h in held0
-                           if h.get("mint") and coins.known(str(h["mint"])) is None]  # fmt: skip
-                raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({float(h.get('value_sol') or 0):.4f} SOL)"
-                                                                 for h in held0)
-                                 + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
-                                 "pass --ignore-mint MINT for a position no sniper manages."
-                                 + (f" Whose coin {', '.join(unsure0)} is cannot be told yet (no buy of it is read, or "
-                                    "one of seconds ago): if it is the owner's own, start the run again in a minute."
-                                    if unsure0 else ""))  # fmt: skip
+                raise held_refusal(held0)
             owner0 = round(sum(owner_val.values()), 6)  # the owner's own coins at their worth now, counted in
             how = ""
             if max_loss is not None:
@@ -2625,7 +2867,8 @@ class Service:
                 )
             # a sniper armed beside the run (by hand, by the book, by a test) buys into the same wallet: the run would
             # sell, count and floor its coins as its own
-            beside = [t for t in await settled(client.tasks)
+            tasks0 = await settled(client.tasks)
+            beside = [t for t in tasks0
                       if str(t.get("status")) in ACTIVE_STATUSES and str(t.get("id")) not in ids]  # fmt: skip
             if beside:
                 raise SystemExit("OKTech has " + ", ".join(f"{tag(str(t.get('id')))} ({t.get('name') or t.get('status')})"
@@ -2633,6 +2876,12 @@ class Service:
                                  + " armed beside this run: its buys would land in the same wallet, and the run would "
                                  "sell, count and floor them as its own. Stop it first (one driver per wallet); not "
                                  "cycling")  # fmt: skip
+            # one of the run's own that OKTech reads armed (a run that died left it so) is stopped below before it is
+            # armed again, and may have bought a second ago: one reading of the wallet does not show that yet
+            armed0 = {str(t.get("id")) for t in tasks0 if str(t.get("status")) in ACTIVE_STATUSES}
+            live0 = [i for i in ids if i in armed0 and rests.get(i, 0.0) <= time.time()]
+            if live0:
+                await second_look(live0, held0_all, began0)
             for i in ids:
                 if rests.get(i, 0.0) > time.time():  # an earlier run rested it (the kinds of copy): armed once over
                     armed_at[i] = 0.0
@@ -2645,6 +2894,7 @@ class Service:
                 # armed before the answer: OKTech can carry a start out and its answer be lost (a timeout), and the end
                 # must stop it all the same (22 Nov audit, finding 7)
                 armed.add(i)
+                mark_start(i)
                 ans = await client.start(i)
                 armed_at[i] = time.time()
                 log(f"started {tag(i)}: {ans.get('task', {}).get('status', ans)}")
@@ -2780,6 +3030,7 @@ class Service:
                     if m not in held_since:  # a holding begins: a buy (the same coin again is a new one)
                         held_since[m] = now_t
                         arrivals, last_arrival = arrivals + 1, now_t
+                        arrived.append(now_t)
                         if not pend_before and not fell_now:  # its SOL left long before and moved the floor
                             undo_late(m, now_t)
                             fell_now = True  # one move for one buy
@@ -2880,6 +3131,7 @@ class Service:
                     tasks_read_at = now
                     await read_spent(now)
                 guarded = False
+                freed: dict[str, float] | None = None  # this tick's look at the chain (`failed_sends`), asked once
                 for i in ids:
                     if rests.get(i, 0.0) > now:  # resting (the kinds of copy): not re-armed until its rest is over
                         continue
@@ -2891,7 +3143,16 @@ class Service:
                     spent = i in spent_at and now - spent_at[i] >= SPENT_REARM_SECS
                     at = armed_at.get(i, now)
                     bought = fills_since(at) >= 1 or last_arrival > at
-                    if bought or since >= rearm_after or spent:
+                    # or sooner, from the reading after the one that saw it spent, when the chain says that a send
+                    # failed since its start and nothing bought since then is unsold (23 Nov: copies refused at the
+                    # ceiling; anything else on the chain, or no reading of it, keeps the wait above)
+                    failed_ago = None
+                    if (not (bought or since >= rearm_after or spent)
+                            and now - spent_at.get(i, now) >= FAILED_SEND_SETTLE_SECS):  # fmt: skip
+                        if freed is None:
+                            freed = await failed_sends()
+                        failed_ago = freed.get(i)
+                    if bought or since >= rearm_after or spent or failed_ago is not None:
                         blocked, why = await guard_says(held_all)  # every coin: the guard tells whose itself
                         if blocked:  # the owner's guard holds: this run re-arms nothing more, as at /stop
                             reason, guarded = f"the wallet-wide guard holds ({why}): no more re-arms", True
@@ -2916,12 +3177,17 @@ class Service:
                                 log(f"/stop came while {tag(i)} was being re-armed: left stopped")
                                 break
                             armed.add(i)  # before the answer, as at the start: a lost answer leaves it armed
+                            mark_start(i)
                             ans = await client.start(i)
                             armed_at[i] = time.time()
                             spent_at.pop(i, None)
                             restarts += 1
                             why_now = (f": OKTech had it spent {SPENT_REARM_SECS:g} s with nothing held (a send that "
                                        "bought nothing)") if spent else ""  # fmt: skip
+                            if failed_ago is not None:
+                                why_now = (f": OKTech has it spent with nothing held, and a failed send on chain "
+                                           f"{failed_ago:.0f} s ago with no buy since its start (a send that bought "
+                                           "nothing)")  # fmt: skip
                             log(f"re-armed {tag(i)} after {since:.0f}s (fills so far {fills}){why_now}: "
                                 f"{ans.get('task', {}).get('status', ans)}")  # fmt: skip
                         except Exception as exc:

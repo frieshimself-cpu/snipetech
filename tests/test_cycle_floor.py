@@ -25,13 +25,27 @@ def _coin(value=5.0):
     return [{"mint": "M1", "amount": 1.0, "value_sol": value, "priced": True}]
 
 
+def _as_made(client, left_running=()):
+    """OKTech reads a sniper that was never started "idle", as a freshly made one (the fake client reads every sniper
+    "running" until it is spent), but those in `left_running`: a run that died left them armed."""
+    listed = client.tasks
+
+    async def tasks():
+        return [dict(t, status="idle") if t["status"] == "running" and t["id"] not in client.started_at
+                and t["id"] not in left_running else t for t in await listed()]  # fmt: skip
+
+    client.tasks = tasks
+
+
 def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, sweeps=None,
          spent=None, sweep_fails=False, payload=None, tape=(), db_dir=None, others=(), launches=(), before=None,
-         sweep_answer=None, hang_at=None, hung=None, seller=None, sold_amounts=None, **kw):  # fmt: skip
+         sweep_answer=None, hang_at=None, hung=None, seller=None, sold_amounts=None, chain=None, left_running=(),
+         **kw):  # fmt: skip
     """The runner over two copy snipers on the fake clock, with `sol(now)` SOL in the wallet, the coins `coins(now)`
     lists (priced) and `unpriced(now)` lists (not on the tape), `wsol(now)` wrapped SOL, and the owner's /stop from
     `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time), and each fails when
-    `sweep_fails`. OKTech reads a sniper "finished" (and refuses to stop it) while `spent(i, now, last_start)`.
+    `sweep_fails`. OKTech reads a sniper "finished" (and refuses to stop it) while `spent(i, now, last_start)`, and
+    "idle" until its first start but those in `left_running` (`_as_made`).
     `payload`: more of each sniper's payload (the fees it pays, the wallets it copies). `tape`: trades the recorder
     writes once the clock reaches each one's time, or (time, trade) for one it writes late; with any, a stranger's
     trade each tick keeps the tape current. `db_dir`: the database's folder (the operator's files, the runner's lock);
@@ -39,11 +53,15 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     the store just before the run (what an earlier run left in it). `sweep_answer(mint)`: what the run's own sale
     answers (a sale that went out, by default). `hang_at`: the first balance read from then never answers (`hung`
     says it came). `seller`: the selling key's wallet (the run's, by default). `sold_amounts`: each sale's coin and
-    the token amount it was asked to sell (None: the whole holding)."""
+    the token amount it was asked to sell (None: the whole holding). `chain`: the wallet's transactions as the RPC
+    lists and serves them (a tests/chain.py Chain with `slot_at(now)`; it is handed the clock), and the node's slot on
+    each reading of the SOL and of the coins (`chain.tip()` when it has one: a node that is behind names an older
+    slot; no slot on the coins' reading with `chain.names_slot` False); without one the RPC lists none, as before."""
     from snipetech.models import Trade
 
     clock, flag = {"t": T0}, {"stop": False}
     client = _SpentClient(clock, SNIPER_IDS, spent or (lambda i, now, last_start: False))
+    _as_made(client, left_running)
     due = sorted(((t.ts, t) if isinstance(t, Trade) else t for t in tape), key=lambda x: x[0])
     box, ticks = {}, itertools.count()
 
@@ -75,6 +93,24 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
                             unpriced=unpriced, on_sleep=on_sleep)  # fmt: skip
     if seller is not None:
         monkeypatch.setattr(svc, "selling_wallet", lambda: seller)
+    if chain is not None:
+        chain.clock, plain_call, plain_coins = clock, svc._rpc.call, svc.open_positions
+
+        def tip():  # the node's slot now
+            return chain.tip() if hasattr(chain, "tip") else chain.slot_at(clock["t"])
+
+        async def call(method, params):
+            out = await plain_call(method, params)
+            return out | {"context": {"slot": tip()}} if method == "getBalance" else out
+
+        async def read_coins(address, ignore=None, unknown=None):
+            out = await plain_coins(address, ignore=ignore, unknown=unknown)
+            svc.holdings_slot = tip() if getattr(chain, "names_slot", True) else None  # as Service.holdings keeps it
+            return out
+
+        svc._rpc.call = call
+        monkeypatch.setattr(svc, "open_positions", read_coins)
+        svc._rpc.get_signatures, svc._rpc.get_transaction = chain.get_signatures, chain.get_transaction
     box["store"] = store
     if db_dir is not None:  # a database on disk: the operator's folder beside it holds the runner's lock
         svc.cfg.storage.db_path = str(db_dir / "snipetech.db")

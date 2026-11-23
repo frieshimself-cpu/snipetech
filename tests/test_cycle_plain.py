@@ -13,6 +13,7 @@ import asyncio
 
 import pytest
 
+from tests.test_cycle_floor import _as_made
 from tests.test_oktech import SNIPER_IDS, W6, _cycle_svc, _SpentClient
 
 T0 = 1_794_045_600.0
@@ -43,6 +44,7 @@ def _run(monkeypatch, wallet: Wallet, *, coins=None, events=None, minutes=5, **k
             return await super().start(i)
 
     client = Client(clock, SNIPER_IDS, lambda i, now, last_start: False)
+    _as_made(client)
 
     def plain():
         if events:
