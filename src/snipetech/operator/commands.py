@@ -1,7 +1,8 @@
 """Owner commands over Telegram: /status /stop /resume /book /sell /test /risk. Polled once per round and every minute
 (`operate --commands`); only the owner's chat is obeyed.
 /stop never strands a coin: a running sniper is left alone while the wallet holds a coin one of ours may hold (it is the only
-thing that sells); the owner's ignored coins, the owner's own and strays no buy of ours explains are no sniper's.
+thing that sells); the owner's ignored coins, the owner's own and strays no buy of ours explains are no sniper's. It
+stops none on one reading: the wallet is read twice, and a buy on the tape or the chain whose coin has not shown holds it.
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py: on the pump.fun curve, or on PumpSwap once the coin has left it, since 7 Nov), never buys, and never
@@ -74,6 +75,15 @@ SELL_MAX_AGE_SECS = 300  # a /sell older than this (it waited out an outage) is 
 READ_SECS = 20
 SELL_SECS = 60
 STOPS_SECS = 40  # all of /stop's stop calls together: six book snipers at READ_SECS each would outlast the pass
+# Before /stop stops a sniper it reads the wallet a second time (live_test.SECOND_READ_SECS after the first, as the live
+# test's close does) and looks at the chain for a buy on its way; each of the two waits this long at most, and all of
+# /stop together STOP_BUDGET_SECS (its stops take what is left of it): still inside the pass's 2 minutes.
+SECOND_WAIT_SECS = 10
+STOP_BUDGET_SECS = 95
+# a landed transaction of the wallet this recent that bought a coin no reading showed is a coin on its way (as long as
+# the runner waits for one: service.FRESH_HOLD_SECS), looked for among this many of its newest signatures
+CHAIN_LOOK_SECS = 30
+CHAIN_LOOK_SIGS = 10
 
 
 def _waited(cmd: Command, now: float) -> int | None:
@@ -257,15 +267,61 @@ def _unrecorded(svc, running: list[dict]) -> set[str]:
     return {i for i in ids if not sniper_marks([payloads.get(i)])["buy"]}
 
 
+async def _landed_buys(svc, wallet: str, since: float) -> list[str]:
+    """The coins the wallet bought in transactions that landed since `since` and has not sold since, read off its own
+    newest signatures on the chain: a coin the tape does not follow (a PumpSwap coin past the tape's 30 minutes: 3 of
+    the 24 copies of 20-22 Nov) is on no tape. None of the non-coins (wrapped SOL, a stablecoin). Empty with no RPC to
+    ask; a transaction the node cannot serve yet is skipped."""
+    rpc = getattr(svc, "rpc", None)
+    if rpc is None:
+        return []
+    from ..measure.chain_landing import read_fill
+    from ..positions import NON_COIN_MINTS
+
+    out: list[str] = []
+    sold: set[str] = set()
+    for s in await rpc.get_signatures(wallet, limit=CHAIN_LOOK_SIGS):  # newest first
+        if s.get("err") is not None or not s.get("signature") or int(s.get("blockTime") or 0) < since:
+            continue
+        tx = await rpc.get_transaction(s["signature"])
+        fill = read_fill(tx, wallet, ours=True) if tx else None
+        if not fill or not fill.get("mint") or fill["mint"] in NON_COIN_MINTS:
+            continue
+        if fill["side"] == "sell":
+            sold.add(fill["mint"])
+        elif fill["side"] == "buy" and fill["mint"] not in sold and fill["mint"] not in out:
+            out.append(fill["mint"])
+    return out
+
+
+async def _on_its_way(svc, cfg: Config, wallet: str, seen: set[str], now: float) -> list[str]:
+    """The coins the wallet bought moments ago that no reading of it showed (`seen`: the coins they did show): on the
+    tape, a buy in the last minute that no sale followed (operator/leftovers._unseen, the rule the round's clean-up of
+    a dead run stops by), and on the chain, for a coin the tape does not follow (`_landed_buys`, CHAIN_LOOK_SECS). A
+    chain that does not answer in SECOND_WAIT_SECS tells nothing more: the readings and the tape decide, as there."""
+    from .leftovers import _unseen
+
+    coming = [m for m in _unseen(svc, cfg, wallet, {}, now) if m not in seen]
+    try:
+        landed = await asyncio.wait_for(_landed_buys(svc, wallet, now - CHAIN_LOOK_SECS), SECOND_WAIT_SECS)
+    except Exception:  # noqa: BLE001 - the chain cannot say now
+        landed = []
+    return coming + [m for m in landed if m not in seen and m not in coming]
+
+
 async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths, now: float) -> str:
     """Stop every sniper OKTech runs, unless the wallet holds a coin one of ours may hold: a stopped sniper strands its
     coin. The coins the owner ignores, the owner's own and strays (_not_ours) are no sniper's: beside only them every
     sniper is stopped (audit of 22 Nov: /stop stopped nothing while the owner's hand-bought coin sat in the wallet), but
-    one whose fees the bot has no record of (_unrecorded), which may have bought the owner's coin."""
+    one whose fees the bot has no record of (_unrecorded), which may have bought the owner's coin. One reading with
+    nothing of ours in it is no proof (23 Nov audit: a copy bought a second before the read had not shown yet): before
+    any stop the wallet is read again live_test.SECOND_READ_SECS later, that reading weighed by its own amounts, and
+    no sniper is stopped while the tape or the chain has a buy of the wallet whose coin neither showed (`_on_its_way`)."""
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    ignore = list(cfg.operator.ignore_mints or ())
     try:  # the owner's ignored coins are left out, as the book, the watch and the runner leave them out
-        held = await asyncio.wait_for(
-            svc.open_positions(cfg.operator.wallet, ignore=list(cfg.operator.ignore_mints or ())), READ_SECS
-        )
+        held = await asyncio.wait_for(svc.open_positions(cfg.operator.wallet, ignore=ignore), READ_SECS)
     except TimeoutError:  # the pass must still answer before it is killed (audit of 22 Nov, round#9)
         notes.write(f"stopped by owner: flag set, but the wallet did not answer in {READ_SECS:g} s; no sniper stopped",
                     "decision")  # fmt: skip
@@ -291,9 +347,33 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
         return "stop flag set; no sniper was running."
     theirs = _not_ours(svc, cfg.operator.wallet, held, paths, now)
     mine = [h for h in held if str(h.get("mint")) not in theirs]
+    ids = ", ".join(str(s.get("id")) for s in running)
+    if not mine:  # a sniper would be stopped: one reading with nothing of ours is no proof
+        try:
+            await asyncio.sleep(live_test.SECOND_READ_SECS)
+            again = await asyncio.wait_for(svc.open_positions(cfg.operator.wallet, ignore=ignore), SECOND_WAIT_SECS)
+        except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
+            why = _late(exc, SECOND_WAIT_SECS, "it")
+            notes.write(f"stopped by owner: flag set, but the wallet could not be read a second time ({why}); no "
+                        "sniper stopped", "decision")  # fmt: skip
+            return (f"stop flag set (no new snipers expected), but I could not read the wallet a second time ({why}), "
+                    "and one reading with nothing held is no proof (a coin bought a second ago shows late), so no "
+                    "sniper was stopped: send /stop again.")  # fmt: skip
+        # weighed by its own amounts: more of an owner's coin than their buys explain may be a buy of ours in between
+        theirs = _not_ours(svc, cfg.operator.wallet, again, paths, now)
+        mine = [h for h in again if str(h.get("mint")) not in theirs]
+        seen = {str(h.get("mint")) for h in (*held, *again)}
+        held = again
+        coming = [] if mine else await _on_its_way(svc, cfg, cfg.operator.wallet, seen, now + loop.time() - began)
+        if coming:
+            coins = ", ".join(f"{m[:6]}…" for m in coming[:5])
+            notes.write(f"stopped by owner: flag set; {len(running)} sniper(s) left running: the wallet bought {coins} "
+                        "moments ago and the coin has not shown in it yet", "decision")  # fmt: skip
+            return (f"stop flag set, but {len(running)} sniper(s) left running ({ids}): the wallet bought {coins} "
+                    "moments ago and the coin has not shown in the wallet yet. A stopped sniper strands its coin; send "
+                    "/stop again in a minute.")  # fmt: skip
     if mine:
         coins = ", ".join(f"{h.get('mint', '?')[:4]}… ({h.get('amount')})" for h in mine[:5])
-        ids = ", ".join(str(s.get("id")) for s in running)
         notes.write(
             f"stopped by owner: flag set; {len(running)} sniper(s) left running because coins are held: {coins}",
             "decision",
@@ -307,8 +387,7 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
     still = (f"; left running: {', '.join(kept)} (no record here of the fees it pays, so {', '.join(m[:6] + '…' for m in own[:5])} "
              "may be its own: a stopped sniper strands its coin; stop it in OKTech once that is sold)" if kept else "")  # fmt: skip
     stopped, failed = [], []
-    loop = asyncio.get_running_loop()
-    until = loop.time() + STOPS_SECS
+    until = min(loop.time() + STOPS_SECS, began + STOP_BUDGET_SECS)
     for s in running:
         left = min(READ_SECS, until - loop.time())
         if left <= 0:

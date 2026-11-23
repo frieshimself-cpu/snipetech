@@ -10,6 +10,7 @@ import pytest
 from snipetech.config import Config
 from snipetech.operator.commands import Command, handle_command, parse_updates, poll_commands
 from snipetech.operator.gate import expected_state
+from snipetech.operator.live_test import SECOND_READ_SECS  # as it ships: the tests below run with no wait
 from snipetech.operator.notify import Notifier
 from snipetech.operator.paths import OperatorPaths
 from snipetech.operator.snapshot import Snapshot
@@ -17,6 +18,15 @@ from snipetech.operator.tools import NoteSink
 
 NOW = 1_793_923_200 + 3600
 W = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
+
+
+@pytest.fixture(autouse=True)
+def _no_wait_between_readings(monkeypatch):
+    """/stop reads an empty wallet a second time before it stops a sniper (live_test.SECOND_READ_SECS apart): no wait
+    in a test."""
+    from snipetech.operator import live_test
+
+    monkeypatch.setattr(live_test, "SECOND_READ_SECS", 0.0)
 
 
 def _msg(uid, chat, text):
@@ -385,6 +395,167 @@ def test_stop_still_stops_beside_the_owners_hand_buy_twenty_slots_behind_a_copie
     svc = _odd_copy_held(tmp_path, slots_behind=20)
     reply, _ = _stop(tmp_path, svc)
     assert svc.calls == [("stop", "c1")] and "your own" in reply, reply
+
+
+# -- round 2 of the audit (23 Nov), A2: /stop read the wallet once -----------------------------------------------------
+
+
+class Readings(StoreSvc):
+    """StoreSvc whose wallet shows what each reading in turn is given (the last one from then on), counting them."""
+
+    def __init__(self, tmp_path, readings, snipers=None):
+        super().__init__(tmp_path, [], snipers)
+        self.readings, self.reads = list(readings), 0
+
+    async def open_positions(self, address, ignore=None, unknown=None):
+        self.reads += 1
+        got = self.readings[min(self.reads, len(self.readings)) - 1]
+        if isinstance(got, Exception):
+            raise got
+        return [h for h in got if h.get("mint") not in set(ignore or ())]
+
+
+OURS = "Ours1" + "1" * 39
+
+
+def test_stop_reads_an_empty_wallet_a_second_time_before_it_stops_a_sniper(tmp_path):
+    """A2: a copy bought a second before /stop's one wallet read had not shown yet, and /stop stopped its sniper beside
+    an empty wallet (a stopped sniper strands its coin). One empty reading is no proof: /stop reads again 5 s later, as
+    the live test's close and the round's clean-up of a dead run do."""
+    svc = Readings(tmp_path, [[], [_coin(OURS)]])
+    svc.tape(OURS, True, OUR_PRIO, OUR_TIP, ts=NOW - 1)
+    reply, ctx = _stop(tmp_path, svc)
+    assert svc.calls == [] and svc.reads == 2, reply
+    assert "left running" in reply and "Ours" in reply and "coins are held" in reply
+    assert ctx["paths"].stop_flag.exists()
+
+
+def test_stop_stops_after_two_empty_readings_and_reads_once_when_nothing_would_be_stopped(tmp_path):
+    svc = Readings(tmp_path, [[], []])
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "s1")] and svc.reads == 2 and "stopped 1 sniper" in reply, reply
+    # a coin of ours in the first reading: nothing would be stopped, so nothing is read again
+    held = Readings(tmp_path, [[_coin(OURS)], []])
+    held.tape(OURS, True, OUR_PRIO, OUR_TIP)
+    reply, _ = _stop(tmp_path, held)
+    assert held.calls == [] and held.reads == 1 and "left running" in reply, reply
+    # no sniper running: nothing to stop, one reading
+    idle = Readings(tmp_path, [[], []], snipers=[{"id": "s1", "name": "a", "status": "finished"}])
+    reply, _ = _stop(tmp_path, idle)
+    assert idle.calls == [] and idle.reads == 1 and "no sniper was running" in reply, reply
+
+
+def test_stop_stops_nothing_when_the_second_reading_fails(tmp_path):
+    svc = Readings(tmp_path, [[], RuntimeError("rpc down")])
+    reply, ctx = _stop(tmp_path, svc)
+    assert svc.calls == [] and "second time" in reply and "send /stop again" in reply.lower(), reply
+    assert "no sniper stopped" in ctx["paths"].notes.read_text()
+
+
+def test_the_second_reading_is_weighed_by_its_own_amounts(tmp_path):
+    """A2: the owner's coin alone in the first reading; in the second there is more of it than their buys explain (a
+    copy of ours into the same coin, not on the tape yet). That is a coin a sniper of ours may hold."""
+    svc = Readings(tmp_path, [[_coin(HAND)], [_coin(HAND, raw=2_000_000)]])
+    svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and svc.reads == 2 and "left running" in reply and "H8WT" in reply, reply
+
+
+def test_stop_holds_while_the_tape_has_a_buy_whose_coin_neither_reading_showed(tmp_path):
+    """A2: a node can leave a coin out of both replies, or show it late; our own recorder has the buy seconds after
+    it lands. A buy of the wallet on the tape in the last minute that no sale followed and no reading showed is a coin
+    on its way (operator/leftovers._unseen, the rule the round's clean-up of a dead run stops by)."""
+    svc = Readings(tmp_path, [[], []])
+    svc.tape(OURS, True, OUR_PRIO, OUR_TIP, ts=NOW - 4)
+    reply, ctx = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "Ours1" in reply and "not shown" in reply, reply
+    assert "send /stop again" in reply.lower() and "not shown" in ctx["paths"].notes.read_text()
+
+
+def test_a_buy_on_the_tape_that_was_sold_or_is_old_holds_no_stop(tmp_path):
+    sold = Readings(tmp_path, [[], []])
+    sold.tape(OURS, True, OUR_PRIO, OUR_TIP, ts=NOW - 20)
+    sold.tape(OURS, False, OUR_PRIO, 2_000_000, ts=NOW - 8)  # its 12 s exit sold it
+    reply, _ = _stop(tmp_path, sold)
+    assert sold.calls == [("stop", "s1")], reply
+    old = Readings(tmp_path, [[], []])
+    old.tape(OURS, True, OUR_PRIO, OUR_TIP, ts=NOW - 3600)  # an hour ago: two readings would show it
+    reply, _ = _stop(tmp_path, old)
+    assert old.calls == [("stop", "s1")], reply
+
+
+def _on_chain(svc, *txs, age=6):
+    """The wallet's own transactions as the RPC lists them, the newest `age` seconds before the command (one slot
+    apart, in the order given): a coin off the tape (a PumpSwap coin past its 30 minutes) is on no tape."""
+    from tests.chain import Chain
+
+    slot0 = 480_000_000
+    chain = Chain(t0=NOW - age - len(txs), slot0=slot0)
+    for k, tx in enumerate(txs):
+        chain.put(slot0 + round((k + 1) / 0.4), tx)
+    svc.rpc = chain
+    return chain
+
+
+def test_stop_holds_while_the_chain_has_a_buy_whose_coin_neither_reading_nor_the_tape_shows(tmp_path):
+    """A2: three of the 24 copies of 20-22 Nov bought coins the tape does not follow. The wallet's own newest
+    transactions say whether it bought one in the last seconds."""
+    from tests.chain import swap
+
+    svc = Readings(tmp_path, [[], []])
+    _on_chain(svc, swap("copy", W, OURS, tokens=38_000_000, sol=1.0, priority=0.001, tip=0.199))
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "Ours1" in reply and "not shown" in reply, reply
+
+
+def test_a_buy_on_the_chain_that_was_sold_since_or_is_older_holds_no_stop(tmp_path):
+    from tests.chain import swap
+
+    sold = Readings(tmp_path, [[], []])
+    _on_chain(sold, swap("copy", W, OURS, tokens=38_000_000, sol=1.0, priority=0.001, tip=0.199),
+              swap("exit", W, OURS, tokens=-38_000_000, sol=1.1, priority=0.001, tip=0.002, held=38_000_000))  # fmt: skip
+    reply, _ = _stop(tmp_path, sold)
+    assert sold.calls == [("stop", "s1")], reply
+    old = Readings(tmp_path, [[], []])
+    _on_chain(old, swap("copy", W, OURS, tokens=38_000_000, sol=1.0, priority=0.001, tip=0.199), age=600)
+    reply, _ = _stop(tmp_path, old)
+    assert old.calls == [("stop", "s1")], reply
+
+
+def test_a_chain_that_does_not_answer_leaves_the_two_readings_and_the_tape_to_decide(tmp_path, monkeypatch):
+    from snipetech.operator import commands
+
+    class Hung:
+        async def get_signatures(self, *a, **k):
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(commands, "SECOND_WAIT_SECS", 0.2)
+    svc = Readings(tmp_path, [[], []])
+    svc.rpc = Hung()
+    ctx, _sent = _ctx(tmp_path, svc)
+    try:
+        reply = asyncio.run(asyncio.wait_for(handle_command(_cmd("stop"), **ctx), 5.0))
+    finally:
+        svc.store.close()
+    assert svc.calls == [("stop", "s1")] and "stopped 1 sniper" in reply, reply
+
+
+def test_all_of_stop_stays_inside_the_passes_two_minutes(tmp_path, monkeypatch):
+    """A2: the second reading and the look at the chain have limits of their own (SECOND_WAIT_SECS), and the stops take
+    what is left of STOP_BUDGET_SECS: with every call as slow as its limit allows, /stop still answers before the
+    one-minute pass is killed at two minutes."""
+    from snipetech.operator import commands
+
+    reads = commands.READ_SECS * 2 + SECOND_READ_SECS + commands.SECOND_WAIT_SECS * 2  # before the first stop is sent
+    assert SECOND_READ_SECS == 5 and reads <= commands.STOP_BUDGET_SECS - 20 and commands.STOP_BUDGET_SECS <= 100
+    monkeypatch.setattr(commands, "READ_SECS", 0.3)
+    monkeypatch.setattr(commands, "STOPS_SECS", 5.0)
+    monkeypatch.setattr(commands, "STOP_BUDGET_SECS", 0.6)
+    svc = Hangs("stop")
+    svc._snipers = [{"id": f"s{k}", "name": "a", "status": "running"} for k in range(6)]
+    ctx, sent = _ctx(tmp_path, svc)
+    reply = asyncio.run(asyncio.wait_for(handle_command(_cmd("stop"), **ctx), 1.5))
+    assert sent == [reply] and "stopped 0 sniper(s)" in reply and all(f"s{k}" in reply for k in range(6)), reply
 
 
 def test_resume_removes_flag_and_status_reports(tmp_path):
