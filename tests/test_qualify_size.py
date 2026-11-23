@@ -48,7 +48,9 @@ def test_each_measured_wallet_also_carries_a_score_at_the_size_that_pays(tmp_pat
     try:
         rows = {r["wallet"]: r for r in default_lab_runner(svc, svc.cfg)(["BIG", "SMALL"], "+6")}
         size = rows["BIG"]["size"]
-        assert size["n"] == 12 and size["buy_sol"] == 5.0 and size["bid_sol"] == 0.2 and size["position"] == "+1x"
+        # 3rd in line: the 7 live buys at a 0.2 SOL bid stood 2.1 buyers behind on average (21-22 Nov), and a score at
+        # a better place than its bid has bought is no evidence (CLAUDE.md rule 2; it stood at "+1x" until 23 Nov)
+        assert size["n"] == 12 and size["buy_sol"] == 5.0 and size["bid_sol"] == 0.2 and size["position"] == "+2x"
         assert size["floor_sol"] == 0.95 and size["max_mcap_sol"] == 100.0 and size["exit"].startswith("hold12s")
         assert {"mean", "ev_lower", "win_rate", "total"} <= set(size)
         assert rows["SMALL"]["size"]["n"] == 0  # its 0.5 SOL buys are under the size floor
@@ -105,7 +107,7 @@ def test_a_size_score_is_said_beside_the_verdict_and_qualifies_nothing(tmp_path)
         # are too few for a wallet without a strong history, as for its verdict: audit of 22 Nov, qualify#2), each
         # with the size, the bid and the place in line it was scored at (CLAUDE.md rule 2: a paper result names them)
         assert out["size_pass"] == [{"wallet": "W1", "n": 30, "mean": 0.7, "ev_lower": 0.5, "buy_sol": 5.0,
-                                     "bid_sol": 0.2, "position": "+1x", "floor_sol": 0.95}]  # fmt: skip
+                                     "bid_sol": 0.2, "position": "+2x", "floor_sol": 0.95}]  # fmt: skip
     finally:
         st.close()
 

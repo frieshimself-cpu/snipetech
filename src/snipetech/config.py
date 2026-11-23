@@ -534,13 +534,15 @@ class QualifyConfig:
     # too (what a copy sniper sent that minSol copies), between the two market caps (in SOL, at the wallet's buy: the
     # ceiling is where the profit is; no floor by default, since the 21 Nov floor test showed OKTech's minMcapUsd does
     # not stop a copy of a buy in a fresh coin), at `size_sol` with `size_bid_sol` at `size_position` on `size_exit`.
+    # The place is the one that bid has bought live: the 7 buys at a 0.2 SOL bid on 21-22 Nov stood 1 to 3 buyers
+    # behind, 2.1 on average, so the score stands 3rd in line ("+2x"; "+1x" until 23 Nov, a place nobody held).
     # Said, never a gate. size_sol 0: no size score
     size_sol: float = 5.0
     size_bid_sol: float = 0.2
     size_floor_sol: float = 0.95
     size_min_mcap_sol: float = 0.0
     size_max_mcap_sol: float = 100.0
-    size_position: str = "+1x"
+    size_position: str = "+2x"
     size_exit: str = "hold12"
 
 
