@@ -104,8 +104,8 @@ def test_the_measure_stage_keeps_every_sends_limit_and_where_it_stood(tmp_path):
         _sol_price(st)
         out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=T0 - 60, notes=notes))
         assert out["buys"] == 1 and out["failed"] == 5
-        shown = {r[0][:8]: r[1:] for r in st._q(
-            "SELECT sig, side, limit_mcap_sol, fill_mcap_sol FROM fills WHERE wallet=? ORDER BY ts", (ME,))}  # fmt: skip
+        one_line = "SELECT sig, side, limit_mcap_sol, fill_mcap_sol FROM fills WHERE wallet=? ORDER BY ts"
+        shown = {r[0][:8]: r[1:] for r in st._q(one_line, (ME,))}
         assert shown["gXv9uz3u"] == ("buy", pytest.approx(64.607, abs=1e-3), pytest.approx(53.879, abs=1e-3))
         assert shown["4BUCDA8G"] == ("failed", pytest.approx(64.625, abs=1e-3), pytest.approx(67.250, abs=1e-3))
         assert shown["4hC1n7oF"] == ("failed", pytest.approx(23.0, abs=1e-3), pytest.approx(40.490, abs=1e-3))
@@ -538,7 +538,7 @@ def test_a_frozen_rule_keeps_its_fill_ceiling_and_the_forward_run_refuses_by_it(
     st.close()
 
 
-# -- C3: a failed scan must not move the measure stage's cursor ---------------------------------------------------------
+# -- C3: a failed scan must not move the measure stage's cursor --------------------------------------------------------
 #
 # The book's stray rule (book/run._strays) and the unsold-coin watch (book/watch.py) read "the measure stage ran since
 # the coin showed" (the cursor, measure:last_ts) as "the fills would hold our buy of a coin the tape does not follow".
