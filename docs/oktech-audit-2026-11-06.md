@@ -21,7 +21,7 @@ what was wrong on our side, what is now known about OKTech, and what only OKTech
 | 8 | Every "is a sniper running" check compared to the literal `running`; OKTech also has `starting`, `stopping`, `failed` | a starting sniper was invisible to `/stop` and the gate; the book planned a second sniper for a wallet whose sniper was starting, and would recreate a failed one every 5 min | `running/starting/stopping` are active everywhere; the book keeps a stopping one, skips a failed one with a note |
 | 9 | The book ignored the owner's `/stop` flag | a live book would have restarted idle snipers 5 min after `/stop` | `operator/STOP` is kill mode for the book (creates nothing, stops non-holders) |
 | 10 | `oktech cycle` stopped every sniper at arm time and only then looked at the wallet | the exact action rule 1 forbids | it reads the wallet first and refuses while a coin is held |
-| 11 | The guard said "stopped buying" when every stop call failed, died on one OKTech error, and its floor was on the SOL *balance* | the fee test's own buys (12 × 0.2 SOL from 2.9) would have breached a 1.2 SOL balance floor and stopped everything while coins were held | floor on equity (SOL + the tape value of the coins held) plus a 0.05 SOL reserve; failed stops reported by id; OKTech errors logged and watched through |
+| 11 | The guard said "stopped buying" when every stop call failed, died on one OKTech error, and its floor was on the SOL *balance* | the fee test's own buys (12 × 0.2 SOL from 2.9) would have breached a 1.2 SOL balance floor and stopped everything while coins were held | floor on equity (SOL + the tape value of the coins held) plus a 0.05 SOL reserve; failed stops reported by id; OKTech errors logged and watched through. (Changed by the audit of 22 Nov: the reserve is 0.005 SOL and only said, never an emergency, and every end of the guard stops its snipers only once the wallet holds nothing they bought: docs/live-recipe.md, "The ends of a live run".) |
 | 12 | A spent book sniper's replacement had the same `externalId` | OKTech refuses the duplicate; the book would loop | `PlannedSniper.salt` (the book passes a 5-minute generation) |
 | 13 | `crowdBuys` was sent under mode `normal` (strategy `--via crowd`, replica); the replica was uncapped | the block gates only in OKTech's *shapes* mode (not granted): such a sniper buys every launch with no cap | `--via crowd` refused; replica capped; burst rules become notes |
 | 14 | `oktech delete` on a task OKTech no longer has kept the local row; one failing id aborted a multi-id stop/start/delete | stale rows, half-done stops | NOT_FOUND retires the row; the loop continues and exits 1 |
@@ -41,6 +41,9 @@ Still open on our side: `computeUnits` per arm is plumbed but unset. Measured ov
 50.9k–79.3k CU used against the 150,000 limit (OKTech's own pre-execution sized the hunt buys at 73–78k). A
 100,000 limit would bid 1.5× higher per CU at the same fee, but no PumpSwap buy has been measured yet, so it is a
 decision for the data, not a default. The guard's emergency stop strands by design (this repo never sells);
+(no longer, since the audit of 22 Nov: under its floor, at its time limit or when killed the guard stops a sniper
+only once the wallet holds nothing it bought, and watches a held coin for 15 minutes; and the repo can sell now:
+the owner's `/sell` since 7 Nov, the runner's own sale, `--sweep-after`, since 21 Nov)
 `remote update` still kills running jobs (the rule stands: check `remote jobs` first).
 
 ## Second pass: a review of the day's own fixes (6 Nov, afternoon)
@@ -59,7 +62,7 @@ rest were checked against the code and fixed test-first without a second opinion
 | Without a copy sniper, the leader set fell back to every labelled wallet (thousands of candidates) | leaders are the copy snipers alive at each fill; none means no leader |
 | Round trips subtracted a flat 0.0012 SOL | each fill's real priority, tip and base fee |
 | `oktech push` matched snipers by kind and source only: a verdict could replace a hand-made copy sniper, `--prune` would have deleted the fee-test and book snipers, holdings unchecked; verdict snipers were uncapped and sized up to 5 SOL; a SOL price tick flipped every market-cap filter to "replace" | verdict snipers are their own kind; push never touches copylist, book, probe or strategy snipers; nothing is retired while a coin is held or before its replacement exists; capped at 5 buys and 1 SOL a buy; the filter is rounded to two significant figures |
-| `/stop` blocked nothing that starts snipers; a manual `oktech stop` stranded coins silently | `oktech start`, `guard` and `cycle` refuse while the STOP flag is set; `stop` and `delete` refuse while a coin is held unless `--force` |
+| `/stop` blocked nothing that starts snipers; a manual `oktech stop` stranded coins silently | `oktech start`, `guard` and `cycle` refuse while the STOP flag is set; `stop` and `delete` refuse while a coin is held unless `--force`. (Since the audit of 22 Nov `start` and `guard` also refuse while the owner's wallet-wide guard, `/risk`, holds or cannot tell, as `cycle` did; `stop` and `delete` leave the owner's ignored coins out of "held".) |
 | The OKTech client read an empty 2xx answer as an error, let network errors escape every handler, and crashed on a dated `Retry-After` | all three handled |
 | The book's equity ignored the coins it bought; a banned wallet that had qualified could still be booked | equity = SOL + WSOL + coins at the tape price; banned wallets are never booked |
 | The failure alert fired on OKTech's normal sell twins | two failures per landed sell in the hour are expected; only the excess alarms |
@@ -81,7 +84,8 @@ Left as they are, on purpose:
 
 - Snipers are always created **idle**; `"start": true` on the create, or `POST /tasks/{id}/start`, starts them (the
   key's "Allow starting" only permits that). We never send `start` on a create: capped snipers are armed by
-  `oktech guard`.
+  `oktech guard`. (Since 20 Nov the live runs are armed by the runner, `oktech cycle`. How a guard ends changed
+  with the audit of 22 Nov: docs/live-recipe.md, "The ends of a live run".)
 - Task statuses: `idle`, `starting`, `running`, `stopping`, `finished`, `failed`. A stopped task reads `idle` with a
   `stoppedAt`. The documents carry no config, counters, errors or fills; `startedAt` is overwritten by each restart.
 - `extraParams.globalSendCount` defaults to 1 in the form; an omitted field takes the form default. The 2–3 sell
