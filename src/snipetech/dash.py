@@ -220,11 +220,9 @@ def _candidates(con: sqlite3.Connection | None, tables: set[str], paths: Operato
                     "source": "qualified",
                 }
                 for w, sc, n, m, lo, nr in con.execute(
-                    # a wallet banned after its last verdict qualified it keeps that verdict: the book leaves it out
-                    # (book/run.py), and so does the page (audit 22 Nov: AG89fn and 7aPo3n led this list, banned)
                     f"SELECT wallet, score, n_tape, mean_sol, lower_sol, next_review FROM ({latest}) v "
-                    "WHERE v.status = 'qualified' AND v.wallet NOT IN (SELECT wallet FROM candidates "
-                    "WHERE status = 'banned') ORDER BY score DESC LIMIT ?",
+                    "WHERE v.status = 'qualified' AND NOT EXISTS (SELECT 1 FROM candidates c WHERE c.wallet = v.wallet "
+                    "AND c.status = 'banned') ORDER BY score DESC LIMIT ?",  # a banned wallet keeps its last verdict
                     (TOP_CANDIDATES,),
                 )
             ]

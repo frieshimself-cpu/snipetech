@@ -121,53 +121,6 @@ def test_state_uses_phase2_tables_when_present(ops):
     assert s["fills"][0]["mint"] == "M1" and s["fills"][0]["sol"] == 0.2
 
 
-def test_the_best_qualified_list_leaves_out_a_banned_wallet(ops):
-    """Audit 22 Nov (tools#6): "Qualified wallets, best first" was read off the latest verdicts alone, so AG89fn and
-    7aPo3n, banned on 12 Nov after their last verdict qualified them, led it while the same page counted them banned
-    (the book leaves a banned wallet out: book/run.py)."""
-    from snipetech.store import Store
-
-    st = Store(ops.db)
-    try:
-        st.upsert_candidate("AG89fnBANNED", "tape", {}, NOW - 100, status="banned")
-        st.upsert_candidate("GoodQUALIFIED", "tape", {}, NOW - 100)
-        for w, score in (("AG89fnBANNED", 0.0038), ("GoodQUALIFIED", 0.0010)):
-            st.put_verdict({"wallet": w, "computed_at": NOW - 50, "n_tape": 30, "mean_sol": 0.02, "lower_sol": 0.005,
-                            "score": score, "status": "qualified", "next_review": NOW + 3600})  # fmt: skip
-    finally:
-        st.close()
-    c = dash_state(ops, now=NOW)["candidates"]
-    assert c["counts"] == {"banned": 1, "qualified": 1}
-    assert [r["wallet"] for r in c["top"]] == ["GoodQUALIFIED"], c["top"]
-
-
-def test_the_pages_wallet_counts_are_read_again_only_when_they_are_two_minutes_old(ops, monkeypatch):
-    """Audit 22 Nov (tools#6): the counts walk every candidate against its latest verdict (131,000 and 445,000 rows on
-    the server, 2 to 3 s of its database) and the page asks every 10 s while it is open. The wallets part is read again
-    once it is CANDIDATES_SECS old: a new verdict or a ban shows within that time."""
-    from snipetech import dash
-    from snipetech.store import Store
-
-    def verdict(at, status):
-        st = Store(ops.db)
-        try:
-            st.upsert_candidate("W1", "tape", {}, NOW - 100)
-            st.put_verdict({"wallet": "W1", "computed_at": at, "status": status, "score": 0.5, "n_tape": 25,
-                            "mean_sol": 0.02, "lower_sol": 0.004, "next_review": NOW + 3600})  # fmt: skip
-        finally:
-            st.close()
-
-    verdict(NOW - 50, "qualified")
-    reads = []
-    real = dash._candidates
-    monkeypatch.setattr(dash, "_candidates", lambda *a: reads.append(1) or real(*a))
-    assert dash_state(ops, now=NOW)["candidates"]["counts"] == {"qualified": 1}
-    verdict(NOW + 5, "retired")
-    assert dash_state(ops, now=NOW + 10)["candidates"]["counts"] == {"qualified": 1} and len(reads) == 1
-    assert dash_state(ops, now=NOW + dash.CANDIDATES_SECS)["candidates"]["counts"] == {"retired": 1}
-    assert len(reads) == 2
-
-
 def _serve(ops):
     server = O.make_server(ops, "127.0.0.1", 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -562,3 +515,50 @@ def test_a_refused_journal_call_is_not_shown_as_a_note_written():
     log = {"kind": "tool", "name": "read_job_log", "input": {"id": "j9"}, "result": "error: no trades on the tape"}
     assert run(f"stepFailed({json.dumps(log)})") is False
     assert run(f"stepFailed({json.dumps(log | {'error': True})})") is True
+
+
+def test_the_best_qualified_list_leaves_out_a_banned_wallet(ops):
+    """Audit 22 Nov (tools#6): "Qualified wallets, best first" was read off the latest verdicts alone, so AG89fn and
+    7aPo3n, banned on 12 Nov after their last verdict qualified them, led it while the same page counted them banned
+    (the book leaves a banned wallet out: book/run.py)."""
+    from snipetech.store import Store
+
+    st = Store(ops.db)
+    try:
+        st.upsert_candidate("AG89fnBANNED", "tape", {}, NOW - 100, status="banned")
+        st.upsert_candidate("GoodQUALIFIED", "tape", {}, NOW - 100)
+        for w, score in (("AG89fnBANNED", 0.0038), ("GoodQUALIFIED", 0.0010)):
+            st.put_verdict({"wallet": w, "computed_at": NOW - 50, "n_tape": 30, "mean_sol": 0.02, "lower_sol": 0.005,
+                            "score": score, "status": "qualified", "next_review": NOW + 3600})  # fmt: skip
+    finally:
+        st.close()
+    c = dash_state(ops, now=NOW)["candidates"]
+    assert c["counts"] == {"banned": 1, "qualified": 1}
+    assert [r["wallet"] for r in c["top"]] == ["GoodQUALIFIED"], c["top"]
+
+
+def test_the_pages_wallet_counts_are_read_again_only_when_they_are_two_minutes_old(ops, monkeypatch):
+    """Audit 22 Nov (tools#6): the counts walk every candidate against its latest verdict (131,000 and 445,000 rows on
+    the server, 2 to 3 s of its database) and the page asks every 10 s while it is open. The wallets part is read again
+    once it is CANDIDATES_SECS old: a new verdict or a ban shows within that time."""
+    from snipetech import dash
+    from snipetech.store import Store
+
+    def verdict(at, status):
+        st = Store(ops.db)
+        try:
+            st.upsert_candidate("W1", "tape", {}, NOW - 100)
+            st.put_verdict({"wallet": "W1", "computed_at": at, "status": status, "score": 0.5, "n_tape": 25,
+                            "mean_sol": 0.02, "lower_sol": 0.004, "next_review": NOW + 3600})  # fmt: skip
+        finally:
+            st.close()
+
+    verdict(NOW - 50, "qualified")
+    reads = []
+    real = dash._candidates
+    monkeypatch.setattr(dash, "_candidates", lambda *a: reads.append(1) or real(*a))
+    assert dash_state(ops, now=NOW)["candidates"]["counts"] == {"qualified": 1}
+    verdict(NOW + 5, "retired")
+    assert dash_state(ops, now=NOW + 10)["candidates"]["counts"] == {"qualified": 1} and len(reads) == 1
+    assert dash_state(ops, now=NOW + dash.CANDIDATES_SECS)["candidates"]["counts"] == {"retired": 1}
+    assert len(reads) == 2
