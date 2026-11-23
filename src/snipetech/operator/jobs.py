@@ -54,9 +54,9 @@ RESEARCH_COMMANDS = frozenset(
 # of OKTech's momentum hold (MOM2%/s@3s<30s-10%) and timer extension was refused as a path, and no lab scored them
 FILE_FLAGS = {"label": frozenset({"--file"}), "lab": frozenset(), "paper": frozenset()}
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget
-# (operator/BUDGET, the owner's /budget), oktech and sweep trade, book switches the live book, strategist and config
-# change settings. Named here so the refusal says whose they are and the model does not try variants
-OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "unwrap", "book", "strategist", "config"})
+# (operator/BUDGET, the owner's /budget), oktech, sweep and buy trade, book switches the live book, strategist and
+# config change settings. Named here so the refusal says whose they are and the model does not try variants
+OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "unwrap", "buy", "book", "strategist", "config"})
 # One action of a command that is otherwise not an agent's: `history` reads the bought hourly files (the owner's
 # credits there), but `history amm-backfill` fetches the PumpSwap trades around big wallets' buys from the RPC so that
 # a lab can score them (12 Nov 2026, the owner: "Ok do it"). It trades nothing; what it may spend is bounded below and

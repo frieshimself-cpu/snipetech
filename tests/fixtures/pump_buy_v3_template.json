@@ -1,0 +1,195 @@
+{
+ "what": "the buy_exact_quote_in_v3 our sniper wallet landed (OKTech's curve buy), taken out of tests/fixtures/buy_limits_23nov.json by tests/fixtures/build_pump_buy_v3_template.py",
+ "signature": "gXv9uz3uN9KaPqiC9BNNuxftSVAhx5qyADRq1J2VJWMuMSGHzGCi7QPwLE8AHhHzXMnYPJ6S2xDzsMrSFAiKZ7n",
+ "slot": 472790130,
+ "utc": "2026-11-23 03:22:01 UTC",
+ "wallet": "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at",
+ "mint": "G21H7ob48EAb1LFVgKJaiFCDPFCmVQdZoCeeFBdapump",
+ "token_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+ "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+ "instruction": "buy_exact_quote_in_v3",
+ "instruction_index": 5,
+ "accounts": [
+  [
+   "global",
+   "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+   false,
+   false
+  ],
+  [
+   "base_mint",
+   "G21H7ob48EAb1LFVgKJaiFCDPFCmVQdZoCeeFBdapump",
+   false,
+   false
+  ],
+  [
+   "quote_mint",
+   "So11111111111111111111111111111111111111112",
+   false,
+   false
+  ],
+  [
+   "base_token_program",
+   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   false,
+   false
+  ],
+  [
+   "quote_token_program",
+   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+   false,
+   false
+  ],
+  [
+   "bonding_curve",
+   "k9T4moawZN3UP4YfKoNNL6PqH7jvAWys33NqwGVrtSZ",
+   false,
+   true
+  ],
+  [
+   "associated_base_bonding_curve",
+   "HLY9rpdW8e6vi76jvqsSGtSWaK46VGvdvsbYMjfArXn2",
+   false,
+   true
+  ],
+  [
+   "associated_quote_bonding_curve",
+   "AbWzwtf4AVDR8xJe68qy8kwUzpHmvNJBppr5x1Y74x5u",
+   false,
+   true
+  ],
+  [
+   "user",
+   "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at",
+   true,
+   true
+  ],
+  [
+   "associated_base_user",
+   "GdZ8N3wHUErUP3vKJVysqq2d9Y2zf87UjtMUDLnJjY6b",
+   false,
+   true
+  ],
+  [
+   "associated_quote_user",
+   "F6GHZxqgysb8q8G8YfwWjXYSBePaqGShVs2gvY6D1KMM",
+   false,
+   true
+  ],
+  [
+   "user_volume_accumulator",
+   "6w8JMesfuqFysggUQytCVmdo75i7r2oppWQxv5Z1UTeS",
+   false,
+   true
+  ],
+  [
+   "fee_config",
+   "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+   false,
+   false
+  ],
+  [
+   "buyback_fee_recipient",
+   "EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL",
+   false,
+   true
+  ],
+  [
+   "system_program",
+   "11111111111111111111111111111111",
+   false,
+   false
+  ],
+  [
+   "event_authority",
+   "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+   false,
+   false
+  ],
+  [
+   "program",
+   "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+   false,
+   false
+  ]
+ ],
+ "data": "e1f7501ed5b38488002d310100000000705a861348000000",
+ "data_base58": "MboJmZWNSp9oGxQtxkcGhAtPSSGrpxeLP",
+ "args": {
+  "spendable_quote_in": 20000000,
+  "min_tokens_out": 309565217392
+ },
+ "compute_budget": [
+  {
+   "index": 1,
+   "data": "038096980000000000",
+   "unit_price_micro_lamports": 10000000
+  },
+  {
+   "index": 2,
+   "data": "02a0860100",
+   "unit_limit": 100000
+  }
+ ],
+ "other_instructions": [
+  {
+   "index": 0,
+   "program": "11111111111111111111111111111111",
+   "accounts": [
+    "vXeMfEiGGwiY5BkcQk7C86ujjAxhA5PUMwKnKT8XEwj",
+    "SysvarRecentB1ockHashes11111111111111111111",
+    "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
+   ],
+   "data": "04000000",
+   "what": "AdvanceNonceAccount: OKTech's durable nonce (ours uses a recent blockhash)"
+  },
+  {
+   "index": 3,
+   "program": "11111111111111111111111111111111",
+   "accounts": [
+    "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at",
+    "AstrA1ejL4UeXC2SBP4cpeEmtcFPZVLxx3XGKXyCW6to"
+   ],
+   "data": "0200000080841e0000000000",
+   "what": "a tip of 2,000,000 lamports to astralane"
+  },
+  {
+   "index": 4,
+   "program": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+   "accounts": [
+    "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at",
+    "GdZ8N3wHUErUP3vKJVysqq2d9Y2zf87UjtMUDLnJjY6b",
+    "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at",
+    "G21H7ob48EAb1LFVgKJaiFCDPFCmVQdZoCeeFBdapump",
+    "11111111111111111111111111111111",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+   ],
+   "data": "01",
+   "what": "CreateIdempotent: the wallet's token account of the coin, opened before the buy"
+  }
+ ],
+ "fee_lamports": 1005000,
+ "units_consumed": 82941,
+ "trade_event": {
+  "mint": "G21H7ob48EAb1LFVgKJaiFCDPFCmVQdZoCeeFBdapump",
+  "user": "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at",
+  "sol_amount": 19753085,
+  "token_amount": 371200971351,
+  "virtual_sol_reserves": 41397777774,
+  "virtual_token_reserves": 777577969959493,
+  "real_sol_reserves": 11397777774,
+  "real_token_reserves": 497677969959493,
+  "fee_basis_points": 95,
+  "fee": 187655,
+  "creator": "B5t3tcxisVKAt2DKDWmn65E8YCBVom2QBBh9PjRFF6XD",
+  "creator_fee_basis_points": 30,
+  "creator_fee": 59260,
+  "buyback_fee_basis_points": 5000,
+  "buyback_fee": 93827,
+  "cashback_fee_basis_points": 0,
+  "cashback": 0,
+  "mayhem_mode": false,
+  "quote_mint": "11111111111111111111111111111111",
+  "ix_name": "buy_exact_quote_in"
+ }
+}

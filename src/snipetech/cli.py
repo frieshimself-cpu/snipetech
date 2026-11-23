@@ -816,6 +816,33 @@ def build_parser() -> argparse.ArgumentParser:
                          "keep_curve_buys, or 2 while that is 0)")  # fmt: skip
     sp.add_argument("--dry-run", action="store_true", help="simulate on the chain and send nothing")
 
+    from .solana.bundle import DEFAULT_REGION as JITO_DEFAULT_REGION
+    from .solana.bundle import REGIONS as JITO_REGIONS
+
+    sp = cmd(
+        "buy",
+        "buy a pump.fun coin on its curve from the sniper wallet (SNIPER_SECRET), in a Jito bundle: behind a leader's "
+        "signed transaction with --behind, our buy right after it. Without --send it is a dry run: it reads the coin, "
+        "quotes, builds and signs the buy and has the chain simulate it; nothing is sent. --send is a live trade: only "
+        "with the owner's yes for that step (CLAUDE.md rule 1)",
+    )
+    sp.add_argument("mint", help="the coin's address")
+    sp.add_argument("--sol", type=float, required=True,
+                    help="SOL the buy spends, the program's fee included; at most [operator] buy_max_sol (0.2: the "
+                         "owner's standing yes). Raising that cap is the owner's decision")  # fmt: skip
+    sp.add_argument("--slippage", type=float, default=0.10,
+                    help="price cap over the quote, 0 to 1 (default 0.10: the buy fails rather than fill at a price "
+                         "more than 10 percent above the quote's)")  # fmt: skip
+    sp.add_argument("--tip", type=float, default=0.001,
+                    help="Jito tip in SOL, the transaction's last instruction (default 0.001)")  # fmt: skip
+    sp.add_argument("--behind", metavar="B64",
+                    help="a leader's signed transaction (base64), as a seat hands it over: the bundle is the leader's "
+                         "transaction, then ours, priced on the curve the leader's simulation leaves")  # fmt: skip
+    sp.add_argument("--region", choices=sorted(JITO_REGIONS), default=JITO_DEFAULT_REGION,
+                    help=f"the Jito block engine (default {JITO_DEFAULT_REGION})")  # fmt: skip
+    sp.add_argument("--send", action="store_true",
+                    help="send the bundle and print its id: a live trade, only with the owner's yes")  # fmt: skip
+
     sp = cmd(
         "follow",
         "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first",
@@ -2237,6 +2264,22 @@ async def _run(args, cfg: Config) -> int:
                 _out(args, res, R.render_unwrap)
             except RuntimeError as exc:
                 raise SystemExit(f"unwrap: {exc}") from None
+        elif c == "buy":
+            from .solana import buy as _buy
+            from .solana.sell import _refused
+
+            try:  # every cap before anything is built for sending (solana/buy.py `buy`); a dry run without --send
+                res = await _buy.buy(svc.rpc, args.mint, args.sol, slippage=args.slippage, tip_sol=args.tip,
+                                     behind=args.behind, region=args.region, send=args.send,
+                                     max_sol=cfg.operator.buy_max_sol, stopped=svc.stop_flag_set(),
+                                     guard=svc.start_refusal, wallet=cfg.operator.wallet or None)  # fmt: skip
+            except _buy.BuyRefused as exc:
+                raise SystemExit(f"buy: refused, nothing sent: {exc}") from None
+            except _buy.BuySendUnknown as exc:
+                raise SystemExit(f"buy: {exc}") from None
+            except Exception as exc:  # noqa: BLE001 - before the send: a node's own words, else the error's kind only
+                raise SystemExit(f"buy: failed, nothing sent: {_refused(exc)}") from None
+            _out(args, res, R.render_buy)
         elif c == "follow":
             ws = list(args.wallets)
             if args.file:

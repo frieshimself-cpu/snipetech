@@ -325,6 +325,10 @@ class OperatorConfig:
     """The server-side operator: a 15-minute snapshot, Claude only when something changed (docs/superpowers/specs)."""
 
     wallet: str = ""  # the sniper wallet to watch (public key)
+    # The most SOL one buy of our own buyer may spend (`snipetech buy`, solana/buy.py), the program's fee included: the
+    # owner's standing yes of 12 Nov 2026 covers live tests up to 0.2 SOL a buy (and 2 SOL lost a day). Raising it is
+    # the owner's decision, said in chat for that step; no agent, strategist or session raises it on its own
+    buy_max_sol: float = 0.2
     # coins the owner said to ignore (an airdropped token, a coin kept on purpose): the unsold-coin watch never
     # alerts on them and neither the watch nor the book counts them as held
     ignore_mints: list[str] = field(default_factory=list)
