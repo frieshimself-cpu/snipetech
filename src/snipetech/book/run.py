@@ -759,7 +759,8 @@ async def _stop(svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store,
     a copy that landed in between is held by the very sniper about to be stopped: a stopped sniper sells nothing (rule
     1). Since the owner's own coin keeps no book sniper running, that gap is open beside it too (review of the second
     round of the 22 Nov audit). A wallet that holds a coin one of ours may hold now (`_holds_a_coin`: by its balances
-    and by the tape), or that does not answer in STOP_READ_SECS, stops nothing: the next run plans again."""
+    and by the tape), or that does not answer in STOP_READ_SECS, stops nothing: the next run plans again, and the
+    owner hears once a day that the sniper keeps running (a kill's own line had just said its snipers are stopped)."""
     try:
         held = await asyncio.wait_for(
             _holds_a_coin(svc, wallet, store, float(now or 0), strays, a.sniper_id in unrecorded), STOP_READ_SECS
@@ -767,9 +768,13 @@ async def _stop(svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store,
     except Exception:  # noqa: BLE001 - no answer in time: not known, and unknown holdings never stop a sniper
         held = True
     if held:
-        sig = f"[book] stop {(a.wallet or '')[:6]} ({a.sniper_id}) waits"
-        if not notes.has_today(sig, now):
-            notes.write(f"{sig}: the wallet holds a coin now (or could not be read); the next run looks again", "info")
+        line = (f"[book] stop {(a.wallet or '')[:6]} ({a.sniper_id}) waits: a coin came into the wallet as this run "
+                "went on (or the wallet could not be read again), and a stopped sniper sells nothing: it keeps "
+                "running, and a later run stops it once the wallet holds nothing")  # fmt: skip
+        if store is not None and now:
+            _tell_once_a_day(store, notifier, notes, line, float(now))
+        else:
+            notifier.send(notes.write(line, "decision"))
         return False
     await _do(svc, notifier, notes, "stop", a, store, now)
     return True

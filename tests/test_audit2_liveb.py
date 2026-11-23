@@ -650,18 +650,23 @@ def test_review_a_kill_reads_the_wallet_again_before_it_stops_a_sniper(tmp_path)
     """The plan's reading of the wallet is seconds old when its stops go out (OKTech, the tape and the records are read
     after it). Beside the owner's coin a kill now stops the book's snipers (B2), so a copy that landed in between was
     held by the very sniper being stopped, and a stopped sniper sells nothing (rule 1). Each stop reads the wallet once
-    more: with a coin of ours in it now, nothing is stopped and the next run plans again."""
+    more: with a coin of ours in it now, nothing is stopped and the next run plans again. The owner, who was just told
+    that the kill stops the book's snipers, hears once that this one keeps running, and why."""
     st, cfg = BT._env(tmp_path)  # the book is off: its kill path stops its snipers that hold nothing
     AB._book_sniper(st)
     held = _owners_coin_the_bot_once_traded(st)
     AB._seen(tmp_path, BOUGHT_BEFORE, BT.NOW - 1800)
     k1 = [{"id": "k1", "name": BT.K1, "status": "running"}]
-    svc = BT.FakeSvc(st, snipers=k1, held=held, held_later=[*held, _copy_shows()], cfg=cfg)
+    svc, sent = BT.FakeSvc(st, snipers=k1, held=held, held_later=[*held, _copy_shows()], cfg=cfg), []
     try:
-        out = _book(tmp_path, svc, cfg)
+        out = _book(tmp_path, svc, cfg, sent)
         assert out["kill_reason"] == "book off" and svc.calls == [], svc.calls
-        notes = OperatorPaths(tmp_path / "data").notes.read_text()
-        assert "[book] stop L1xxxx (k1) waits: the wallet holds a coin now" in notes, notes
+        (told,) = [t for t in sent if "(k1) waits" in t]
+        assert "[book] stop L1xxxx (k1) waits: a coin came into the wallet as this run went on" in told, told
+        assert "it keeps running" in told and "a stopped sniper sells nothing" in told
+        svc = BT.FakeSvc(st, snipers=k1, held=held, held_later=[*held, _copy_shows()], cfg=cfg)
+        _book(tmp_path, svc, cfg, sent)  # the same again a run later: said once a day
+        assert svc.calls == [] and len([t for t in sent if "(k1) waits" in t]) == 1, sent
         svc = BT.FakeSvc(st, snipers=k1, held=held, cfg=cfg)  # the next run: the copy is sold, the owner's coin stays
         assert _book(tmp_path, svc, cfg)["kill_reason"] == "book off" and svc.calls == [("stop", "k1")], svc.calls
     finally:
