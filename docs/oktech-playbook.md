@@ -615,9 +615,13 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     four wallets of his own 3 s after buying it (no sale), and OKTech sold our copy of it at once; he moves a coin
     within 12 s of buying it after about one buy in six. If the copy exit reads a fall in his balance, a transfer
     should not count as a sale.
+29. (23 Nov) Does a copy into an older coin build its token account for the right token program? Decu's sniper's send of
+    15:23:50 UTC failed while making our token account (`IncorrectProgramId` from the Token-2022 program), before any
+    buy: the coin is older than our tape's 14 days, very likely made with the original token program. Each such copy
+    costs its priority fee and buys nothing.
 
 Questions 1, 2, 3, 4 and 5 decide the real-size copy. **The 22 Nov plan's six, in its order: 6 (the signer check),
-20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26, and the 0.2 SOL test 27 and 28: each costs a live run copies, shots or exits today.
+20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26, and the 0.2 SOL test 27 to 29: each costs a live run copies, shots or exits today.
 The rest can wait a day.
 
 ---
