@@ -139,7 +139,8 @@ def test_i1_the_rest_of_a_copy_half_sold_between_two_rounds_is_the_bots_whatever
     tape(st, "half", 1520, COIN, W, False, (600_000_000, 7_500_000), EXIT)
     chain_fill(st, "pswap", 1500, SWAP, ODD)  # and one only the fills hold, half sold too
     st.put_fill({"sig": "phalf", "ts": 1530, "slot": 1530, "wallet": W, "mint": SWAP, "side": "sell", "sol": 0.6,
-                 "tokens": 500_000.0, "priority_lamports": EXIT[0], "tip_lamports": EXIT[1], "buy_sig": "pswap"})  # fmt: skip
+                 "tokens": 500_000.0, "priority_lamports": EXIT[0], "tip_lamports": EXIT[1],
+                 "buy_sig": "pswap"})  # fmt: skip
     AR.tick(st, 1995)
     b = AR.take(st, cfg, paths, a, 2000.0, 9.2, [AR.coin(COIN, 0.5), AR.coin(SWAP, 0.5)])
     assert AR.whose(b) == {COIN: "ours", SWAP: "ours"}
@@ -156,3 +157,39 @@ def test_i1_a_hand_buy_half_sold_between_two_rounds_stays_the_owners(world):
     AR.tick(st, 1995)
     b = AR.take(st, cfg, paths, a, 2000.0, 8.1, [AR.coin(COIN, 1.2)])
     assert AR.whose(b) == {COIN: "owner"}
+
+
+# -- I2: a copy test's own marks carry the copy's shape ----------------------------------------------------------------
+
+
+def test_i2_a_test_whose_sniper_follows_a_wallet_tells_its_copy_by_its_place_too(world):
+    """live_test.own_marks built the test's marks without the store, so they carried no shape: a copy test's buy at
+    fees its payload does not name was none of the test's coins (`_bought`), no buy on its way (`_unseen_buy`), and
+    the owner's own coin to the close (measure/ours.owner_coins), which then stops the test's sniper beside it."""
+    from snipetech.measure.ours import owner_coins
+    from snipetech.operator import live_test as LT
+
+    st, _cfg, _paths = world
+    t = {"oktech_id": "cs1", "wallet": W, "started_at": 1400.0}
+    tape(st, "lead", 1499, COIN, LEAD, True, (3_000_000_000, 37_500_000), (5_000, 0))
+    tape(st, "copy", 1500, COIN, W, True, ONE_SOL, ODD)
+    tape(st, "hand", 1505, SWAP, W, True, HAND_SOL, HAND)  # the owner's own buy in the same minutes: never the test's
+    marks = LT.own_marks(st, t)
+    assert LT._bought(st, t, 1600.0) == {COIN}
+    assert LT._unseen_buy(st, t, marks, 1510.0, set()) == COIN
+    held = [{"mint": COIN, "raw": 1_000_000}, {"mint": SWAP, "raw": 1_000_000}]
+    assert owner_coins(st, W, held, marks) == {SWAP}
+
+
+def test_i2_a_hunt_tests_marks_are_its_fees_alone_as_before(world):
+    """A hunt sniper follows no wallet: its fees are the only mark, with the store or without."""
+    from snipetech.operator import live_test as LT
+
+    st, _cfg, _paths = world
+    hunt = {"singleSnipe": True, "priorityFee": 0.001, "tipAmount": 0.199}
+    st.add_oktech_sniper({"id": "h1", "external_id": "h1", "kind": "strategy", "source": "x", "name": "hunt",
+                          "config_hash": "h", "created_at": 1, "payload": hunt})  # fmt: skip
+    marks = LT.own_marks(st, {"oktech_id": "h1", "wallet": W, "started_at": 1400.0})
+    assert set(marks) == {"buy", "sell"} and (1_000_000, 199_000_000) in marks["buy"]
+    assert not LT.own_marks(st, {"oktech_id": "nobody", "wallet": W})["buy"]  # no record: no mark, every trade counts
+    assert not LT.own_marks(None, {"oktech_id": "h1", "wallet": W})["buy"]
