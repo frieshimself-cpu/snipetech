@@ -769,6 +769,26 @@ def test_a_block_whose_plain_sol_cannot_pay_a_curve_buy_holds_and_never_loops(en
     assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
 
 
+def test_a_first_block_whose_plain_sol_cannot_pay_a_curve_buy_does_not_start(env):
+    """Audit of 22 Nov, second round (B7): every later block is held while the wallet's plain SOL cannot pay one curve
+    buy with its fees and rent (the test above); a strategy's first block had no such check. With nearly all of the
+    wallet wrapped it made its sniper and started its cycler, whose every buy fails and pays its fees. It waits, said
+    once a day, and starts once the wallet has the plain SOL."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    env.sol = 0.1  # 11.8 SOL of the wallet is wrapped
+    _round(env, NOW + 60, wsol=11.8)
+    assert len(env.svc.created) == 0 and len(env.started) == 0 and LT.load(env.paths) is None and _seq(env) is None
+    (said,) = _said(env, "plain SOL")
+    assert "0.10" in said and "0.25" in said and "paid in plain SOL only" in said and BEST in said, said
+    _round(env, NOW + 960, wsol=11.8)
+    assert len(env.sent) == 1 and len(env.svc.created) == 0  # said once a day, and still nothing is made
+    env.sol = 11.8  # the SOL is unwrapped
+    _round(env, NOW + 1860)
+    t = LT.load(env.paths)
+    assert t["state"] == "running" and t["sequence"]["block"] == 1 and len(env.svc.created) == 1
+
+
 def test_the_books_loss_never_drops_a_strategy_that_never_traded(env):
     """The first block's request is written; the book buys a coin before the round starts it, so it does not start (a
     quiet wait), and that coin then sells 0.9 SOL down. The wallet is 11.0 SOL, under the first request's 10.90 floor

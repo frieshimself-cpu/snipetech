@@ -997,6 +997,17 @@ async def _begin(r: _Round, at: dict) -> dict | None:
                   "(its floor, never under 1 SOL, a buy and its fees); it starts once the wallet has that (said once a "
                   "day).")  # fmt: skip
         return wait(f"the wallet holds {eq:.2f} SOL, under the {need:.2f} SOL a first block needs")
+    room = _curve_room(float(p["buy_sol"]))
+    native = r.snap.native_sol if r.snap is not None else None
+    if native is not None and float(native) + 1e-9 < room:
+        # a curve buy is paid in plain SOL only: the first block is held as every later one is (_next_block; second
+        # round of the 22 Nov audit: with the wallet's SOL wrapped it made a sniper and a cycler whose every buy fails)
+        sig = "automatic test: too little plain SOL to start"
+        if not r.notes.has_today(sig, now):
+            r.say(f"{sig} {p['label']} ({best['id']}): the wallet's plain SOL is {float(native):.2f} and a curve buy "
+                  f"is paid in plain SOL only: one buy of {p['buy_sol']:g} SOL with its fees and rent needs {room:.2f} "
+                  "SOL. It starts once the wallet has that in plain SOL (said once a day).")  # fmt: skip
+        return wait(f"the wallet's plain SOL is {float(native):.2f}, under the {room:.2f} SOL one curve buy needs")
     req = live_test.request(p, best, r.cfg, now, by=BY, sequence={"id": seq["id"], "block": 1}, approved=at["approved"])
     save_seq(paths, seq)  # first: the round's own check asks that the request be the sequence's own
     why, _wait, _kind = await live_test._check(r.svc, r.cfg, paths, req, r.snap, now)
@@ -1022,6 +1033,12 @@ async def _begin(r: _Round, at: dict) -> dict | None:
           f"{_share(at['continue_at'])}, and is dropped for good below that or at its floor. /stop holds it; /test "
           "auto off ends it.")  # fmt: skip
     return seq
+
+
+def _curve_room(size: float) -> float:
+    """The plain SOL one curve buy of `size` needs: the buy, its fees and failed sends (live_test.BUY_FEE_MARGIN_SOL)
+    and the token account's rent. No block starts with less: its sniper's buys would only fail and pay their fees."""
+    return round(float(size) + live_test.BUY_FEE_MARGIN_SOL + RENT_SOL, 4)
 
 
 def _waits_for_oktech(r: _Round, rows: list[dict]) -> None:
@@ -1388,7 +1405,7 @@ async def _next_block(r: _Round, seq: dict) -> dict:
     eq = live_test.equity_now(r.snap, r.now, wallet)
     if eq is None:
         return _hold(r, seq, "balance", "the wallet's balance could not be read this round")
-    room = round(size + live_test.BUY_FEE_MARGIN_SOL + RENT_SOL, 4)
+    room = _curve_room(size)
     if eq + 1e-9 < room:  # 7 Nov 10:59 the wallet was emptied: that is no result of the strategy's
         return _hold(r, seq, "room", f"the wallet holds {eq:.2f} SOL: no room for a buy of {size:g} SOL with its fees "
                                      f"and rent ({room:.2f} SOL)", daily=True)  # fmt: skip
