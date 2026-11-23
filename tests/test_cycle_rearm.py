@@ -467,3 +467,40 @@ def test_a_chain_clock_a_few_seconds_behind_ours_still_frees_a_refused_sniper(mo
     again = _starts(client, A, T0 + 100)
     assert len(again) == 1 and T0 + 117 < again[0] < T0 + 130, [t - T0 for t in again]
     assert "failed send on chain" in _lines(rep, A)[0]
+
+
+def test_a_sniper_whose_sends_keep_failing_rests_instead_of_burning_a_fee_a_minute(monkeypatch):
+    """23 Nov 15:23-15:31: Decu's sniper sent a copy about once a minute, each failing before any buy (buys of coins at
+    the moment of their launch, which OKTech copies before they fail), and the runner armed it again after every one:
+    0.0011 SOL a minute for nothing, about 0.07 an hour. After FAIL_STREAK_MAX sends in a row that bought nothing, each
+    within FAIL_STREAK_FAST_SECS of its start, the sniper rests (FAIL_STREAK_REST_SECS) and the run says why; the
+    other sniper is untouched. (Yugi's refusals at the ceiling that day came 4 to 20 minutes after each start: none
+    of them would rest him.)"""
+    from snipetech import service as S
+
+    chain = WalletChain()
+    sends = [T0 + 100, T0 + 160, T0 + 220, T0 + 280, T0 + 340]
+    for k, at in enumerate(sends):
+        chain.at(at, _refused(f"refused{k}", mint=key(f"coin {k}")))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: sends}), minutes=8)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == S.FAIL_STREAK_MAX - 1, [t - T0 for t in again]  # armed again after the first two only
+    rest = [e for e in rep["events"] if "rests until" in e and A[-6:] in e]
+    assert rest and f"{S.FAIL_STREAK_MAX} sends in a row bought nothing" in rest[0], rep["events"]
+    assert not _starts(client, B, T0 + 10)
+
+
+def test_a_fill_or_a_slow_failure_breaks_the_streak(monkeypatch):
+    """A send that fails long after its start (a refusal at the ceiling minutes later, as Yugi's were) is no part of a
+    streak: three such failures in a row still arm the sniper again each time."""
+    from snipetech import service as S
+
+    chain = WalletChain()
+    gap = S.FAIL_STREAK_FAST_SECS + 60
+    sends = [T0 + gap * (k + 1) for k in range(S.FAIL_STREAK_MAX)]
+    for k, at in enumerate(sends):
+        chain.at(at, _refused(f"slow{k}", mint=key(f"slow coin {k}")))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: sends}),
+                       minutes=int(sends[-1] - T0) // 60 + 2)  # fmt: skip
+    assert len(_starts(client, A, T0 + 100)) == S.FAIL_STREAK_MAX
+    assert not [e for e in rep["events"] if "rests until" in e]

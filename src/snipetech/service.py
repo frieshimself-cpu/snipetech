@@ -90,6 +90,16 @@ WAITING_STATUSES = frozenset({"running", "starting"})
 LAUNCH_REST_SECS = 3 * 3600.0
 BAIT_DAY_MAX = 3
 RESTS_KEY = "runner:rests"
+# A sniper whose sends keep buying nothing (23 Nov 15:23-15:31: Decu's copies of his buys at the moment of a coin's
+# launch, each failing before any buy, about once a minute while the run armed it again after every one: 0.0011 SOL a
+# minute for nothing). After FAIL_STREAK_MAX such sends in a row, each within FAIL_STREAK_FAST_SECS of the sniper's
+# start, it rests FAIL_STREAK_REST_SECS, twice as long at each such rest after that in the run (FAIL_STREAK_REST_MAX
+# at most). A send that fails later than that after its start (Yugi's refusals at the ceiling came 4 to 20 minutes
+# after it), a fill, and a re-arm for any other reason end the streak. The rest is kept as the kinds' rests are.
+FAIL_STREAK_MAX = 3
+FAIL_STREAK_FAST_SECS = 180.0
+FAIL_STREAK_REST_SECS = 1800.0
+FAIL_STREAK_REST_MAX = 4 * 3600.0
 QUICK_KINDS = ("own launch", "bait")  # copies sold at once and never counted for the place stop
 # `oktech cycle --place-stop`: a buy of ours is placed this long after it ran (the recorder writes a block's trades in
 # batches; the buys between the copied one and ours ran before ours, so they are on the tape once ours is, and settled)
@@ -2465,6 +2475,8 @@ class Service:
         kind_by_sig: dict[str, str] = {}
         sell_now: set[str] = set()  # coins of own-launch and bait copies: sold at the next reading
         baits: dict[tuple[str, int], int] = {}  # (sniper, UTC day) -> its bait copies that day
+        streaks: dict[str, int] = {}  # sniper -> its sends in a row that bought nothing soon after its start
+        streak_rests: dict[str, int] = {}  # sniper -> the rests such a streak gave it in this run (each twice as long)
         kinds_off = False
         try:  # the rests an earlier run left (a restarted run keeps them)
             rests: dict[str, float] = {str(i): float(u) for i, u in (self.store.coverage(RESTS_KEY) or {}).items()
@@ -2885,8 +2897,8 @@ class Service:
             for i in ids:
                 if rests.get(i, 0.0) > time.time():  # an earlier run rested it (the kinds of copy): armed once over
                     armed_at[i] = 0.0
-                    log(f"{tag(i)} rests until {hm(rests[i])} (a copy of its wallet's own launch, or its third bait "
-                        "of the day): not armed until then")  # fmt: skip
+                    log(f"{tag(i)} rests until {hm(rests[i])} (an earlier run rested it: a copy of its wallet's own "
+                        "launch, its third bait of the day, or sends that kept buying nothing): not armed until then")  # fmt: skip
                     continue
                 with contextlib.suppress(Exception):  # a sniper left running from an earlier run has spent its shot
                     await client.stop(i)
@@ -3153,6 +3165,20 @@ class Service:
                             freed = await failed_sends()
                         failed_ago = freed.get(i)
                     if bought or since >= rearm_after or spent or failed_ago is not None:
+                        # a send that bought nothing soon after its start adds to the sniper's streak; anything else
+                        # ends it. FAIL_STREAK_MAX of them in a row and it rests instead (FAIL_STREAK_*)
+                        nothing = (spent or failed_ago is not None) and not bought
+                        streaks[i] = streaks.get(i, 0) + 1 if nothing and since < FAIL_STREAK_FAST_SECS else 0
+                        if streaks[i] >= FAIL_STREAK_MAX:
+                            n = streak_rests.get(i, 0)
+                            until = now + min(FAIL_STREAK_REST_SECS * 2**n, FAIL_STREAK_REST_MAX)
+                            streak_rests[i], streaks[i] = n + 1, 0
+                            rests[i] = max(rests.get(i, 0.0), until)
+                            save_rests()
+                            log(f"{tag(i)} rests until {hm(until)}: {FAIL_STREAK_MAX} sends in a row bought nothing, "
+                                f"each within {FAIL_STREAK_FAST_SECS:.0f} s of its start (its copied wallet's sends "
+                                "fail, or OKTech cannot copy them: each costs its fee); armed again after the rest")  # fmt: skip
+                            continue
                         blocked, why = await guard_says(held_all)  # every coin: the guard tells whose itself
                         if blocked:  # the owner's guard holds: this run re-arms nothing more, as at /stop
                             reason, guarded = f"the wallet-wide guard holds ({why}): no more re-arms", True
