@@ -47,6 +47,12 @@ SHAPE = "shape"  # the key under which fee marks carry the copy's shape (`CopySh
 # wallets from the blocks themselves while it is this young. Later the measure stage has placed it (its fill says), and
 # the copied wallets' signatures are not walked back further: a big wallet makes thousands of transactions a day.
 CHAIN_SHAPE_SECS = 600.0
+# and a walk of the blocks that finds no followed wallet's buy before it says "the owner's" only of a buy at least this
+# old. The runner reads a coin a second or two after its buy, and what it reads holds for the whole holding; one RPC
+# name is several machines, and the one asked for a followed wallet's signatures can be a second behind the one that
+# listed our own (review of the 23 Nov audit: a whole walk that found nothing made a copy the owner's coin for good).
+# Under CHAIN_RETRY_SECS: the next chain read is past it, and the tape has both buys seconds after they ran.
+CHAIN_SETTLE_SECS = 20.0
 
 
 def _lamports(x: Any) -> int | None:
@@ -471,6 +477,7 @@ class RunCoins:
         self.store, self.rpc, self.wallet, self.marks = store, rpc, wallet, marks
         self._known: dict[str, str] = {}
         self._chain_at: dict[str, float] = {}
+        self._walked_at: dict[str, float] = {}  # when the blocks were first asked about each holding's buy
         self.odd: list[dict] = []
 
     def known(self, mint: str) -> str | None:
@@ -481,6 +488,7 @@ class RunCoins:
         """The holding has ended: the next one of the same coin is decided afresh."""
         self._known.pop(mint, None)
         self._chain_at.pop(mint, None)
+        self._walked_at.pop(mint, None)
 
     async def whose(self, coin: dict, since_ts: float, now: float) -> str | None:
         mint = str(coin.get("mint") or "")
@@ -557,7 +565,7 @@ class RunCoins:
         from the tape or the blocks); the tape, for a followed wallet's buy of the coin in the slots just before the
         buy's own; and, unless the buy is known to be older than CHAIN_SHAPE_SECS, the blocks themselves as the measure
         stage reads them (chain_landing): the followed wallets' own buys of the coin around ours, and for one in our
-        own block which of the two ran first."""
+        own block which of the two ran first. A walk that finds none says "" only of a buy CHAIN_SETTLE_SECS old."""
         shape = _shape(self.marks)
         if shape is None:
             return ""
@@ -591,4 +599,13 @@ class RunCoins:
             ahead = [b for b in same if (k := _index(txs, b["sig"])) is not None and k < at]
             if ahead:
                 return str(ahead[0]["leader"])
-        return None if short else ""  # a followed wallet not walked back to our buy may have bought right before it
+        if short:
+            return None  # a followed wallet not walked back to our buy may have bought right before it
+        if now is None:
+            return ""
+        # No copied buy found. Of a buy younger than CHAIN_SETTLE_SECS that tells nothing yet: a node can list a
+        # followed wallet's signatures a second behind our own. Its age by its block time, or, with none, since the
+        # blocks were first asked about this holding.
+        first = self._walked_at.setdefault(mint, float(now))
+        age = float(now) - (float(ts) if ts is not None else first)
+        return None if age < CHAIN_SETTLE_SECS else ""

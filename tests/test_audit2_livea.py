@@ -274,7 +274,9 @@ def test_a_hand_buy_off_the_tape_with_no_copied_buy_before_it_is_the_owners_stil
     chain = Chain()
     chain.put(S - 40, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
     chain.put(S, swap("hand", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.000006121, tip=0.026993879))
-    whose, _coins = _chain_whose(chain, COPY)
+    # review of A1: read once the buy is CHAIN_SETTLE_SECS old (a walk that finds no copied buy tells nothing before)
+    assert _chain_whose(chain, COPY)[0] is None  # 6 s after it: nobody's yet (held, never sold by the run)
+    whose, _coins = _chain_whose(chain, COPY, now=chain.ts(S) + 30)
     assert whose == "owner"
     # and with no wallet copied the chain is asked nothing more than before: the fees decide
     chain2 = Chain()
@@ -300,6 +302,75 @@ def test_a_chain_that_cannot_place_the_buy_tells_nothing_yet():
     chain.get_signatures = refuse
     whose, coins = _chain_whose(chain, COPY)
     assert whose is None and coins.known(COIN) is None
+
+
+def _copy_one_block_behind(lead_shown):
+    """Our copy at fees no payload names one block behind the copied wallet's buy, on a chain whose answers about the
+    copied wallet's signatures leave that buy out until `lead_shown["yes"]`: a node a second behind (one RPC name is
+    several machines; the one that listed our token account's signatures had our buy)."""
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.0015, tip=0.12))
+    real = chain.get_signatures
+
+    async def lagging(address, **kw):
+        rows = await real(address, **kw)
+        return [r for r in rows if r["slot"] < S] if address == CW and not lead_shown["yes"] else rows
+
+    chain.get_signatures = lagging
+    return chain
+
+
+def test_a_node_a_second_behind_on_the_copied_wallet_does_not_make_a_fresh_copy_the_owners():
+    """Review of A1: the runner reads a coin a second or two after its buy, before the tape has it, and what it reads
+    then holds for the whole holding. A node a second behind on the copied wallet's signatures listed no buy of it:
+    the walk was whole, found none, and the copy was the owner's coin for good (never counted or sold, its sniper
+    re-armed while it held it: CLAUDE.md rule 1). A walk that finds no copied buy tells nothing of a buy younger than
+    CHAIN_SETTLE_SECS: the tape (which has both buys seconds later) or the next chain read decides."""
+    from snipetech.measure import ours
+
+    assert 10 <= ours.CHAIN_SETTLE_SECS <= ours.CHAIN_RETRY_SECS  # the next chain read is past it
+    shown = {"yes": False}
+    chain = _copy_one_block_behind(shown)
+    store = Store(":memory:")
+    coins = RunCoins(store, chain, ME, sniper_marks([COPY], store=store))
+    coin = {"mint": COIN, "raw": 38_000_000, "value_sol": 1.0, "priced": True, "account": key(f"ata {ME} {COIN}")}
+    t = chain.ts(S + 1)
+    assert asyncio.run(coins.whose(coin, t - 300, t + 2)) is None and coins.known(COIN) is None
+    shown["yes"] = True  # every node has the copied wallet's buy by the next chain read
+    assert asyncio.run(coins.whose(coin, t - 300, t + 2 + ours.CHAIN_RETRY_SECS)) == "ours"
+    assert [o["leader"] for o in coins.odd] == [CW]
+    store.close()
+
+
+def test_a_fresh_buy_with_no_block_time_is_not_the_owners_on_the_first_look_either():
+    """Review of A1: a node can serve a transaction of seconds ago with no block time. Its age is then counted from
+    the first time the chain was asked about the holding: the first look that finds no copied buy tells nothing, one
+    CHAIN_SETTLE_SECS later does (the owner's hand buy: no copied buy ever shows)."""
+    from snipetech.measure import ours
+
+    chain = Chain()
+    chain.put(S, swap("hand", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.000006121, tip=0.026993879))
+    real_tx, real_sigs = chain.get_transaction, chain.get_signatures
+
+    async def no_time(signature):
+        tx = await real_tx(signature)
+        return tx and {**tx, "blockTime": None}
+
+    async def sigs_no_time(address, **kw):
+        return [{**row, "blockTime": None} for row in await real_sigs(address, **kw)]
+
+    chain.get_transaction, chain.get_signatures = no_time, sigs_no_time
+    store = Store(":memory:")
+    coins = RunCoins(store, chain, ME, sniper_marks([COPY], store=store))
+    coin = {"mint": COIN, "raw": 38_000_000, "value_sol": 1.0, "priced": True, "account": key(f"ata {ME} {COIN}")}
+    t = chain.ts(S)
+    assert asyncio.run(coins.whose(coin, t - 300, t + 2)) is None
+    assert asyncio.run(coins.whose(coin, t - 300, t + 2 + ours.CHAIN_RETRY_SECS)) == "owner"
+    # and the next holding of the same coin counts from its own first look
+    coins.forget(COIN)
+    assert asyncio.run(coins.whose(coin, t - 300, t + 200)) is None
+    store.close()
 
 
 def test_one_followed_wallet_not_walked_back_to_our_buy_tells_nothing_yet():
