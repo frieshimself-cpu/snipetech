@@ -789,3 +789,22 @@ def test_the_owners_hand_sale_of_another_amount_is_still_theirs(monkeypatch):
          payload=FEES, tape=[_copy(T0 + 100), _hand(T0 + 106, mint=OURS, sol=1.0), hand_sale], sweeps=sweeps,
          sold_amounts=sold, sweep_after=20, minutes=4)  # fmt: skip
     assert sold[:1] == [(OURS, 1_000_000)], sold
+
+
+# -- review of round 2 (23 Nov), A1: a coin nobody can tell yet at a run's start ---------------------------------------
+
+
+def test_a_coin_nobody_can_tell_yet_refuses_the_start_and_says_to_start_again(monkeypatch):
+    """Review of A1: a coin whose buy nothing has read yet may be one of the run's snipers' (the tape has not written a
+    buy of seconds ago, and a walk of the chain that finds no copied buy tells nothing of one that fresh): the run does
+    not begin beside it. It said only "sell by hand", of what may be the owner's own coin of a moment ago; it now says
+    which coin cannot be told yet, and that the start can be tried again in a minute."""
+    with pytest.raises(SystemExit, match="not cycling") as refused:
+        _run(monkeypatch, lambda now: 9.0, coins=lambda now: [_coin(OWN, 2.0)], payload=COPIES,
+             tape=[_lead(T0 - 5, "Else" + "3" * 40)])  # fmt: skip
+    said = str(refused.value)
+    assert "cannot be told yet" in said and "Own111…" in said and "again in a minute" in said, said
+    # a coin known to be the run's says no such thing: it is to be sold first
+    with pytest.raises(SystemExit, match="not cycling") as refused:
+        _run(monkeypatch, lambda now: 9.0, coins=lambda now: [_coin(OURS, 1.0)], payload=FEES, tape=[_copy(T0 - 600)])
+    assert "cannot be told yet" not in str(refused.value)

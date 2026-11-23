@@ -2589,10 +2589,17 @@ class Service:
             # the owner's own coins strand nothing: the newest buy of each says whose it is
             held0, _, _ = await sort_coins(held0_all, time.time(), since=0)
             if held0:
+                # a coin nobody can tell yet (no buy of it read; a buy of seconds ago, which a walk of the chain that
+                # finds no copied buy says nothing of: measure/ours.CHAIN_SETTLE_SECS) may be the owner's own
+                unsure0 = [f"{str(h['mint'])[:6]}…" for h in held0
+                           if h.get("mint") and coins.known(str(h["mint"])) is None]  # fmt: skip
                 raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({float(h.get('value_sol') or 0):.4f} SOL)"
                                                                  for h in held0)
                                  + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
-                                 "pass --ignore-mint MINT for a position no sniper manages.")  # fmt: skip
+                                 "pass --ignore-mint MINT for a position no sniper manages."
+                                 + (f" Whose coin {', '.join(unsure0)} is cannot be told yet (no buy of it is read, or "
+                                    "one of seconds ago): if it is the owner's own, start the run again in a minute."
+                                    if unsure0 else ""))  # fmt: skip
             owner0 = round(sum(owner_val.values()), 6)  # the owner's own coins at their worth now, counted in
             how = ""
             if max_loss is not None:
