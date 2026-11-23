@@ -275,8 +275,11 @@ def keep_to_coins(config: dict[str, Any], notes: list[str], platforms: tuple[str
         # same (23 Nov: "a $50,000,000 market-cap ceiling" on a sniper sent $3,900)
         caps = sorted({int(w["maxMcapUsd"]) for w in config.get("ctbotWallets") or []}) or [COPY_MAX_MCAP_USD]
         ceiling = f"a ${caps[0]:,}" if len(caps) == 1 else f"a ${caps[0]:,} to ${caps[-1]:,}"
-        sent.append(f"{ceiling} market-cap ceiling on the copied wallet (above it the buy fails on "
-                    "chain and pays its priority fee instead of filling)")  # fmt: skip
+        # on OUR OWN fill (23 Nov smoke test: OKTech turns maxMcapUsd into the buy's least coins at its own SOL
+        # price; every fill stood under it, every refusal above it), not on the copied wallet's buy
+        sent.append(f"{ceiling} market-cap ceiling on our own fill (OKTech turns it into the buy's least coins at "
+                    "its own SOL price: above it the buy fails on chain and pays its priority fee instead of "
+                    "filling)")  # fmt: skip
     why = (
         "OKTech's copy mode has no setting on record that refuses a coin by its address "
         f"({', '.join(NON_COIN_MINTS.values())}), and a copy followed a swap into USDC twice on 12 Nov"
@@ -582,7 +585,7 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
         f"copies {a}: {score.get('positions', 0)} positions analyzed, copier EV {score.get('ev_sol') or 0:+.4f} SOL "
         f"(bound {score.get('ev_lower_sol') or 0:+.4f}), ~{score.get('positions_per_day') or 0:.1f} trades/day",
         f"{config['buyAmount']} SOL per copy; only its buys >= {wallet['minSol']} SOL"
-        + (f" below ${wallet['maxMcapUsd']:,} market cap" if own_cap else ""),
+        + (f", our own fill below ${wallet['maxMcapUsd']:,} market cap" if own_cap else ""),
         exit_line,
         kept,
     ]
@@ -782,9 +785,12 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
                          "that long before it sells); the lab's stop fires at once, so a live stop can sell later "
                          "and lower than the lab scored")  # fmt: skip
     # the cap asked for (the owner's), as it is sent; the ceiling alone is no rule about which coins to copy
-    floor = f" above ${int(min_mcap_usd):,}" if min_mcap_usd else ""
-    ceiling = f" below ${int(config['ctbotWallets'][0]['maxMcapUsd']):,}" if max_mcap_usd else ""
-    cap = f"{floor}{' and' if floor and ceiling else ''}{ceiling} market cap" if floor or ceiling else ""
+    # (the ceiling is on our own fill, not on the wallet's buy: the 23 Nov smoke test)
+    floor = f" above ${int(min_mcap_usd):,} market cap" if min_mcap_usd else ""
+    ceiling = (
+        f", our own fill below ${int(config['ctbotWallets'][0]['maxMcapUsd']):,} market cap" if max_mcap_usd else ""
+    )
+    cap = f"{floor}{ceiling}"
     summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL{cap}, {buy_sol:g} SOL per copy, "
                f"stops after {config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
                f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {choice.sell_tip:g} tip + {choice.sell_priority:g} priority SOL, "

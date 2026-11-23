@@ -430,7 +430,7 @@ def test_copylist_cli_sends_a_market_cap_cap_given_in_sol(tmp_path, capsys, monk
     assert rc == 0
     (sniper,) = out["snipers"]
     assert sniper["config"]["ctbotWallets"][0]["maxMcapUsd"] == 21_000  # 150 SOL at 140 $
-    assert any("below $21,000 market cap" in line for line in sniper["summary"])
+    assert any("our own fill below $21,000 market cap" in line for line in sniper["summary"])
     assert cli.build_parser().parse_args(["oktech", "copylist", "--copy", "W:x:1"]).max_mcap is None
 
 
@@ -460,7 +460,7 @@ def test_copylist_cli_sends_a_market_cap_floor_given_in_sol(tmp_path, capsys, mo
     (sniper,) = out["snipers"]
     wallet = sniper["config"]["ctbotWallets"][0]
     assert wallet["minMcapUsd"] == 4_900 and wallet["maxMcapUsd"] == 21_000  # 35 and 150 SOL at 140 $
-    assert any("above $4,900 and below $21,000 market cap" in line for line in sniper["summary"])
+    assert any("above $4,900 market cap, our own fill below $21,000 market cap" in line for line in sniper["summary"])
     rc = cli.main([*base, "--min-mcap", "35", "--json"])  # a floor alone: no ceiling of the owner's
     (sniper,) = json.loads(capsys.readouterr().out)["snipers"]
     assert rc == 0 and sniper["config"]["ctbotWallets"][0]["minMcapUsd"] == 4_900
@@ -2148,7 +2148,7 @@ def test_a_copy_sniper_with_a_market_cap_cap_copies_only_the_leaders_buys_below_
     lead = "7aPo3npvVtdpkqE7jjY2TAubbYtp2ZpZDaaBLxkKbGXN"
     capped = list_copy_sniper(lead, "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
     assert capped.config["ctbotWallets"][0]["maxMcapUsd"] == 12_000
-    assert "below $12,000 market cap" in " ".join(capped.summary)
+    assert "our own fill below $12,000 market cap" in " ".join(capped.summary)
     plain = list_copy_sniper(lead, "book", 0.3, 0.2, 3)
     assert plain.config["ctbotWallets"][0]["maxMcapUsd"] == 50_000_000
     assert "below $" not in " ".join(plain.summary)
@@ -2273,8 +2273,9 @@ def test_a_copy_sniper_is_kept_to_pump_fun_and_pumpswap_under_a_market_cap_ceili
     """12 Nov 17:05 UTC: a copy of Cupsey bought USDC (through a PumpSwap pool) and sold it four seconds later, 0.04
     SOL of fees for nothing. OKTech's copy mode has no field on record that shuts out a mint, so every copy payload
     carries the two nearest things it has: `platforms` pumpfun + pumpswap (no Raydium, Meteora or LaunchLab swap) and a
-    market-cap ceiling on the copied wallet (`ctbotWallets[].maxMcapUsd`, a min-out on the buy: above it the buy fails
-    on chain instead of filling). An owner's tighter cap wins; one above the ceiling is brought down to it."""
+    market-cap ceiling in the copied wallet's entry (`ctbotWallets[].maxMcapUsd`, a min-out on our own buy, so a
+    ceiling on our own fill: above it the buy fails on chain instead of filling). An owner's tighter cap wins; one
+    above the ceiling is brought down to it."""
     from snipetech.oktech import COPY_MAX_MCAP_USD, COPY_PLATFORMS, list_copy_sniper
 
     assert COPY_PLATFORMS == ("pumpfun", "pumpswap") and COPY_MAX_MCAP_USD == 50_000_000
@@ -2298,14 +2299,20 @@ def test_a_copy_sniper_is_kept_to_pump_fun_and_pumpswap_under_a_market_cap_ceili
 
 
 def test_the_kept_to_coins_line_names_the_ceiling_that_was_sent():
-    """23 Nov: `copylist --max-mcap 56` sent a $3,900 ceiling on the copied wallet and its summary still said "a
-    $50,000,000 market-cap ceiling": the line named the default every copy carries, not what this sniper was sent."""
+    """23 Nov: `copylist --max-mcap 56` sent a $3,900 ceiling and its summary still said "a $50,000,000 market-cap
+    ceiling": the line named the default every copy carries, not what this sniper was sent. And the ceiling is on OUR
+    OWN fill, not on the copied wallet's buy (smoke test of 23 Nov 03:17-03:56: OKTech turns maxMcapUsd into the buy's
+    least coins at its own SOL price; every fill under it, every refusal above it): the summary said "on the copied
+    wallet" and the first line "only its buys ... below $X market cap", which an agent reads as a rule about the
+    wallet's buys."""
     from snipetech.oktech import list_copy_sniper
 
     tight = list_copy_sniper(CUPSEYY, "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
     said = [s for s in tight.summary if s.startswith("kept to coins")]
-    assert len(said) == 1 and "a $12,000 market-cap ceiling on the copied wallet" in said[0]
+    assert len(said) == 1 and "a $12,000 market-cap ceiling on our own fill" in said[0]
+    assert "copied wallet" not in said[0] and "SOL price" in said[0]
     assert "$50,000,000" not in said[0]
+    assert "only its buys >= 0.3 SOL below" not in " ".join(tight.summary)
 
 
 def test_the_two_protections_can_be_switched_off_and_the_payload_is_then_the_one_of_before(monkeypatch):
