@@ -132,8 +132,8 @@ def _lever_savings(sell: dict, lots: list[tuple[dict, float, float]], dups: list
       tries that failed before it landed, which lost no race).
     - sell_fee: the sell tip ([oktech] sell_tip_sol; before the 8 Nov split one sell_fee_sol priced the tip and the
       untipped copies' priority alike) back at 0.001 saves the landed sell's tip above 0.001 and the same on each
-      duplicate still priced at that joint setting (one at the setting's priority, not the buy's; a duplicate at the
-      split's near-zero priority is not). A sale by hand is not the setting's.
+      duplicate still priced at that joint setting (one at the setting's priority, not the buy's; a duplicate since
+      the split pays the buy's priority and is not). A sale by hand is not the setting's.
     - buy_bid: the buy's priority and tip above the minimum, and the buy's priority again on the landed sell and on a
       tipped duplicate (OKTech charges the buy's priority on every tipped exit)."""
     out: dict[str, int] = {}
@@ -223,8 +223,9 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
     first_buy = buys.get(sell.get("buy_sig") or "") or shares[0][0]
     ran = sell.get("exit_name") or first_buy.get("exit_name")
     n_dups = (len(dups) or None) if dup_l else 0  # a cost on record but no send tied to it here: count unknown
-    # the sell priority setting that priced the duplicates (0.002 before the 8 Nov split, 0.0001 after): the untipped
-    # ones' priority, since the tipped variant that lost paid the buy's priority instead (run.twin_priority)
+    # what the duplicates paid, which names their group (run.twin_priority): the untipped ones' priority, the 0.002
+    # sell priority setting before the 8 Nov split and the sniper's buy priority since, 0.001 at the minimum bid
+    # (OKTech uses no sell priority under the buy's: fees.py)
     from .run import twin_priority
 
     twin_prio = twin_priority(dups)
@@ -301,7 +302,8 @@ CAUSE_WORDS = {
     "price": "the price fell after we bought (what it took on the trips where it fell)",
     "buy_fees": "the buys' priority fee and tip",
     "sell_fees": "the landed sells' priority fee and tip",
-    "duplicates": "failed duplicate sells (OKTech's extra copies of a sell: they fail and still pay)",
+    "duplicates": "failed sell sends (OKTech's extra copies of a sell, and a sale's own tries that failed before it "
+    "landed: they fail and still pay)",
 }
 PUMP_FEE_WORDS = "pump.fun's fee, 1.25 % on each buy and each sell"
 VENUE_FEE_WORDS = "the venue's fee (pump.fun's 1.25 % a side; PumpSwap's pool fee once a coin moved there)"
@@ -441,9 +443,10 @@ def _bid_at_minimum(cfg, tip_only: bool) -> bool:
 
 
 def twins_per_trip(trips: list[dict]) -> dict[str, dict[str, Any]]:
-    """The duplicates' cost per trip, by the sell priority setting that priced the duplicates (`twin_priority_sol`, the
-    untipped ones' priority: 0.002 before the 8 Nov split, 0.0001 after), over the trips that had any: what the split
-    saves per landed sell, before and after."""
+    """The duplicates' cost per trip, by what the duplicates paid (`twin_priority_sol`, the untipped ones' priority:
+    the 0.002 sell priority setting before the 8 Nov split, the sniper's buy priority since, 0.001 at the minimum
+    bid, because OKTech uses no sell priority under the buy's), over the trips that had any: what a landed sell's
+    duplicates cost, before and after."""
     out: dict[str, dict[str, Any]] = {}
     for t in trips:
         if not t or t.get("twin_priority_sol") is None:

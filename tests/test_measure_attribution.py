@@ -239,8 +239,9 @@ def test_a_sell_that_closes_two_buys_shares_each_buys_fees_by_the_tokens_it_clos
 
 def test_a_trips_twin_priority_is_the_untipped_duplicates_never_a_median():
     """After the split: one tipped duplicate at the buy's priority (1,000,000, its tip refunded) and one untipped at
-    the sell priority (100,000): the trip's `twin_priority_sol` is 0.0001, the setting that priced the twins, not a
-    median of the two (which would read 0.001 and file the trip under 'before')."""
+    the sell priority (100,000): the trip's `twin_priority_sol` is 0.0001, the untipped one's, which names its group,
+    not a median of the two (which would read 0.001 and file the trip under 'before'). The shape the 8 Nov split was
+    meant to give: live, the untipped twins pay the buy priority too (OKTech uses no sell priority under the buy's)."""
     st = Store(":memory:")
     try:
         st.add_trades([_trade("B", T0, "M", True, 197_530_864, 2_469_136, 1000),
