@@ -30,6 +30,24 @@ first on the server's recording and only then run live in capped batches.
   lead, after KYC and a 7 to 14 day pilot: not inside six days.
 - **What runs:** the OKTech copy behind Cented and Yugi (about 1 to 2 SOL a day on paper; live about half so far):
   the 0.2 SOL test to 09:11 (no fill since the 19:59 restart), then the two-buys check, then the 1 SOL day.
+- **The owner, ~22:15 UTC: "We need order book leaking."** The plan given in answer, three tracks at once:
+  1. **The seat right behind Cented's and Decu's buys** (paper: about 115 to 175 SOL a day if won on every big buy,
+     between a 0.6 SOL and a 0.003 SOL seat price), bought from whoever holds the flow and is allowed to sell it: the
+     owner applies (only the owner can: identity) to Hello Moon (a Discord ticket asking for a Lunar Lander key and
+     backrun placement on the flow it lands), Inertia (the searcher form: backruns, order-flow auction) and Harmonic
+     (an ID check and a 7 to 14 day pilot). This session builds our own buyer meanwhile (a pump.fun curve buy from a
+     landed template, a Jito bundle client that puts our buy right behind a transaction a seller hands us, caps,
+     dry run by default; workflow wf_c19b879a-779, 22:2x); nothing is sent before the owner's yes to a 0.1 SOL test.
+  2. **Money this week:** the OKTech copy route above.
+  3. **Our own fast buyer without a seat:** only if the check running now (wf_b9d0e0a5-29e) shows it lands closer
+     than OKTech's 2 to 4 buyers behind Cented; then a 0.1 SOL test with the same buyer, on the owner's yes.
+  Honest bottom line given: 100 SOL a day by 29 Nov happens only if a seller grants the seat within two or three
+  days.
+- **The line, as told to the owner:** we buy seats behind other people's trades from whoever is allowed to sell
+  them, and nothing else. Never in front of a user's trade: there our profit is the user's worse price; the leaders'
+  transactions carry Jito's don't-front marker; Jito closed its public mempool in 2024 over sandwiching. Never flow
+  from someone not allowed to sell it: that is taking part in a breach, and such a deal can vanish overnight. All the
+  money measured sits right behind the buy, which is what the legitimate sellers offer.
 
 ## 23 Nov, 21:15 UTC: the owner's goal, 100 SOL a day in six days: the one route that reaches it, and what each step needs
 
