@@ -7,13 +7,21 @@ sniper of ours is set to pay (I4), the month's Helius credits are counted once f
 from before the last boot is not running to a research agent either (I6), and the wrapped-SOL conversion follows the
 book's own can-pay rule (I7)."""
 
+import asyncio
+import time
+
 import pytest
 
+from snipetech.book import run as R
+from snipetech.book.run import SECOND_READ_SECS as BOOK_SECOND_READ_SECS  # as it ships: the tests run with no wait
 from snipetech.config import Config
 from snipetech.models import Trade
 from snipetech.operator.paths import OperatorPaths
 from snipetech.store import Store
+from tests import test_audit_book as AB  # the first round's book helpers, on the book tests' clock (BT.NOW)
 from tests import test_audit_round as AR  # the first round's snapshot helpers (take, whose, tick, coin, bot_lines)
+from tests import test_book_run as BT
+from tests.chain import Chain, swap
 
 W = AR.W  # the sniper wallet, the owner's too
 LEAD = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"  # a wallet a copy sniper of ours follows
@@ -193,3 +201,175 @@ def test_i2_a_hunt_tests_marks_are_its_fees_alone_as_before(world):
     assert set(marks) == {"buy", "sell"} and (1_000_000, 199_000_000) in marks["buy"]
     assert not LT.own_marks(st, {"oktech_id": "nobody", "wallet": W})["buy"]  # no record: no mark, every trade counts
     assert not LT.own_marks(None, {"oktech_id": "h1", "wallet": W})["buy"]
+
+
+# -- I3: before a stop the book looks where /stop looks ----------------------------------------------------------------
+
+PSWAP = "Pswp" + "p" * 40  # a coin on PumpSwap the tape does not follow (past its 30 minutes there)
+K1_RUNS = [{"id": "k1", "name": BT.K1, "status": "running"}]
+
+
+def _landed(svc, *txs, age=6):
+    """The wallet's own transactions as the chain lists them, the newest about `age` seconds before the book's run
+    (one slot apart, in the order given): a coin the tape does not follow is on no tape."""
+    slot0 = 480_000_000
+    chain = Chain(t0=BT.NOW - age - len(txs), slot0=slot0)
+    for k, tx in enumerate(txs):
+        chain.put(slot0 + round((k + 1) / 0.4), tx)
+    svc.rpc = chain
+    return chain
+
+
+def _copy_lands(mint=PSWAP, name="copy"):
+    return swap(name, BT.W, mint, tokens=38_000_000, sol=0.2, priority=0.001, tip=0.002)
+
+
+def _book(svc, cfg, sent=None):
+    held = list(svc._held)
+    return asyncio.run(R.run_book(svc, cfg, BT.NOW, notifier=AB._notifier([] if sent is None else sent),
+                                  balances=lambda w: (10.0, 0.0, held)))  # fmt: skip
+
+
+def test_i3_a_kill_stops_no_book_sniper_while_the_chain_has_a_buy_the_tape_does_not_follow(tmp_path):
+    """The book's stops read the wallet twice and the tape. A copy into a coin the tape does not follow (three of the
+    six copies of 20 Nov) that lands within about a second of the stop is in neither: the wallet's reading does not
+    show it yet and no tape ever will, and the sniper that had just bought was stopped (a stopped sniper sells
+    nothing, rule 1). /stop looks at the wallet's own newest signatures for such a buy since the round before
+    (operator/commands._on_its_way); the book makes the same look before each stop."""
+    st, cfg = BT._env(tmp_path)  # the book is off: its kill path stops its snipers that hold nothing
+    AB._book_sniper(st)
+    svc, sent = BT.FakeSvc(st, snipers=K1_RUNS, held=[], cfg=cfg), []
+    _landed(svc, _copy_lands())
+    try:
+        out = _book(svc, cfg, sent)
+        assert out["kill_reason"] == "book off" and svc.calls == [], svc.calls
+        (told,) = [t for t in sent if "(k1) waits" in t]
+        assert "the wallet bought a coin moments ago that has not shown in it yet" in told, told
+        assert "it keeps running" in told and "a stopped sniper sells nothing" in told
+        again = BT.FakeSvc(st, snipers=K1_RUNS, held=[], cfg=cfg)
+        _landed(again, _copy_lands())
+        _book(again, cfg, sent)  # the same a run later: said once a day
+        assert again.calls == [] and len([t for t in sent if "(k1) waits" in t]) == 1, sent
+    finally:
+        st.close()
+
+
+def test_i3_a_buy_on_the_chain_that_was_sold_since_or_is_old_holds_no_stop_of_the_books(tmp_path):
+    """The look is /stop's own: a buy sold since, one from before the look, or no chain to ask, holds nothing back."""
+    exit_ = swap("exit", BT.W, PSWAP, tokens=-38_000_000, sol=0.21, priority=0.001, tip=0.002, held=38_000_000)
+    for k, (txs, age) in enumerate((((_copy_lands(), exit_), 6), ((_copy_lands(),), 600), ((), 6))):
+        st, cfg = BT._env(tmp_path / str(k))
+        AB._book_sniper(st)
+        svc = BT.FakeSvc(st, snipers=K1_RUNS, held=[], cfg=cfg)
+        if txs:
+            _landed(svc, *txs, age=age)
+        try:
+            assert _book(svc, cfg)["kill_reason"] == "book off" and svc.calls == [("stop", "k1")], (k, svc.calls)
+        finally:
+            st.close()
+
+
+def test_i3_a_transaction_of_moments_ago_the_node_cannot_serve_yet_holds_the_books_stop(tmp_path):
+    """A landed transaction inside the look that the node does not serve yet may be the buy: it holds the stop."""
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    svc, sent = BT.FakeSvc(st, snipers=K1_RUNS, held=[], cfg=cfg), []
+    chain = _landed(svc, _copy_lands())
+
+    async def not_served(signature):
+        return None
+
+    chain.get_transaction = not_served
+    try:
+        assert _book(svc, cfg, sent)["kill_reason"] == "book off" and svc.calls == [], svc.calls
+        assert len([t for t in sent if "(k1) waits" in t]) == 1, sent
+    finally:
+        st.close()
+
+
+def test_i3_a_look_that_cannot_be_made_stops_nothing(tmp_path, monkeypatch):
+    """The look itself failing (not the chain: that leaves the readings and the tape to decide, as for /stop) is a
+    wallet nobody could look at: nothing is stopped on it, and the owner hears why once a day."""
+    from snipetech.operator import commands
+
+    async def broken(*a, **k):
+        raise RuntimeError("no such helper")
+
+    monkeypatch.setattr(commands, "_on_its_way", broken)
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    svc, sent = BT.FakeSvc(st, snipers=K1_RUNS, held=[], cfg=cfg), []
+    try:
+        assert _book(svc, cfg, sent)["kill_reason"] == "book off" and svc.calls == [], svc.calls
+        assert len([t for t in sent if "(k1) waits" in t and "RuntimeError" in t]) == 1, sent
+    finally:
+        st.close()
+
+
+class _Timed(BT.FakeSvc):
+    """FakeSvc that notes when each reading of the wallet was asked for."""
+
+    async def open_positions(self, address, ignore=()):
+        self.asked = [*getattr(self, "asked", []), time.monotonic()]
+        return await super().open_positions(address, ignore)
+
+
+def test_i3_the_stops_reading_comes_five_seconds_after_the_runs_own(tmp_path, monkeypatch):
+    """A buy on its way shows in a second reading only when that one comes later: /stop, the live test's close and the
+    round's clean-up of a dead run wait 5 s between the two. The book's second reading came as soon as its plan was
+    made, a second or two after the first. It waits out the rest of the five seconds (once a run: its later stops are
+    past them)."""
+    from snipetech.operator import live_test
+
+    assert BOOK_SECOND_READ_SECS == live_test.SECOND_READ_SECS == 5
+    monkeypatch.setattr(R, "SECOND_READ_SECS", 0.4)
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    AB._book_sniper(st, sid="k2", name=f"snipetech copy book {BT.L2[:6]} arm:control", created_at=BT.NOW - 3000)
+    snipers = [*K1_RUNS, {"id": "k2", "name": f"snipetech copy book {BT.L2[:6]} arm:control", "status": "running"}]
+    svc = _Timed(st, snipers=snipers, held=[], cfg=cfg)
+    try:
+        began = time.monotonic()
+        assert _book(svc, cfg)["kill_reason"] == "book off" and svc.calls == [("stop", "k1"), ("stop", "k2")]
+        assert len(svc.asked) == 3 and svc.asked[1] - svc.asked[0] >= 0.39, svc.asked
+        assert time.monotonic() - began < 0.4 * 2  # the second stop did not wait again
+    finally:
+        st.close()
+
+
+def test_i3_a_retire_waits_while_the_chain_has_a_buy_the_tape_does_not_follow(tmp_path):
+    """A retire stops its sniper too. With a buy of the wallet on its way it waits, as the plan's stops do: no stop,
+    no delete, no replacement of that sniper this run."""
+    st, cfg, svc = BT._made_its_buy(tmp_path)
+    _landed(svc, _copy_lands())
+    try:
+        _book(svc, cfg)
+        assert not any(c[1] == "k1" for c in svc.calls if c[0] in ("stop", "delete")), svc.calls
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{BT.L2}:book:0.3:lab",)]
+        notes = (tmp_path / "data" / "operator" / "notes.md").read_text()
+        assert "[book] retire L1xxxx (k1) waits: the wallet bought Pswppp… moments ago" in notes, notes
+    finally:
+        st.close()
+
+
+def test_i3_a_retire_is_undone_when_the_chain_shows_a_buy_made_while_it_stopped(tmp_path):
+    """After a retire's stop the wallet is read again and the tape looked at; a copy into a coin the tape does not
+    follow that landed while the stop went out was in neither, and its sniper was deleted. The chain is looked at
+    there too: the sniper is started again so it can sell, and nothing is deleted."""
+    st, cfg, svc = BT._made_its_buy(tmp_path)
+    chain = _landed(svc, _copy_lands())
+    listed, looks = chain.get_signatures, []
+
+    async def lands_during_the_stop(address, **kw):
+        looks.append(address)
+        return await listed(address, **kw) if len(looks) > 1 else []  # the look before the stop finds nothing yet
+
+    chain.get_signatures = lands_during_the_stop
+    sent = []
+    try:
+        _book(svc, cfg, sent)
+        assert ("stop", "k1") in svc.calls and ("start", "k1") in svc.calls and ("delete", "k1") not in svc.calls
+        assert any("k1" in t and "started again" in t for t in sent), sent
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{BT.L2}:book:0.3:lab",)]
+    finally:
+        st.close()

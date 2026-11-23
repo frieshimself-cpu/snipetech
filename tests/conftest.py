@@ -14,3 +14,10 @@ def _no_standin_jobs(monkeypatch):
     never do (test_standin checks that the round calls it by patching it again). It lives at the top of tests/ because
     pytest skips a folder's conftest for a file reached again after another folder on the command line."""
     monkeypatch.setattr("snipetech.operator.run.start_standins", lambda jobs, services, now, log=None: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_wait_before_a_book_stop(monkeypatch):
+    """Before it stops a sniper the book reads the wallet again, no sooner than book.run.SECOND_READ_SECS (5 s) after
+    the run's own reading. Tests never wait; the test of the wait sets its own."""
+    monkeypatch.setattr("snipetech.book.run.SECOND_READ_SECS", 0.0)
