@@ -6,7 +6,10 @@ sent. The transactions are the sniper wallet's own of the 23 Nov smoke test (tes
 served by the test chain as the RPC serves them; nothing here reaches a network.
 C2: a wallet rule's `max_fill_mcap` holds the lab and the paper test to that same limit: our own fill at the scored
 landing, and a moment over it is a refused send.
-C3: a run whose scan of the wallet's signatures failed leaves the measure stage's cursor where it was and says so."""
+C3: a run whose scan of the wallet's signatures failed leaves the measure stage's cursor where it was and says so.
+C4: how long an exit can hold is one number, the simulator's own (its timer, an extension, a dead exit's pause, its
+parts): the lab checks the tape for it, each exit's own hold too, and the paper run settles by it and says a later
+settle time once a rule."""
 
 import asyncio
 import json
@@ -562,3 +565,116 @@ def test_a_backfill_never_moves_the_cursor_whatever_its_scan_did(tmp_path):
         assert st.coverage(M.LAST_KEY) == {}
     finally:
         st.close()
+
+
+# -- C4: how long an exit can hold, in one place -----------------------------------------------------------------------
+#
+# The lab checks that the tape holds a moment for as long as its exits can hold (`lab.exits_horizon`), and the paper run
+# scores a moment once its exit has played out (`paper.settle_secs`). Round 2 taught the horizon a timer extension.
+# Left: a dead exit's pause, which the simulator's own reach counts (`sim.exits.exits_reach`), and `lab.exit_gap`,
+# which still read each exit's own hold as its timer alone.
+
+
+def _stored(st, **rules):
+    """Frozen wallet rules as the store holds them, one for each named exit."""
+    trig = parse_trigger({"kind": "kol", "group": "wallet", "sol": 1}).__dict__
+    out = {}
+    for name, ex in rules.items():
+        out[name] = {"id": paper.strategy_id(trig, ex.to_dict(), "+2x", 0, 1.0), "label": name, "trigger": trig,
+                     "exit": ex.to_dict(), "position": "+2x", "latency": 0, "buy_sol": 1.0, "per_tx_sol": 0.0035,
+                     "from_ts": FREEZE, "lab": {"mean": 0.1, "ev_lower": 0.05}, "landing_asked": True}  # fmt: skip
+    st.set_coverage("paper_strategies", {"strategies": list(out.values())})
+    return out
+
+
+TIMER = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300.0, sell_on_dev_sell=False)
+DEAD1 = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300.0, sell_on_dev_sell=False, stale_secs=1.0)
+DEAD5 = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300.0, sell_on_dev_sell=False, stale_secs=5.0)
+
+
+def test_the_horizon_is_the_simulators_own_reach_a_dead_exits_pause_included():
+    from types import SimpleNamespace
+
+    from snipetech.analysis.lab import exits_horizon, in_parts, mig_gap
+    from snipetech.sim.exits import exit_from_label, exits_reach
+
+    assert exits_horizon([TIMER]) == 300.0 and exits_horizon([DEAD1]) == 301.0  # was 300.0
+    # the agents' exit of the 22 Nov review: a 10 s timer whose dead exit waits 158 s can sell 168 s after the buy
+    quiet = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=10.0, stale_secs=158.0, sell_on_dev_sell=False)
+    assert exits_horizon([quiet]) == 168.0  # was 10.0
+    ext = exit_from_label("hold12s EXT1%/s@2s+4s<20s")
+    for exits in ([TIMER], [DEAD1, DEAD5], [quiet, ext], in_parts([DEAD5, ext], 4, 15.0)):
+        assert exits_horizon(exits) == exits_reach(exits)  # one answer to "how long can it hold"
+    # so a MIG buy the PumpSwap tape holds for the timer alone is no moment of an exit that waits out a quiet coin
+    at = 1_794_000_000
+    cov = {"runs": [{"from": at, "to": at + 20, "secs": 1800, "skipped": [], "slot_secs": 0.214}]}
+    mig = SimpleNamespace(ts=at)
+    waits = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=12.0, stale_secs=10.0, sell_on_dev_sell=False)
+    assert mig_gap(cov, None, None, mig, exits_horizon([exit_from_label("hold12s")])) is None
+    assert mig_gap(cov, None, None, mig, exits_horizon([waits])) == "end"  # 22 s and a slot: was None
+
+
+def test_one_exit_of_a_launch_rule_is_checked_for_as_long_as_it_can_hold():
+    """`lab.exit_gap`: a lab whose longest exit lacks the PumpSwap tape judges each exit on its own hold. An exit that
+    sells in parts, or whose timer extends, or that waits out a quiet coin holds past its timer: it was checked for
+    the timer alone and scored on tape that did not hold its later sales."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from snipetech.analysis.lab import exit_gap, in_parts
+    from snipetech.sim.exits import exit_from_label
+
+    at = 1_794_000_000
+    # the PumpSwap tape holds the coin for 30 s after our buy; the coin migrates 8 s after it, inside a 12 s timer
+    cov = {"runs": [{"from": at, "to": at + 30, "secs": 1800, "skipped": [], "slot_secs": 0.214}]}
+    path = SimpleNamespace(ts=np.array([float(at)]), slot=np.array([1000]), n=1)
+    prep = SimpleNamespace(e=0, entry_ts=float(at), off_curve=None)
+    mig = SimpleNamespace(ts=at + 8, slot=1040)
+    res = SimpleNamespace(sold_on_curve=False, exit_ts=float(at + 12))
+    plain = exit_from_label("hold12s")
+    assert exit_gap(cov, path, prep, res, plain, mig) is None  # the tape holds the migration through its 12 s
+    (parts,) = in_parts([plain], 4, 15.0)  # its last part is due 57 s after the buy
+    assert exit_gap(cov, path, prep, res, parts, mig) == "end"  # was None
+    ext = exit_from_label("hold12s EXT1%/s@2s+4s<20s")  # its timer can move on to 32 s
+    assert exit_gap(cov, path, prep, res, ext, mig) == "end"  # was None
+    waits = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=12.0, stale_secs=25.0, sell_on_dev_sell=False)
+    assert exit_gap(cov, path, prep, res, waits, mig) == "end"  # its dead exit can sell at 37 s
+
+
+def test_a_rule_with_a_dead_exit_settles_its_pause_later_and_says_so_once():
+    """22 of the 135 stored paper rules have a dead exit on a 300 s timer (23 Nov): each settles 1 to 5 s later now. A
+    line a rule in every paper run would be 22 lines every fifteen minutes that say nothing new: the run says a rule's
+    settle time once (and again if it changes); the paper report keeps it on the rule's row."""
+    assert paper.settle_secs(TIMER) == 420.0 and paper.settle_secs(DEAD1) == 421.0  # was 420.0
+    assert paper.settle_secs(DEAD5) == 425.0
+    st = Store(":memory:")
+    st.set_label(KOL, "followed", "wallet", "file")
+    rules = _stored(st, timer=TIMER, dead1=DEAD1, dead5=DEAD5)
+    for k in range(3):
+        _c2_coin(st, 200 + k, FREEZE + 300 + k * 120, 0.05)
+    st.set_coverage("tape", {"spans": [[W0, RUN]]})
+    reads = []
+    whole = st.active_mints
+    st.active_mints = lambda a, b, n=1: reads.append((a, b)) or whole(a, b, n)
+    first = paper.run(st, _c2_cfg(), now=RUN)
+    assert first["new_trades"] == 9
+    assert first["settles_later"] == {rules["dead1"]["id"]: 421.0, rules["dead5"]["id"]: 425.0}
+    # the three settle times are one read of the tape: a rule that settles a few seconds later asks no read of its own
+    assert len(reads) == 1 and reads[0] == (FREEZE - 5, RUN - 420)
+    _c2_coin(st, 210, RUN + 200, 0.05)
+    st.set_coverage("tape", {"spans": [[W0, RUN + 1200]]})
+    again = paper.run(st, _c2_cfg(), now=RUN + 1200)
+    assert again["new_trades"] == 3 and "settles_later" not in again  # said once
+    rows = {r["id"]: r for r in paper.report(st, _c2_cfg(), now=RUN + 1200)["strategies"]}
+    assert rows[rules["dead5"]["id"]]["settles_after_secs"] == 425.0
+    assert "settles_after_secs" not in rows[rules["timer"]["id"]]
+    kept = st.coverage(paper.SETTLES_SAID_KEY)["rules"]
+    assert kept == {rules["dead1"]["id"]: 421.0, rules["dead5"]["id"]: 425.0}
+    # a rule whose settle time is not the one that was said (the code counts more of its exit now) is said again, alone
+    st.set_coverage(paper.SETTLES_SAID_KEY, {"rules": {**kept, rules["dead5"]["id"]: 424.0}})
+    st.set_coverage("tape", {"spans": [[W0, RUN + 2400]]})
+    third = paper.run(st, _c2_cfg(), now=RUN + 2400)
+    assert third["new_trades"] == 0 and third["settles_later"] == {rules["dead5"]["id"]: 425.0}
+    assert st.coverage(paper.SETTLES_SAID_KEY)["rules"] == kept
+    st.close()

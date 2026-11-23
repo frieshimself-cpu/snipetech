@@ -657,7 +657,8 @@ def test_the_lab_searches_a_few_ladder_exits_and_every_exit_it_had():
     tp = [e for e in new if e.tp_stages and not e.momentum_hold]
     assert {len(e.tp_stages) for e in tp} >= {2, 3} and all(e.trailing_stop > 0 for e in tp)  # trail the rest
     assert any(e.sl_stages for e in new) and any(e.momentum_hold > 0 for e in new)
-    assert exits_horizon(exits) == 300.0  # no lab needs more tape than before
+    # C4 (23 Nov): 305, the 300 s timer and a dead exit's 5 s pause. No lab needs more tape than before the ladders.
+    assert exits_horizon(exits) == exits_horizon(exits[: -len(new)]) == 305.0
     for e in new:
         assert e.max_hold_secs <= 300 and not e.sell_on_dev_sell
         if e.momentum_hold:  # research only

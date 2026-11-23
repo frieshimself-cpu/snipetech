@@ -1042,23 +1042,18 @@ SELL_SLOT_SECS = 1.0  # a sell lands a slot after its exit fires, and block time
 
 
 def exits_horizon(exits: Sequence[ExitParams]) -> float:
-    """How long after its buy a position scored on these exits can still be held: the longest timer among them, moved
-    on as far as its timer extension can move it (`ext_max`, where the extension is on), with the time its last part
-    takes when it sells out in parts. Every exit of a lab is scored on the same moments, so the tape must hold that
-    long of each. Until 23 Nov the extension was left out: an EXT exit could sell up to `ext_max` past the stretch the
-    PumpSwap tape was checked to hold (`mig_gap`, `amm_buy_gap`, `migration_sell_gap`).
+    """How long after its buy a position scored on these exits can still be held: the simulator's own answer
+    (`sim.exits.exits_reach`), so the stretch a lab checks the tape for is the stretch an exit can sell in. The longest
+    timer among them, moved on as far as its timer extension can move it (`ext_max`, where the extension is on), a dead
+    exit's pause after it (`stale_secs`: its sale lands up to that long after the timer's last trade), and the time its
+    last part takes when it sells out in parts. Every exit of a lab is scored on the same moments, so the tape must
+    hold that long of each (`mig_gap`, `amm_buy_gap`, `migration_sell_gap`, and each exit's own hold in `exit_gap`);
+    the paper run settles a moment that long after it (`paper.settle_secs`).
 
-    Not counted: a dead exit's pause (`stale_secs`), which `sim.exits.exits_reach` counts since 22 Nov. Its sale lands
-    up to that long after the timer's last trade, so an exit like "STALE158s hold10s" can still sell past the stretch
-    checked here (the menu's dead exits pause 1 to 5 s). Counting it would also move the paper run's settle time
-    (`paper.settle_secs`) for every rule with a dead exit on a 300 s timer, 22 of the 135 stored on 23 Nov: left for a
-    decision."""
-
-    def held(ex: ExitParams) -> float:
-        ext = float(ex.ext_max) if ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0 else 0.0
-        return float(ex.max_hold_secs) + ext + (max(1, int(ex.sell_parts)) - 1) * max(0.0, float(ex.sell_part_secs))
-
-    return max((held(ex) for ex in exits), default=0.0)
+    Until 23 Nov this was a second sum of its own, and it fell behind the simulator twice: without the extension (an
+    EXT exit could sell up to `ext_max` past the stretch that was checked), then without the pause (an agent's
+    "STALE158s hold10s" could sell 158 s past it; the menu's dead exits pause 1 to 5 s)."""
+    return exits_reach(exits)
 
 
 MAX_SELL_PARTS = 20
@@ -1558,22 +1553,23 @@ def migration_sell_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, ho
 def exit_gap(cov: Mapping[str, Any], path: MarketPath, prep, res, ex: ExitParams, mig) -> str | None:
     """Why one exit of a launch-type position (`prep`, its result `res`) whose sale did not land on the curve cannot be
     scored, or None when it can: where its own hold needs the PumpSwap tape of the migration and the tape lacks it
-    (`migration_sell_gap` over its own timer), and where its timer ends before the recorded migration yet its sale is
-    off the curve. Then it was priced on a completed curve, which takes no sale, and only the PumpSwap tape from where
-    the coin left its curve to the sale says what it sold for; with no migration on the tape nothing does.
+    (`migration_sell_gap` over as long as it can hold, `exits_horizon`: until 23 Nov over its timer alone, so an exit
+    in parts, an extended timer or a dead exit's pause sold past the stretch that was checked), and where its hold ends
+    before the recorded migration yet its sale is off the curve. Then it was priced on a completed curve, which takes
+    no sale, and only the PumpSwap tape from where the coin left its curve to the sale says what it sold for; with no
+    migration on the tape nothing does.
 
     Review, 8 Nov: a coin completing 58 s after the create and migrating at 62 s, before the PumpSwap tape began. A 59 s
     timer was priced on the completing buy, the curve's highest price: +2.1 SOL on a 0.2 SOL buy, where a 57 s timer
     made +0.06, because its own hold ends before the migration and so "nothing migrates while held" scored it."""
     if res.sold_on_curve:
         return None
-    own = migration_sell_gap(cov, path, prep.e, mig, float(ex.max_hold_secs))
+    hold = exits_horizon([ex])  # as long as this exit can hold: its timer, an extension, a pause, its parts
+    own = migration_sell_gap(cov, path, prep.e, mig, hold)
     if own is not None or res.sold_on_curve is None:
         return own  # None for a path that does not say where the coin left its curve (built by hand): as before
-    if mig is not None and (
-        int(mig.slot) < int(path.slot[prep.e]) or float(mig.ts) <= prep.entry_ts + ex.max_hold_secs
-    ):
-        return None  # bought after the migration, or the tape holds the migration through this exit's timer
+    if mig is not None and (int(mig.slot) < int(path.slot[prep.e]) or float(mig.ts) <= prep.entry_ts + hold):
+        return None  # bought after the migration, or the tape holds the migration through this exit's whole hold
     if mig is None:
         return "no_migration"
     start = float(mig.ts)
