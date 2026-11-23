@@ -607,9 +607,17 @@ For the owner to paste to their support. Each is one sentence, and each changes 
 26. (23 Nov) Which SOL price turns `maxMcapUsd` into a buy's price limit, and why is it sometimes $200? Sends in a
     new sniper's first minutes, and once 19 minutes after a start, carried a limit worked out at $200.00 a SOL (23 SOL
     of market cap on a $4,600 ceiling, under the 28 SOL a coin starts at), so each could only fail.
+27. (23 Nov) Why did one copy pay a priority of 0.001 and no tip when its sniper is sent 0.0011 + 0.002? The 0.2 SOL
+    test's first fill (11:21:02 UTC, behind Yugi) landed four buyers behind his buy with those fees; every other buy of
+    ours paid what its sniper was sent. Our runner tells such a buy as ours by its place and size behind the copied
+    wallet, but a buy without its tip may land later than the bid we pay for.
+28. (23 Nov) Does the copy exit fire on a copied wallet's token transfers, not only on its sales? Yugi moved a coin into
+    four wallets of his own 3 s after buying it (no sale), and OKTech sold our copy of it at once; he moves a coin
+    within 12 s of buying it after about one buy in six. If the copy exit reads a fall in his balance, a transfer
+    should not count as a sale.
 
 Questions 1, 2, 3, 4 and 5 decide the real-size copy. **The 22 Nov plan's six, in its order: 6 (the signer check),
-20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26: each costs a live run copies or shots today.
+20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26, and the 0.2 SOL test 27 and 28: each costs a live run copies, shots or exits today.
 The rest can wait a day.
 
 ---
