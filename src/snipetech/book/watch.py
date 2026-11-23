@@ -216,10 +216,13 @@ def _open_buys(ours: list[Trade], owner: set[str] | frozenset = frozenset()) -> 
 
 
 def _owner_sigs(store: Store, wallet: str, mint: str, now: float, marks: dict) -> set[str]:
-    """The wallet's trades of `mint` on the tape (in `unmanaged`'s window) whose fees are known and are no sniper's of
-    ours: the owner's own trades by hand, buys and sales (measure/ours.py: a buy not at a sniper's buy fees, a sale not
-    at a sniper's or the fallback sale's; `marks`: fee_marks). None with no sniper on record, or when the tape's fees
-    cannot be read: every trade then counts as the bot's, as before."""
+    """The wallet's trades of `mint` on the tape (in `unmanaged`'s window) that are no sniper's of ours: the owner's
+    own trades by hand, buys and sales (measure/ours.py: a buy the rule does not call the bot's, a sale not at a
+    sniper's or the fallback sale's fees; `marks`: fee_marks). A buy goes to the rule with its signature, coin and
+    place, not its fees alone: what else the rule tells a copy of ours by (where it stands behind the copied wallet's
+    buy) is asked here too, or a copy at fees no payload names was "a trade of your own" with no /sell line (second
+    round of the 22 Nov audit). None with no sniper on record, or when the tape's fees cannot be read: every trade then
+    counts as the bot's, as before."""
     from types import SimpleNamespace
 
     from ..measure.ours import bot_sale_fees, bot_tape_buy
@@ -227,13 +230,18 @@ def _owner_sigs(store: Store, wallet: str, mint: str, now: float, marks: dict) -
     if not marks["buy"]:
         return set()
     try:
-        rows = store._q("SELECT sig, is_buy, priority, tip FROM trades WHERE user=? AND +mint=? AND +ts>=? AND +ts<=?",
-                        (wallet, mint, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
+        rows = store._q("SELECT sig, is_buy, priority, tip, slot, pos, ts FROM trades WHERE user=? AND +mint=? "
+                        "AND +ts>=? AND +ts<=?", (wallet, mint, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
     except Exception:  # noqa: BLE001 - not known: the bot's, as before
         return set()
-    return {str(sig) for sig, is_buy, prio, tip in rows
-            if not (bot_tape_buy(SimpleNamespace(priority=prio, tip=tip), marks) if is_buy
-                    else bot_sale_fees({"priority_lamports": prio, "tip_lamports": tip}, marks))}  # fmt: skip
+
+    def ours(sig, is_buy, prio, tip, slot, pos, ts) -> bool:
+        if not is_buy:
+            return bot_sale_fees({"priority_lamports": prio, "tip_lamports": tip}, marks)
+        return bot_tape_buy(SimpleNamespace(sig=sig, mint=mint, slot=slot, pos=pos, ts=ts, priority=prio, tip=tip),
+                            marks)  # fmt: skip
+
+    return {str(row[0]) for row in rows if not ours(*row)}
 
 
 _FILL_KEYS = ("sig", "ts", "sol", "tokens", "wallet_copied", "sniper_id", "priority_lamports", "tip_lamports")
@@ -256,7 +264,7 @@ def _fill_buys(store: Store, wallet: str, mint: str, now: float, on_tape: set[st
     for r in rows:
         if str(r[0]) in on_tape:
             continue
-        f = dict(zip(_FILL_KEYS, r))
+        f = dict(zip(_FILL_KEYS, r)) | {"mint": mint}  # with its coin: the rule that tells whose a buy is places it
         tokens = float(f.get("tokens") or 0)  # tokens not recorded: open, a coin nobody may be selling
         out.append(f | {"open": not tokens or float(sold.get(f["sig"]) or 0) < tokens * (1 - OPEN_SHARE)})
     return out

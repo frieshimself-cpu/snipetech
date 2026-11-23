@@ -114,26 +114,36 @@ def _bought_by_us(store, wallet: str, mint: str, marks: dict | None = None) -> b
     """Whether a buy of ours explains holding `mint`: a buy of the bot's by the wallet on the tape, or a buy fill of
     the bot's in the wallet (measure/ours.py: the fees a sniper of ours pays, a sniper or copied wallet the measure stage
     tied it to, or fees nobody recorded; `marks`: fee_marks, read here when not given). The owner's own buy at other
-    fees explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Any read
-    that fails counts as ours (the coin then keeps equity unknown, as before)."""
-    from types import SimpleNamespace
-
+    fees explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Each buy
+    goes to that rule whole (`_tape_buy`: its signature, coin and place, not its fees alone), so that whatever else
+    the rule tells a buy of ours by is asked here too. Any read that fails counts as ours (the coin then keeps equity
+    unknown, as before)."""
     from ..measure.ours import bot_buy, bot_tape_buy, fee_marks
 
     if not mint or mint == "unknown":
         return True
     try:
         marks = fee_marks(store) if marks is None else marks
-        for priority, tip in store._q("SELECT priority, tip FROM trades WHERE mint=? AND user=? AND is_buy=1",
-                                      (mint, wallet)):  # fmt: skip
-            if bot_tape_buy(SimpleNamespace(priority=priority, tip=tip), marks):
+        for row in store._q("SELECT sig, slot, pos, ts, priority, tip FROM trades WHERE mint=? AND user=? "
+                            "AND is_buy=1", (mint, wallet)):  # fmt: skip
+            if bot_tape_buy(_tape_buy(mint, *row), marks):
                 return True
-        rows = store._q("SELECT sniper_id, wallet_copied, priority_lamports, tip_lamports FROM fills "
+        rows = store._q("SELECT sig, sniper_id, wallet_copied, priority_lamports, tip_lamports FROM fills "
                         "WHERE wallet=? AND mint=? AND side='buy'", (wallet, mint))  # fmt: skip
-        return any(bot_buy({"sniper_id": s, "wallet_copied": c, "priority_lamports": p, "tip_lamports": t}, marks)
-                   for s, c, p, t in rows)  # fmt: skip
+        return any(bot_buy({"sig": g, "mint": mint, "sniper_id": s, "wallet_copied": c, "priority_lamports": p,
+                            "tip_lamports": t}, marks) for g, s, c, p, t in rows)  # fmt: skip
     except Exception:  # noqa: BLE001
         return True
+
+
+def _tape_buy(mint: str, sig, slot, pos, ts, priority, tip):
+    """A buy on the tape as measure/ours.bot_tape_buy reads one: its fees, and its signature, coin and place in the
+    block. The fees alone left a copy that paid a pair no payload on record names (OKTech varies what it pays: 22 Nov
+    00:19 a copy went out without its tip) the owner's own to every reader here, though the rule can tell such a copy by
+    where it stands behind the copied wallet's buy (second round of the 22 Nov audit)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(sig=sig, mint=mint, slot=slot, pos=pos, ts=ts, priority=priority, tip=tip)
 
 
 STRAY_AFTER_SECS = 600  # a coin no buy of ours explains, seen this long: no tape lag can explain it either
@@ -218,8 +228,6 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     record of it (when it was made, what it copies) is not counted, so it is never retired. A buy at fees no sniper of
     ours pays is the owner's own (measure/ours.bot_tape_buy) and is no sniper's (22 Nov audit: counted for every book
     sniper, one hand buy would have retired them all)."""
-    from types import SimpleNamespace
-
     from ..measure.ours import bot_tape_buy, fee_marks
 
     local = {r["id"]: r for r in store.oktech_snipers(active=False)}
@@ -239,7 +247,7 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     buys = [(sig, mint, slot, pos, ts) for sig, mint, slot, pos, ts, priority, tip in
             store._q("SELECT DISTINCT sig, mint, slot, pos, ts, priority, tip FROM trades WHERE user=? AND is_buy=1 "
                      "AND ts>=? ORDER BY slot, pos", (wallet, since))
-            if bot_tape_buy(SimpleNamespace(priority=priority, tip=tip), marks)]  # fmt: skip
+            if bot_tape_buy(_tape_buy(mint, sig, slot, pos, ts, priority, tip), marks)]  # fmt: skip
     every_leader = sorted({ld for r in local.values() for ld in copied_leaders(r)})
 
     def leaders_before(mint: str, slot: int, pos: int) -> set[str]:

@@ -712,3 +712,101 @@ def test_review_a_stop_of_a_sniper_whose_wallet_left_the_ranking_reads_the_walle
             assert ("stop", "g1") not in svc.calls, (k, svc.calls)
         finally:
             st.close()
+
+
+ODD_FEES = (1_000_000, 77_000_000)  # a sniper's priority with a tip no payload on record names
+ODD = "Oddf" + "d" * 40  # the coin of a copy that paid them
+ODD_SIG = "ODDCOPY" + "x" * 81  # that copy on the tape (AB._tape_trade pads a signature to 88 characters)
+ODD_AT = (ODD, 400_600_000, 3)  # where it stands: its coin, slot and place in the block
+
+
+def _told_by_its_place(monkeypatch, fill_sig=None):
+    """Stand in for the rule the same round gives measure/ours.py (another group's file): a buy is the bot's by its
+    fees, or by its place right behind a copied wallet's buy whatever it paid, which the rule can only ask of a buy
+    whose signature, coin and place the reader hands over. Here that copy is ODD_SIG at ODD_AT (and `fill_sig` in the
+    fills)."""
+    from snipetech.measure import ours as O
+
+    by_fees_tape, by_fees_fill = O.bot_tape_buy, O.bot_buy
+
+    def tape(t, marks):
+        at = (getattr(t, "mint", None), getattr(t, "slot", None), getattr(t, "pos", None))
+        return by_fees_tape(t, marks) or (getattr(t, "sig", None) == ODD_SIG and at == ODD_AT)
+
+    def fill(row, marks):
+        return by_fees_fill(row, marks) or (fill_sig is not None and row.get("sig") == fill_sig
+                                            and row.get("mint") == ODD)  # fmt: skip
+
+    monkeypatch.setattr(O, "bot_tape_buy", tape)
+    monkeypatch.setattr(O, "bot_buy", fill)
+
+
+def test_review_the_book_hands_a_buys_place_to_the_rule_that_tells_whose_it_is(tmp_path, monkeypatch):
+    """OKTech can send a copy at a fee pair no payload on record names (22 Nov 00:19: one went out without its tip).
+    The same round teaches the rule to tell such a copy by its place behind the copied wallet's buy. The book's stray
+    rule and its count of a sniper's buys handed the rule the fees alone, so to them that copy stayed the owner's: a
+    stray after ten minutes, its sniper stopped under a kill while it held it, and no buy of the sniper's (never
+    replaced before the buy that uses up OKTech's cap). They hand over the buy's signature, coin and place."""
+    from snipetech.book.run import _bought_by_us, _buys_by_sniper, _strays
+
+    st, cfg = BT._env(tmp_path)  # the book is off: its kill path stops its snipers that hold nothing
+    AB._book_sniper(st)
+    AB._tape_trade(st, "ODDCOPY", BT.NOW - 1800, ODD_AT[1], True, ODD_FEES, mint=ODD)
+    AB._seen(tmp_path, ODD, BT.NOW - 1800)
+    held = [{"mint": ODD, "amount": RAW / 1e6, "raw": 2 * RAW, "value_sol": 0.2, "priced": True}]
+    k1 = [{"id": "k1", "name": BT.K1, "status": "running"}]
+    paths = OperatorPaths(tmp_path / "data")
+    try:
+        assert _bought_by_us(st, W, ODD) is False and _strays(st, W, held, paths, BT.NOW) == {ODD}  # by its fees alone
+        assert _buys_by_sniper(st, W, k1) == {"k1": 0}
+        _told_by_its_place(monkeypatch)
+        assert _bought_by_us(st, W, ODD) is True and _strays(st, W, held, paths, BT.NOW) == set()
+        assert _buys_by_sniper(st, W, k1) == {"k1": 1}
+        svc = BT.FakeSvc(st, snipers=k1, held=held, cfg=cfg)
+        assert _book(tmp_path, svc, cfg)["kill_reason"] == "book off" and svc.calls == [], svc.calls
+    finally:
+        st.close()
+
+
+def test_review_the_book_hands_a_fills_signature_and_coin_to_that_rule(tmp_path, monkeypatch):
+    """The same of a copy the tape does not hold (an older PumpSwap coin), which the measure stage reads off the chain
+    into fills: the rule places it by its signature and coin."""
+    from snipetech.book.run import _bought_by_us
+
+    st, _cfg0 = BT._env(tmp_path)
+    AB._book_sniper(st)
+    sig = "ODDFILL" + "f" * 81
+    st.put_fill({"sig": sig, "ts": int(BT.NOW) - 900, "wallet": W, "wallet_copied": BT.L1, "mint": ODD, "side": "buy",
+                 "sol": 0.2, "tokens": 1e9, "priority_lamports": ODD_FEES[0], "tip_lamports": ODD_FEES[1]})  # fmt: skip
+    try:
+        assert _bought_by_us(st, W, ODD) is False  # by its fees alone
+        _told_by_its_place(monkeypatch, fill_sig=sig)
+        assert _bought_by_us(st, W, ODD) is True
+    finally:
+        st.close()
+
+
+def test_review_the_watch_hands_a_buys_place_to_that_rule_too(tmp_path, monkeypatch):
+    """The unsold-coin watch told a held coin by its buys' fees alone as well: a copy at fees no payload names was "a
+    trade of your own", one line a day and no /sell line, and the gate takes the watch's word for the owner's coin, so
+    nothing said that nobody was selling it. With the buy's place handed over it is our copy: the alert with its
+    /sell line, every 15 minutes while it is held, and an `unmanaged` record."""
+    from snipetech.book.watch import watch_pass
+
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    AB._tape_trade(st, "ODDCOPY", BT.NOW - 1800, ODD_AT[1], True, ODD_FEES, mint=ODD)
+    BT._fresh_tape(st)
+    AB._seen(tmp_path, ODD, BT.NOW - 1800)
+    held = [{"mint": ODD, "amount": RAW / 1e6, "raw": RAW, "value_sol": 0.2, "priced": True}]
+    sent: list[str] = []
+    try:
+        (hit,) = watch_pass(cfg, st, AB._notifier(sent), W, held, [], BT.NOW)
+        assert hit["stray"] and hit["owner"] and "a trade of your own" in sent[0]  # by its fees alone
+        _told_by_its_place(monkeypatch)
+        (hit,) = watch_pass(cfg, st, AB._notifier(sent), W, held, [], BT.NOW + 60)
+        assert not hit.get("stray") and hit["buy_sig"] == ODD_SIG, hit
+        assert "Nobody is selling coin " + ODD in sent[1] and sent[1].endswith(f"/sell {ODD}"), sent
+        assert [e["mint"] for e in st.events(kind="unmanaged")] == [ODD]
+    finally:
+        st.close()
