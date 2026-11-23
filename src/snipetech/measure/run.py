@@ -699,7 +699,7 @@ def _hold_to_ceilings(store: Store, cfg: Config, now: float, notes, seen: list[t
     price = store.asset(WSOL_MINT) or {}
     if not price.get("price_usd") or now - float(price.get("updated") or 0) > CEILING_PRICE_MAX_AGE_SECS:
         limits["unchecked"] = (f"no SOL price on record under {CEILING_PRICE_MAX_AGE_SECS // 3600} hours old: the "
-                               "limits are kept, and were not held against the ceilings the snipers were sent")  # fmt: skip
+                               "limits are kept, and were not held against the snipers' ceilings")  # fmt: skip
         return
 
     def copied(row: dict) -> str | None:
@@ -835,6 +835,9 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     failed_rows: list[dict] = []
     failed_list: list[dict] = []
     landed_list: list[dict] = []
+    # why this run could not read the wallet's own signatures of its window, or the transactions among them the tape
+    # does not hold: its failed sends and its trades off the tape are then in no fill, and the cursor stays (below)
+    scan_failed: str | None = None
     try:
         if failed_sigs is None and landed_sigs is None:
             listed = await wallet_signatures(svc.rpc, wallet, int(since_ts))
@@ -844,6 +847,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             failed_list = await failed_sigs(wallet, int(since_ts)) if failed_sigs else []
             landed_list = await landed_sigs(wallet, int(since_ts)) if landed_sigs else []
     except Exception as exc:  # noqa: BLE001
+        scan_failed = f"{type(exc).__name__}: {exc}"
         if hasattr(svc, "progress"):
             svc.progress(f"measure: failed-signature scan failed: {type(exc).__name__}: {exc}")
     # read from the chain: our landed trades the tape does not hold, and the landing of a buy the tape cannot place
@@ -884,6 +888,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         except Exception as exc:  # noqa: BLE001
             txs = {}
             chain_error("our off-tape transactions", exc)
+            scan_failed = scan_failed or f"our off-tape transactions: {type(exc).__name__}: {exc}"
         for s in sorted(todo, key=lambda s: (int(s.get("slot") or 0), s["signature"])):
             sig = s["signature"]
             try:
@@ -1192,9 +1197,19 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             landing = f"+{int(round(behind_p75)) + LANDING_OFFSET}"
             store.set_coverage(LANDING_KEY, {"pos": landing, "behind_p75": behind_p75, "pos_p75": best.get("p75_pos"),
                                              "arm": best["arm"], "n": len(behind), "ts": int(now)})  # fmt: skip
-    if move_cursor:
+    # The cursor says the fills hold every trade of the wallet up to it, the ones the tape does not follow among them:
+    # the book's stray rule and the unsold-coin watch read it so (book/run._strays, book/watch.py), the automatic test
+    # waits on it, and the next run's window starts from it. A run whose scan failed read none of those, so it leaves
+    # the cursor where it was (23 Nov: it moved all the same; two such runs, a copy held ten minutes and a kill together
+    # called that copy a stray, and three in a row moved the window past trades no later run read). The next run that
+    # can read takes the whole stretch since the last one that could.
+    if move_cursor and scan_failed is None:
         store.set_coverage(LAST_KEY, {"ts": int(now)})
-    return {"fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),
+    failed_scan = {} if scan_failed is None else {"scan_failed": scan_failed + (
+        ": the wallet's failed sends and its trades off the tape were not read, and the cursor stays where it was"
+        if move_cursor else "")}  # fmt: skip
+    return {**failed_scan,
+            "fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
             "from_chain": from_chain, "limits": limits, "non_coin_buys": non_coins,

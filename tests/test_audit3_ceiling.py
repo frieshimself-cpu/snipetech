@@ -476,3 +476,89 @@ def test_a_frozen_rule_keeps_its_fill_ceiling_and_the_forward_run_refuses_by_it(
         assert t["data"]["fill_mcap_sol"] == pytest.approx(_fill_at(2.6), rel=1e-4)
     assert ran["refused_sends"] == {frozen["id"]: 2}
     st.close()
+
+
+# -- C3: a failed scan must not move the measure stage's cursor ---------------------------------------------------------
+#
+# The book's stray rule (book/run._strays) and the unsold-coin watch (book/watch.py) read "the measure stage ran since
+# the coin showed" (the cursor, measure:last_ts) as "the fills would hold our buy of a coin the tape does not follow".
+# The stage moved the cursor also when its scan of the wallet's own signatures had failed: nothing off the tape was
+# read then. Two such runs, a copy held ten minutes and a kill together called that copy a stray. And three in a row
+# moved the window past the trades of the first, which no later run read.
+
+
+class Down(RuntimeError):
+    pass
+
+
+def _flaky(chain):
+    """The chain's signature listing, refusing while `down` holds True."""
+    down = [False]
+    listing = chain.get_signatures
+
+    async def get_signatures(address, before=None, until=None, limit=1000):
+        if down[0]:
+            raise Down("the RPC answered nothing")
+        return await listing(address, before=before, until=until, limit=limit)
+
+    chain.get_signatures = get_signatures
+    return down
+
+
+def test_a_failed_scan_leaves_the_cursor_where_it_was_and_the_next_run_reads_its_window(tmp_path):
+    from snipetech.book.watch import _measured_at
+
+    chain = _smoke_chain()
+    svc, st, cfg = _svc(tmp_path, chain)
+    down = _flaky(chain)
+    try:
+        first = asyncio.run(run_measure(svc, cfg, T0 - 100, notes=Notes()))  # before the first send: nothing yet
+        assert "scan_failed" not in first and st.coverage(M.LAST_KEY) == {"ts": T0 - 100}
+        down[0] = True
+        for k in (1, 2, 3):  # a quarter of an hour without an answer, while a buy lands that the tape does not hold
+            out = asyncio.run(run_measure(svc, cfg, T0 - 100 + 600 * k, notes=Notes()))
+            assert out["scan_failed"].startswith("Down: the RPC answered nothing") and out["buys"] == 0
+            # the record the book's stray rule and the watch read still says: not run since before the buy
+            assert st.coverage(M.LAST_KEY) == {"ts": T0 - 100} and _measured_at(st) == T0 - 100
+        assert st.fill(sig("gXv9uz3u")) is None  # the buy of T0 + 488 is in no fill yet
+        down[0] = False
+        back = asyncio.run(run_measure(svc, cfg, T0 + 2400, notes=Notes()))
+        # the window starts where the last scan that worked ended (less the overlap), not ten minutes ago
+        assert back["window"][0] == T0 - 100 - cfg.measure.overlap_secs and "scan_failed" not in back
+        assert st.fill(sig("gXv9uz3u"))["side"] == "buy" and st.fill(sig("4hC1n7oF"))["side"] == "failed"
+        assert st.coverage(M.LAST_KEY) == {"ts": T0 + 2400}
+    finally:
+        st.close()
+
+
+def test_off_tape_transactions_that_cannot_be_fetched_hold_the_cursor_too(tmp_path):
+    chain = _smoke_chain()
+    svc, st, cfg = _svc(tmp_path, chain)
+    fetch = chain.get_transactions
+    down = [True]
+
+    async def get_transactions(signatures):
+        if down[0]:
+            raise Down("the RPC answered nothing")
+        return await fetch(signatures)
+
+    chain.get_transactions = get_transactions
+    try:
+        asyncio.run(run_measure(svc, cfg, T0 - 100, notes=Notes()))
+        out = asyncio.run(run_measure(svc, cfg, T0 + 900, notes=Notes()))  # the signatures are listed, none is read
+        assert "our off-tape transactions" in out["scan_failed"] and st.coverage(M.LAST_KEY) == {"ts": T0 - 100}
+        down[0] = False
+        asyncio.run(run_measure(svc, cfg, T0 + 1200, notes=Notes()))
+        assert st.fill(sig("gXv9uz3u"))["side"] == "buy" and st.coverage(M.LAST_KEY) == {"ts": T0 + 1200}
+    finally:
+        st.close()
+
+
+def test_a_backfill_never_moves_the_cursor_whatever_its_scan_did(tmp_path):
+    chain = _smoke_chain()
+    svc, st, cfg = _svc(tmp_path, chain)
+    try:
+        asyncio.run(M.backfill(svc, cfg, T0 - 60, T0 + 3000, notes=Notes()))
+        assert st.coverage(M.LAST_KEY) == {}
+    finally:
+        st.close()
