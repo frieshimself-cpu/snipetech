@@ -427,3 +427,96 @@ def test_a_copy_two_slots_behind_is_still_a_copy_when_the_blocks_could_not_be_li
     marks = fee_marks(store)
     assert bot_buy(row, marks) and odd_fill(row, marks) == CW
     store.close()
+
+
+# -- S3: a copied wallet's transaction that could not be fetched is "not walked back" ---------------------------------
+
+
+def _unserved(chain, *names):
+    """The chain on a node that lists the transactions `names` and cannot serve them yet (getTransaction: null);
+    returns the switch that makes it serve them."""
+    from .chain import sig
+
+    lost = {sig(n) for n in names}
+    real = chain.get_transaction
+
+    async def get_transaction(signature):
+        return None if signature in lost else await real(signature)
+
+    chain.get_transaction = get_transaction
+    return lost.clear
+
+
+def _copy_behind_unserved_lead():
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.0015, tip=0.12))
+    return chain, _unserved(chain, "lead")
+
+
+def test_a_copy_whose_copied_buy_the_node_cannot_serve_yet_is_nobodys_until_it_can():
+    """S3: our copy at fees no payload names, one block behind the copied wallet's buy; the node lists that buy and
+    cannot serve its transaction yet. The walk dropped it without a word, looked whole, and once the copy was
+    CHAIN_SETTLE_SECS old it was the owner's coin for good: never counted or sold by the run, its sniper re-armed
+    (stopped) while it held the coin (CLAUDE.md rule 1). A candidate that cannot be opened is a walk that did not
+    reach back: the coin stays nobody's until it can be read."""
+    from snipetech.measure import ours
+
+    chain, serve = _copy_behind_unserved_lead()
+    store = Store(":memory:")
+    coins = RunCoins(store, chain, ME, sniper_marks([COPY], store=store))
+    t = chain.ts(S + 1)
+    assert asyncio.run(coins.whose(COIN_HELD, t - 300, t + 2)) is None
+    later = t + 2 + ours.CHAIN_RETRY_SECS  # past CHAIN_SETTLE_SECS: a whole walk that found nothing would say "owner"
+    assert asyncio.run(coins.whose(COIN_HELD, t - 300, later)) is None and coins.known(COIN) is None
+    serve()
+    assert asyncio.run(coins.whose(COIN_HELD, t - 300, later + ours.CHAIN_RETRY_SECS)) == "ours"
+    assert [o["leader"] for o in coins.odd] == [CW]
+    store.close()
+
+
+def test_the_measure_stages_reading_of_that_buy_decides_nothing_while_it_was_not_whole():
+    """S3, the other reader of the same walk: the measure stage reads the buy within five minutes and writes its fill,
+    and the runner asks that fill first. Its search could not open the copied wallet's transaction either: the fill
+    said "chain-none" (the chain was read, no copied wallet bought the coin), the runner took it at its word, and the
+    copy was the owner's. A reading that was not whole writes no landing, so the runner's own walk decides."""
+    chain, serve = _copy_behind_unserved_lead()
+    landing, row = _measured_row(chain, "ours")
+    assert landing["searched"] is False and row.get("landing_src") is None and row.get("wallet_copied") is None
+    store = _sniper_store()
+    store.put_fill(row)
+    marks = fee_marks(store)
+    assert not bot_buy(row, marks)  # nothing new either way: its fees decide for a yes or no, as before
+    serve()
+    coins = RunCoins(store, chain, ME, sniper_marks([COPY], store=store))
+    now = chain.ts(S + 1) + 400  # the measure stage has run; the buy is still young enough to walk back to
+    assert asyncio.run(coins.whose(COIN_HELD, now - 700, now)) == "ours"
+    store.close()
+
+
+def test_the_measure_stage_reads_such_a_buy_again_until_its_reading_is_whole(tmp_path):
+    """S3, through the measure stage's own entry (the path `measure backfill` takes): a copy of a coin the tape does
+    not hold, read while the node could not serve the copied wallet's transaction. Its fill was "chain-none" for
+    good (a stored fill with a venue is never read again). It is now written with what the buy cost and bid and
+    nothing about its landing, not even the venue, and the next run reads it again and places it."""
+    from snipetech.measure.run import backfill, run_measure
+
+    from . import test_measure_chain as MC
+
+    chain, ours = MC._ladder_chain()
+    serve = _unserved(chain, "lead")
+    svc, st, cfg = MC._svc(tmp_path, chain)
+    try:
+        MC._copy_sniper(st)
+        out = asyncio.run(backfill(svc, cfg, MC.T0, MC.T0 + 1200))
+        buy = st.fill(ours)
+        assert buy["side"] == "buy" and buy["sol"] == pytest.approx(0.05) and buy["priority_lamports"] == 5_000_000
+        assert buy["landing_src"] is None and buy["wallet_copied"] is None and buy["venue"] is None
+        assert out["from_chain"] == {"buys": 1, "sells": 1, "placed": 0}
+        serve()
+        out = asyncio.run(run_measure(svc, cfg, MC.T0 + 1300, since_ts=MC.T0, until_ts=MC.T0 + 1200, move_cursor=False))
+        buy = st.fill(ours)
+        assert buy["landing_src"] == "chain" and buy["wallet_copied"] == MC.LEAD and buy["trades_behind"] == 2
+        assert buy["venue"] and out["from_chain"]["placed"] == 1
+    finally:
+        st.close()
