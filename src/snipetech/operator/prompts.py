@@ -106,7 +106,8 @@ config change or acts on an owner question before the owner has answered it.
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet newly qualified, a coin our
 snipers bought that no sniper is selling, a sniper running or a coin of ours held when none should be, equity moved by
 our own trades more than the alert threshold, the tape stalled, a service down, the budget reached. A held coin is ours
-when its `ours` in the snapshot is true: the owner's own coin and one sent in (`ours` false) are never a decision.
+when its `ours` in the snapshot is true: the owner's own coin and one sent in (`ours` false) are never a decision, nor
+is what our sold copy left (`sold_copy` true).
 Everything else is "info". Write for the owner: plain words, the numbers that matter,
 no jargon, two sentences where two will do. News is what changed since the last round: a wallet already reported as
 qualified in an earlier note (read_file operator/notes.md with tail 60: the file is long, its last lines are the

@@ -703,6 +703,17 @@ def test_i8_the_agents_are_told_what_the_odd_fees_note_means_and_what_to_do_with
         assert "behind a wallet no running sniper follows it is most likely the owner's own buy" in text
 
 
+def test_i8_the_agents_are_told_what_a_sold_copy_left_is_no_decision():
+    """The snapshot marks the few tokens a sold copy of ours left `sold_copy` (this round's loss-alert fix). They are
+    the bot's (`ours` true), and "a coin of ours held when none should be" is a decision note: the agents are told
+    such a coin is none, as the gate already raises nothing for it."""
+    from snipetech.operator import prompts as P
+
+    said = "are never a decision, nor is what our sold copy left (`sold_copy` true)"
+    for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
+        assert said in _flat(system)
+
+
 def test_i8_the_agents_are_told_how_the_reports_text_marks_a_refuted_rule():
     """The text of `paper report` (no --json) marks a refuted rule in a last column `state` since the second round."""
     from snipetech.operator import prompts as P
