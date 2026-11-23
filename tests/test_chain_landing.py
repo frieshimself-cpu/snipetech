@@ -108,6 +108,178 @@ def test_a_gap_of_more_than_five_blocks_is_said_and_the_count_is_a_floor():
     assert r["place"] == 5 and "at least" in CL.render([r])
 
 
+def _no_list(chain: Chain, answer=None) -> Chain:
+    """The chain with a list of blocks that cannot be read: the call fails, or answers `answer(lo, hi)`."""
+
+    async def get_blocks(start_slot, end_slot):
+        chain.calls.append(("getBlocks", start_slot, end_slot))
+        if answer is None:
+            raise RuntimeError("node refused")
+        return answer(start_slot, end_slot)
+
+    chain.get_blocks = get_blocks
+    return chain
+
+
+@pytest.mark.parametrize("answer", [None, lambda lo, hi: [], lambda lo, hi: [hi]],
+                         ids=["the call fails", "an empty answer", "an answer without the copied block"])  # fmt: skip
+def test_a_list_of_blocks_that_cannot_be_read_is_not_the_next_block(answer):
+    """S2 (audit round 3). When getBlocks failed or answered nothing, the two ends alone were "the blocks that exist":
+    `blocks_after` 1 for any distance up to 150 slots, the place counted from two blocks, and the landing called
+    complete. The fills keep that for good, and a buy a minute behind a copied wallet read as one block behind it (a
+    copy, to whoever asks the fills whose a buy is). With no list there is at the most a block a slot: the slot
+    distance, and the slots between are unread."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    for k in (20, 60):  # buyers in blocks between that nobody reads
+        chain.put(S + k, swap(f"mid{k}", key(f"buyer {k}"), COIN, tokens=100_000_000, sol=0.2, priority=0.004))
+    chain.put(S + 100, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    r = _run(CL.read_landing(_no_list(chain, answer), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["leader"] == LEAD and r["leader_buy"]["sig"] == sig("lead") and r["slots_after"] == 100
+    assert r["blocks_after"] == 100
+    assert not r["complete"] and r["blocks_unread"] == 99 and r["blocks_read"] == 2
+    assert r["place"] == 0 and "at least 0" in CL.render([r])  # a floor, and said so
+    assert CL.fill_fields(r)["blocks_after"] == 100  # what the fills keep
+
+
+def test_a_list_that_names_some_blocks_between_is_read_for_them_and_still_says_what_it_lacks():
+    """S2: an answer that lacks one of the two blocks we know exist (each holds one of the two buys) was not read
+    whole. The blocks it does name are read for their buyers; the count of blocks stays the slot distance."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(S + 2, swap("mid", key("a buyer between"), COIN, tokens=100_000_000, sol=0.2, priority=0.004))
+    chain.put(S + 9, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    r = _run(CL.read_landing(_no_list(chain, lambda lo, hi: [S + 2, hi]), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["blocks_after"] == 9 and not r["complete"] and r["blocks_unread"] == 7 and r["blocks_read"] == 3
+    assert [b["wallet"] for b in r["buyers_ahead"]] == [key("a buyer between")] and r["place"] == 1
+
+
+@pytest.mark.parametrize("our_slot", [S, S + 1], ids=["one block", "adjacent blocks"])
+def test_two_buys_in_one_block_or_in_adjacent_ones_need_no_list_of_blocks(our_slot):
+    """S2: where every copy on record landed (the copied wallet's block or the next slot) nothing lies between, so a
+    list that cannot be read changes nothing, and none is asked for."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(our_slot, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    r = _run(CL.read_landing(_no_list(chain), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["blocks_after"] == our_slot - S and r["complete"] and r["blocks_unread"] == 0
+    assert r["place"] == 0 and r["verdict"] == "first"
+    assert not [c for c in chain.calls if c[0] == "getBlocks"]
+
+
+def test_a_copy_ahead_of_its_leader_with_no_list_of_blocks_is_not_one_block_ahead_either():
+    """S2, the other side: a buy of ours that landed before the copied wallet's own, three slots before it."""
+    chain = Chain()
+    chain.put(S, swap("ours", ME, COIN, tokens=60_000_000, sol=0.05, priority=0.005, tip=0.03))
+    chain.put(S + 3, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    r = _run(CL.read_landing(_no_list(chain), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["ahead_of_leader"] and r["verdict"] == "ahead" and r["blocks_after"] == -3
+    assert not r["complete"] and r["blocks_unread"] == 2
+
+
+def _unserved(chain: Chain, *names: str) -> Chain:
+    """The chain on a node that lists the transactions `names` and cannot serve them yet (getTransaction: null)."""
+    lost = {sig(n) for n in names}
+    real = chain.get_transaction
+
+    async def get_transaction(signature):
+        return None if signature in lost else await real(signature)
+
+    chain.get_transaction = get_transaction
+    return chain
+
+
+def test_a_copied_wallets_transaction_that_cannot_be_fetched_is_not_no_copied_buy():
+    """S3 (audit round 3). The search for the copied buy opens the copied wallet's transactions around ours; one the
+    node listed and could not serve was dropped without a word, so the search looked whole and found no copied buy:
+    "chain-none" on the fill for good, and to the runner a fresh copy at fees no payload names was the owner's coin.
+    A candidate that could not be opened is a search that did not reach back: said, and nothing is placed."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    _unserved(chain, "lead")
+    found, note = _run(CL._leader_buys(chain, [LEAD], COIN, sig("ours"), S + 1))
+    assert found == [] and LEAD[:6] in note and "could not be fetched" in note
+    r = _run(CL.read_landing(chain, sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["leader_buy"] is None and r["place"] is None and "could not be fetched" in r["leader_note"]
+    assert r["searched"] is False and not r["complete"]
+    cols = CL.fill_fields(r)
+    assert cols.get("landing_src") is None and "wallet_copied" not in cols  # no landing: read again, decides nothing
+    assert r["sol"] == pytest.approx(0.05) and r["our_bid_sol"] == 0.035  # our own side is still read
+
+
+def test_a_nearer_transaction_that_cannot_be_fetched_leaves_the_buy_found_further_back_unplaced():
+    """S3: the copied wallet bought the coin 40 slots before us too, and that buy can be read. Placed against it our
+    copy was "40 blocks behind", no copy at all: a search that found something and missed a nearer candidate is no
+    more whole than one that found nothing."""
+    chain = Chain()
+    chain.put(S - 40, swap("lead-old", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(S, swap("lead", LEAD, COIN, tokens=1_000_000_000, sol=1.0, priority=0.002, held=3_000_000_000))
+    chain.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    _unserved(chain, "lead")
+    found, note = _run(CL._leader_buys(chain, [LEAD], COIN, sig("ours"), S + 1))
+    assert [b["sig"] for b in found] == [sig("lead-old")] and "could not be fetched" in note
+    r = _run(CL.read_landing(chain, sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["searched"] is False and not r["complete"] and "could not be fetched" in r["leader_note"]
+    assert r["leader_buy"]["sig"] == sig("lead-old")  # the table still shows what it was read against, and says so
+    assert "the search for the copied buy was not whole" in CL.render([r])
+    assert CL.fill_fields(r).get("landing_src") is None
+    # served, the search is whole and the copy stands one block behind the buy it copied
+    whole = Chain()
+    whole.blocks = chain.blocks
+    r = _run(CL.read_landing(whole, sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["searched"] is True and r["complete"] and r["leader_note"] is None
+    assert r["leader_buy"]["sig"] == sig("lead") and r["blocks_after"] == 1
+    assert CL.fill_fields(r)["landing_src"] == "chain"
+    assert _run(CL._leader_buys(whole, [LEAD], COIN, sig("ours"), S + 1))[1] == ""
+
+
+def test_a_copied_wallet_that_could_not_be_asked_is_said_when_another_ones_buy_was_found():
+    """S3: two wallets are copied. One bought the coin 40 slots before us; the ask for the other's signatures just
+    before our buy failed. Its buy right before ours may be there unread: the search says so (it returned the first
+    wallet's buy as if both had been looked at)."""
+    other = key("another copied wallet")
+    chain = Chain()
+    chain.put(S - 40, swap("lead-old", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(S, swap("other", other, COIN, tokens=1_000_000_000, sol=1.0, priority=0.002))
+    chain.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    real = chain.get_signatures
+
+    async def refuse(address, **kw):
+        if address == other:
+            raise RuntimeError("node refused")
+        return await real(address, **kw)
+
+    chain.get_signatures = refuse
+    found, note = _run(CL._leader_buys(chain, [LEAD, other], COIN, sig("ours"), S + 1))
+    assert [b["leader"] for b in found] == [LEAD] and other[:6] in note and "could not be asked" in note
+    r = _run(CL.read_landing(chain, sig("ours"), [LEAD, other], mates=set(), own={ME}))
+    assert r["searched"] is False and CL.fill_fields(r).get("landing_src") is None
+
+
+def test_our_own_block_that_the_node_does_not_serve_is_no_landing_either():
+    """S3's sibling in the same reading: the copied buy was found, and the node gave no block for our own slot, so
+    which of the two ran first is not known. The landing said only a note and the fill became "chain-none" (no copied
+    wallet had bought the coin), which is not what was read."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    real = chain.get_block
+
+    async def get_block(slot):
+        return None if slot == S + 1 else await real(slot)
+
+    chain.get_block = get_block
+    r = _run(CL.read_landing(chain, sig("ours"), LEAD, mates=set(), own={ME}))
+    assert "not in the block" in r["leader_note"] and r["searched"] is False and not r["complete"]
+    assert CL.fill_fields(r).get("landing_src") is None
+    # a reading that was whole and found no copied buy is still "chain-none"
+    alone = Chain()
+    alone.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    r = _run(CL.read_landing(alone, sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["searched"] is True and CL.fill_fields(r)["landing_src"] == "chain-none"
+
+
 def test_first_behind_the_wallet_and_every_buyer_ahead_bidding_more():
     chain = Chain()
     chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))

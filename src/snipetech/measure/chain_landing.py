@@ -170,12 +170,15 @@ def pool_side(tx: dict, mint: str, bought: bool) -> dict[str, Any] | None:
 MOVE_RENT_LAMPORTS = 2_100_000  # a token account's rent (2,039,280) and a little: what a coin's transfer may carry
 
 
-def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, *, ours: bool = False) -> dict | None:
+def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, *, ours: bool = False,
+              coin: str | None = None) -> dict | None:  # fmt: skip
     """One wallet's side of one transaction (a getTransaction answer, or a block's transaction with its slot added):
-    the coin whose balance of the wallet changed the most, bought or sold; `tokens` (raw units) and `sol`: what the
-    trade itself cost or brought, from the wallet's plain and wrapped SOL before and after, less what `fills` keeps
-    apart (the fee, the tips) and less the rent of a token account of its own opened or closed there. So `sol` is the
-    tape's `sol` (the quote and the venue's fee) wherever the coin trades. `pool_sol`: the SOL at the pool
+    the coin whose balance of the wallet changed the most, bought or sold (`coin`: this one instead, when the
+    wallet's balance of it changed there: for the reader that asks of one coin, in a transaction that moved another
+    one more); `tokens` (raw units) and `sol`: what the trade itself cost or brought, from the wallet's plain and
+    wrapped SOL before and after, less what `fills` keeps apart (the fee, the tips) and less the rent of a token
+    account of its own opened or closed there. So `sol` is the tape's `sol` (the quote and the venue's fee) wherever
+    the coin trades; in a transaction that moved two coins it is what all of it cost. `pool_sol`: the SOL at the pool
     (`pool_side`); `price`: SOL per coin (raw lamports per raw unit) at the pool, else from `sol` (`price_from`).
     `ours`: the wallet is ours, and a payment to an account nobody catalogued is a tip (`classify.fee_fields`); for
     any other wallet it is `other_lamports`. A failed transaction is side "failed" with the coin it named; a coin
@@ -194,7 +197,7 @@ def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, 
         mint = max(set(coins), key=coins.count) if coins else None
         change = 0
     else:
-        mint = max(delta, key=lambda m: abs(delta[m])) if delta else None
+        mint = coin if coin and delta.get(coin) else (max(delta, key=lambda m: abs(delta[m])) if delta else None)
         change = delta.get(mint, 0) if mint else 0
         if not change:
             return None
@@ -306,7 +309,11 @@ def _mates_of(mates: Any, leader: str) -> Collection[str] | None:
 async def _leader_buys(rpc, leaders: list[str], mint: str, our_sig: str, our_slot: int) -> tuple[list[dict], str]:
     """Every buy of `mint` by one of `leaders` around our buy (LEADER_WINDOW_SLOTS before it, LEADER_AFTER_SLOTS
     after): [{"leader", "sig", "slot", "tx", "order"}] (`order`: the newer of one wallet's buys has the smaller), and
-    a note when a search could not reach back to our buy.
+    a note when the search could not reach back to our buy: a wallet's signatures not walked back that far, one of
+    its transactions around our buy that the node listed and could not serve (it may be the copied buy), or a wallet
+    that could not be asked while another one's buy was found. With a note the search was not whole, whatever it
+    found: "no copied buy", or "this is the buy we copied", cannot be read off it (23 Nov audit: such a transaction
+    was dropped without a word, the search looked whole, and a fresh copy read as the owner's coin).
 
     First each wallet's signatures just before our transaction (one small call a wallet). Only when that finds no
     buy by any of them (an RPC that takes only the wallet's own signature as the cursor answers nothing; a buy that
@@ -315,23 +322,35 @@ async def _leader_buys(rpc, leaders: list[str], mint: str, our_sig: str, our_slo
     lo, hi = our_slot - LEADER_WINDOW_SLOTS, our_slot + LEADER_AFTER_SLOTS
     found: list[dict] = []
     notes: list[str] = []
+    unserved: dict[str, set[str]] = {}  # each wallet's transactions around our buy that the node did not serve
 
     async def bought(rows: list[dict], leader: str) -> list[dict]:
         rows = [s for s in rows if s.get("err") is None and s.get("signature") and lo <= int(s.get("slot") or 0) <= hi]
         rows.sort(key=lambda s: abs(int(s["slot"]) - our_slot))  # the nearest first; a stable sort keeps their order
         rows = rows[:LEADER_CANDIDATES]
         txs = await rpc.get_transactions([s["signature"] for s in rows]) if rows else {}
+        lost = unserved.setdefault(leader, set())
+        for s in rows:  # one the walk below gets served is unserved no more
+            (lost.discard if txs.get(s["signature"]) else lost.add)(s["signature"])
         return [{"leader": leader, "sig": s["signature"], "slot": int(s["slot"]), "tx": txs[s["signature"]], "order": k}
                 for k, s in enumerate(rows) if txs.get(s["signature"]) and leader in buyers(txs[s["signature"]], mint)]  # fmt: skip
 
+    def said() -> str:
+        lost = [f"{w[:6]}…: {len(sigs)} of its transactions around our buy could not be fetched"
+                for w, sigs in unserved.items() if sigs]  # fmt: skip
+        return "; ".join(notes + lost)
+
+    unasked: list[str] = []
     for leader in leaders:
         try:
             near = await rpc.get_signatures(leader, before=our_sig, limit=LEADER_NEAR)
         except Exception:  # noqa: BLE001 - an RPC that refuses the cursor: the walk below asks without it
             near = []
+            unasked.append(leader)
         found += await bought(list(near or []), leader)
-    if found:
-        return found, ""
+    if found:  # no walk follows: a wallet whose ask failed was not looked at, though another one's buy was found
+        notes += [f"{w[:6]}…: its signatures just before our buy could not be asked for" for w in unasked]
+        return found, said()
     for leader in leaders:
         rows, cursor, reached = [], None, False
         for _ in range(LEADER_PAGES):
@@ -349,7 +368,7 @@ async def _leader_buys(rpc, leaders: list[str], mint: str, our_sig: str, our_slo
             notes.append(f"{leader[:6]}… made more than {LEADER_PAGES * 1000:,} transactions since our buy: its "
                          "signatures were not walked back that far")  # fmt: skip
         found += hits
-    return found, "; ".join(notes)
+    return found, said()
 
 
 async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: str | None = None, mates: Any = None,
@@ -365,14 +384,18 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
 
     The row: our own side as `read_fill` gives it and `our_bid_sol`; `leader`, `leader_buy` (None with `leader_note`
     when no copied wallet bought the coin before us); `blocks_after` (0: the leader's own block; the blocks that
-    exist in between, `slots_after` the slots), `place` (the outsiders' buys between the leader's and ours; 0: first
-    behind it), `buyers_ahead` in the order they ran, `failed_ahead`, `companions_ahead`, `own_ahead`, `pack_ahead`
-    (the buys of the leader's own pack: the transactions right behind its own, back to back, each with buys of
-    PACK_TX_WALLETS wallets or more, and a later buy in that block by a wallet that bought in the pack or in the
-    leader's own transaction; listed and not counted, like its companions'),
+    exist in between, `slots_after` the slots; with `blocks_listed` False the list of those blocks could not be read,
+    and it is the slot distance: at the most that many), `place` (the outsiders' buys between the leader's and ours;
+    0: first behind it), `buyers_ahead` in the order they ran, `failed_ahead`, `companions_ahead`, `own_ahead`,
+    `pack_ahead` (the buys of the leader's own pack: the transactions right behind its own, back to back, each with
+    buys of PACK_TX_WALLETS wallets or more, and a later buy in that block by a wallet that bought in the pack or in
+    the leader's own transaction; listed and not counted, like its companions'),
     `highest_bid_ahead_sol` / `median_bid_ahead_sol`, `bid_more` / `bid_less` / `bid_unclear` and the `verdict`
     (VERDICT_WORDS), `price_gap_pct` (our price over the leader's, percent) with `price_from`, and `complete`: False
-    when more blocks lay between than MAX_BLOCKS (`blocks_unread`: the place is a floor then)."""
+    when more blocks lay between than MAX_BLOCKS, when one of them could not be read, or when they could not be
+    listed (`blocks_unread`: the place is a floor then). `searched`: False when the search for the copied buy itself
+    was not whole (`_leader_buys`' note, or our own block not served; `leader_note` says which): the buy it was read
+    against, or "no copied buy", may be wrong, the landing is not complete, and `fill_fields` writes none."""
     leaders = [leaders] if isinstance(leaders, str) else list(dict.fromkeys(leaders))
     labels = labels or {}
     tx = tx or await rpc.get_transaction(sig)
@@ -391,6 +414,7 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
     out: dict[str, Any] = {
         **fill, "sig": sig, "our_bid_sol": our_bid / LAMPORTS, "leader": None, "leader_buy": None, "leader_note": None,
         "blocks_after": None, "slots_after": None, "blocks_read": 0, "blocks_unread": 0, "complete": True,
+        "blocks_listed": True, "searched": True,
         "ahead_of_leader": False, "place": None, "buyers_ahead": [], "failed_ahead": [], "companions_ahead": [],
         "pack_ahead": [], "own_ahead": [], "companions": "unknown", "highest_bid_ahead_sol": None,
         "median_bid_ahead_sol": None,
@@ -407,11 +431,14 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
         )
         out["leader_note"] = (f"no buy of this coin by {who} in the {LEADER_WINDOW_SLOTS} slots before ours or the "
                               f"{LEADER_AFTER_SLOTS} after" + (f" ({note})" if note else ""))  # fmt: skip
+        if note:  # not "no copied wallet bought it": the search did not reach back
+            out |= {"searched": False, "complete": False}
         return out
     our_txs = _block_txs(await rpc.get_block(slot), slot)
     our_at = _index(our_txs, sig)
-    if our_at is None:
-        out["leader_note"] = "our transaction is not in the block the RPC returns for its slot"
+    if our_at is None:  # a copied buy was found, and which of the two ran first cannot be read
+        out |= {"leader_note": "our transaction is not in the block the RPC returns for its slot",
+                "searched": False, "complete": False}  # fmt: skip
         return out
 
     def position(b: dict) -> tuple[int, int]:
@@ -425,15 +452,28 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
     leader = lead["leader"]
     lead_fill = read_fill(lead["tx"], leader, services)
     lo, hi = sorted((lead["slot"], slot))
-    try:
-        slots = sorted(int(s) for s in (await rpc.get_blocks(lo, hi)) or [])
-    except Exception:  # noqa: BLE001 - the list of blocks is a convenience: without it, the two ends
-        slots = []
-    slots = sorted(set(slots) | {lo, hi})
-    blocks_after = len(slots) - 1
+    # The blocks that exist from the copied buy's to ours. Two buys in one block or in adjacent slots have none
+    # between, and need no list. Further apart, a list that could not be read (the call failed, or its answer lacks
+    # one of the two blocks we know exist: each holds one of the two buys) is not "the next block": there is at the
+    # most a block a slot, so the count is the slot distance, and the slots between that it does not name are unread
+    # (23 Nov audit: `blocks_after` was 1 for any distance up to 150 slots, the fills kept that for good, and a hand
+    # buy a minute behind a copied wallet read as a copy one block behind it).
+    listed: set[int] = set()
+    if hi - lo > 1:
+        try:
+            listed = {int(s) for s in (await rpc.get_blocks(lo, hi)) or []}
+        except Exception:  # noqa: BLE001 - no list: the two ends are read, and the landing says what it lacks
+            listed = set()
+    whole_list = hi - lo <= 1 or {lo, hi} <= listed
+    slots = sorted({s for s in listed if lo <= s <= hi} | {lo, hi})
+    blocks_after = len(slots) - 1 if whole_list else hi - lo
+    unlisted = 0 if whole_list else (hi - lo + 1) - len(slots)
     known = _mates_of(mates, leader)
     out |= {"leader": leader, "ahead_of_leader": not before, "blocks_after": blocks_after if before else -blocks_after,
-            "slots_after": slot - lead["slot"], "companions": "unknown" if known is None else "known"}  # fmt: skip
+            "slots_after": slot - lead["slot"], "companions": "unknown" if known is None else "known",
+            "blocks_listed": whole_list, "blocks_unread": unlisted, "complete": unlisted == 0 and not note}  # fmt: skip
+    if note:  # a nearer buy of a copied wallet may be among what could not be read: said, and no landing is written
+        out |= {"leader_note": note, "searched": False}
     if lead_fill and lead_fill["price"] and fill["price"]:
         ours_p, lead_p, src = fill["price"], lead_fill["price"], fill["price_from"]
         if lead_fill["price_from"] != src:  # one of the two has no pool side: both from the wallets' own SOL
@@ -453,7 +493,7 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
         return out
     read = slots if len(slots) <= MAX_BLOCKS else slots[: MAX_BLOCKS - 1] + slots[-1:]
     mates_set, own_set = set(known or ()), set(own) | {wallet}
-    unread = len(slots) - len(read)
+    unread = len(slots) - len(read) + unlisted
     for n, s in enumerate(slots):
         if s not in read:
             continue
@@ -519,7 +559,7 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
         verdict = "fees"
     else:
         verdict = "unclear"
-    out |= {"place": len(ahead), "blocks_unread": unread, "complete": unread == 0,
+    out |= {"place": len(ahead), "blocks_unread": unread, "complete": unread == 0 and not note,
             "highest_bid_ahead_sol": max(bids) if bids else None,
             "median_bid_ahead_sol": round(statistics.median(bids), 9) if bids else None,
             "bid_more": counts["more"], "bid_less": counts["less"], "bid_unclear": counts["unclear"] + counts["same"],
@@ -561,7 +601,12 @@ def fill_fields(res: Mapping[str, Any]) -> dict[str, Any]:
     lamports, "sol", "vs": more/less/unclear/same, "max": the bid with a payment nobody catalogued}], the first
     AHEAD_KEPT), the highest and the median bid ahead in lamports, the verdict, the venue ("other:<program>" for one
     we have no name for), and `landing_src`: "chain", or "chain-none" when the chain was read and no copied wallet
-    had bought the coin."""
+    had bought the coin. A reading whose search for the copied buy was not whole (`searched` False) gives no landing
+    and no venue: "chain-none" would say what was not read, and whoever asks the fill whose buy it is (measure/ours)
+    would take a copy for the owner's coin. With neither on its fill the measure stage reads the buy again at its
+    next run (measure/run.py: an off-tape trade with no venue, a tape trade with no landing)."""
+    if res.get("searched") is False:
+        return {"landing_src": None}
     venue = res.get("venue")
     if venue == "other" and res.get("program"):
         venue = f"other:{res['program']}"
@@ -707,7 +752,13 @@ def render(rows: list[dict[str, Any]]) -> str:
                          f"{len(r['own_ahead'])} of our own wallets")  # fmt: skip
         if r.get("leader") and r["companions"] == "unknown":
             extra.append("the wallet's companions are unknown (the tape holds too few of its buys)")
-        if not r["complete"]:
+        if r.get("searched") is False and r.get("leader"):  # with no leader the note stands in the row itself
+            extra.append(f"the search for the copied buy was not whole ({r.get('leader_note')}): the buy it is read "
+                         "against may not be the one copied")  # fmt: skip
+        if not r["complete"] and not r.get("blocks_listed", True):
+            extra.append(f"the blocks in between could not be listed: up to {r['blocks_unread']} were not read, and "
+                         "blocks after is the slots between the two buys")  # fmt: skip
+        elif not r["complete"]:
             extra.append(f"{r['blocks_unread']} blocks in between were not read (at most {MAX_BLOCKS} are)")
         if r.get("failed_sends"):
             extra.append(

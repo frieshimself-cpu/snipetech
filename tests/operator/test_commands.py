@@ -377,9 +377,10 @@ def _odd_copy_held(tmp_path, slots_behind=1):
     from snipetech.models import Trade
 
     svc = StoreSvc(tmp_path, [_coin(COPY)], snipers=[{"id": "c1", "name": "snipetech copy lead", "status": "running"}])
+    # S1 (audit round 3): a copy is told by its place and its size, so the sniper on record has one (the buy's 1 SOL)
     svc.store.add_oktech_sniper({"id": "c1", "kind": "copy", "source": LEADER, "created_at": NOW - 86_400,
                                  "payload": {"priorityFee": 0.001, "tipAmount": 0.199, "singleSnipe": True,
-                                             "ctbotWallets": [{"address": LEADER}]}})  # fmt: skip
+                                             "buyAmount": 1.0, "ctbotWallets": [{"address": LEADER}]}})  # fmt: skip
     for sig, user, slot, pos, fees in (("lead", LEADER, 5_000, 196, (5_000, 0)),
                                        ("copy", W, 5_000 + slots_behind, 12, (ODD_PRIO, ODD_TIP))):  # fmt: skip
         svc.store.add_trades([Trade(sig=sig, ev=0, slot=slot, pos=pos, ts=NOW - 3600, mint=COPY, venue="curve",
