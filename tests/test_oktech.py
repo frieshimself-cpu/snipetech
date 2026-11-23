@@ -2270,6 +2270,17 @@ def test_a_copy_sniper_is_kept_to_pump_fun_and_pumpswap_under_a_market_cap_ceili
     assert any("brought down" in n for n in loose.notes)
 
 
+def test_the_kept_to_coins_line_names_the_ceiling_that_was_sent():
+    """23 Nov: `copylist --max-mcap 56` sent a $3,900 ceiling on the copied wallet and its summary still said "a
+    $50,000,000 market-cap ceiling": the line named the default every copy carries, not what this sniper was sent."""
+    from snipetech.oktech import list_copy_sniper
+
+    tight = list_copy_sniper(CUPSEYY, "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
+    said = [s for s in tight.summary if s.startswith("kept to coins")]
+    assert len(said) == 1 and "a $12,000 market-cap ceiling on the copied wallet" in said[0]
+    assert "$50,000,000" not in said[0]
+
+
 def test_the_two_protections_can_be_switched_off_and_the_payload_is_then_the_one_of_before(monkeypatch):
     """If OKTech refuses `platforms` on a copy sniper, or the ceiling hurts a normal copy, each is one constant: with
     both empty the book's sniper is byte for byte the payload it sent before 12 Nov (the digest of

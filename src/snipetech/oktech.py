@@ -271,7 +271,11 @@ def keep_to_coins(config: dict[str, Any], notes: list[str], platforms: tuple[str
                              "copy carries")  # fmt: skip
             if not cap or float(cap) > COPY_MAX_MCAP_USD:
                 w["maxMcapUsd"] = COPY_MAX_MCAP_USD
-        sent.append(f"a ${COPY_MAX_MCAP_USD:,} market-cap ceiling on the copied wallet (above it the buy fails on "
+        # the line names what was sent: a tighter cap already on a wallet stays, and the line said the default all the
+        # same (23 Nov: "a $50,000,000 market-cap ceiling" on a sniper sent $3,900)
+        caps = sorted({int(w["maxMcapUsd"]) for w in config.get("ctbotWallets") or []}) or [COPY_MAX_MCAP_USD]
+        ceiling = f"a ${caps[0]:,}" if len(caps) == 1 else f"a ${caps[0]:,} to ${caps[-1]:,}"
+        sent.append(f"{ceiling} market-cap ceiling on the copied wallet (above it the buy fails on "
                     "chain and pays its priority fee instead of filling)")  # fmt: skip
     why = (
         "OKTech's copy mode has no setting on record that refuses a coin by its address "
