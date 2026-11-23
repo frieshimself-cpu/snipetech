@@ -800,7 +800,8 @@ exists yet), a refuted mark in the text report, and `outside_model` in the autom
   it at once.
 - **The instructions' cache.** A research role's instructions take the hour-long cache only while it pays: after two
   waits in a row of more than an hour they take the five-minute one. The operator's and the analyst's turns still
-  always take the hour-long cache (about 1 $ a day; a separate design).
+  always take the hour-long cache (the audit's review put what that costs at about 1 $ a day, a number nobody has
+  measured on the server; changing it is a separate design).
 
 ## A bot's failed sends, placed at its leaders' buys (`sends`, 22 Nov)
 
