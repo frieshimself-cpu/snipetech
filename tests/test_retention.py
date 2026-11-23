@@ -290,3 +290,137 @@ def test_the_command_shows_the_state_and_sets_the_days(tmp_path, capsys, monkeyp
     assert (out["asked"], out["effective"]) == (14.0, 14.0)
     assert main(["--db", str(db), "db", "retain", "--days", "0"]) == 0  # 0: back to the configured days
     assert json.loads(capsys.readouterr().out)["asked"] is None
+
+
+# -- the disk rule sizes the tape from the pages in use, not from the file (audit round 2, 23 Nov) -----------------
+#
+# The file never shrinks after a prune (no auto_vacuum: the pages its deletes free stay inside it). Sized from the
+# file, the rule fed on itself once the file passed a third of the share (0.2 of the disk: 128.8 GB of the server's
+# 643.8; the file was 90.5 GB on 23 Nov, its compact copy 76.2 GB): fewer days fit than the tape held, the prune cut
+# the tape to them, the file stayed as large, so its bytes a day rose and fewer days fit again, every hour, down to the
+# configured floor of 6 days, for good.
+
+MB = 10**6
+
+
+def _freed(tmp_path, now: float, days: float = 14.0, mb: int = 8) -> Store:
+    """A database holding `days` of tape whose file is mostly free pages: `mb` MB written and deleted again, what the
+    prunes leave behind."""
+    st = Store(tmp_path / "t.db")
+    st.set_coverage("tape", {"spans": [[int(now - days * DAY), int(now - 10)]]})
+    with st.lock:
+        st.conn.execute("CREATE TABLE bloat (x BLOB)")
+        st.conn.executemany("INSERT INTO bloat VALUES (zeroblob(4000))", [()] * (mb * 250))
+        st.conn.commit()
+        st.conn.execute("DROP TABLE bloat")
+        st.conn.commit()
+        st.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return st
+
+
+def test_the_pages_in_use_are_the_files_pages_without_its_free_ones(tmp_path):
+    import os
+
+    st = _freed(tmp_path, float(T0))
+    file, used = os.path.getsize(st.path), R.in_use_bytes(st)
+    assert file > 8 * MB and 0 < used < file / 5  # the 8 MB deleted stay in the file, and are not in use
+    st.close()
+    assert R.in_use_bytes(st) is None  # a store that cannot say its pages (closed here): the file's size is used
+
+
+def test_a_file_much_larger_than_its_pages_in_use_does_not_lower_the_days(tmp_path, monkeypatch):
+    import os
+
+    now = float(T0)
+    st = _freed(tmp_path, now)
+    R.ask(st, 14, now, "db retain")
+    # a disk the FILE's bytes a day fill at 9.8 days (0.6 x 3.5 files / 3 files x 14 days); its pages in use are
+    # under a fifth of it
+    monkeypatch.setattr(R, "disk_total_bytes", lambda _path: int(3.5 * os.path.getsize(st.path)))
+    out = R.current(st, 6.0, now)
+    assert (out["asked"], out["fits"], out["effective"]) == (14.0, R.MAX_DAYS, 14.0)  # was fits 9.8, effective 9.8
+    st.close()
+
+
+def test_repeated_prunes_never_walk_the_days_down_to_the_floor(tmp_path, monkeypatch):
+    """The recorder's own hourly prune on such a file: the 14 days asked for stand hour after hour (sized from the
+    file: 9.8 days at the first prune, 6.9 at the second, then the configured 6 for good)."""
+    import os
+
+    now = float(T0)
+    st = _freed(tmp_path, now)
+    R.ask(st, 14, now, "db retain")
+    _day_trades(st, now, 13, 10, 7, 1)
+    monkeypatch.setattr(R, "disk_total_bytes", lambda _path: int(3.5 * os.path.getsize(st.path)))
+    monkeypatch.setattr("snipetech.live.PRUNE_REST", 0.0)
+    w = watcher(store=st)
+    w.cfg.storage.retain_days = 6.0
+    w.retain_days = 6.0
+    kept = []
+    for hour in range(6):
+        asyncio.run(w._prune(now + hour * 3600))
+        kept.append(w.retain_days)
+    assert kept == [14.0] * 6
+    assert _days_left(st, now) == [1, 7, 10, 13]  # was [1]: the 7-, 10- and 13-day-old trades deleted
+    st.close()
+
+
+def test_the_servers_file_past_a_fifth_of_the_disk_keeps_its_fourteen_days():
+    """The server's numbers a few weeks on: a 643.8 GB disk, the file grown to 130 GB (past 0.2 of the disk), 6.59 GB
+    of pages in use for each day of tape. A month of hourly prunes: the days never move."""
+    total, file, per_day = 643.8 * GB, 130 * GB, 6.59 * GB
+    days = 14.0
+    for _hour in range(24 * 30):
+        fits = R.fit_days(total, file, days, used_bytes=per_day * days)
+        days = min(days + 1 / 24, R.effective_days(6.0, 14.0, fits))
+    assert days == 14.0
+    # sized from the file, as before: the first prune already cuts under the tape's days
+    assert R.fit_days(total, file, 14.0) < 14.0
+
+
+def test_with_no_free_pages_the_room_is_what_the_files_size_gave():
+    # every case of the tests above (a file within a third of the share): three files of the tape's size
+    for db_gb, days in ((45.5, 6.0), (7.0, 0.1), (90.44, 14.0)):
+        fits = R.fit_days(644 * GB, db_gb * GB, days, used_bytes=db_gb * GB)
+        assert fits == R.fit_days(644 * GB, db_gb * GB, days)
+        assert fits == pytest.approx(min(R.MAX_DAYS, 0.6 * 644 / (3 * db_gb / max(days, 1.0))))
+    assert R.fit_days(644 * GB, 45.5 * GB, 6.0, used_bytes=45.5 * GB) == pytest.approx(16.98, abs=0.02)
+
+
+def test_the_file_never_shrinks_so_it_takes_its_size_now_beside_the_two_copies():
+    # 643.8 GB disk: the share is 386.28 GB. A 180 GB file, all of it in use by 14 days of tape (12.86 GB a day):
+    # the file stays 180 GB however many days go, and two compact copies of d days lie beside it:
+    # 180 + 2 x 12.86 x d <= 386.28, so 8.02 days (three files of d days would say 10.01)
+    assert R.fit_days(643.8 * GB, 180 * GB, 14.0, used_bytes=180 * GB) == pytest.approx(8.02, abs=0.01)
+    # the same file with 80 GB in use (5.71 GB a day): 180 + 2 x 5.71 x d <= 386.28, 18.05 days
+    assert R.fit_days(643.8 * GB, 180 * GB, 14.0, used_bytes=80 * GB) == pytest.approx(18.05, abs=0.01)
+    # a file larger than the whole share: no day fits (the configured days stand, `effective_days`)
+    assert R.fit_days(643.8 * GB, 400 * GB, 14.0, used_bytes=80 * GB) == 0.0
+    # pages not yet in the file (a WAL not checkpointed: the file is smaller than its pages) count as the file's
+    assert R.fit_days(644 * GB, 0, 6.0, used_bytes=45.5 * GB) == R.fit_days(644 * GB, 45.5 * GB, 6.0)
+
+
+def test_the_state_shows_the_file_and_what_is_in_use(tmp_path):
+    st = Store(tmp_path / "t.db")
+    st.set_coverage("tape", {"spans": [[T0 - 14 * DAY, T0 - 10]]})
+    R.ask(st, 14.0, T0, "test")
+    out = R.state(st, 6.0, T0, total_bytes=643.8 * GB, db_bytes=130 * GB, used_bytes=92.26 * GB)
+    assert (out["db_gb"], out["used_gb"], out["gb_per_day"]) == (130.0, 92.26, 6.59)
+    assert out["fits"] == pytest.approx(19.45, abs=0.02) and out["effective"] == 14.0
+    # no pages known (a caller with the file's size alone): the file's size stands for them, as before
+    out = R.state(st, 6.0, T0, total_bytes=643.8 * GB, db_bytes=90.44 * GB)
+    assert (out["db_gb"], out["used_gb"], out["gb_per_day"]) == (90.44, 90.44, 6.46)
+    st.close()
+
+
+def test_a_store_that_cannot_say_its_pages_is_sized_from_its_file(tmp_path, monkeypatch):
+    import os
+
+    now = float(T0)
+    st = _freed(tmp_path, now)
+    R.ask(st, 14, now, "db retain")
+    monkeypatch.setattr(R, "disk_total_bytes", lambda _path: int(3.5 * os.path.getsize(st.path)))
+    monkeypatch.setattr(R, "in_use_bytes", lambda _store: None)
+    out = R.current(st, 6.0, now)
+    assert out["db_gb"] == out["used_gb"] and out["fits"] < 14.0  # the file's bytes a day, as before
+    st.close()
