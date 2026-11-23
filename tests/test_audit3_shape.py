@@ -362,6 +362,27 @@ def test_a_coin_that_came_in_for_no_sol_is_no_copy():
     assert asyncio.run(coins.whose(held, now - 300, now)) == "owner" and not _walked(chain)
 
 
+@pytest.mark.parametrize("fixture,size", [("tx/48YmS3mVdw*.json", 0.05), ("tx/xqo6FRzqCx*.json", 0.03),
+                                          ("pumpswap_buy_landed_10nov.json", 0.2)],
+                         ids=["a 0.05 SOL curve copy", "a 0.03 SOL curve copy", "a 0.2 SOL PumpSwap copy"])  # fmt: skip
+def test_our_real_buys_read_off_the_chain_spent_exactly_their_snipers_size(fixture, size):
+    """S1, the size the runner reads for a coin the tape does not hold yet (ours._chain_spent, off the transaction's
+    own balances): OKTech's real buys of 6 and 10 Nov, on the curve and on PumpSwap, each read to the lamport as the
+    buyAmount its sniper was sent with. The priority fee, the tip, the token account's rent and the wrapped SOL
+    OKTech tops up in the same transaction are no part of it."""
+    import json
+    from pathlib import Path
+
+    from snipetech.measure.classify import copy_sized
+    from snipetech.measure.ours import _chain_spent
+
+    tx = json.loads(next((Path(__file__).parent / "fixtures").glob(fixture)).read_text())
+    mint = CL.read_fill(tx, W)["mint"]
+    spent = _chain_spent(tx, W, mint)
+    assert spent == round(size * 1e9) and copy_sized(spent, round(size * 1e9))
+    assert _chain_spent(tx, W, "Another" + "1" * 37) is None  # not the coin this transaction bought
+
+
 # -- S2: a list of blocks that could not be read is not "the next block" ----------------------------------------------
 
 
