@@ -243,7 +243,7 @@ JOB_HELP_CUTS: tuple[tuple[str, str | frozenset[str]], ...] = (
     ("SIZE (the owner, 12 Nov: money is not the limit", frozenset({"lab"})),
     # 22 Nov: what --each and "repeats": "also" score and what refuses them, for a lab and for the table of bids
     ("EACH WALLET'S OWN BUYS (22 Nov):", frozenset({"lab", "place-bids"})),
-    ('With "repeats": "also" a coin gives several moments in a lab:', frozenset({"lab"})),
+    ('With "--each" a coin can give several moments in a lab', frozenset({"lab"})),
     ("THE BACKFILL (12 Nov):", frozenset({"history amm-backfill"})),
     ("A lab with a wallet rule then scores a wallet's PumpSwap buy only where",
      frozenset({"lab", "history amm-backfill"})),

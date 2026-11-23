@@ -1741,8 +1741,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         scored behind the followed wallet's companions (the wallets its operator buys with: in the next transactions
         of the block, or in its block in changing order, ahead of it as often as behind, which a copier never is; no
         copy lands among them; the result's copy_companions says how many wallets had some).
-        "--copy-position", "+0" with "--per-tx" scores a copy right behind them, at the price the leader's buy left,
-        with the bid charged (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
+        "--copy-position", "+0" with "--per-tx" scores a copy right behind them, at the price their buys left, with
+        the bid charged (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
         "--trigger", '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}', "--copy-position",
         "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"]. No bid is known to buy that place on
         every moment: a send that reacts to the landed buy lands some block places later and gets that price only
@@ -1873,9 +1873,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         what a live copy sniper copies. It is scored only with "--each": lab and place-bids refuse it without, paper
         freeze refuses it (a forward record holds one trade a coin), and the records frozen with it earlier are
         research only (exit_note "research only: one trade a coin, where its copy sniper takes every buy").
-        With "repeats": "also" a coin gives several moments in a lab: test.coins is how many coins the newer moments
-        are, and ev_lower draws a coin's moments together, so read n beside coins (26 moments in 18 coins are 18
-        draws).
+        With "--each" a coin can give several moments in a lab (two followed wallets in it; with "repeats": "also" a
+        wallet's repeats too): test.coins is how many coins the newer moments are, and ev_lower draws a coin's
+        moments together, so read n beside coins (26 moments in 18 coins are 18 draws).
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
         trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when
@@ -2050,7 +2050,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         THE COST A LAB CHARGES (14 Nov): from 12 Nov 17:24 to 14 Nov 18:26 UTC every lab, freeze and qualify verdict
         charged 0.0062 to 0.0093 SOL a transaction, rising through the two days to twice the low bid's real cost
         (about 0.0044): four buys of the tip test at 0.035 SOL and 50 failed sends of one USDC swap had been counted
-        in it. That was up to about 0.009 SOL a round trip too much: a rule or a wallet that failed by less than that
+        in it. That was up to about 0.01 SOL a round trip too much: a rule or a wallet that failed by less than that
         in those two days is NOT refuted, test it again; a rule frozen in those two days (per_tx_sol 0.0062 to 0.0093
         in its record) is charged too much forward: freeze it again, and the freeze makes a new record of it at
         today's cost (again 1, an id of its own, from zero trades) while the old one keeps its trades and is named

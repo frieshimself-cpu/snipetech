@@ -104,14 +104,85 @@ def test_the_two_days_of_doubled_cost_are_told_at_what_the_stored_records_were_c
     """Round 1 (paper#3): the text said every lab and freeze of 12 Nov 17:24 to 14 Nov 18:26 UTC charged 0.0085 to
     0.0093 SOL a transaction. The rules frozen in that window on the server carry per_tx_sol 0.0062 (1 rule), 0.0067
     (4), 0.0074 (1), 0.0085 (18) and 0.0093 (4), rising through the two days (read-only SQL, 23 Nov). And a hunt's
-    exit_note can now be the cost's note as well as the crews'."""
-    from snipetech.analysis.paper import OVERCHARGED_SOL
+    exit_note can now be the cost's note as well as the crews'. What that was too much a round trip is the code's own
+    sum (paper.overcharge_sol: a buy and a sale, each over today's 0.0045): 0.0034 SOL at the lowest of them, 0.0096
+    at the dearest, so "up to about 0.01", not the 0.009 the text kept from the narrower range (review of round 2)."""
+    from snipetech.analysis.paper import OVERCHARGED_FROM, OVERCHARGED_SOL, overcharge_sol
 
     text = _tools_text()
     assert "charged 0.0062 to 0.0093 SOL a transaction, rising through the two days" in text
-    assert "0.0085 to 0.0093" not in text and "up to about 0.009 SOL a round trip too much" in text
+    assert "0.0085 to 0.0093" not in text and "up to about 0.01 SOL a round trip too much" in text
+    assert "0.009 SOL a round trip" not in text
+    frozen_then = {"from_ts": OVERCHARGED_FROM, "exit": {}}
+    assert round(overcharge_sol(frozen_then | {"per_tx_sol": 0.0093}), 4) == 0.0096
+    assert round(overcharge_sol(frozen_then | {"per_tx_sol": 0.0062}), 4) == 0.0034
     assert OVERCHARGED_SOL <= 0.0062  # the lowest of them is one the code calls overcharged
     assert "has another reason: SERIAL CREWS' COINS or THE COST A LAB CHARGES below" in text
+
+
+def _path_of_one_coin(buys):
+    """A coin's tape as the lab reads it: its create, then `buys` ((wallet, SOL, blocks after the create), each a
+    transaction of its own)."""
+    from snipetech.sim.market import MarketPath
+    from snipetech.store import Store
+
+    from .synth import Market, addr
+
+    st = Store(":memory:")
+    try:
+        coin = addr("a2-coin")
+        m = Market(st, coin, addr("a2-dev"), 1_795_000_000, 70_000_000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        for who, sol, block in buys:
+            m.buy(who, sol, block)
+        m.commit()
+        return MarketPath.build(st.trades_for_mint(coin), st.launch(coin)), st.launch(coin)
+    finally:
+        st.close()
+
+
+def test_plus_zero_is_said_to_pay_the_price_the_followed_wallets_companions_left():
+    """Review of round 2 (R-docs-3). Where the lab text said "+0" scores a copy right behind the followed wallet's
+    companions "at the bid that buys the place", round 2 wrote "at the price the leader's buy left". Behind a wallet
+    that buys with others of its own the copy stands behind the last of them (lab.entry_at) and pays the price their
+    buys left, which is dearer than the one the leader's own buy left."""
+    from snipetech.analysis.lab import entry_at
+
+    from .synth import addr
+
+    lead, mate = addr("a2-lead"), addr("a2-mate")
+    path, _ = _path_of_one_coin([(lead, 2.0, 10), (mate, 2.0, 10), (addr("a2-outsider"), 1.0, 10)])
+    i = path.users.index(lead)
+    alone = entry_at("kol", path, i, int(path.slot[i]), 0, "+0")
+    with_its_own = entry_at("kol", path, i, int(path.slot[i]), 0, "+0", frozenset({mate}))
+    assert path.users[alone] == lead and path.users[with_its_own] == mate
+    assert path.q[with_its_own] / path.b[with_its_own] > path.q[alone] / path.b[alone]  # the price each one left
+    text = _tools_text()
+    assert '"+0" with "--per-tx" scores a copy right behind them, at the price their buys left' in text
+    assert "at the price the leader's buy left" not in text
+
+
+def test_a_coin_is_said_to_give_several_moments_with_each_and_not_only_with_repeats():
+    """Review of round 2 (lab#0). The lab text told an agent to read test.coins beside n only for a rule that takes
+    every buy ("repeats": "also"). With --each alone a coin two followed wallets bought gives two moments, one draw
+    of the bound (lab.coin_keys), and every lab the exit analyst is told to run is an --each lab over a group."""
+    from snipetech.analysis.lab import _first_buys, coin_keys, parse_trigger
+
+    from .synth import addr
+
+    w1, w2 = addr("a2-w1"), addr("a2-w2")
+    path, launch = _path_of_one_coin([(w1, 2.0, 10), (addr("a2-outsider"), 1.0, 11), (w2, 2.0, 12), (w1, 2.0, 14)])
+    group = {"wallet": {w1, w2}}
+    first = _first_buys(parse_trigger({"kind": "kol", "group": "wallet", "sol": 1}), path, launch, group)
+    assert [path.users[j] for j in first] == [w1, w2]  # each wallet's own first buy: two moments in the one coin
+    every = _first_buys(parse_trigger({"kind": "kol", "group": "wallet", "sol": 1, "repeats": "also"}), path, launch,
+                        group)  # fmt: skip
+    assert [path.users[j] for j in every] == [w1, w2, w1]
+    assert len(set(coin_keys([{"mint": launch.mint} for _ in first]))) == 1  # and one draw of the bound
+    text = _tools_text()
+    assert ('With "--each" a coin can give several moments in a lab (two followed wallets in it; with "repeats": '
+            '"also" a wallet\'s repeats too): test.coins is how many coins the newer moments are') in text  # fmt: skip
+    assert 'With "repeats": "also" a coin gives several moments in a lab' not in text
 
 
 def test_the_agents_are_told_what_the_snapshots_paper_rows_and_a_report_rows_marks_mean():

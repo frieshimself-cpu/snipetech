@@ -1948,7 +1948,8 @@ def test_the_agents_are_told_what_plus_zero_is_and_how_to_score_a_send_that_reac
     """Review of the 22 Nov audit (docs, goal#0 and goal#2). The lab text said "--copy-position", "+0" scores a copy
     "at the bid that buys the place": on 65 % of the big wallets' first buys a buyer stood within 3 block places, and
     no bid of a send that reacts to the landed buy is known to buy the place ahead of them. "+0" is the price the
-    leader's buy left; "react:K" scores where a reacting send lands, in the lab and forward."""
+    leader's buy left, and its companions' where it buys with some (tests/test_audit2_texts.py holds that to the
+    lab's own placing); "react:K" scores where a reacting send lands, in the lab and forward."""
     from snipetech.analysis.paper import hypothesis_landing
     from snipetech.cli import build_parser
     from snipetech.operator.prompts import ROLE_SYSTEM
@@ -1957,7 +1958,7 @@ def test_the_agents_are_told_what_plus_zero_is_and_how_to_score_a_send_that_reac
     for role in ("tester", "fees", "exits"):
         text = _help(tools(role)["start_job"])
         assert "at the bid that buys the place" not in text, role
-        assert "at the price the leader's buy left" in text
+        assert "right behind them, at the price their buys left" in text
         assert "gets that price only where nobody bought in between" in text
         assert '"--copy-position", "react:K"' in text and "a paper place, never a live landing" in text
     for role in ("scout", "fees"):  # where the table of bids sends its reader on to "+0"
