@@ -114,7 +114,9 @@ What a buy is paid with: on pump.fun's curve the buy itself is paid in plain SOL
 its fees, its tip and a new coin's token account on top: 0.205 SOL for a 0.2 SOL copy. Wrapped SOL pays only for a coin
 that has left its curve (PumpSwap), and that buy still pays its fees, its tip and a new coin's token account in plain
 SOL, never in wrapped SOL (wsol). The snapshot's buys_payable says how many copies of the book's size the wallet can
-pay on each ("curve", "pumpswap"). At 0 no copy lands there. Under one buy's fees in plain SOL nothing of ours reaches
+pay on each ("curve", "pumpswap"). At 0 no copy lands there. While a sniper runs, OKTech also keeps 1.1 times its buy
+wrapped, taken from plain SOL: with nothing wrapped a 0.2 SOL copy needs 0.425 SOL plain. buys_payable does not count
+that, and the book makes no sniper under it. Under one buy's fees in plain SOL nothing of ours reaches
 the chain: no buy and no failed send in fills, though OKTech counts the snipe (11 Nov: five signals of the one
 qualified wallet, none bought). With the fees but not the buy, a curve buy lands and fails: fills says side "failed"
 and "buy not paid", the chain's log "insufficient lamports ..., need ..." (11 Nov 18:52 UTC: 0.0052 SOL beside 0.47
