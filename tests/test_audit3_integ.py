@@ -169,6 +169,28 @@ def test_i1_a_hand_buy_half_sold_between_two_rounds_stays_the_owners(world):
     assert AR.whose(b) == {COIN: "owner"}
 
 
+def test_i1_the_live_runs_buys_at_its_own_priority_and_their_sales_are_the_bots_in_the_rounds_count(world):
+    """The live run of 23 Nov sends its snipers a buy priority of 0.0011 SOL and a 0.002 tip, so that a book sniper's
+    0.001 + 0.002 can never read as the run's. The round's count knows no priority of its own: it reads the payloads
+    on record (measure/ours.fee_marks). A run's buy at 0.0011, and its sale at the buy's priority as OKTech pays it,
+    are the bot's; the owner's hand buy beside them is not."""
+    st, cfg, paths = world
+    run = {"singleSnipe": True, "ctbotWallets": [{"address": LEAD}], "buyAmount": 1.0, "priorityFee": 0.0011,
+           "tipAmount": 0.002, "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}  # fmt: skip
+    st.add_oktech_sniper({"id": "run1", "external_id": "run1", "kind": "copy", "source": LEAD, "name": "snipetech copy",
+                          "config_hash": "r", "created_at": 1, "payload": run})  # fmt: skip
+    AR.tick(st, 1095)
+    a = AR.take(st, cfg, paths, None, 1100.0, 10.0, [])
+    tape(st, "runbuy", 1500, COIN, W, True, ONE_SOL, (1_100_000, 2_000_000))
+    tape(st, "runsell", 1512, COIN, W, False, (1_100_000_000, 13_750_000), (1_100_000, 2_000_000))
+    tape(st, "hand", 1600, SWAP, W, True, HAND_SOL, HAND)
+    AR.tick(st, 1995)
+    b = AR.take(st, cfg, paths, a, 2000.0, 7.6, [AR.coin(SWAP, 2.4)])
+    assert [(f["side"], f["ours"]) for f in b.fills] == [("buy", True), ("sell", True), ("buy", False)]
+    assert b.bot_cash == pytest.approx(-(1.0 + 0.0031) + (1.1 - 0.01375 - 0.0031) - 2 * 0.000005)  # signatures in
+    assert AR.whose(b) == {SWAP: "owner"}
+
+
 # -- from liveb's list: the loss alert beside the few tokens a sold copy left ------------------------------------------
 
 COIN2 = "Coin222222222222222222222222222222222222pump"
