@@ -1143,6 +1143,27 @@ def test_an_agents_sends_never_asks_for_more_than_the_month_has_left(jobs):
     assert jobs.start(["sends", BOT, "--max-credits", "6000", "--json"], now=now, role="scout", idea=idea)["id"]
 
 
+@pytest.mark.parametrize("role", ["scout", "fees", None])
+def test_no_agent_runs_sends_past_the_month_on_the_owners_flag(jobs, role, monkeypatch):
+    """Round 3 of the 22 Nov audit: `sends --over-month` runs past what the month has left, on the owner's word. The
+    agents' runner let an agent say it. Its own count of the month still held the run, except when that count could
+    not be read (a database busy for five seconds): the run then started, and the flag had switched the command's own
+    check off. The flag is the owner's, as --month-credits is for a backfill, wherever it stands and with the count
+    read or not."""
+    from snipetech import amm_backfill
+
+    idea = _queue(jobs, role) if role else None
+    for argv in (["sends", BOT, "--over-month", "--json"], ["sends", BOT, "--max-credits", "100", "--over-month"],
+                 ["sends", "--over-month", BOT]):  # fmt: skip
+        with pytest.raises(PermissionError, match="--over-month is the owner's"):
+            jobs.start(argv, role=role, idea=idea)
+    monkeypatch.setattr(amm_backfill, "month_count", lambda *a, **k: None)  # the month's count cannot be read
+    with pytest.raises(PermissionError, match="--over-month is the owner's"):
+        jobs.start(["sends", BOT, "--max-credits", "200000", "--over-month"], role=role, idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["sends", BOT, "--max-credits", "200000", "--json"], role=role, idea=idea)["id"]  # without it
+
+
 def test_an_agents_launch_tools_reads_a_bounded_number_of_launches(jobs):
     """launch-tools fetches one create transaction a launch it has never read (14 days of tape hold about 600,000), and
     a coin not on the tape costs up to 500 pages of signatures: an agent's run reads at most 100,000 launches, or 50

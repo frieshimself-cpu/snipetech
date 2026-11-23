@@ -253,6 +253,25 @@ def test_the_months_limit_ends_a_run_whatever_its_own_limit_says(world):
     assert out["stopped"] is None and backfill_spans(store) == {M: [STRETCH]}
 
 
+def test_the_sends_credits_count_against_the_backfills_month_too(world):
+    # round 3 of the 22 Nov audit: one Helius plan pays the backfills and the runs of `sends`, and `sends` (and the
+    # agents' job runner) counted the two together while a backfill subtracted only its own: with the sends' credits
+    # at the month's limit a backfill still ran for its whole --max-credits. One tuple names what counts
+    # (MONTH_USAGES, here because analysis/sends.py imports this module), and both readers count by it
+    from snipetech.analysis import sends as S
+
+    chain, store, _ = world
+    assert B.MONTH_USAGES == ("helius-backfill", "helius-sends") and S.USAGE == B.SENDS_USAGE == "helius-sends"
+    store.usage_add("helius-sends", B.MONTH_CREDITS - 1_005, NOW)
+    store.usage_add("helius-backfill", 1_000, NOW)
+    assert B.month_used(store, NOW) == B.MONTH_CREDITS - 5 and S.month_left(store, NOW) == 5
+    assert B.month_counted(store.path, NOW) == B.MONTH_CREDITS - 5  # the same number for a caller with no Store
+    out = run(chain, store)
+    assert out["stopped"] == "month_credits" and out["credits"]["counted"] == 5 and len(chain.requests) == 5
+    assert "the runs of sends count" in out["note"] and out["credits"]["this_month"] == B.MONTH_CREDITS
+    assert store.usage_month("helius-backfill", NOW) == 1_005  # what it asked is counted as its own
+
+
 def test_a_second_run_asks_only_for_what_is_new(world):
     chain, store, _ = world
     run(chain, store)
@@ -701,6 +720,10 @@ def test_a_backfill_stopped_at_the_months_limit_waits_for_the_owner(world, comma
     with pytest.raises(PermissionError, match="month's limit.*owner"):
         oj.start(argv, now=NOW)  # nothing is left of the month: the same run would stop at its first request
     monkeypatch.setattr(B, "MONTH_CREDITS", B.MONTH_CREDITS + 1000)  # the owner lifts it
+    store.usage_add("helius-sends", 1000, NOW)  # round 3: the sends' credits took the room: still nothing is left
+    with pytest.raises(PermissionError, match="month's limit.*owner"):
+        oj.start(argv, now=NOW)
+    monkeypatch.setattr(B, "MONTH_CREDITS", B.MONTH_CREDITS + 1000)
     assert oj.start(argv, now=NOW)["id"] and started == [argv]
 
 
