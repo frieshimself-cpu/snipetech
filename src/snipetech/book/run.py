@@ -144,17 +144,25 @@ def _strays(store, wallet: str, holdings: list[dict] | None, paths: OperatorPath
     in this wallet) and that the unsold-coin watch first saw STRAY_AFTER_SECS ago or more: no sniper of ours holds
     them, so they never keep a spent sniper from being replaced (8 Nov: a dust airdrop held every replacement for
     hours), nor a book sniper armed under a kill, nor the clean-up waiting. A coin seen just now may be a buy the tape
-    has not caught up with, and still counts as held."""
+    has not caught up with, and still counts as held. So does one the measure stage has not run past since it showed:
+    our copy into a coin the tape does not hold (an older PumpSwap coin) is on record only in that stage's fills, and
+    while it stood still such a copy, held ten minutes, was a stray whose sniper a kill stopped (second round of the
+    22 Nov audit). With no record of that stage at all (it never ran) the ten minutes decide alone, as before."""
     from ..measure.ours import fee_marks
-    from .watch import _load
+    from .watch import _load, _measured_at
 
     seen = (_load(paths).get("first_seen") or {}) if holdings else {}
     marks = fee_marks(store) if holdings else None
+    measured = _measured_at(store) if holdings else None
     out: set[str] = set()
     for h in holdings or []:
         m = str(h.get("mint") or "")
         t = seen.get(m)
-        if m and t is not None and now - float(t) >= STRAY_AFTER_SECS and not _bought_by_us(store, wallet, m, marks):
+        if not m or t is None or now - float(t) < STRAY_AFTER_SECS:
+            continue
+        if measured is not None and measured < float(t):
+            continue  # the fills cannot hold its buy yet
+        if not _bought_by_us(store, wallet, m, marks):
             out.add(m)
     return out
 

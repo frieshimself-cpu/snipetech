@@ -570,3 +570,27 @@ def test_b5_our_sold_copy_is_said_so_only_of_what_a_sale_leaves_behind(tmp_path)
                 assert "Nobody is selling coin " + PSWAP in sent[0] and sent[0].endswith(f"/sell {PSWAP}"), sent
         finally:
             st.close()
+
+
+def test_b5_the_book_calls_no_coin_a_stray_before_the_measure_stage_read_past_it(tmp_path):
+    """The same gap where it acts: the book (and /stop) call a coin a stray, no holding of any sniper, once the watch
+    has seen it ten minutes and no buy of ours is on record. Our copy into a PumpSwap coin the tape does not hold is on
+    record only once the measure stage has read it: while that stage stood still, such a copy held ten minutes was a
+    stray, and a kill stopped the sniper holding it (rule 1). No coin is a stray before the measure stage has run past
+    its first sighting; once it has, and still no buy of ours explains the coin, it is one."""
+    st, cfg = BT._env(tmp_path)  # the book is off: its kill path stops its snipers that hold nothing
+    AB._book_sniper(st)
+    AB._seen(tmp_path, PSWAP, BT.NOW - 1800)  # held half an hour, no buy of it on the tape or in the fills
+    held = [{"mint": PSWAP, "amount": 1000.0, "raw": 10**9, "value_sol": None, "priced": False}]
+    k1 = [{"id": "k1", "name": BT.K1, "status": "running"}]
+    try:
+        st.set_coverage("measure:last_ts", {"ts": int(BT.NOW) - 3600})  # the measure stage last ran before it showed
+        svc = BT.FakeSvc(st, snipers=k1, held=held, cfg=cfg)
+        _book(tmp_path, svc, cfg)
+        assert svc.calls == [], svc.calls  # it may be our copy: every book sniper stays
+        st.set_coverage("measure:last_ts", {"ts": int(BT.NOW) - 60})  # it ran since, and found no buy of ours
+        svc = BT.FakeSvc(st, snipers=k1, held=held, cfg=cfg)
+        _book(tmp_path, svc, cfg)
+        assert svc.calls == [("stop", "k1")], svc.calls
+    finally:
+        st.close()
