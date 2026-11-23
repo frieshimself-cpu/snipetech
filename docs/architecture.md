@@ -621,7 +621,8 @@ how often a role skips are the design's estimates until a day of numbers exists.
 The sniper wallet is the owner's too. The owner buys and sells in it by hand and sends coins out of it (22 Nov 02:40
 UTC: three hand buys of one coin, which the wallet-wide guard read as the bot's loss and stopped the day's live
 trading for). None of that is the bot's result. Since 22 Nov every stage that judges, stops or alerts asks first whose
-a trade or a coin is, by one rule (`measure/ours.py`, `tests/test_whose_coin.py`):
+a trade or a coin is, by one rule (`measure/ours.py`, `tests/test_whose_coin.py`). This section and the four after
+it describe the code merged as 3b412e0, the first round of the audit of 22 Nov. The rule:
 
 - **A buy is the bot's** when the measure stage tied it to a sniper, or when it paid exactly the fees one of our
   snipers pays: the priority and the tip of a payload we sent OKTech, or that priority with no tip. Since the audit of

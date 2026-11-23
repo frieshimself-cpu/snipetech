@@ -924,9 +924,10 @@ pre-execution and the account filter. The sniper config already sent is then the
 
 ## The ends of a live run and the owner's commands, as they work since the audit of 22 Nov (written 23 Nov)
 
-What the audit of 22 Nov changed in the rules every live test runs under. Each was a hole found in the code and fixed
-test-first. None changes a size, a wallet or what may start. Whose a coin is (the bot's, the owner's own, a stray) is
-told by one rule, in docs/architecture.md ("Whose trade, whose coin").
+What the audit of 22 Nov changed in the rules every live test runs under, as the code merged as 3b412e0 holds them
+(the audit's first round). Each was a hole found in the code and fixed test-first. None changes a size, a wallet or
+what may start. Whose a coin is (the bot's, the owner's own, a stray) is told by one rule, in docs/architecture.md
+("Whose trade, whose coin").
 
 **`/stop`.** It sets the stop flag, then stops every sniper OKTech runs, unless the wallet holds a coin one of ours may
 hold (a stopped sniper strands its coin). Three kinds of coin are no sniper's and no longer keep any running: a coin on
