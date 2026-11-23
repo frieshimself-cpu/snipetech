@@ -781,7 +781,9 @@ def test_a_first_block_whose_plain_sol_cannot_pay_a_curve_buy_does_not_start(env
     assert len(env.svc.created) == 0 and len(env.started) == 0 and LT.load(env.paths) is None and _seq(env) is None
     (said,) = _said(env, "plain SOL")
     assert "0.10" in said and "0.25" in said and "paid in plain SOL only" in said and BEST in said, said
-    assert "turn some of its wrapped SOL back into SOL, or add SOL" in said  # what the owner can do about it
+    # review of B7: the line names what the owner can do and never asks for SOL (owner, 9 Nov; the agents' rule too):
+    # a wallet with room for a first block (its floor, a buy and its fees) always has the SOL, in wrapped form
+    assert "turning some of its wrapped SOL back into SOL does it" in said and "add SOL" not in said, said
     _round(env, NOW + 960, wsol=11.8)
     assert len(env.sent) == 1 and len(env.svc.created) == 0  # said once a day, and still nothing is made
     env.sol = 11.8  # the SOL is unwrapped

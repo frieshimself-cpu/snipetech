@@ -1001,13 +1001,15 @@ async def _begin(r: _Round, at: dict) -> dict | None:
     native = r.snap.native_sol if r.snap is not None else None
     if native is not None and float(native) + 1e-9 < room:
         # a curve buy is paid in plain SOL only: the first block is held as every later one is (_next_block; second
-        # round of the 22 Nov audit: with the wallet's SOL wrapped it made a sniper and a cycler whose every buy fails)
+        # round of the 22 Nov audit: with the wallet's SOL wrapped it made a sniper and a cycler whose every buy fails).
+        # The line never asks for SOL (the owner, 9 Nov): past the check above the wallet holds a floor of 1 SOL and
+        # more beside the buy, so with too little of it plain the rest is there, wrapped
         sig = "automatic test: too little plain SOL to start"
         if not r.notes.has_today(sig, now):
             r.say(f"{sig} {p['label']} ({best['id']}): the wallet's plain SOL is {float(native):.2f} and a curve buy "
                   f"is paid in plain SOL only: one buy of {p['buy_sol']:g} SOL with its fees and rent needs {room:.2f} "
-                  "SOL. It starts once the wallet has that in plain SOL: turn some of its wrapped SOL back into SOL, "
-                  "or add SOL (said once a day).")  # fmt: skip
+                  "SOL. It starts once the wallet has that in plain SOL: turning some of its wrapped SOL back into SOL "
+                  "does it (said once a day).")  # fmt: skip
         return wait(f"the wallet's plain SOL is {float(native):.2f}, under the {room:.2f} SOL one curve buy needs")
     req = live_test.request(p, best, r.cfg, now, by=BY, sequence={"id": seq["id"], "block": 1}, approved=at["approved"])
     save_seq(paths, seq)  # first: the round's own check asks that the request be the sequence's own
