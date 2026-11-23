@@ -1646,16 +1646,17 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         leaders' first buys of 1.9 SOL or more ("--min-sol"), how many it tried, landed right behind ("adjacent"),
         behind other buyers in the block, later, tried with failed sends only, or did not try, and what the failed ones
         paid (a failed send pays its priority; its tip is undone). It costs Helius credits: one a thousand signatures
-        and one a failed send ("--max-credits", 5000 unless told; 200,000 at most and "--hours" 336 at most from an
-        agent, and never more than the backfills and the earlier runs left of the month). A send that never landed
-        (dropped, or a bundle that lost its auction) leaves nothing on chain, so the tries it counts are the least the
-        bot made. Every moment is listed (moments_list: its outcome, the bot's failed sends at it, the first other
-        buyer of 0.1 SOL or more within 3 block places after the leader) and "near" counts such buyers after the leader
-        and before it. "--validators" adds each moment's block leader (getSlotLeaders: one request for up to 5,000
-        slots, about 130 for 72 hours, counted at an assumed credit each and read before the failed sends, so the
-        credit limit cuts the sends and not this) and splits the moments by validator (by_validator): whether some
-        validators sell the place right behind, or a route of the leaders' own holds it, before anyone builds a sender
-        for it.
+        and one a failed send that landed within 3 slots of such a buy, the only ones that can be tries
+        ("--max-credits", 5000 unless told; 200,000 at most and "--hours" 336 at most from an agent, and never more
+        than the backfills and the earlier runs left of the month; a buy whose sends the limit left unread is counted
+        "unread", not untried). A send that never landed (dropped, or a bundle that lost its auction) leaves nothing on
+        chain, so the tries it counts are the least the bot made. Every moment is listed (moments_list: its outcome,
+        the bot's failed sends at it, the first other buyer of 0.1 SOL or more within 3 block places after the leader)
+        and "near" counts such buyers after the leader and before it. "--validators" adds each moment's block leader
+        (getSlotLeaders: one request for up to 5,000 slots, about 130 for 72 hours, counted at an assumed credit each
+        and read before the failed sends, so the credit limit cuts the sends and not this) and splits the moments by
+        validator (by_validator): whether some validators sell the place right behind, or a route of the leaders' own
+        holds it, before anyone builds a sender for it.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
         gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the

@@ -1386,7 +1386,7 @@ def build_parser() -> argparse.ArgumentParser:
         "sends",
         "a wallet's sends that failed on chain beside its buys on the tape, placed at the first buys of the wallets it "
         "follows: whether a bot tries every one and wins the place now and then, or picks its coins (reads the chain: "
-        "a credit a thousand signatures and one a failed send; a research job)",
+        "a credit a thousand signatures and one a failed send that landed near such a buy; a research job)",
     )
     sp.add_argument("wallet")
     sp.add_argument("--leader", action="append", default=[], help="a wallet it follows (repeatable; default: the "

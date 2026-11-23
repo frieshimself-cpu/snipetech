@@ -480,7 +480,10 @@ class Ops:
                            "days": round((time.time() - spans[0][0]) / 86400, 2) if spans else 0.0}  # fmt: skip
         except sqlite3.Error as exc:
             out["tape"] = {"error": str(exc)}
-        out["jobs_running"] = sum(1 for j in self.jobs.values() if j.code is None)
+        # every running job record, whoever started it (this process, one before a deploy, the operator round's own
+        # Ops): `self.jobs` holds only this process's, and read 0 while six ran (audit 22 Nov)
+        jobs = self.op_jobs()["jobs"]
+        out["jobs_running"] = sum(1 for j in jobs if j.get("running"))
         out["cpus"] = os.cpu_count() or 1  # sizes the lab's worker pool ([lab] workers, auto: all but two)
         out["mem_gb"] = _mem_gb()
         wal = self.db.with_name(self.db.name + "-wal")
@@ -490,7 +493,7 @@ class Ops:
         out["units_cpu_secs"] = _units_cpu_secs(CGROUP_ROOT / SLICE)
         out["units_mem_gb"] = _units_mem_gb(CGROUP_ROOT / SLICE)
         out["machine"] = _machine(CGROUP_ROOT)
-        out["deploy_waits_for"] = self.deploy_waits_for()  # what `update` would refuse for now
+        out["deploy_waits_for"] = self.deploy_waits_for(jobs)  # what `update` would refuse for now
         return out
 
     def op_run(self, argv: list[str], timeout: int = 6 * 3600) -> dict[str, Any]:
@@ -626,13 +629,15 @@ class Ops:
         n = str(max(1, min(int(lines), MAX_LOG_LINES)))
         return {"unit": unit, "log": self._run(["journalctl", *which, *what, "-n", n, "--no-pager", "-o", "short-iso"])}
 
-    def deploy_waits_for(self) -> list[str]:
+    def deploy_waits_for(self, jobs: list[dict] | None = None) -> list[str]:
         """What an update would leave on mixed code now, in words: the running jobs whose numbers come from the code
         they started with (`holds_deploy`), then the timer-run units that are mid-run (`HOLD_UNITS`; a machine without
-        systemd answers with an error text and holds nothing)."""
+        systemd answers with an error text and holds nothing). `jobs`: the records `op_jobs` lists, when read
+        already."""
         now = time.time()
+        jobs = self.op_jobs()["jobs"] if jobs is None else jobs
         out = [f"{' '.join(map(str, j['argv']))[:60]} (for {int(now - float(j.get('started') or now))} s)"
-               for j in self.op_jobs()["jobs"] if j.get("running") and holds_deploy(j.get("argv") or [])]  # fmt: skip
+               for j in jobs if j.get("running") and holds_deploy(j.get("argv") or [])]  # fmt: skip
         states = self._run([SYSTEMCTL, "is-active", *HOLD_UNITS]).split("\n")
         out += [f"the unit {u}, mid-run" for u, state in zip(HOLD_UNITS, states) if state.strip() in UNIT_RUNS]
         return out

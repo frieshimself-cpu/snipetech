@@ -748,6 +748,24 @@ def test_status_names_the_jobs_an_update_would_wait_for(env, monkeypatch):
     assert len(waits) == 1 and waits[0].startswith("lab --hours 72 (for 31") and waits[0].endswith(" s)")
 
 
+def test_status_counts_the_running_jobs_another_process_started(env, monkeypatch):
+    """Audit 22 Nov (server#3): jobs_running counted the jobs this ops process had started since its last restart, so
+    it missed every job the operator round starts (through an Ops of its own) and every one started before a deploy:
+    22 Nov 11:08 UTC it said 0 while `remote jobs` listed six running and deploy_waits_for in the same answer named
+    four. It counts the job records `remote jobs` lists, read once for both."""
+    ops, key = env
+    jid = time.strftime("%Y%m%d-%H%M%S-") + "abc123"
+    rec = {"id": jid, "argv": ["paper", "run"], "started": int(time.time()) - 60, "ended": None, "exit_code": None,
+           "running": True, "pid": os.getpid()}  # its process lives and it wrote no exit file: it runs  # fmt: skip
+    (ops.data / "jobs" / f"{jid}.json").write_text(json.dumps(rec))
+    assert [j["id"] for j in req(ops, key, "jobs")["jobs"] if j.get("running")] == [jid]
+    reads = []
+    listed = ops.op_jobs
+    monkeypatch.setattr(ops, "op_jobs", lambda: reads.append(1) or listed())
+    status = req(ops, key, "status")
+    assert status["jobs_running"] == 1 and len(reads) == 1
+
+
 def test_the_remote_command_can_wait_for_a_quiet_moment(monkeypatch, capsys):
     """`remote update --when-quiet [minutes]`: asks again every 15 seconds while the server says a job or a unit is
     mid-run, for 20 minutes unless told otherwise, and says once what it waits for. Any other refusal ends it."""

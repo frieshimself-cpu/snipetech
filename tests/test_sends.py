@@ -19,6 +19,7 @@ LEAD = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"
 OTHER = "5Y9pyDgrXkAqfFbvb5YhELc3VQhGVfkHTFpaVR1GFJmb"
 NOW = 1_794_045_600
 T0 = NOW - 3600
+ERR = {"InstructionError": [3, {"Custom": 6002}]}  # a failed send's error, in its listing and in its transaction
 
 
 def _t(user, mint, slot, pos, sol, buy=True, ts=None):
@@ -73,9 +74,9 @@ def _world():
         _t(LEAD, "M1", 1360, 0, 2.2),
         _t(OTHER, "ElseMint", 2000, 0, 0.1),
     ])  # fmt: skip
-    entries = [  # newest first, as the RPC lists them
-        {"signature": "f9", "slot": 1400, "err": {"x": 1}, "blockTime": int(T0 + 400 * 0.4)},
-        {"signature": "f2", "slot": 1201, "err": {"x": 1}, "blockTime": int(T0 + 201 * 0.4)},
+    entries = [  # newest first, as the RPC lists them; a failed one's listing carries its transaction's own error
+        {"signature": "f9", "slot": 1400, "err": ERR, "blockTime": int(T0 + 400 * 0.4)},
+        {"signature": "f2", "slot": 1201, "err": ERR, "blockTime": int(T0 + 201 * 0.4)},
         {"signature": "ok1", "slot": 1100, "err": None, "blockTime": int(T0 + 100 * 0.4)},
     ]
     txs = {"f2": _failed("f2", 1201, "M2", 5000 + 480_000_000), "f9": _failed("f9", 1400, "M9", 5000 + 1_000)}
@@ -90,7 +91,8 @@ def test_each_first_buy_of_a_leader_is_placed_as_landed_failed_or_untried():
     store, chain = _world()
     out = _run(store, chain)
     assert out["moments"] == 3  # M1, M2, M3: M4 is under 1.9 SOL, the second M1 buy is no first buy
-    assert out["outcomes"] == {"adjacent": 1, "block": 0, "later": 0, "failed": 1, "none": 1}
+    # audit 22 Nov (tools#0): "unread" is the outcome of a moment whose sends the credit limit left unread
+    assert out["outcomes"] == {"adjacent": 1, "block": 0, "later": 0, "failed": 1, "none": 1, "unread": 0}
     assert out["tried"] == 2 and out["per_leader"][LEAD]["tried"] == 2
 
 
@@ -98,9 +100,10 @@ def test_a_failed_send_pays_its_priority_and_says_its_error():
     store, chain = _world()
     out = _run(store, chain)
     f = out["failed"]
-    assert f["sends"] == 2 and f["fetched"] == 2 and f["placed"] == 1
-    assert f["placed_fee_sol"] == pytest.approx(0.480005) and f["fee_sol"] == pytest.approx(0.480005 + 0.000006)
-    assert f["errors"] == {json.dumps({"InstructionError": [3, {"Custom": 6002}]}, separators=(",", ":")): 2}
+    # audit 22 Nov (tools#0): f9 landed near no moment, so it is not fetched; its error is read off the listing
+    assert f["sends"] == 2 and f["near"] == 1 and f["fetched"] == 1 and f["placed"] == 1
+    assert f["placed_fee_sol"] == pytest.approx(0.480005) and f["fee_sol"] == pytest.approx(0.480005)
+    assert f["errors"] == {json.dumps(ERR, separators=(",", ":")): 2}
 
 
 def test_each_outcome_carries_only_the_fees_of_its_own_failed_sends():
@@ -134,17 +137,111 @@ def test_each_outcome_carries_only_the_fees_of_its_own_failed_sends():
             "landed.") in out["verdict"]  # fmt: skip
 
 
-def test_only_the_failed_transactions_are_fetched_and_every_request_is_counted():
+def test_only_the_failed_transactions_near_a_moment_are_fetched_and_every_request_is_counted():
     store, chain = _world()
     out = _run(store, chain)
-    assert ("txs", 2) in chain.calls and out["credits"] == 3  # one listing, two transactions
-    assert store.usage_month(S.USAGE, NOW) == 3
+    # audit 22 Nov (tools#0): f9 (slot 1400) is no try at any moment: only f2 is fetched
+    assert ("txs", 1) in chain.calls and out["credits"] == 2  # one listing, one transaction
+    assert store.usage_month(S.USAGE, NOW) == 2
 
 
 def test_the_credit_limit_stops_before_a_request_that_would_pass_it():
     store, chain = _world()
-    out = _run(store, chain, max_credits=2)  # the listing fits, the two transactions do not
+    # audit 22 Nov (tools#0): one transaction is fetched now, so a limit of 1 is what the listing alone fits
+    out = _run(store, chain, max_credits=1)  # the listing fits, the transaction does not
     assert out["stopped"] == "credits" and out["failed"]["fetched"] == 0 and out["credits"] == 1
+    assert out["outcomes"]["unread"] == 1 and out["outcomes"]["none"] == 1  # M2's try is unread; M3 had no send near
+
+
+def _cut_world(far: int = 0):
+    """Two first buys of LEAD with nothing of the bot's landed: M1 (slot 1100) and M2 (slot 1200), each tried with
+    one failed send that names it; `far` newer failed sends name no moment's coin and land near no moment."""
+    store = Store(":memory:")
+    store.add_trades([_t(LEAD, "M1", 1100, 0, 2.5), _t(LEAD, "M2", 1200, 0, 3.0), _t(OTHER, "Else", 8000, 0, 0.1)])
+    entries = [{"signature": f"far{k}", "slot": 1500 + k, "err": ERR, "blockTime": int(T0 + (500 + k) * 0.4)}
+               for k in range(far)][::-1]  # fmt: skip
+    entries += [{"signature": "f2", "slot": 1201, "err": ERR, "blockTime": int(T0 + 201 * 0.4)},
+                {"signature": "f1", "slot": 1101, "err": ERR, "blockTime": int(T0 + 101 * 0.4)}]  # fmt: skip
+    txs = {e["signature"]: _failed(e["signature"], e["slot"], "OTHER", 900_000) for e in entries}
+    txs |= {"f1": _failed("f1", 1101, "M1", 900_000), "f2": _failed("f2", 1201, "M2", 900_000)}
+    return store, Chain(entries, txs)
+
+
+def test_a_failed_send_that_landed_near_no_moment_is_never_fetched():
+    """Audit 22 Nov (tools#0): the listing already gives each send's slot, and only a send that landed within
+    TRY_SLOTS of a moment can be a try at it. The first real run paid 4,136 of its 4,907 credits for 4,136
+    transactions no moment could hold, and the limit then cut the oldest sends, the ones a moment needed."""
+    store, chain = _cut_world(far=50)
+    out = _run(store, chain)
+    assert sum(n for kind, n in chain.calls if kind == "txs") == 2  # f1 and f2: none of the 50
+    assert out["failed"]["sends"] == 52 and out["failed"]["near"] == 2 and out["failed"]["placed"] == 2
+    assert out["outcomes"]["failed"] == 2 and out["credits"] == 3 and out["stopped"] is None
+
+
+def test_the_old_sends_of_a_busy_bot_are_read_inside_the_default_limit():
+    """Audit 22 Nov (tools#0), the first run's shape: 6,000 newer failed sends that no moment can hold, then the tries
+    at two old moments. The run used to fetch from the newest down, stop at the default 5,000 credits and call both
+    moments untried ("none"); it reads the two tries for 7 listing pages and 2 transactions."""
+    store, chain = _cut_world(far=6000)
+    out = _run(store, chain)
+    assert out["outcomes"]["failed"] == 2 and out["outcomes"]["none"] == 0 and out["outcomes"]["unread"] == 0
+    assert out["credits"] == 7 + 2 and out["stopped"] is None
+
+
+def test_a_moment_whose_tries_the_limit_left_unread_reads_unread_not_untried(monkeypatch):
+    """Audit 22 Nov (tools#0): when the limit cuts the sends near the moments, the moments whose sends were not read
+    are not "none" (nothing of the bot reached the chain): their tries are on chain and in the listing, unread."""
+    store, chain = _cut_world()
+    monkeypatch.setattr(S, "FETCH_CHUNK", 1)
+    out = _run(store, chain, max_credits=2)  # the listing and one transaction: f2, the newer
+    assert out["stopped"] == "credits" and out["failed"]["fetched"] == 1
+    assert out["outcomes"] == {"adjacent": 0, "block": 0, "later": 0, "failed": 1, "none": 0, "unread": 1}
+    assert out["tried"] == 1 and out["per_leader"][LEAD]["unread"] == 1 and out["per_leader"][LEAD]["tried"] == 1
+    assert "1 unread" in out["verdict"], out["verdict"]
+
+
+def test_a_try_the_rpc_did_not_return_leaves_its_moment_unread_and_the_verdict_says_so():
+    """Review 22 Nov (tools#0): a transaction the RPC does not return (`get_transactions` gives None for it after its
+    retries) leaves its moment unread, not untried, though no limit stopped the run; the verdict names the unread
+    ones then too, or its numbers do not add up to the first buys and nobody is told why."""
+    store, chain = _cut_world()
+    del chain.txs["f1"]  # M1's try: the RPC answers nothing for it
+    out = _run(store, chain)
+    assert out["stopped"] is None and out["failed"]["near"] == 2 and out["failed"]["fetched"] == 1
+    assert out["outcomes"] == {"adjacent": 0, "block": 0, "later": 0, "failed": 1, "none": 0, "unread": 1}
+    assert "1 unread" in out["verdict"] and "RPC" in out["verdict"], out["verdict"]
+    assert "credit limit" not in out["verdict"], out["verdict"]
+
+
+def test_the_verdict_gives_the_moments_with_only_failed_sends_their_own_fees():
+    """Audit 22 Nov (tools#4): "N with only failed sends (X SOL in their fees)" summed the failed tries of every tried
+    moment, the landed ones too: the first run's 2.0497 SOL was the fee of all 764 failed sends at its 62 tried moments,
+    not of the 15 with failed sends only. M1: the bot landed right behind it after a failed try that paid 0.3 SOL; M2:
+    one failed try that paid 0.001 SOL."""
+    store = Store(":memory:")
+    store.add_trades([_t(LEAD, "M1", 1100, 0, 2.5), _t(BOT, "M1", 1100, 1, 6.0), _t(LEAD, "M2", 1200, 0, 3.0),
+                      _t(OTHER, "Else", 2000, 0, 0.1)])  # fmt: skip
+    entries = [{"signature": "f2", "slot": 1201, "err": ERR, "blockTime": int(T0 + 201 * 0.4)},
+               {"signature": "f1", "slot": 1101, "err": ERR, "blockTime": int(T0 + 101 * 0.4)}]  # fmt: skip
+    txs = {"f1": _failed("f1", 1101, "M1", 300_000_000), "f2": _failed("f2", 1201, "M2", 1_000_000)}
+    out = _run(store, Chain(entries, txs))
+    assert out["outcomes"]["adjacent"] == 1 and out["outcomes"]["failed"] == 1
+    assert "1 with only failed sends (0.0010 SOL in their fees)" in out["verdict"], out["verdict"]
+    # one sentence for it since the merge with the per-outcome fees: what the tries' failed sends cost, and beside what
+    assert "The 2 failed sends at its tries cost 0.3010 SOL" in out["verdict"], out["verdict"]
+    f = out["failed"]
+    assert f["failed_only_fee_sol"] == pytest.approx(0.001) and f["placed_fee_sol"] == pytest.approx(0.301)
+    # fee_sol and priority_sol are over the fetched sends, which sit beside all the failed ones: the output says so
+    assert "fee_sol and priority_sol" in f["note"] and "fetched" in f["note"]
+
+
+def test_a_moment_the_listing_never_reached_reads_unread():
+    """Audit 22 Nov (tools#0): a limit that stops the listing itself leaves every moment it did not reach unread; a
+    landed buy is on the tape and needs no listing."""
+    store, chain = _world()
+    out = _run(store, chain, max_credits=0)
+    assert out["stopped"] == "credits" and out["signatures"] == 0 and out["credits"] == 0
+    assert out["outcomes"] == {"adjacent": 1, "block": 0, "later": 0, "failed": 0, "none": 0, "unread": 2}
 
 
 def test_the_window_ends_where_the_tape_ends():
@@ -235,7 +332,8 @@ def test_with_validators_each_moment_names_its_block_leader_and_the_moments_spli
         {"validator": "V1", "moments": 2, "taken_after": 1, "tried": 1, "adjacent": 1},
         {"validator": "V2", "moments": 1, "taken_after": 1, "tried": 1, "adjacent": 0},
     ]
-    assert ("leaders", 1100, 201) in chain.calls and out["credits"] == 4  # one listing, two transactions, one leaders
+    # one listing, one leaders, and the one failed send that landed near a moment (f9 landed near none: not fetched)
+    assert ("leaders", 1100, 201) in chain.calls and out["credits"] == 3
     assert out["validators_error"] is None
 
 
@@ -243,13 +341,14 @@ def test_the_validators_are_read_before_the_failed_sends_so_a_credit_limit_cuts_
     """Review of 22 Nov: a 72-hour run behind Cented, Decu and theo side spends the 5,000-credit limit on failed sends
     (job 20261122-074139-296636 stopped at 4,907), and the leaders read after them (about 130 requests for 72 hours)
     found 93 credits left: the later moments would have had no validator. The leaders are read first; the limit then
-    cuts the failed sends, which the result already says are counted in part."""
+    cuts the failed sends, and the moment whose send went unread says so (it is not counted as untried)."""
     store, chain = _world()
     chain.leaders = {1100: "V1", 1200: "V2", 1300: "V1"}
-    out = _run(store, chain, validators=True, max_credits=3)  # the listing and the leaders fit, the two sends do not
+    out = _run(store, chain, validators=True, max_credits=2)  # the listing and the leaders fit, the send near M2 not
     assert [r["validator"] for r in out["moments_list"]] == ["V1", "V2", "V1"] and out["validators_error"] is None
     assert out["stopped"] == "credits" and out["failed"]["fetched"] == 0 and out["credits"] == 2
     assert [c[0] for c in chain.calls] == ["sigs", "leaders"]
+    assert out["outcomes"]["unread"] == 1 and out["outcomes"]["failed"] == 0
 
 
 def test_a_leader_lookup_that_fails_leaves_the_validators_unknown_and_says_why():
