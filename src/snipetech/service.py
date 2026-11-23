@@ -2213,7 +2213,8 @@ class Service:
             owner's in `held` (`run_parts`) the run's own tokens only, and no more than the wallet holds beyond the
             owner's (`owner_base`), `sweep_after` seconds after the run's last buy of it. A coin nobody can tell is the
             run's yet is never sold: it may be the owner's. A sale counts once the chain has it."""
-            bought_at: dict[str, float] | None = None  # the run's last buy of each coin on the tape, read once a call
+            # the run's tokens of each coin and its last buy of each on the tape, read once a call
+            bought_at: tuple[dict[str, float], dict[str, float]] | None = None
             for h in held:
                 mint = str(h.get("mint") or "")
                 theirs = mint in owner_val  # the owner's coin, the run's tokens in it
@@ -2224,14 +2225,20 @@ class Service:
                     except Exception:  # noqa: BLE001 - the tape cannot say: not due (and its part is read below)
                         since = now
                 elif sweep_after is not None and mint in held_since:
-                    # from the run's buy the first reading showed (BUY_SEEN_SECS), not from that reading
+                    # from the run's buy the first reading showed (BUY_SEEN_SECS), not from that reading; that buy is
+                    # the holding's only when the run's tokens of the coin on the tape are what the wallet holds (review
+                    # of 60b894d: a second sniper's buy of a coin the first had sold seconds before, neither the sale
+                    # nor the new buy on the tape yet, was timed from the first buy and sold 2 s after it was bought)
                     if bought_at is None:
                         try:
-                            bought_at = run_tokens()[1]
+                            tokens_now = run_tokens()
+                            bought_at = (tokens_now[0], tokens_now[1])
                         except Exception:  # noqa: BLE001 - the tape cannot say: from the first reading, as before
-                            bought_at = {}
-                    bought = bought_at.get(mint)
-                    if bought is not None and since - BUY_SEEN_SECS <= bought < since:
+                            bought_at = ({}, {})
+                    left, last = bought_at
+                    bought = last.get(mint)
+                    if (bought is not None and since - BUY_SEEN_SECS <= bought < since
+                            and abs(float(left.get(mint, 0.0)) - int(h.get("raw") or 0)) < 1):  # fmt: skip
                         since = bought
                 age = now - since
                 quick = mint in sell_now
