@@ -67,6 +67,12 @@ SWEEP_RETRY_SECS = 60.0
 SWEEP_SOON_SECS = 15.0
 SALE_LAND_SECS = 12.0
 SALE_SECS = 60.0
+# --sweep-after counts from the run's buy of the coin on the tape when the first reading that showed the coin came this
+# soon after that buy (it is the buy the reading shows); else from that reading. 23 Nov 19:44, fill 8: OKTech's sniper
+# never sold, the reading showed the coin 6 s after the buy and the run's sale went 25 s after it, at half the price.
+# Less than the time a sniper takes to sell and be armed again (its 12 s timer, then 20 to 45 s): an older buy of the
+# coin on the tape is never the one a new holding came from.
+BUY_SEEN_SECS = 15.0
 # one read of the runner's (the wallet, its coins, OKTech's tasks): an RPC call retries for minutes on a refusal
 # (solana/rpc.py: six tries of 30 s), and the floor, the sale and /stop waited on it (22 Nov audit, finding 10). One
 # that has not answered by then is a failed reading, said; the next tick comes on time.
@@ -2207,6 +2213,7 @@ class Service:
             owner's in `held` (`run_parts`) the run's own tokens only, and no more than the wallet holds beyond the
             owner's (`owner_base`), `sweep_after` seconds after the run's last buy of it. A coin nobody can tell is the
             run's yet is never sold: it may be the owner's. A sale counts once the chain has it."""
+            bought_at: dict[str, float] | None = None  # the run's last buy of each coin on the tape, read once a call
             for h in held:
                 mint = str(h.get("mint") or "")
                 theirs = mint in owner_val  # the owner's coin, the run's tokens in it
@@ -2216,6 +2223,16 @@ class Service:
                         since = run_tokens()[1].get(mint, now)
                     except Exception:  # noqa: BLE001 - the tape cannot say: not due (and its part is read below)
                         since = now
+                elif sweep_after is not None and mint in held_since:
+                    # from the run's buy the first reading showed (BUY_SEEN_SECS), not from that reading
+                    if bought_at is None:
+                        try:
+                            bought_at = run_tokens()[1]
+                        except Exception:  # noqa: BLE001 - the tape cannot say: from the first reading, as before
+                            bought_at = {}
+                    bought = bought_at.get(mint)
+                    if bought is not None and since - BUY_SEEN_SECS <= bought < since:
+                        since = bought
                 age = now - since
                 quick = mint in sell_now
                 if not mint or not (quick or (sweep_after is not None and age >= float(sweep_after))):
