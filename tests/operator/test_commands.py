@@ -659,7 +659,7 @@ def test_what_the_chain_showed_before_it_stopped_answering_still_counts(tmp_path
     counted for nothing at all, the buy it had already found with it."""
     from snipetech.operator import commands
 
-    monkeypatch.setattr(commands, "SECOND_WAIT_SECS", 0.3)
+    monkeypatch.setattr(commands, "SECOND_WAIT_SECS", 0.5)
     svc = Readings(tmp_path, [[], []])
     older = _copy_on_chain("Older" + "1" * 39, name="a buy before it")
     chain = _on_chain(svc, older, _copy_on_chain())
@@ -673,6 +673,30 @@ def test_what_the_chain_showed_before_it_stopped_answering_still_counts(tmp_path
     chain.get_transaction = hangs_on_the_older
     reply, _ = _stop(tmp_path, svc)
     assert svc.calls == [] and "Ours1" in reply and "not shown" in reply, reply
+
+
+def test_a_landed_transaction_of_moments_ago_the_node_cannot_serve_yet_holds_the_stop(tmp_path):
+    """Review of A2: the wallet's newest transaction is on its list of signatures, landed, and the node asked for it
+    does not serve it yet (one RPC name is several machines). It may be the buy: it was passed over and the sniper
+    stopped. A landed transaction inside the look that cannot be read holds /stop back, and the reply says so."""
+    svc = Readings(tmp_path, [[], []])
+    chain = _on_chain(svc, _copy_on_chain())
+
+    async def not_served(signature):  # answers nothing: the node does not have the transaction yet
+        chain.calls.append(("getTransaction", signature))
+
+    chain.get_transaction = not_served
+    reply, ctx = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "cannot be read yet" in reply, reply
+    assert "send /stop again" in reply.lower() and "cannot be read yet" in ctx["paths"].notes.read_text()
+    # a failed send that cannot be served bought nothing, and holds nothing
+    from tests.chain import swap
+
+    failed = Readings(tmp_path, [[], []])
+    chain = _on_chain(failed, swap("failed", W, OURS, tokens=1_000, sol=0.01, err={"InstructionError": [3, "x"]}))
+    chain.get_transaction = not_served
+    reply, _ = _stop(tmp_path, failed)
+    assert failed.calls == [("stop", "s1")], reply
 
 
 def test_a_buy_the_tape_gets_while_the_chain_is_read_holds_the_stop(tmp_path):

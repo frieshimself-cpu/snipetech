@@ -271,15 +271,15 @@ def _unrecorded(svc, running: list[dict]) -> set[str]:
     return {i for i in ids if not sniper_marks([payloads.get(i)])["buy"]}
 
 
-async def _landed_buys(svc, wallet: str, since: float, found: list[tuple[str, str]]) -> None:
+async def _landed_buys(svc, wallet: str, since: float, found: list[tuple[str, str]], unread: list[str]) -> None:
     """Into `found`, as (coin, signature): the coins the wallet bought in transactions that landed since `since` and
     has not sold since, read off its own newest signatures on the chain, newest first: a coin the tape does not follow
     (a PumpSwap coin past the tape's 30 minutes: three of the six copies of 20 Nov) is on no tape, and a buy of a
-    second ago is not on it yet. None of the non-coins (wrapped SOL, a stablecoin). Nothing with no RPC to ask; a
-    transaction the node cannot serve yet is skipped. A signature listed with no block time is one too fresh to have
-    it, never an old one (review of 23 Nov: read as a time of zero, the freshest buy was passed over): its
-    transaction says when. The first one older than `since` ends the look. A sale is read before the buy it followed,
-    so what is found holds when the look is cut short."""
+    second ago is not on it yet. None of the non-coins (wrapped SOL, a stablecoin). Nothing with no RPC to ask. Into
+    `unread`: each landed transaction inside the look that the node does not serve yet (it may be the buy). A
+    signature listed with no block time is one too fresh to have it, never an old one (review of 23 Nov: read as a
+    time of zero, the freshest buy was passed over): its transaction says when. The first one older than `since`
+    ends the look. A sale is read before the buy it followed, so what is found holds when the look is cut short."""
     rpc = getattr(svc, "rpc", None)
     if rpc is None:
         return
@@ -295,6 +295,7 @@ async def _landed_buys(svc, wallet: str, since: float, found: list[tuple[str, st
             continue
         tx = await rpc.get_transaction(s["signature"])
         if not tx:
+            unread.append(str(s["signature"]))
             continue
         when = when if when is not None else tx.get("blockTime")
         if when is not None and int(when) < since:
@@ -321,23 +322,26 @@ def _on_record(svc, sig: str) -> bool:
         return False
 
 
-async def _on_its_way(svc, cfg: Config, wallet: str, seen: set[str], now: float) -> list[str]:
-    """The coins the wallet bought since moments before /stop began (`now`) whose tokens no reading of it showed
-    (`seen`: the coins they did show, none of them a sniper's by our records). On the chain (`_landed_buys`, from
-    CHAIN_LOOK_SECS before `now`): a coin the readings did not show, or one they showed whose buy neither the tape
-    nor the fills hold yet, so nothing has weighed it (review of 23 Nov: a copy into a coin the owner holds, its tokens
-    not shown yet, counted for nothing because "the coin was shown"). On the tape, looked at last (the chain can take
+async def _on_its_way(svc, cfg: Config, wallet: str, seen: set[str], now: float) -> tuple[list[str], int]:
+    """(The coins the wallet bought since moments before /stop began (`now`) whose tokens no reading of it showed;
+    how many of its transactions landed in that time and cannot be read yet: one may be a buy.) `seen`: the coins the
+    readings did show, none of them a sniper's by our records. On the chain (`_landed_buys`, from CHAIN_LOOK_SECS
+    before `now`): a coin the readings did not show, or one they showed whose buy neither the tape nor the fills hold
+    yet, so nothing has weighed it (review of 23 Nov: a copy into a coin the owner holds, its tokens not shown yet,
+    counted for nothing because "the coin was shown"). On the tape, looked at last (the chain can take
     SECOND_WAIT_SECS, and the recorder writes meanwhile): a buy since a minute before `now` that no sale followed
     (operator/leftovers._unseen, the rule the round's clean-up of a dead run stops by). The owner's ignored coins are
     left out of both. A chain that stops answering tells no more than it had: the readings and the tape decide."""
     from .leftovers import _unseen
 
     landed: list[tuple[str, str]] = []
+    unread: list[str] = []
     with contextlib.suppress(Exception):  # the chain cannot say more now: what it showed before still counts
-        await asyncio.wait_for(_landed_buys(svc, wallet, now - CHAIN_LOOK_SECS, landed), SECOND_WAIT_SECS)
+        await asyncio.wait_for(_landed_buys(svc, wallet, now - CHAIN_LOOK_SECS, landed, unread), SECOND_WAIT_SECS)
     skip = set(cfg.operator.ignore_mints or ())
     coming = [m for m, sig in landed if m not in skip and (m not in seen or not _on_record(svc, sig))]
-    return coming + [m for m in _unseen(svc, cfg, wallet, {}, now) if m not in seen and m not in coming]
+    coming += [m for m in _unseen(svc, cfg, wallet, {}, now) if m not in seen and m not in coming]
+    return coming, len(unread)
 
 
 async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths, now: float) -> str:
@@ -398,14 +402,19 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
         held = again
         # from before /stop began (`now`), however long the readings took: a look back from this moment lost a buy
         # of just before the command behind slow readings (review of 23 Nov)
-        coming = [] if mine else await _on_its_way(svc, cfg, cfg.operator.wallet, seen, now)
-        if coming:
-            coins = ", ".join(f"{m[:6]}…" for m in coming[:5])
-            notes.write(f"stopped by owner: flag set; {len(running)} sniper(s) left running: the wallet bought {coins} "
-                        "moments ago and what it bought has not shown in it yet", "decision")  # fmt: skip
-            return (f"stop flag set, but {len(running)} sniper(s) left running ({ids}): the wallet bought {coins} "
-                    "moments ago and what it bought has not shown in the wallet yet. A stopped sniper strands its "
-                    "coin; send /stop again in a minute.")  # fmt: skip
+        coming, unread = ([], 0) if mine else await _on_its_way(svc, cfg, cfg.operator.wallet, seen, now)
+        if coming or unread:
+            why = []
+            if coming:
+                coins = ", ".join(f"{m[:6]}…" for m in coming[:5])
+                why.append(f"the wallet bought {coins} moments ago and what it bought has not shown in the wallet yet")
+            if unread:  # landed, inside the look, not served by the node yet: one of them may be a buy
+                why.append(f"{unread} transaction(s) of the wallet landed moments ago and cannot be read yet (one may "
+                           "be a buy)")  # fmt: skip
+            notes.write(f"stopped by owner: flag set; {len(running)} sniper(s) left running: {'; '.join(why)}",
+                        "decision")  # fmt: skip
+            return (f"stop flag set, but {len(running)} sniper(s) left running ({ids}): {'; '.join(why)}. A stopped "
+                    "sniper strands its coin; send /stop again in a minute.")  # fmt: skip
         if not mine:  # weighed once more: the tape may have got a buy of ours while the chain was read
             theirs = _not_ours(svc, cfg.operator.wallet, again, paths, now)
             mine = [h for h in again if str(h.get("mint")) not in theirs]
