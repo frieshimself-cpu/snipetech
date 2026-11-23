@@ -2,7 +2,9 @@
 Order: stops first (equity floor, day stop, daily risk, the owner's wallet-wide guard), then the diff between the wanted
 set and the snipers that exist. The book's own stops are the owner's /risk values where the owner set them (BookStops,
 book/switch.book_stops): a stop the owner switched off never halts the book.
-It never stops a sniper while the wallet holds a coin, and never creates or starts under a stop."""
+It never stops a sniper while the wallet holds a coin one of ours may hold, and never creates or starts under a stop.
+The coins that are no sniper's (a stray, the owner's own hand-bought coin) are left out of `holdings` by the runner
+(book/run.py), as /stop leaves them out."""
 
 from __future__ import annotations
 
@@ -122,7 +124,7 @@ class BookInputs:
     live: dict[str, dict]  # wallet_live rows by wallet
     bid_model: dict[str, dict]  # bid_model rows by arm
     snipers: list[dict]  # OKTech tasks: id, name, status
-    holdings: list[dict]
+    holdings: list[dict]  # the coins a sniper of ours may hold: the runner leaves out strays and the owner's own coins
     now: float
     stopped: bool = False  # the owner's /stop flag is set: kill mode until /resume
     switched_on: bool = True  # the owner's switch ([book] enabled or /book on); off = stop the book's own snipers
@@ -136,8 +138,8 @@ class BookInputs:
     holdings_known: bool = False  # the wallet's holdings were read this run: retiring a sniper needs them, and none
     # the owner's wallet-wide guard holds (operator/risk_guard.py: the day 1 SOL down or the wallet under 10 SOL): a
     # kill like the book's own stops, so nothing is created or started, and with the wallet holding nothing every book
-    # sniper stops; while it holds any coin (holders None: not traceable) every book sniper is kept, as under the book's
-    # own stops, and each can still buy up to max_buys_per_sniper
+    # sniper stops; while it holds a coin of ours (holders None: not traceable) every book sniper is kept, as under the
+    # book's own stops, and each can still buy up to max_buys_per_sniper
     guard: bool = False
     # the book's own floor, day stop and daily cap as they apply (book/switch.book_stops: the owner's /risk values where
     # set); None: the config's [book] values
@@ -163,6 +165,10 @@ class BookInputs:
     # book snipers a retire stopped while a coin came into the wallet and that could not be started again (run._retire,
     # run.RESTART_KEY): a stopped sniper sells nothing, so each is started while the wallet holds a coin
     restart: set[str] = field(default_factory=set)
+    # book snipers that may have bought a coin the runner left out of `holdings` as the owner's own: that coin is told
+    # by the fees of the snipers on record (measure/ours.owner_coins), and these have no fee on record here (run.py, as
+    # /stop's operator/commands._unrecorded). Each is kept like a holder: never stopped, never retired
+    may_hold: set[str] = field(default_factory=set)
 
 
 GUARD_KILL = "wallet-wide guard"  # the kill reason while the owner's guard holds (its own line says why)
@@ -420,8 +426,13 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
 
     def holds(s: dict) -> bool:
         """This sniper may be managing the wallet's coin: the coin's buy copied its leader, or the coin cannot be traced
-        to a leader (then every book sniper counts as a holder: never strand a coin)."""
-        return holding and (inp.holders is None or s["w6"] in inp.holders)
+        to a leader (then every book sniper counts as a holder: never strand a coin); or it may have bought the coin
+        read as the owner's own (`may_hold`)."""
+        return (holding and (inp.holders is None or s["w6"] in inp.holders)) or s["id"] in inp.may_hold
+
+    # why a holder is kept, in the owner's words (the runner's kill line counts the lines ending "never stop a holder")
+    a_coin = "the wallet holds a coin" if holding else (
+        "the wallet holds a coin that may be its own (no record here of the fees it pays)")  # fmt: skip
 
     # stops: a stop that is off (the owner's /risk, 7 Nov ~12:10 UTC) never halts the book, and with the floor off the
     # equity is not needed (an unknown one says nothing about a floor there is not)
@@ -452,7 +463,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                             s["arm"],
                             None,
                             s["id"],
-                            f"{plan.kill_reason}, but the wallet holds a coin: never stop a holder",
+                            f"{plan.kill_reason}, but {a_coin}: never stop a holder",
                         )
                     )
                 else:
@@ -537,18 +548,20 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         return f"same actor as {other[:6]}, which has a sniper: {ONE_SNIPER}; {what}"
 
     # holder attribution is off (run_book passes holders=None): a sniper is retired only while the wallet holds nothing
+    # one of ours may hold, and never one that may have bought the coin read as the owner's (`may_hold`)
     flat = inp.holdings_known and not holding
     relied = relied_buys(cfg)
     for s in mine:
         w6, status = s["w6"], str(s.get("status"))
         if w6 in wanted and wanted[w6][1] is not None:
             wallet, arm = wanted[w6]
-            if status in ("running", "starting", "idle") and flat and inp.buys_by_sniper.get(s["id"], 0) >= relied:
+            spent = inp.buys_by_sniper.get(s["id"], 0) >= relied
+            if status in ("running", "starting", "idle") and flat and spent and s["id"] not in inp.may_hold:
                 # not seen: the same plan creates its replacement. An idle one is replaced too, never restarted with
                 # a part-used cap (a retire whose delete failed leaves it idle)
                 plan.actions.append(Action("retire", wallet, s["arm"], None, s["id"], RETIRE_REASON))
-            elif status == "idle" and inp.buys_by_sniper.get(s["id"], 0) >= relied:
-                if s["id"] in inp.restart and holding:
+            elif status == "idle" and spent:
+                if s["id"] in inp.restart and (holding or s["id"] in inp.may_hold):
                     # its retire was undone by a coin it may hold, and the start after failed (22 Nov audit): a
                     # stopped sniper strands its coin, so it runs again until the wallet holds nothing, then is retired
                     plan.actions.append(Action("start", wallet, s["arm"], None, s["id"], RESTART_REASON))
@@ -612,7 +625,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                             s["arm"],
                             None,
                             s["id"],
-                            "dropped out of the ranking, but the wallet holds a coin: never stop a holder",
+                            f"dropped out of the ranking, but {a_coin}: never stop a holder",
                         )
                     )
                 else:

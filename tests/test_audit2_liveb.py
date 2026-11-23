@@ -10,6 +10,8 @@ from snipetech.config import Config
 from snipetech.operator.notify import Notifier
 from snipetech.operator.paths import OperatorPaths
 from snipetech.store import Store
+from tests import test_audit_book as AB  # the first round's book helpers, on their own clock (BT.NOW)
+from tests import test_book_run as BT
 
 NOW = 1_795_500_000  # 24 Nov 2026 06:00 UTC
 W = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"  # the sniper wallet
@@ -132,5 +134,194 @@ def test_b1_with_no_sniper_on_record_every_trade_counts_as_before(tmp_path):
         assert new_round_trips(st, cfg, NOW)["n"] == 4
         ev = week_evidence(st, cfg, NOW)
         assert set(ev["arms"]) == {"control", "paid"} and ev["exit_reasons"]["none"] == {"manual": 1}
+    finally:
+        st.close()
+
+
+# -- B2: the book's kill and retire paths beside a coin that is the owner's own ---------------------------------------
+
+BOUGHT_BEFORE = "Agn" + "a" * 41  # a coin the bot copied and sold yesterday, and the owner bought by hand today
+RAW = 10**12  # what one AB._tape_trade buys, in the coin's smallest units
+
+
+def _owners_coin_the_bot_once_traded(st, raw=RAW, hand_ts=BT.NOW - 1800):
+    """The bot's copy of BOUGHT_BEFORE a day ago, sold 12 s later, then the owner's hand buy of it; the wallet's row."""
+    AB._tape_trade(st, "BOTBUY", BT.NOW - 86400, 400_100_000, True, AB.BOT_FEES, mint=BOUGHT_BEFORE)
+    AB._tape_trade(st, "BOTSALE", BT.NOW - 86388, 400_100_030, False, AB.BOT_SALE_FEES, mint=BOUGHT_BEFORE)
+    AB._tape_trade(st, "HANDBUY", hand_ts, 400_500_000, True, AB.OWNER_FEES, mint=BOUGHT_BEFORE)
+    return [{"mint": BOUGHT_BEFORE, "amount": raw / 1e6, "raw": raw, "value_sol": 4.9, "priced": True}]
+
+
+def _book(tmp_path, svc, cfg, sent=None, native=10.0):
+    from snipetech.book.run import run_book
+
+    held = list(svc._held)
+    return asyncio.run(run_book(svc, cfg, BT.NOW, notifier=AB._notifier([] if sent is None else sent),
+                                balances=lambda w: (native, 0.0, held)))  # fmt: skip
+
+
+def test_b2_a_kill_stops_the_books_snipers_beside_a_coin_the_owner_bought_after_the_bot_sold_out_of_it(tmp_path):
+    """R-livetest-2: the book left a coin out of its holdings only when no buy of the bot's, ever, explained it
+    (run._strays). A coin our sniper copied and sold yesterday and the owner bought by hand today stayed "held" for as
+    long as the owner kept it: /book off, the guard and the day stop kept every book sniper armed beside it, each still
+    able to buy to its cap. Every buy of it since the wallet's last sale paid the owner's fees and explains all that is
+    held: the owner's own (measure/ours.owner_coins, as /stop reads it), and no holding of the book's."""
+    st, cfg = BT._env(tmp_path)  # the book is off: its kill path stops its snipers that hold nothing
+    AB._book_sniper(st)
+    held = _owners_coin_the_bot_once_traded(st)
+    AB._seen(tmp_path, BOUGHT_BEFORE, BT.NOW - 1800)
+    svc, sent = BT.FakeSvc(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], held=held, cfg=cfg), []
+    try:
+        out = _book(tmp_path, svc, cfg, sent)
+        assert out["kill_reason"] == "book off" and ("stop", "k1") in svc.calls, (svc.calls, sent)
+        assert not any("kept running while the wallet holds a coin" in t for t in sent)
+    finally:
+        st.close()
+
+
+def test_b2_the_owners_coin_is_no_holding_from_the_moment_its_buy_is_on_record(tmp_path):
+    """A stray no buy explains waits ten minutes of the watch seeing it (a buy of ours may not be written yet). A coin
+    whose buy is on record at the owner's fees, the whole holding explained, needs no wait: /stop reads it so at once."""
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    AB._hand_buy_in_fills(st, BT.NOW - 400)  # read off the chain by the measure stage; the watch has not seen it yet
+    held = [{"mint": AB.OWNER_COIN, "amount": 1.0, "raw": 1_000_000, "value_sol": 4.9, "priced": True}]
+    svc = BT.FakeSvc(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], held=held, cfg=cfg)
+    try:
+        assert _book(tmp_path, svc, cfg)["kill_reason"] == "book off" and ("stop", "k1") in svc.calls, svc.calls
+    finally:
+        st.close()
+
+
+def test_b2_more_of_the_coin_than_the_owners_buys_explain_keeps_every_book_sniper(tmp_path):
+    """Rule 1: twice what the owner's hand buy brought in may be a buy of ours the tape has not written yet. Such a
+    coin is not the owner's beyond doubt, and under a kill every book sniper stays, as before."""
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    held = _owners_coin_the_bot_once_traded(st, raw=2 * RAW)
+    AB._seen(tmp_path, BOUGHT_BEFORE, BT.NOW - 30)
+    svc, sent = BT.FakeSvc(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], held=held, cfg=cfg), []
+    try:
+        out = _book(tmp_path, svc, cfg, sent)
+        assert out["kill_reason"] == "book off" and svc.calls == [], svc.calls
+        assert any("1 book sniper(s) kept running while the wallet holds a coin" in t for t in sent), sent
+    finally:
+        st.close()
+
+
+K2 = f"snipetech copy book {BT.L2[:6]} arm:control"
+
+
+def test_b2_a_book_sniper_with_no_fee_record_stays_beside_the_owners_coin(tmp_path):
+    """The owner's coin is told by the fees of the snipers on record. A book sniper the bot holds no payload of pays
+    fees nobody recorded here, so that coin may be its own: under a kill it keeps running (a stopped sniper strands its
+    coin), as /stop leaves it (operator/commands._unrecorded), while the sniper on record is stopped."""
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)  # k1, with the payload we sent; k2 has no record here
+    AB._hand_buy_on_tape(st, BT.NOW - 1800)
+    AB._seen(tmp_path, AB.OWNER_COIN, BT.NOW - 1800)
+    held = [{"mint": AB.OWNER_COIN, "amount": 1e6, "raw": RAW, "value_sol": 10.2, "priced": True}]
+    snipers = [{"id": "k1", "name": BT.K1, "status": "running"}, {"id": "k2", "name": K2, "status": "running"}]
+    svc, sent = BT.FakeSvc(st, snipers=snipers, held=held, cfg=cfg), []
+    try:
+        out = _book(tmp_path, svc, cfg, sent)
+        assert out["kill_reason"] == "book off" and svc.calls == [("stop", "k1")], svc.calls
+        assert any("1 book sniper(s) kept running" in t for t in sent), sent
+    finally:
+        st.close()
+
+
+def test_b2_the_plan_keeps_a_sniper_that_may_hold_the_owners_coin_and_never_retires_it():
+    """The policy's part: a sniper named in `may_hold` is kept like a holder under a kill and when its wallet left the
+    ranking, and is not retired, though the wallet holds nothing else; every other sniper goes as it always did."""
+    from snipetech.book.policy import BookInputs, plan_book
+
+    def plan(snipers, may_hold, qualified=(), **kw):
+        inp = BookInputs(equity_sol=10, day_realised_sol=0, day_risk_used_sol=0, qualified=list(qualified), live={},
+                         bid_model={}, snipers=snipers, holdings=[], now=BT.NOW, holdings_known=True, native_sol=10,
+                         wsol=0, may_hold=may_hold, **kw)  # fmt: skip
+        return {a.sniper_id: (a.kind, a.reason) for a in plan_book(inp, Config().book).actions if a.sniper_id}
+
+    two = [{"id": "k1", "name": BT.K1, "status": "running"}, {"id": "k2", "name": K2, "status": "running"}]
+    killed = plan(two, {"k2"}, stopped=True)
+    assert killed["k1"][0] == "stop" and killed["k2"][0] == "keep" and "never stop a holder" in killed["k2"][1]
+    assert "may be its own (no record here of the fees it pays)" in killed["k2"][1]
+    dropped = plan(two, {"k2"})  # neither wallet is ranked any more
+    assert dropped["k1"][0] == "stop" and dropped["k2"][0] == "keep"
+    ranked = [{"wallet": BT.L1, "score": 0.03, "copy_plan": {"min_leader_sol": 0.3}}]
+    one = [{"id": "k1", "name": BT.K1, "status": "running"}]
+    assert plan(one, set(), ranked, buys_by_sniper={"k1": 1})["k1"][0] == "retire"
+    assert plan(one, {"k1"}, ranked, buys_by_sniper={"k1": 1})["k1"][0] == "keep"
+
+
+def test_b2_the_owners_coin_holds_back_neither_a_retire_nor_the_clean_up(tmp_path):
+    """The book on: k1 made its relied-on buy and the wallet holds only a coin the bot sold out of yesterday and the
+    owner bought by hand today. Before, that coin held back every replacement and the clean-up for as long as the owner
+    kept it. k1 is retired and replaced, and a sniper that ended is deleted."""
+    st, cfg = BT._env(tmp_path, enabled=True)
+    old = "snipetech copy book OLDWAL arm:control"
+    AB._book_sniper(st)
+    AB._book_sniper(st, sid="e1", name=old, created_at=BT.NOW - 9000)  # an ended one, on record with its fees
+    BT._coin(st, "c1", BT.NOW - 3000, 400_000_000, 0, 3, leader=BT.L1, sell_slot=10)  # k1's relied-on buy, sold
+    held = _owners_coin_the_bot_once_traded(st)
+    BT._fresh_tape(st)
+    AB._seen(tmp_path, BOUGHT_BEFORE, BT.NOW - 1800)
+    st.set_coverage("book:ended", {"ids": ["e1"], "ts": int(BT.NOW) - 300})  # the run before saw e1 ended too
+    snipers = [{"id": "k1", "name": BT.K1, "status": "running"}, {"id": "e1", "name": old, "status": "finished"}]
+    svc = BT.FakeSvc(st, snipers=snipers, held=held, cfg=cfg)
+    try:
+        _book(tmp_path, svc, cfg)
+        assert ("stop", "k1") in svc.calls and ("delete", "k1") in svc.calls, svc.calls
+        assert ("delete", "e1") in svc.calls, svc.calls
+    finally:
+        st.close()
+
+
+class _MoreLater(BT.FakeSvc):
+    """From the third read of the wallet on (the one after a retire's stop) it holds twice as much of the coin: a
+    sniper of ours bought it too, and the tape has not written that buy yet."""
+
+    async def open_positions(self, address, ignore=()):
+        self._reads += 1
+        return [h | ({"raw": 2 * h["raw"]} if self._reads >= 3 else {}) for h in self._held]
+
+
+def test_b2_a_retire_beside_the_owners_coin_is_undone_when_more_of_that_coin_shows(tmp_path, monkeypatch):
+    """Each reading of the wallet is weighed on its own amounts: the owner's coin a sniper of ours bought into while
+    the retire's stop went out is no longer explained by the owner's buys, so the sniper is started again and nothing
+    is deleted (a stopped sniper sells nothing)."""
+    from snipetech.book import run as R
+
+    monkeypatch.setattr(R, "RESTART_PAUSE_SECS", 0.0)
+    st, cfg = BT._env(tmp_path, enabled=True)
+    AB._book_sniper(st)
+    BT._coin(st, "c1", BT.NOW - 3000, 400_000_000, 0, 3, leader=BT.L1, sell_slot=10)
+    held = _owners_coin_the_bot_once_traded(st)
+    BT._fresh_tape(st)
+    svc, sent = _MoreLater(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], held=held, cfg=cfg), []
+    try:
+        _book(tmp_path, svc, cfg, sent)
+        assert svc.calls[:2] == [("stop", "k1"), ("start", "k1")] and ("delete", "k1") not in svc.calls, svc.calls
+        assert any("retire" in t and "started again" in t for t in sent), sent
+    finally:
+        st.close()
+
+
+def test_b2_the_clean_up_leaves_an_ended_sniper_with_no_fee_record_beside_the_owners_coin(tmp_path):
+    """An ended sniper can still be selling its last coin (OKTech counts attempts), so the clean-up deletes none while
+    the wallet holds a coin of ours. Beside a coin read as the owner's, one with no fee record may be the one that
+    bought it: it is left, and the ended sniper on record is deleted."""
+    st, cfg = BT._env(tmp_path, enabled=True)
+    old = "snipetech copy book OLDWAL arm:control"
+    AB._book_sniper(st, sid="e1", name=old)  # on record, with its fees
+    held = _owners_coin_the_bot_once_traded(st)
+    BT._fresh_tape(st)
+    st.set_coverage("book:ended", {"ids": ["e1", "e2"], "ts": int(BT.NOW) - 300})
+    snipers = [{"id": "e1", "name": old, "status": "finished"},
+               {"id": "e2", "name": "snipetech copy book GONE22 arm:control", "status": "finished"}]  # fmt: skip
+    svc = BT.FakeSvc(st, snipers=snipers, held=held, cfg=cfg)
+    try:
+        _book(tmp_path, svc, cfg)
+        assert ("delete", "e1") in svc.calls and ("delete", "e2") not in svc.calls, svc.calls
     finally:
         st.close()

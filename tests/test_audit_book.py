@@ -112,15 +112,18 @@ def test_book0_the_owners_coin_neither_holds_back_a_retire_and_the_clean_up_nor_
     from snipetech.book.run import _buys_by_sniper
 
     st, cfg = _env(tmp_path, enabled=True)
+    old = "snipetech copy book OLDWAL arm:control"
     _book_sniper(st)
+    # audit round 2 (B2): the wallet's row carries its raw amount, as the wallet read gives it, so the coin reads as the
+    # owner's own; beside one, an ended sniper is deleted only when its fees are on record (it cannot have bought it)
+    _book_sniper(st, sid="e1", name=old, created_at=NOW - 9000)
     _coin(st, "c1", NOW - 3000, 400_000_000, 0, 3, leader=L1, sell_slot=10)  # k1's relied-on buy, sold
     _hand_buy_on_tape(st, NOW - 1800)
     _fresh_tape(st)
     _seen(tmp_path, OWNER_COIN, NOW - 1800)
     st.set_coverage("book:ended", {"ids": ["e1"], "ts": int(NOW) - 300})  # the run before saw e1 ended too
-    held = [{"mint": OWNER_COIN, "amount": 1e6, "value_sol": 10.2, "priced": True}]
-    snipers = [{"id": "k1", "name": K1, "status": "running"},
-               {"id": "e1", "name": "snipetech copy book OLDWAL arm:control", "status": "finished"}]  # fmt: skip
+    held = [{"mint": OWNER_COIN, "amount": 1e6, "raw": 10**12, "value_sol": 10.2, "priced": True}]
+    snipers = [{"id": "k1", "name": K1, "status": "running"}, {"id": "e1", "name": old, "status": "finished"}]
     svc = FakeSvc(st, snipers=snipers, held=held, cfg=cfg)
     try:
         assert _buys_by_sniper(st, W, snipers) == {"k1": 1}  # its own buy only, not the owner's

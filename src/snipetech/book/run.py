@@ -158,6 +158,39 @@ def _strays(store, wallet: str, holdings: list[dict] | None, paths: OperatorPath
     return out
 
 
+def _owners_coins(store, wallet: str, held: list[dict] | None) -> set[str]:
+    """The coins among `held` (the wallet's coins as just read, each row with its `raw` amount) that are the owner's own
+    beyond doubt (measure/ours.owner_coins: every buy of the coin by the wallet since its last sale of it paid fees no
+    sniper of ours pays, and those buys explain all the wallet holds of it). No sniper on record holds them, so they
+    keep no book sniper armed under a kill and hold back no retire and no clean-up: the rule /stop got on 22 Nov
+    (operator/commands._not_ours). `_strays` alone kept such a coin a holding whenever the bot had ever bought it (a
+    copy sold yesterday, the owner's hand buy today), and for ten minutes otherwise. Each reading of the wallet is
+    weighed on its own amounts: more of the coin than the owner's buys explain may be a buy of ours not written yet.
+    None when the records cannot be read: each coin may be ours."""
+    from ..measure.ours import fee_marks, owner_coins
+
+    if store is None or not held:
+        return set()
+    try:
+        return set(owner_coins(store, wallet, held, fee_marks(store)))
+    except Exception:  # noqa: BLE001 - not known: each coin may be ours
+        return set()
+
+
+def _no_fee_record(svc, snipers: list[dict]) -> set[str]:
+    """The book's snipers among `snipers` (OKTech's tasks) the bot holds no fee record of (no payload of theirs on
+    record names a priority: operator/commands._unrecorded, as /stop asks). The owner's coins are told by the fees of
+    the snipers on record, so one of these may have bought a coin read as the owner's: it is never stopped, retired or
+    deleted beside one. Every one when it cannot be told."""
+    mine = [t for t in snipers if t.get("id") is not None and BOOK_NAME_RE.match(str(t.get("name") or ""))]
+    try:
+        from ..operator.commands import _unrecorded
+
+        return set(_unrecorded(svc, mine))
+    except Exception:  # noqa: BLE001 - not known: each may have bought it
+        return {str(t["id"]) for t in mine}
+
+
 CREATED_GRACE_SECS = 60  # our clock against block time: a buy just before the recorded creation can still be its own
 
 
@@ -390,6 +423,11 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         strays = _strays(store, wallet, holdings if holdings_known else None, paths, now)
     except Exception:  # noqa: BLE001 - no stray is called while anything cannot be read
         strays = set()
+    # the coins that are the owner's own beyond doubt hold no sniper on record either (as /stop reads them); a book
+    # sniper with no fee record may have bought one, and stays beside it
+    owners = _owners_coins(store, wallet, list(holdings or [])) if holdings_known else set()
+    unrecorded = _no_fee_record(svc, snipers)
+    not_ours = strays | owners
     fresh = book_fresh_starts(paths)
     paused_rec = dict(store.coverage(PAUSED_KEY) or {})
     lifted = [w for w, rec in paused_rec.items() if w in fresh and fresh[w] >= float((rec or {}).get("ts") or 0)]
@@ -421,16 +459,17 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=bookable, live=live_rows, actors=actors or {}, twins=twins, non_coin=non_coin or {},
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers,
-                     holdings=[h for h in holdings or [] if str(h.get("mint") or "") not in strays], now=now,
+                     holdings=[h for h in holdings or [] if str(h.get("mint") or "") not in not_ours], now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
                      tape_holding=tape_holding, paused=paused_rec,
                      guard=guard is None or guard.tripped or not guard.known,
                      stops=book_stops(cfg, paths),  # the owner's /risk values where set, else [book]'s
-                     native_sol=native, wsol=wsol, restart=_restarts(store, snipers))  # fmt: skip
-    # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
-    # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
-    # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
+                     native_sol=native, wsol=wsol, restart=_restarts(store, snipers),
+                     may_hold=unrecorded if owners else set())  # fmt: skip
+    # holders=None: while the wallet holds a coin of ours every book sniper is kept. A measured fill can name the wrong
+    # leader (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the
+    # sniper that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
     plan: BookPlan = plan_book(inp, b)
     if actors is None or non_coin is None:  # a read failed: when in doubt the book adds no sniper
         plan.actions = [a for a in plan.actions if a.kind not in ("create", "start", "retire")]
@@ -559,11 +598,12 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         if (
             a.kind == "retire"
             and a.sniper_id
-            and not await _retire(svc, wallet, notifier, notes, a, store, now, strays)
+            and not await _retire(svc, wallet, notifier, notes, a, store, now, strays, unrecorded)
         ):
             not_replaced.add(a.wallet or "")
     # the ended ones go before a new one is made: OKTech counts them against the key's 200 (19 Nov)
-    await _prune_ended(svc, wallet, notes, snipers, store, now, strays, tape_behind=tape_behind, wanted=plan.wanted)
+    await _prune_ended(svc, wallet, notes, snipers, store, now, strays, tape_behind=tape_behind, wanted=plan.wanted,
+                       unrecorded=unrecorded)  # fmt: skip
     new_ids: list[tuple[str, Any]] = []
     from .switch import book_mcaps
 
@@ -650,13 +690,29 @@ def _ignored(svc) -> list[str]:
     return list(getattr(getattr(getattr(svc, "cfg", None), "operator", None), "ignore_mints", None) or [])
 
 
-async def _coins_held(svc, wallet: str, strays: set[str] | frozenset) -> list[dict] | None:
-    """The wallet's coins by its own balances now, the strays and the owner's ignored coins left out; None when they
-    cannot be read."""
+async def _wallet_now(svc, wallet: str, strays: set[str] | frozenset,
+                      store=None) -> tuple[list[dict], list[dict]] | None:  # fmt: skip
+    """The wallet's coins by its own balances now (the owner's ignored coins left out), in two parts: those a sniper of
+    ours may hold, and (given the `store`) those that are the owner's own on this reading's amounts (`_owners_coins`).
+    A stray that is not the owner's is in neither. None when the wallet cannot be read."""
     try:
-        return [p for p in await svc.open_positions(wallet, ignore=_ignored(svc)) if str(p.get("mint")) not in strays]
+        held = list(await svc.open_positions(wallet, ignore=_ignored(svc)))
     except Exception:  # noqa: BLE001 - unknown holdings
         return None
+    theirs = _owners_coins(store, wallet, held)
+    own = [p for p in held if str(p.get("mint")) in theirs]
+    return [p for p in held if str(p.get("mint")) not in theirs and str(p.get("mint")) not in strays], own
+
+
+async def _coins_held(svc, wallet: str, strays: set[str] | frozenset, store=None,
+                      blind: bool = False) -> list[dict] | None:  # fmt: skip
+    """The wallet's coins a sniper of ours may hold now (`_wallet_now`): the strays and the owner's own coins left out;
+    None when they cannot be read. `blind`: for a sniper the bot holds no fee record of (`_no_fee_record`), which may
+    have bought a coin read as the owner's: those stay in (as /stop keeps such a sniper running beside one)."""
+    got = await _wallet_now(svc, wallet, strays, store)
+    if got is None:
+        return None
+    return [*got[0], *got[1]] if blind else got[0]
 
 
 def _tape_holds(store, wallet: str, now: float) -> bool:
@@ -667,10 +723,11 @@ def _tape_holds(store, wallet: str, now: float) -> bool:
         return True
 
 
-async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | frozenset) -> bool:
-    """Whether the wallet holds a coin of ours now, by its own balances and by the tape (a buy seconds old); holdings
-    that cannot be read count as held."""
-    coins = await _coins_held(svc, wallet, strays)
+async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | frozenset,
+                       blind: bool = False) -> bool:  # fmt: skip
+    """Whether the wallet holds a coin a sniper of ours may hold now (`_coins_held`; `blind`: a sniper with no fee
+    record), by its own balances and by the tape (a buy seconds old); holdings that cannot be read count as held."""
+    coins = await _coins_held(svc, wallet, strays, store, blind)
     return coins is None or bool(coins) or _tape_holds(store, wallet, now)
 
 
@@ -776,13 +833,15 @@ def _one_sniper_refused(exc: BaseException) -> bool:
 
 async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], store, now: float,
                        strays: set[str] | frozenset = frozenset(), tape_behind: bool = False,
-                       wanted: set[str] | None = None) -> int:  # fmt: skip
+                       wanted: set[str] | None = None, unrecorded: set[str] | frozenset = frozenset()) -> int:  # fmt: skip
     """Delete the book's own snipers that have ended (positions.SPENT_STATUSES: they buy and sell nothing more), and,
     given the wallets the plan keeps a sniper for (`wanted`, first six characters), its stopped ("idle") snipers of any
     other wallet (19 Nov: 8 such tasks were left on the key, one since 9 Nov, a slow leak toward OKTech's 200; a wallet
     that comes back gets a new sniper in a second, its buy counter at zero), the
     oldest first and at most PRUNE_PER_RUN a run; how many went. Only one the run before already saw ended
-    (ENDED_KEY), only while the wallet holds nothing (a wallet that could not be read counts as holding) and the tape
+    (ENDED_KEY), only while the wallet holds nothing a sniper of ours may hold (a wallet that could not be read counts
+    as holding; a stray and the owner's own coin are none, `_owners_coins`; beside a coin read as the owner's, never a
+    sniper with no fee record, `unrecorded`, which may be the one that bought it) and the tape
     is not behind (`tape_behind`: it could not show a buy of ours that is seconds old). Never a sniper that is not the
     book's by its name, one that still runs or waits, or one OKTech marks failed (that one is kept for someone to look
     at). Housekeeping: written down, never sent to the owner. A sniper OKTech will not delete is passed over
@@ -807,8 +866,16 @@ async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], s
     except Exception:  # noqa: BLE001 - what the run before saw is not known: nothing is deleted this run
         return 0
     due = [sid for sid in ended if sid in seen]
-    if not due or tape_behind or await _holds_a_coin(svc, wallet, store, float(now or 0), strays):
+    if not due or tape_behind:
         return 0
+    got = await _wallet_now(svc, wallet, strays, store)
+    if got is None or got[0] or _tape_holds(store, wallet, float(now or 0)):
+        return 0
+    theirs = bool(got[1])
+    if theirs:  # beside a coin read as the owner's, a sniper with no fee record may be the one that bought it
+        due = [sid for sid in due if sid not in unrecorded]
+        if not due:
+            return 0
     done, refused, until, gone_dropped = 0, [], time.monotonic() + PRUNE_SECS, 0
     for sid in due[:PRUNE_PER_RUN]:
         try:
@@ -820,7 +887,7 @@ async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], s
             if not _one_sniper_refused(exc) or len(refused) >= PRUNE_REFUSALS:
                 break
     line = (f"[book] deleted {done} of its ended snipers on OKTech ({len(ended) - done} left): each had ended by the "
-            "run before and the wallet holds nothing")  # fmt: skip
+            "run before and the wallet holds nothing" + (" of ours" if theirs else ""))  # fmt: skip
     if gone_dropped:
         line += f"; {gone_dropped} of them stopped, of a wallet it no longer copies"
     if refused:
@@ -839,21 +906,24 @@ async def _retire(
     store=None,
     now: float | None = None,
     strays: set[str] | frozenset = frozenset(),
+    unrecorded: set[str] | frozenset = frozenset(),
 ) -> bool:
-    """Stop and delete a sniper that made its relied-on buy, once the wallet holds nothing; True when it is gone. The
-    holdings are read before the stop and again after it (with the tape): a coin bought in between gets its sniper
-    started again and nothing is deleted (a stopped sniper sells nothing, so its coin would be stranded). That start is
-    tried RESTART_TRIES times; when it fails the owner is told so, with the coin's /sell line, and the next run starts
-    the sniper while the wallet holds a coin (RESTART_KEY)."""
+    """Stop and delete a sniper that made its relied-on buy, once the wallet holds nothing it may hold; True when it is
+    gone. The holdings are read before the stop and again after it (with the tape): a coin bought in between gets its
+    sniper started again and nothing is deleted (a stopped sniper sells nothing, so its coin would be stranded). That
+    start is tried RESTART_TRIES times; when it fails the owner is told so, with the coin's /sell line, and the next run
+    starts the sniper while the wallet holds a coin (RESTART_KEY). The owner's own coins are none of its coins, each
+    reading weighed on its own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`)."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
     now = float(now if now is not None else 0)
+    blind = sid in unrecorded  # no fee record of it: a coin read as the owner's may be its own
 
-    if await _holds_a_coin(svc, wallet, store, now, strays):
+    if await _holds_a_coin(svc, wallet, store, now, strays, blind):
         notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again (or could not be read)", "info")
         return False
     with contextlib.suppress(Exception):  # an idle task may refuse a stop; the delete is what counts
         await svc.oktech_task("stop", sid)
-    coins = await _coins_held(svc, wallet, strays)
+    coins = await _coins_held(svc, wallet, strays, store, blind)
     if coins is None or coins or _tape_holds(store, wallet, now):
         mints = [str(c["mint"]) for c in coins or [] if c.get("mint")]
         if store is not None:
