@@ -529,9 +529,9 @@ again 5 s later, that reading weighed on its own amounts, and stops nothing whil
 the chain or the tape show a buy since moments before the `/stop` whose coin neither reading showed, or a landed
 transaction the node cannot serve yet: the reply says what is on its way and asks for `/stop` again in a minute. The
 flag holds from the moment the one-minute pass reads the `/stop`, before any command is acted on (unless a `/resume`
-came before it in that pass). Since the third round a `/stop` whose pass was cut off before it answered is owed: the
-next pass acts on it first, and its answer begins "Your /stop is acted on now", unless the owner has sent a `/stop` or
-a `/resume` since. Each read waits 20 s at most, the second reading and the look at the chain 10 s each, the stop calls
+came before it in that pass). Since the third round a `/stop` whose pass was cut off before it answered is owed
+(`operator/stop_owed`): the next pass acts on it first, and its answer begins "Your /stop is acted on now", unless the
+owner has sent a `/stop` or a `/resume` since. Each read waits 20 s at most, the second reading and the look at the chain 10 s each, the stop calls
 together 40 s and all of `/stop` 95 s; a `/sell` sale waits 60 s. The pass is killed at 2 minutes, so a `/sell` and a
 `/stop` in one pass cannot both be sure to finish: the owed `/stop` covers that. A sniper not answered in time is
 named, with the word to send `/stop` again.
