@@ -268,17 +268,22 @@ def test_a_dated_report_of_the_research_record_settles_an_angle_as_a_round_does(
 def test_the_agents_are_told_what_a_running_sniper_wraps_beside_a_curve_buy():
     """Round 1 (book#6): while a sniper runs OKTech keeps 1.1 times its buy wrapped and takes what is missing from
     plain SOL, so the book makes a sniper only while one curve copy can still be paid beside that (22 Nov: with 0.30
-    plain SOL a 0.2 SOL sniper was made, OKTech wrapped 0.22, and every curve copy failed). The snapshot's
-    buys_payable still counts the buy and its fees alone, and the rules read it as what the wallet can pay."""
+    plain SOL a 0.2 SOL sniper was made, OKTech wrapped 0.22, and every curve copy failed). Since the audit's second
+    round the snapshot's buys_payable counts what is left once OKTech has taken that (it read 0.30 SOL as one curve
+    copy before), and the rules say so."""
     from snipetech.positions import WRAP_TOPUP, buys_payable, curve_buy_beside_topup, curve_plain_need
 
     assert WRAP_TOPUP == 1.1 and abs(curve_plain_need(0.0, 0.2) - 0.425) < 1e-9
-    assert buys_payable(0.30, 0.0, 0.2)["curve"] == 1 and curve_buy_beside_topup(0.30, 0.0, 0.2) is False
+    can = buys_payable(0.30, 0.0, 0.2)
+    assert can["curve"] == 0 and can["oktech_wraps_sol"] == 0.22 and curve_buy_beside_topup(0.30, 0.0, 0.2) is False
+    assert buys_payable(0.425, 0.0, 0.2)["curve"] == 1
     for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
         text = _flat(system)
         assert "OKTech also keeps 1.1 times its buy wrapped, taken from plain SOL" in text
         assert "with nothing wrapped a 0.2 SOL copy needs 0.425 SOL plain" in text
-        assert "buys_payable does not count that, and the book makes no sniper under it" in text
+        assert "buys_payable counts what is left once that is taken (oktech_wraps_sol says how much)" in text
+        assert "the book makes no sniper under one curve copy" in text
+        assert "buys_payable does not count that" not in text
 
 
 def test_the_verdicts_table_says_a_banned_wallet_keeps_its_verdict_and_is_not_qualified():

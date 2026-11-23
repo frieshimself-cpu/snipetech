@@ -115,8 +115,9 @@ its fees, its tip and a new coin's token account on top: 0.205 SOL for a 0.2 SOL
 that has left its curve (PumpSwap), and that buy still pays its fees, its tip and a new coin's token account in plain
 SOL, never in wrapped SOL (wsol). The snapshot's buys_payable says how many copies of the book's size the wallet can
 pay on each ("curve", "pumpswap"). At 0 no copy lands there. While a sniper runs, OKTech also keeps 1.1 times its buy
-wrapped, taken from plain SOL: with nothing wrapped a 0.2 SOL copy needs 0.425 SOL plain. buys_payable does not count
-that, and the book makes no sniper under it. Under one buy's fees in plain SOL nothing of ours reaches
+wrapped, taken from plain SOL: with nothing wrapped a 0.2 SOL copy needs 0.425 SOL plain. buys_payable counts what is
+left once that is taken (oktech_wraps_sol says how much), and the book makes no sniper under one curve copy. Under one
+buy's fees in plain SOL nothing of ours reaches
 the chain: no buy and no failed send in fills, though OKTech counts the snipe (11 Nov: five signals of the one
 qualified wallet, none bought). With the fees but not the buy, a curve buy lands and fails: fills says side "failed"
 and "buy not paid", the chain's log "insufficient lamports ..., need ..." (11 Nov 18:52 UTC: 0.0052 SOL beside 0.47
@@ -573,9 +574,9 @@ ROLE_SYSTEM = {"scout": SCOUT_SYSTEM, "tester": TESTER_SYSTEM, "fees": FEES_SYST
 
 
 
-# What the wallet can pay (BUY_NATIVE_SOL, BOOK_FILL_SOL, buys_payable) is one rule for the agents' snapshot and the
-# conversion of wrapped SOL; the book adds the wrapped SOL OKTech keeps while a sniper runs
-# (positions.curve_buy_beside_topup). positions.py holds it, and it is read here under its old names.
+# What the wallet can pay (BUY_NATIVE_SOL, BOOK_FILL_SOL, buys_payable) is one rule for the agents' snapshot, the
+# conversion of wrapped SOL and the book: buys_payable counts what is left once OKTech has wrapped what it keeps
+# while a sniper runs (positions.after_topup). positions.py holds it, and it is read here under its old names.
 
 
 JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file
