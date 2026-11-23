@@ -302,6 +302,26 @@ def test_a_chain_that_cannot_place_the_buy_tells_nothing_yet():
     assert whose is None and coins.known(COIN) is None
 
 
+def test_a_buy_the_node_gives_no_block_time_for_is_still_placed_by_the_blocks():
+    """A1: a node can serve a transaction of seconds ago with no block time yet. That is no old buy: the blocks are
+    still asked, and the copy is the run's (taken for an old one it was the owner's by its fees)."""
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S + 1, swap("ours", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.0015, tip=0.12))
+    real_tx, real_sigs = chain.get_transaction, chain.get_signatures
+
+    async def no_time(signature):
+        tx = await real_tx(signature)
+        return tx and {**tx, "blockTime": None}
+
+    async def sigs_no_time(address, **kw):
+        return [{**row, "blockTime": None} for row in await real_sigs(address, **kw)]
+
+    chain.get_transaction, chain.get_signatures = no_time, sigs_no_time
+    whose, _coins = _chain_whose(chain, COPY)
+    assert whose == "ours"
+
+
 def test_an_old_buy_off_the_tape_is_told_by_the_measure_stages_fill_not_by_a_long_walk():
     """A1: at a run's start a coin held for hours is read too. The copied wallets' signatures are not walked back that
     far (a big wallet makes thousands of transactions a day, and the read has 20 s): the measure stage has placed the

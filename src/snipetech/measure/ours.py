@@ -540,21 +540,23 @@ class RunCoins:
                 return "owner"  # another wallet sent it in: no buy of the run's
             if self._verdict(m.priority_lamports, m.tip_lamports) == "ours":
                 return "ours"
-            leader = await self._off_tape_copy(str(s["signature"]), tx, mint, s.get("slot"), now)
+            at = {"slot": tx.get("slot", s.get("slot")), "blockTime": tx.get("blockTime", s.get("blockTime"))}
+            leader = await self._off_tape_copy(str(s["signature"]), at, mint, now)
             if leader:
                 self.odd.append({"sig": str(s["signature"]), "mint": mint, "leader": leader,
                                  "priority": int(m.priority_lamports or 0), "tip": int(m.tip_lamports or 0)})  # fmt: skip
             return None if leader is None else ("ours" if leader else "owner")
         return None
 
-    async def _off_tape_copy(self, sig: str, tx: dict, mint: str, slot: Any, now: float | None) -> str | None:
+    async def _off_tape_copy(self, sig: str, at: dict, mint: str, now: float | None) -> str | None:
         """Whether a buy the chain read found, at fees that are none of the marks, has a copy's shape: the followed
         wallet it stands right behind, "" when it stands behind none (the owner's own buy), None while nothing can
-        tell (asked again CHAIN_RETRY_SECS later: until then the coin is nobody's, never the owner's). Asked in turn:
-        the measure stage's fill of the buy (it places every buy of the wallet, from the tape or the blocks); the tape,
-        for a followed wallet's buy of the coin in the slots just before the buy's own; and, while the buy is young
-        (CHAIN_SHAPE_SECS), the blocks themselves as the measure stage reads them (chain_landing): the followed
-        wallets' own buys of the coin around ours, and for one in our own block which of the two ran first."""
+        tell (asked again CHAIN_RETRY_SECS later: until then the coin is nobody's, never the owner's). `at`: the buy's
+        slot and block time. Asked in turn: the measure stage's fill of the buy (it places every buy of the wallet,
+        from the tape or the blocks); the tape, for a followed wallet's buy of the coin in the slots just before the
+        buy's own; and, unless the buy is known to be older than CHAIN_SHAPE_SECS, the blocks themselves as the measure
+        stage reads them (chain_landing): the followed wallets' own buys of the coin around ours, and for one in our
+        own block which of the two ran first."""
         shape = _shape(self.marks)
         if shape is None:
             return ""
@@ -565,14 +567,13 @@ class RunCoins:
             who = shape.fill(row)
             if who or row.get("landing_src"):  # placed by the measure stage: behind a followed wallet, or behind none
                 return who or ""
-        slot = slot if slot is not None else tx.get("slot")
-        ts = tx.get("blockTime")
+        slot, ts = at.get("slot"), at.get("blockTime")
         if slot is None:
             return None
         who = shape.tape(mint, int(slot), -1, ts)  # an earlier block only: its place in its own block is not known here
         if who:
             return who
-        if ts is None or now is None or float(now) - float(ts) > CHAIN_SHAPE_SECS:
+        if ts is not None and now is not None and float(now) - float(ts) > CHAIN_SHAPE_SECS:
             return ""  # too old to walk the followed wallets back to: its fees decide, as before
         from .chain_landing import _block_txs, _index, _leader_buys
 
