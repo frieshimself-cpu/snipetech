@@ -11,6 +11,7 @@ checkpointed). A read that holds its snapshot leaves the new frame behind it."""
 import random
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,14 @@ class Wal:
     def check(self) -> None:
         with self._lock:
             self.other.execute("INSERT INTO probe VALUES (1)")
-            self.checks.append(tuple(self.other.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()))
+            got = tuple(self.other.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone())
+            if got[1] != got[2]:
+                # a short read in another thread can hold a frame at this very instant (allowed: reads are short); a
+                # long reader still holds it 50 ms later. Without the second look the full suite under -n 3 failed
+                # test_discover_reads_its_tape_from_the_hourly_copy once in about ten runs (23 Nov), on one frame.
+                time.sleep(0.05)
+                got = tuple(self.other.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone())
+            self.checks.append(got)
 
     def watch(self, conn: sqlite3.Connection) -> None:
         steps = [0]
