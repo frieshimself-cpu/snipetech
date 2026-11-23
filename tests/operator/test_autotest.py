@@ -1360,6 +1360,68 @@ def test_a_dead_cycler_then_a_start_that_left_a_sniper_idle_back_off_like_two_de
     assert seq["hold"]["kind"] == "start" and seq["hold"]["deaths"] == 2 and "tried at" in seq["waiting"]["why"]
 
 
+def test_a_fault_of_another_kind_between_two_deaths_does_not_begin_the_count_again(env):
+    """Audit of 22 Nov, second round (B6): the faults in a row lived in the hold. A fault of another kind between two
+    deaths (the wallet's balance unreadable for a round, OKTech down) replaced the dead cycler's hold, cleared when the
+    next block started, and the count began again: death, wobble, death, wobble never reached the 4-hour back-off, and
+    each dead cycler left its sniper armed with nobody watching. The count is the strategy's own record's; only a block
+    that runs to its end begins it again."""
+    _start(env)
+
+    def dies(at):  # the block running now: its cycler dies ten minutes before the round at `at`
+        t = LT.load(env.paths)
+        assert t["state"] == "running", t
+        LTT._armed(env)
+        _cycler_ended(env, t, None, at - 600, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+        _round(env, at)
+
+    at = NOW + 60 + 900
+    dies(at)  # block 1's cycler died
+    at += 900
+    _round(env, at, readable=False)  # the one try, and the wallet's balance cannot be read: a hold of another kind
+    assert _seq(env)["hold"]["kind"] == "balance" and len(env.started) == 1
+    at += 900
+    _round(env, at)  # it clears: block 2 starts
+    assert len(env.started) == 2
+    at += 900
+    dies(at)  # block 2's cycler dies too: the second death in a row
+    for _k in range(14):  # three and a half hours: no block starts
+        at += 900
+        _round(env, at)
+    assert len(env.started) == 2 and len(env.svc.created) == 2, (len(env.started), _seq(env).get("hold"))
+    seq = _seq(env)
+    assert "2 times in a row" in seq["hold"]["why"] and "tried at" in seq["waiting"]["why"]
+    assert seq["streak"]["n"] == 2
+    LTT._send(env, name="stop", at=at + 60)
+    reply = LTT._send(env, name="resume", at=at + 120)  # the owner's /resume says the count, and tries a block again
+    assert "died 2 times in a row" in reply and "tries one block" in reply, reply
+    _round(env, at + 900)
+    assert len(env.started) == 3
+
+
+def test_a_block_that_runs_to_its_end_begins_the_count_of_faults_again(env):
+    """A death, then a block that runs to its end, then a death: one fault in a row, and one more block at the next
+    round, as before."""
+    _start(env)
+    t = LT.load(env.paths)
+    LTT._armed(env)
+    at = NOW + 60 + 900
+    _cycler_ended(env, t, None, at - 600, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+    _round(env, at)
+    assert _seq(env)["streak"]["n"] == 1
+    _round(env, at + 900)  # the one try: block 2
+    _play(env, [0.02] * 3, reason=TIME)  # it runs to its end
+    _round(env, at + 2 * HOUR + 900)
+    assert "streak" not in _seq(env) and LT.load(env.paths)["sequence"]["block"] == 3
+    t = LT.load(env.paths)
+    LTT._armed(env)
+    _cycler_ended(env, t, None, at + 2 * HOUR + 1200, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+    _round(env, at + 2 * HOUR + 1800)
+    assert _seq(env)["streak"]["n"] == 1
+    _round(env, at + 2 * HOUR + 2700)
+    assert len(env.started) == 4  # one more block at the next round: no back-off after one death
+
+
 def test_a_fault_that_fails_another_way_each_round_is_said_once(env):
     """Audit of 22 Nov (livetest#7): "the owner hears it once when it starts holding and once when it clears". One RPC
     and OKTech wobble that failed another way each round (the balance unreadable, then the coins, then OKTech) replaced
