@@ -1410,6 +1410,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--validators", action="store_true", help="also read each moment's block leader (getSlotLeaders, "
                     "a credit a request of up to 5,000 slots) and split the moments by validator")  # fmt: skip
     sp = cmd(
+        "route",
+        "who stands right behind wallets' first buys, and through which route: whether each other buyer within "
+        "--places block places after the leader's buy came inside the leader's own Jito bundle (and who paid its tip), "
+        "in a bundle of its own, or outside Jito (Jito's public explorer: no key, no Helius credits; reads the tape "
+        "copy; a research job)",
+    )
+    sp.add_argument("--leader", action="append", default=[], help="a wallet whose first buys are the moments "
+                    "(repeatable; at least one)")  # fmt: skip
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--min-sol", type=float, default=1.9, help="a leader's smallest first buy that is a moment")
+    sp.add_argument("--places", type=int, default=3, help="block places after the leader's buy that are right behind")
+    sp.add_argument("--max-moments", type=int, default=150, help="moments with a buyer near read at most, the newest")
+    sp.add_argument("--max-requests", type=int, default=800, help="requests to the explorer at most")
+    sp = cmd(
         "copy-context",
         "what a known wallet's buy is worth by its context: entered a block late and marked at each horizon, split by "
         "how many known wallets were in, the coin's volume, age, hour, the leader's size and the buys later in its own "
@@ -2738,6 +2752,7 @@ BATCH_COMMANDS = frozenset(
         "landing",
         "launch-tools",
         "rescore",
+        "route",
         "history amm-backfill",
     }
 )
@@ -3564,6 +3579,36 @@ def _main(args) -> int:
         print(f"{out['wallet']}: {out['verdict']}")
         for lead, row in (out.get("per_leader") or {}).items():
             print(f"  behind {lead}: {row}")
+        return 0
+    if args.cmd == "route":
+        if not args.leader:
+            raise SystemExit("route: give the wallets whose first buys to read (--leader WALLET, repeatable)")
+        from .analysis import route as route_mod
+
+        svc = Service(cfg)
+
+        async def go_route():
+            try:
+                async with httpx.AsyncClient(timeout=20, headers={"Accept": "application/json"}) as http:
+                    explorer = route_mod.Explorer(http, max_requests=args.max_requests)
+                    return await route_mod.route(svc.tape_store, explorer, list(args.leader), time.time(),
+                                                 hours=args.hours, min_sol=args.min_sol, places=args.places,
+                                                 max_moments=args.max_moments)  # fmt: skip
+            finally:
+                await svc.close()
+                svc.store.close()
+
+        out = asyncio.run(go_route())
+        if args.json:
+            print(json.dumps(out, indent=1))
+            return 0
+        print(out["verdict"])
+        for lead, row in (out.get("by_leader") or {}).items():
+            print(f"  behind {lead}: {row}")
+        for title, key in (("inside the leader's bundle", "backrunners"), ("in a bundle of their own", "own_bundle"),
+                           ("closest, outside Jito", "outside")):  # fmt: skip
+            if out.get(key):
+                print(f"  {title}: " + ", ".join(f"{r['wallet'][:6]}… {r['n']}" for r in out[key]))
         return 0
     if args.cmd == "history":
         return _history(args, cfg)
