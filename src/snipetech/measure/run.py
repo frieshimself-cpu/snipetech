@@ -43,41 +43,83 @@ from .exits import (
     preset_name,
     shadow_exits,
 )
+from .ours import bot_buy, bot_fill, bot_sale_fees, bot_send, fee_marks
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
 LANDING_OFFSET = 3  # lab position = buys behind the leader + 3 (calibrated on the 6 Nov copy test)
 BASE_FEE_LAMPORTS = 5000
 SHADOW_MAX_PER_RUN = 200  # buys replayed in one run at most, newest first (a replay reads the coin's tape)
+# What a replay is changed with the 22 Nov audit: each sale pays a sale's own fee and the buy's bid is paid once
+# (exits._sale_fee_sol), and the exit the buying sniper ran is replayed beside the menu (exits.exit_that_ran: hold12). A
+# replay made before the version below is made again, newest first, as a new one is (a new EXIT_MENU_VERSION would reset
+# the verdicts' exits too); the record says from when the replays are of this version.
+SHADOW_VERSION_KEY = "measure:shadow_version"
+SHADOW_VERSION = 2
 
 
 def shadow_new_buys(store: Store, cfg: Config, wallet: str, now: float, since_ts: int,
-                    limit: int = SHADOW_MAX_PER_RUN) -> int:  # fmt: skip
+                    limit: int = SHADOW_MAX_PER_RUN, marks: dict | None = None) -> int:  # fmt: skip
     """Replay every exit on the menu from each copy buy of ours since `since_ts` that is old enough and not replayed
-    under this menu yet (measure/exits.py shadow_exits); how many were. Newest first, so an old buy the tape missed
-    never holds up a new one; one slot time, measured around the newest, for all of them."""
-    done = store.shadowed_buys(EXIT_MENU_VERSION)
+    under this menu and its costs yet (measure/exits.py shadow_exits, at the buying sniper's fees); how many were.
+    Newest first, so an old buy the tape missed never holds up a new one; one slot time, measured around the newest,
+    for all of them. Only the bot's buys (measure/ours.bot_buy, by `marks`): an owner's hand buy right after a copied
+    wallet's is no copy of ours."""
+    marks = fee_marks(store) if marks is None else marks
+    mark = store.coverage(SHADOW_VERSION_KEY)
+    if mark.get("version") != SHADOW_VERSION or mark.get("ts") is None:
+        mark = {"version": SHADOW_VERSION, "ts": int(now)}
+        store.set_coverage(SHADOW_VERSION_KEY, mark)
+    done = {r[0] for r in store._q("SELECT DISTINCT buy_sig FROM exit_shadow WHERE menu_version=? AND computed_at>=?",
+                                   (EXIT_MENU_VERSION, int(mark["ts"])))}  # fmt: skip
     due = [b for b in store.fills(wallet=wallet, since_ts=int(since_ts), side="buy", limit=100_000)
-           if b.get("wallet_copied") and b["sig"] not in done and float(b["ts"]) <= now - SHADOW_AFTER_SECS]  # fmt: skip
+           if b.get("wallet_copied") and b["sig"] not in done and float(b["ts"]) <= now - SHADOW_AFTER_SECS
+           and bot_buy(b, marks)]  # fmt: skip
     if not due:
         return 0
     due.sort(key=lambda b: (-float(b["ts"]), b["sig"]))
     newest = int(float(due[0]["ts"]))
     slot_secs = span_slot_secs(store, newest - 1800, newest + SHADOW_AFTER_SECS)
-    return sum(1 for b in due[:limit] if shadow_exits(store, b, cfg=cfg, now=now, slot_secs=slot_secs))
+    rows = copy_sniper_rows(store)  # the buying sniper's config: what each replayed sale pays, the exit it ran
+
+    def payload(b: dict) -> dict | None:
+        return (buying_sniper(rows, b) or {}).get("payload")
+
+    return sum(1 for b in due[:limit]
+               if shadow_exits(store, b, cfg=cfg, now=now, slot_secs=slot_secs, payload=payload(b)))  # fmt: skip
 
 
 def _weights(ts_list: list[float], now: float, half_life_days: float) -> list[float]:
     return [0.5 ** (max(0.0, now - t) / (half_life_days * 86400.0)) for t in ts_list]
 
 
+def _copies(trips: list[dict]) -> list[dict]:
+    """One entry per copy: the trips of one buy lot (`buy_sig`) added up, sold when its last sale was. A copy closed by
+    two sales (an OKTech part exit, the runner's sweep of what it left, a hand sale of half) is one copy, never two at
+    half its result each (22 Nov audit). A trip with no buy_sig stands alone."""
+    out: list[dict] = []
+    by_buy: dict[str, dict] = {}
+    for t in trips:
+        key = t.get("buy_sig")
+        if key is None or key not in by_buy:
+            out.append(dict(t))
+            if key is not None:
+                by_buy[key] = out[-1]
+            continue
+        c = by_buy[key]
+        c["pnl_sol"] = float(c["pnl_sol"]) + float(t["pnl_sol"])
+        c["sell_ts"] = max(float(c.get("sell_ts") or 0), float(t.get("sell_ts") or 0))
+    return out
+
+
 def wallet_live_rows(trips: list[dict], now: float, half_life_days: float,
                      starts: dict[str, float] | None = None) -> list[dict[str, Any]]:  # fmt: skip
-    """Per copied wallet: unweighted n, decay-weighted mean, a one-sided lower bound, live once n >= 10. `starts`: the
-    owner's fresh start per wallet (`book fresh`): only the trips sold after it count for that wallet."""
+    """Per copied wallet: unweighted n (copies, `_copies`: a copy sold in parts is one), decay-weighted mean, a
+    one-sided lower bound, live once n >= 10. `starts`: the owner's fresh start per wallet (`book fresh`): only the
+    copies sold after it count for that wallet."""
     by: dict[str, list[dict]] = {}
     starts = starts or {}
-    for t in trips:
+    for t in _copies(trips):
         w = t.get("wallet_copied")
         if w and float(t.get("sell_ts") or 0) < float(starts.get(w, 0)):
             continue
@@ -191,12 +233,21 @@ def _landed_before(sell: dict, failed: dict) -> bool:
     return float(sell["ts"]) <= float(failed["ts"])
 
 
-def twin_sells(failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS) -> dict[str, str]:
+def twin_sells(failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS,
+               bought: dict[str, dict] | None = None, whose: Callable[[dict], Any] | None = None
+               ) -> dict[str, str]:  # fmt: skip
     """Which landed sell each failed send is a twin of (failed sig -> sell sig). OKTech sends every exit as one tipped
     and up to two untipped variants, and the losers fail on chain. A failed send carrying a sell instruction (`is_sell`)
     on the same coin within `window_s` seconds after a landed sell is that sell's twin; with several landed sells in
     reach, the nearest one. A twin never lands before its winner, so a sell that landed after the failed send is never
-    its winner. A send whose fee is unknown is no twin (it cannot be charged to one)."""
+    its winner. A send whose fee is unknown is no twin (it cannot be charged to one).
+
+    `bought`: the buy each landed sell closes (sell sig -> its fills row: slot, ts). A failed send that is no twin,
+    carries a pump.fun sale of the coin (`sells_ix`) and lands after that buy and before the sell is one of the sell's
+    failed tries, charged to it the same way; with several sells in reach, the first after it. 22 Nov audit: 8MTKG4's
+    curve sales failed nine times in the slots before its PumpSwap sale landed, charged to no trip and no day.
+    `whose` (measure/ours.bot_fill): a try is the sale's only when the same hand made it as the buy the sale closes, so
+    the owner's failed hand sale of a coin the bot holds too is never the bot's cost (review of the 22 Nov fixes)."""
     by_mint: dict[str, list[dict]] = {}
     for s in sells:
         if s.get("mint"):
@@ -214,18 +265,27 @@ def twin_sells(failed_rows: list[dict], sells: list[dict], window_s: float = TWI
                                         abs(int(slot) - int(s["slot"])) if slot is not None and s.get("slot") is not None else 0,
                                         s["sig"]))  # fmt: skip
         out[f["sig"]] = best["sig"]
+    for f in failed_rows if bought else ():
+        if f["sig"] in out or not f.get("sells_ix") or not f.get("mint") or f.get("priority_lamports") is None:
+            continue
+        tried = [s for s in by_mint.get(f["mint"], []) if s["sig"] in bought
+                 and _landed_before(bought[s["sig"]], f) and not _landed_before(s, f)
+                 and (whose is None or whose(f) == whose(bought[s["sig"]]))]  # fmt: skip
+        if tried:
+            out[f["sig"]] = min(tried, key=lambda s: (float(s["ts"]), int(s.get("slot") or 0), s["sig"]))["sig"]
     return out
 
 
-def twin_fees_by_sell(
-    failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS
-) -> dict[str, float]:
-    """What each landed sell's failed twins cost, in SOL (twin_sells says which are twins): each pays its priority fee
-    and the 5,000-lamport base fee (a failed send's tip is rolled back)."""
+def twin_fees_by_sell(failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS,
+                      bought: dict[str, dict] | None = None, whose: Callable[[dict], Any] | None = None
+                      ) -> dict[str, float]:  # fmt: skip
+    """What each landed sell's failed twins cost, in SOL (twin_sells says which are twins, and with `bought` which are
+    its failed tries before it landed, by `whose` hand): each pays its priority fee and the 5,000-lamport base fee (a
+    failed send's tip is rolled back)."""
     fee = {f["sig"]: (int(f["priority_lamports"]) + BASE_FEE_LAMPORTS) / 1e9 for f in failed_rows
            if f.get("priority_lamports") is not None}  # fmt: skip
     out: dict[str, float] = {}
-    for fsig, ssig in twin_sells(failed_rows, sells, window_s).items():
+    for fsig, ssig in twin_sells(failed_rows, sells, window_s, bought, whose).items():
         out[ssig] = out.get(ssig, 0.0) + fee[fsig]
     return out
 
@@ -460,6 +520,16 @@ def _chain_context(svc, cfg: Config, now: float) -> dict[str, Any]:
     return {"mates": mates, "own": own_wallets(store, cfg), "services": store.labels("service")}
 
 
+def _stale_trade(row: dict | None) -> bool:
+    """A trade of 0 SOL the chain reading wrote (it has a venue): what the reader before 22 Nov wrote for a coin that
+    only moved, a dust transfer another wallet paid for among them (3kA7a2QS, 3h1KvzFZ). A run reads it again, so the
+    reader of today says what it was and a move is dropped (22 Nov audit: such a row was read again in a backfill
+    alone, paired a sale three hours before it and raised a false alert)."""
+    if not row or row.get("side") not in ("buy", "sell"):
+        return False
+    return bool(row.get("venue")) and not float(row.get("sol") or 0)
+
+
 def _chain_row(fill: dict, landing: dict | None, arms: dict[str, dict] | None) -> dict[str, Any]:
     """A `fills` row for a trade of ours the tape does not hold, from the chain reader (`chain_landing.read_fill`;
     `landing`: a buy's `read_landing`). Its place among the coin's trades in its block (pos_in_slot) and the copied
@@ -602,7 +672,17 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         if hasattr(svc, "progress"):  # one transaction that cannot be read never fails the run: tried again next run
             svc.progress(f"measure: chain reading of {sig[:8]}… failed: {type(exc).__name__}: {exc}")
 
-    todo = [s for s in off_tape if reclassify_arms or not (store.fill(s["signature"]) or {}).get("venue")]
+    def read_again(s: dict) -> bool:
+        stored = store.fill(s["signature"]) or {}
+        return reclassify_arms or not stored.get("venue") or _stale_trade(stored)
+
+    todo = [s for s in off_tape if read_again(s)]
+    if read_chain:  # and those of the window every run pairs, whose signatures no run's own window holds any more
+        listed = {s["signature"] for s in todo}
+        todo += [{"signature": f["sig"], "slot": f.get("slot"), "blockTime": f.get("ts")}
+                 for f in store.fills(wallet=wallet, since_ts=look, limit=100_000)
+                 if _stale_trade(f) and f["sig"] not in listed and f["sig"] not in on_tape
+                 and int(f.get("ts") or 0) <= until_ts]  # fmt: skip
     if todo:
         ctx = ctx or _chain_context(svc, cfg, now)
         try:
@@ -712,28 +792,68 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                "venue": venue}  # fmt: skip
         store.put_fill(row)
         failed_rows.append(row)
-    # round trips over the lookback window
+    # round trips over the lookback window; a sale closes the lots of its own maker first, the bot's or the owner's
+    # (the owner trades by hand in the same wallet: measure/ours.py)
     all_buys = store.fills(wallet=wallet, since_ts=look, side="buy", limit=100_000)
     all_sells = store.fills(wallet=wallet, since_ts=look, side="sell", limit=100_000)
-    paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol())
+    marks = fee_marks(store)
+    in_window = {b["sig"] for b in all_buys}
+
+    def paired_before(s: dict) -> bool:
+        """A sale paired with a buy that has since left the window: that pairing stands. Paired again without its buy,
+        it would take the coin's next lot and write that over the right pairing for good (22 Nov audit)."""
+        bsig = s.get("buy_sig")
+        if not bsig or bsig in in_window or s.get("pnl_sol") is None:
+            return False
+        b = store.fill(bsig)
+        return b is not None and int(b.get("ts") or 0) < look
+
+    paired = pair_round_trips(all_buys, [s for s in all_sells if not paired_before(s)], cfg.costs.per_tx_sol(),
+                              whose=lambda r: bot_fill(r, marks))  # fmt: skip
     buy_by_sig = {b["sig"]: b for b in all_buys}
+    # measure's own outputs (the bid model, the live record per copied wallet, the measured landing, the exit shadow)
+    # hold the bot's trades only: the owner's hand trades are written and paired, never counted in them (22 Nov audit:
+    # three hand buys were 3 of the paid arm's 8 fills)
+    bot_buys = [b for b in all_buys if bot_buy(b, marks)]
+    bot_sigs = {b["sig"] for b in bot_buys}
+    # a buy named 'custom' before its sniper's exit had a name (holdN: 22 Nov audit, every copy since 20 Nov 23:03) is
+    # named again, and the sales that close it below with it
+    for b in bot_buys:
+        if b.get("exit_name") == "custom" and b.get("wallet_copied"):
+            named = preset_name((buying_sniper(copy_rows, b) or {}).get("payload"))
+            if named and named != "custom":
+                b["exit_name"] = named
+                store.put_fill(b)
     # failed twins of each landed sell: their cost is the trip's too, so the live expectancy per wallet includes it
     all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
+    bot_failed = [f for f in all_failed if bot_send(f, marks)]
     failed_meta = store.tx_meta([f["sig"] for f in all_failed]) if all_failed else {}
-    failed_flagged = [f | {"is_sell": failed_is_sell(f, failed_meta.get(f["sig"]))} for f in all_failed]
-    twins = twin_fees_by_sell(failed_flagged, all_sells)
+    failed_flagged = [f | {"is_sell": failed_is_sell(f, failed_meta.get(f["sig"])),
+                           "sells_ix": _sells_a_coin(failed_meta.get(f["sig"]))} for f in all_failed]  # fmt: skip
+    first_buy_for_sell: dict[str, str] = {}
+    for t in paired["trips"]:
+        first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
+    # and the sale's tries that failed before it landed, after the buy it closes, by the hand that made that buy
+    # (twin_sells, `bought`, `whose`)
+    bought = {s: buy_by_sig[b] for s, b in first_buy_for_sell.items() if b in buy_by_sig}
+    twins = twin_fees_by_sell(failed_flagged, all_sells, bought=bought, whose=lambda r: bot_fill(r, marks))
     closed: dict[str, float] = {}
     for t in paired["trips"]:
         closed[t["sell_sig"]] = closed.get(t["sell_sig"], 0.0) + float(t["tokens"])
     trips = []
     for t in paired["trips"]:
+        if t["buy_sig"] not in bot_sigs:  # the owner's own lot: no trip of the bot's
+            continue
         t["wallet_copied"] = buy_by_sig.get(t["buy_sig"], {}).get("wallet_copied")
         if twins.get(t["sell_sig"]) and closed.get(t["sell_sig"]):  # shared like the sell's own fee, by tokens closed
             t["pnl_sol"] -= twins[t["sell_sig"]] * float(t["tokens"]) / closed[t["sell_sig"]]
         trips.append(t)
-    first_buy_for_sell: dict[str, str] = {}
-    for t in paired["trips"]:
-        first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
+
+    def bot_sale(s: dict) -> bool:
+        """A sale of the bot's: it closed a buy of the bot's, or, closing none, paid a sniper's sale fees."""
+        b = first_buy_for_sell.get(s["sig"])
+        return b in bot_sigs if b else bot_sale_fees(s, marks)
+
     every_sniper = store.oktech_snipers(active=False)
     all_time_fees = fee_pairs(r.get("payload") for r in every_sniper)  # only when no sniper is known alive at a sale
     newly_crossed: list[tuple[dict, dict | None]] = []
@@ -770,10 +890,10 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             store.put_fill(s | want)
     for s, buy in newly_crossed:
         _note(cfg, now, notes, _crossed_line(s, buy))
-    # a buy of something that is not a coin (a stablecoin, wrapped SOL): counted every run, said once
-    non_coins = non_coin_buys(all_buys)
+    # a sniper's buy of something that is not a coin (a stablecoin, wrapped SOL): counted every run, said once
+    non_coins = non_coin_buys(bot_buys)
     told = list(store.coverage(NON_COIN_SAID_KEY).get("sigs") or [])
-    untold = [b for b in all_buys if b["sig"] in set(non_coins["sigs"]) - set(told)]
+    untold = [b for b in bot_buys if b["sig"] in set(non_coins["sigs"]) - set(told)]
     for b in sorted(untold, key=lambda b: (b.get("ts") or 0, str(b.get("sig")))):
         _note(cfg, now, notes, _non_coin_line(b))
         told.append(b["sig"])
@@ -783,8 +903,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     # landed per buy before and after it (the first 20 sells after are said one by one; a fall is an alert line)
     prio_by_buy = {b["sig"]: sell_priority_of((buying_sniper(copy_rows, b) or {}).get("payload")) for b in all_buys}
     prio_by_sell = {s["sig"]: prio_by_buy.get(first_buy_for_sell.get(s["sig"]) or "") for s in all_sells}
-    per_sell = twins_per_sell(all_sells, failed_flagged, prio_by_sell)
-    split = sells_per_buy(all_buys, paired["trips"], prio_by_buy, now)
+    per_sell = twins_per_sell([s for s in all_sells if bot_sale(s)], failed_flagged, prio_by_sell)
+    split = sells_per_buy(bot_buys, paired["trips"], prio_by_buy, now)
     said = store.coverage(SELL_SPLIT_WATCH_KEY)
     if split["watch"] and said.get("sells") != split["after"]["sells"]:
         _note(cfg, now, notes, split["watch"])
@@ -794,7 +914,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         store.set_coverage(SELL_SPLIT_WATCH_KEY, said | {"alert_sells": split["after"]["sells"], "ts": int(now)})
     # every exit on the menu replayed from each copy buy six minutes old: what another exit would have made of it
     try:
-        shadowed = shadow_new_buys(store, cfg, wallet, now, look)
+        shadowed = shadow_new_buys(store, cfg, wallet, now, look, marks=marks)
     except Exception as exc:  # noqa: BLE001 - a replay that fails never fails the measure run
         shadowed = 0
         if hasattr(svc, "progress"):
@@ -805,7 +925,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         if moved:
             f["bid_arm"] = moved
             store.put_fill(f)
-    arms = bid_model_rows(all_buys, all_failed, now)
+    arms = bid_model_rows(bot_buys, bot_failed, now)
     for row in arms:
         store.put_bid_model(row)
     store.prune_bid_model([row["arm"] for row in arms])
@@ -828,7 +948,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     given = {name for name, arm in (cfg.book.bid_arms or {}).items() if not arm_retired(arm)}
     best = max((a for a in arms if a["arm"] in given), key=lambda a: a["n"], default=None)
     if best and best["n"] >= m.min_arm_fills:
-        behind = sorted(int(b["trades_behind"]) for b in all_buys if (b.get("bid_arm") or "control") == best["arm"]
+        behind = sorted(int(b["trades_behind"]) for b in bot_buys if (b.get("bid_arm") or "control") == best["arm"]
                         and b.get("trades_behind") is not None)  # fmt: skip
         if len(behind) >= m.min_arm_fills:
             # the lab's "+N" counts every trade after the leader's; the 6 Nov copy test landed 2-4 buys behind at the
@@ -844,10 +964,10 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
             "from_chain": from_chain, "non_coin_buys": non_coins,
-            "non_coin_failed": len(all_failed) - len(on_coins(all_failed)),
+            "non_coin_failed": len(bot_failed) - len(on_coins(bot_failed)),
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
             "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed,
-            "landing_by_progress": landing_by_progress(all_buys), "twins_per_sell": per_sell, "sells_per_buy": split}  # fmt: skip
+            "landing_by_progress": landing_by_progress(bot_buys), "twins_per_sell": per_sell, "sells_per_buy": split}  # fmt: skip
 
 
 async def backfill(svc, cfg: Config, since_ts: int, until_ts: int, **kw) -> dict[str, Any]:

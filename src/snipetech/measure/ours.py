@@ -4,12 +4,13 @@ The sniper wallet is the owner's too: the owner buys and sells in it by hand and
 02:40 UTC: three hand buys of one coin, 10.4 SOL, the coin sent to another wallet; the wallet-wide guard read them as
 the bot's loss and stopped every live trade for the day). None of that is the bot's result.
 
-A buy is the bot's when the measure stage tied it to a copied wallet or a sniper, or when it paid the fees one of our
-snipers pays (the payloads we sent OKTech: its priority and tip on a buy, and the same priority with no tip, as a copy
-of 22 Nov 00:19 went out). A sale is the bot's when it closes such a buy, or when it paid a sniper's sale fees (OKTech
-pays a sale the buy's priority: every sale since 20 Nov paid 0.001 SOL and its 0.002 tip under a sellPriorityFeeSol of
-0.0001) or the fees of the run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees
-not known, nothing tells a hand trade apart, and the trade counts as the bot's, as before.
+A buy is the bot's when the measure stage tied it to a sniper, or when it paid the fees one of our snipers pays (the
+payloads we sent OKTech: its priority and tip on a buy, and the same priority with no tip, as a copy of 22 Nov 00:19
+went out). A copied wallet on the buy says nothing alone: the owner's own tool pays the snipers' priority too. A sale
+is the bot's when it closes such a buy, or when it paid a sniper's sale fees (OKTech pays a sale the buy's priority:
+every sale since 20 Nov paid 0.001 SOL and its 0.002 tip under a sellPriorityFeeSol of 0.0001) or the fees of the
+run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees not known, nothing tells a
+hand trade apart, and the trade counts as the bot's, as before.
 
 `RunCoins` asks the same of a coin the wallet holds, for one run of the runner (service.oktech_cycle), live: the tape's
 buy of it since it showed, or the chain's when the tape has none.
@@ -86,20 +87,16 @@ def _paid(priority: Any, tip: Any, marks: frozenset[tuple[int, int]]) -> bool | 
 
 def bot_buy(row: dict, marks: dict[str, frozenset]) -> bool:
     """Whether a buy in `fills` is the bot's (the module's rule): one tied to a sniper, or one whose fees are a
-    sniper's or unknown; a copied wallet on it (`wallet_copied`) counts only with a sniper's priority: the measure
-    stage writes it on every buy of the wallet that came after a copied wallet's buy of the coin, the owner's hand buys
-    too (22 Nov review), and a copy whose tip changed since its payload was recorded is still ours."""
+    sniper's whole (priority, tip) pair or unknown, as on the tape (`bot_tape_buy`). A copied wallet on it
+    (`wallet_copied`) says nothing: the measure stage writes it on a buy of the wallet that came right after a copied
+    wallet's buy of the coin, the owner's hand buys too (22 Nov review), and the owner's own tool pays the snipers'
+    0.001 SOL priority (22 Nov audit: 2Y2StBPj, 1,000,000 priority and a 16,000,000 tip, no sniper armed)."""
     if row.get("sniper_id"):
         return True
     if not marks["buy"]:
         return True
     paid = _paid(row.get("priority_lamports"), row.get("tip_lamports"), marks["buy"])
-    if paid is None or paid:
-        return True
-    try:
-        return bool(row.get("wallet_copied")) and int(row["priority_lamports"]) in {p for p, _t in marks["buy"]}
-    except (KeyError, TypeError, ValueError):
-        return False
+    return paid is None or paid
 
 
 def bot_sale_fees(row: dict, marks: dict[str, frozenset]) -> bool:
@@ -119,6 +116,26 @@ def bot_tape_buy(t, marks: dict[str, frozenset]) -> bool:
     return True if paid is None else paid
 
 
+def bot_send(row: dict, marks: dict[str, frozenset]) -> bool:
+    """Whether a failed send in `fills` is the bot's, by its own fees: a sniper's buy or sale fees, the run's fallback
+    sale's, or fees not known (with no sniper on record, every send). The owner's failed hand sends pay other fees."""
+    if not marks["buy"]:
+        return True
+    paid = _paid(row.get("priority_lamports"), row.get("tip_lamports"), marks["buy"] | marks["sell"])
+    return True if paid is None else paid
+
+
+def bot_fill(row: dict, marks: dict[str, frozenset]) -> bool:
+    """Whether a buy, a sale or a failed send in `fills` is the bot's by its own record, before any pairing: a buy by
+    `bot_buy`, a sale by its own fees (`bot_sale_fees`), a failed send by `bot_send`. What the measure stage pairs each
+    sale's lots by (classify.pair_round_trips: a sale closes the lots of its own maker first), and ties a sale's failed
+    tries by (run.twin_sells: only the same hand's as the buy the sale closes)."""
+    side = row.get("side")
+    if side == "buy":
+        return bot_buy(row, marks)
+    return bot_send(row, marks) if side == "failed" else bot_sale_fees(row, marks)
+
+
 def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None) -> list[dict]:
     """The sales among `rows` (fills) that are the bot's: each closes a buy of the bot's (its `buy_sig`), or, with no
     buy on record, paid a sniper's or the fallback sale's fees."""
@@ -133,6 +150,24 @@ def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None
         if bot_buy(b, marks) if b is not None else bot_sale_fees(r, marks):
             out.append(r)
     return out
+
+
+def bot_rows(store, rows: list[dict], marks: dict[str, frozenset] | None = None) -> list[dict]:
+    """The rows among `rows` (fills of any side) that are the bot's, in their order: buys by `bot_buy`, sales by
+    `bot_sells`, failed sends by `bot_send`. What the agents' fill tools and their wake count (22 Nov audit: the
+    owner's hand buys woke the OKTech analyst as "a new fill of ours" and were "buys" in read_fills)."""
+    marks = fee_marks(store) if marks is None else marks
+    sold = {r.get("sig") for r in bot_sells(store, rows, marks)}
+
+    def ours(r: dict) -> bool:
+        side = r.get("side")
+        if side == "buy":
+            return bot_buy(r, marks)
+        if side == "sell":
+            return r.get("sig") in sold
+        return bot_send(r, marks) if side == "failed" else True
+
+    return [r for r in rows if ours(r)]
 
 
 def _brought_in(tx: dict, wallet: str, mint: str) -> bool:

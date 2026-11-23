@@ -45,12 +45,12 @@ from ..solana.programs import LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM
 from ..solana.tips import BASE_FEE_PER_SIGNATURE, SYSTEM
 from ..solana.tx import _account_keys
 from ..solana.txmeta import ATA_PROGRAM, COMPUTE_BUDGET, PROGRAM_LABELS, SPL_TOKEN, TOKEN_2022, extract_tx_meta
-from .classify import fee_fields, pair_round_trips
+from .classify import LEADER_WINDOW_SLOTS, fee_fields, pair_round_trips
 
 LAMPORTS = 1_000_000_000
 WSOL = "So11111111111111111111111111111111111111112"
 MAX_BLOCKS = 5  # blocks read for one buy: the copied wallet's, the next ones, and ours
-LEADER_WINDOW_SLOTS = 150  # the copied buy is looked for this far before ours (a minute)
+# LEADER_WINDOW_SLOTS (classify): the copied buy is looked for this far before ours (a minute), as the tape reading does
 LEADER_AFTER_SLOTS = 4  # and this far after it (a copy sent on a buy still in flight can land first)
 LEADER_NEAR = 100  # the copied wallet's signatures asked for just before our buy
 LEADER_CANDIDATES = 25  # of its transactions in the window, those opened to see whether they bought the coin

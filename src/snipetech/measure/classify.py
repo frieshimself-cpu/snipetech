@@ -140,6 +140,13 @@ def arm_for(store: Store, sniper_id: str | None) -> str:
     return "control"
 
 
+# The copied buy is looked for this far before ours (a minute), by the tape reading as by the chain reading
+# (chain_landing). A copy lands in the copied wallet's block or the next; a buy of the coin by a copied wallet
+# minutes or hours before ours is not what ours copied (22 Nov audit: with no limit the owner's hand buy 2.8 hours
+# after one became a live copy of that wallet, 40 trades behind it).
+LEADER_WINDOW_SLOTS = 150
+
+
 def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
     if not leaders:
         return None
@@ -149,8 +156,9 @@ def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
         chunk = ws[i : i + 500]
         rows = store._q(
             "SELECT user, slot, pos, quote, q_after, b_after, venue FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
-            "AND (slot<? OR (slot=? AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(chunk)),
-            (trade.mint, *chunk, trade.slot, trade.slot, trade.pos),
+            "AND slot>=? AND (slot<? OR (slot=? AND pos<?)) "
+            "ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(chunk)),
+            (trade.mint, *chunk, int(trade.slot) - LEADER_WINDOW_SLOTS, trade.slot, trade.slot, trade.pos),
         )
         if rows and (best is None or (rows[0][1], rows[0][2]) > (best[1], best[2])):
             best = rows[0]
@@ -309,20 +317,39 @@ def _fill_fee_sol(row: dict) -> float | None:
     return (int(row.get("priority_lamports") or 0) + int(row.get("tip_lamports") or 0) + 5000) / 1e9
 
 
-def pair_round_trips(buys: list[dict], sells: list[dict], per_tx_sol: float) -> dict[str, Any]:
+def _bought_by(lot: dict, sell: dict) -> bool:
+    """The lot was bought at or before the sell: by slot when both are known, else by the second."""
+    if lot.get("slot") is not None and sell.get("slot") is not None:
+        return int(lot["slot"]) <= int(sell["slot"])
+    return float(lot["ts"]) <= float(sell["ts"])
+
+
+def pair_round_trips(buys: list[dict], sells: list[dict], per_tx_sol: float,
+                     whose: Callable[[dict], Any] | None = None) -> dict[str, Any]:  # fmt: skip
     """FIFO per mint: each sell consumes the oldest open buy lots; a partial sell closes the proportional share.
     Each trip pays its share of the buy's and the sell's real fees (priority + tip + base, from the fingerprint),
     or `per_tx_sol` per side when a fill's fees are unknown.
+    `whose`: who made a fill (measure/ours.bot_fill: the bot or the owner, who trades by hand in the same wallet). A
+    sell then closes the open lots of its own maker first, oldest first, and only then the others': a sniper's sale
+    never closes the owner's older lot of the same coin while the bot's own is open (22 Nov audit: it did, and the day
+    stop lost the bot's trip), and a sale by hand of a coin only the bot bought is still the bot's 'manual' exit.
+    None: one pool, as before. A sell closes only lots bought at or before it (by slot when both are known, else by the
+    second): 22 Nov audit, a sale whose own buy was outside the window took a later buy's lot.
     Returns trips (one per buy lot touched by a sell), the sells with nothing to close, the buys still open, and PnL per sell."""
     open_lots: dict[str, list[dict]] = {}
     for b in sorted(buys, key=lambda r: (r["ts"], r["sig"])):
         open_lots.setdefault(b["mint"], []).append({"sig": b["sig"], "ts": b["ts"], "sol": float(b["sol"]), "tokens": float(b["tokens"]),
-                                                    "left": float(b["tokens"]), "fee": _fill_fee_sol(b)})  # fmt: skip
+                                                    "left": float(b["tokens"]), "fee": _fill_fee_sol(b),
+                                                    "who": whose(b) if whose else None,
+                                                    "slot": b.get("slot")})  # fmt: skip
     trips: list[dict] = []
     unmatched: list[dict] = []
     pnl_by_sell: dict[str, float] = {}
     for s in sorted(sells, key=lambda r: (r["ts"], r["sig"])):
-        lots = open_lots.get(s["mint"]) or []
+        lots = [lot for lot in open_lots.get(s["mint"]) or [] if _bought_by(lot, s)]
+        if whose:  # its own maker's lots first; a stable sort keeps each maker's lots oldest first
+            who = whose(s)
+            lots = sorted(lots, key=lambda lot: lot["who"] != who)
         tokens = float(s["tokens"])
         if tokens <= 0 or not any(lot["left"] > 0 for lot in lots):
             unmatched.append(s)

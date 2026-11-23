@@ -487,8 +487,9 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     """A block's live result from the measure stage's fills, read two ways, for the worse of the two to be judged:
     `own`, the buys the fills do not mark as copying a leader, and `all`, every buy of the wallet while the cycler ran.
     The book trades from the same wallet, and the fills name a copied leader on any buy of ours in a coin one of the
-    book's leaders bought earlier, with no time bound and no word of which sniper bought (a hunt buy right behind a
-    launch-sniping leader reads as a copy), so neither reading alone can be trusted to be the test's own.
+    book's leaders bought in the minute before (measure/classify.LEADER_WINDOW_SLOTS), with no word of which sniper
+    bought (a hunt buy right behind a launch-sniping leader reads as a copy), so neither reading alone can be trusted
+    to be the test's own.
 
     Each buy's result is that of the sales that closed it (the measure stage's own result for each sale, real fees and
     its failed duplicate sends included), shared out first in first out by tokens as the measure stage pairs them. A buy
@@ -549,12 +550,17 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
               if _sniper_send(f, marks) and (float(f.get("ts") or 0) <= end
                                              or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled))]  # fmt: skip
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
-    twins = twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], sells)
+    # and a sale's tries that failed before it landed, which the measure stage ties to it by the buy it closes (its
+    # buy_sig) and charges in its result as it does its twins (measure/run.twin_sells): never charged here again
+    closes = {x["sig"]: b for x in paired
+              if x.get("buy_sig") and (b := buys.get(x["buy_sig"]) or store.fill(x["buy_sig"]))}  # fmt: skip
+    sends = [f | {"is_sell": (sold := _sells_a_coin(metas.get(f["sig"]))), "sells_ix": sold} for f in failed]
+    twins = twin_sells(sends, sells, bought=closes)
     with_result = {x["sig"] for x in paired}
     charged = []
     for f in failed:
-        # a twin is in its sale's result; a sale with no result (its buy not on record: the tape missed it) holds
-        # nothing, so its twins are charged here as the failed sends they are (review of 8 Nov: counted nowhere)
+        # a twin (or a try) is in its sale's result; a sale with no result (its buy not on record: the tape missed it)
+        # holds nothing, so its twins are charged here as the failed sends they are (review of 8 Nov: counted nowhere)
         if twins.get(f["sig"]) in with_result:
             continue
         prio = f.get("priority_lamports")

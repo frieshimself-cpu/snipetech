@@ -765,10 +765,13 @@ def last_postmortem_ts(paths: OperatorPaths) -> float | None:
 def trips_since_postmortem(store: Store, wallet: str, paths: OperatorPaths, now: float) -> dict[str, Any]:
     """Live round trips (sells in fills) after the newest sell the last finished post-mortem reviewed; the last day's
     before any. Counting from that sell, not from the clock, keeps a sell that measure records a few minutes late
-    from slipping between two post-mortems."""
+    from slipping between two post-mortems. Only the bot's own sells (measure/ours.bot_sells): the owner's hand
+    trades in the wallet start no post-mortem (22 Nov audit)."""
+    from ..measure.ours import bot_sells
+
     st = postmortem_state(paths)
     since = int(st["sell_ts"]) if st.get("sell_ts") is not None else int(now - FIRST_WINDOW_SECS)
-    rows = store.fills(wallet=wallet or None, since_ts=since + 1, side="sell", limit=100_000)
+    rows = bot_sells(store, store.fills(wallet=wallet or None, since_ts=since + 1, side="sell", limit=100_000))
     newest = max((int(r["ts"]) for r in rows if r.get("ts") is not None), default=None)
     return {"n": len(rows), "since_ts": since, "newest_ts": newest if newest is not None else st.get("sell_ts")}
 
@@ -842,8 +845,11 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40, cfg
     whole result also charges the failed duplicate sends of the sells it could not price (`unpriced`,
     `unpriced_dup_sol`)."""
     from ..measure.attribution import break_down, known_result_sol, levers, totals, trip_result_sol
+    from ..measure.ours import bot_sells
 
-    sells = store.fills(wallet=wallet or None, since_ts=int(since_ts), side="sell", limit=max(1, int(limit)))
+    # the bot's own sells (measure/ours.py), newest first: the owner's hand trades in the wallet are no trip of ours
+    sells = bot_sells(store, store.fills(wallet=wallet or None, since_ts=int(since_ts), side="sell", limit=100_000))
+    sells = sells[: max(1, int(limit))]
     verdicts: dict[str, dict[str, Any] | None] = {}
     shadows: dict[str, dict[str, dict[str, Any]]] = {}
     buy_sigs = sorted({s["buy_sig"] for s in sells if s.get("buy_sig")})

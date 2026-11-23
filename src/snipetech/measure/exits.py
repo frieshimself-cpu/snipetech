@@ -26,7 +26,7 @@ from ..analysis.lab import EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_sell_fracti
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MenuExit
 from ..models import Trade
-from ..oktech import EXITS, autosell
+from ..oktech import EXITS, autosell, named_exit
 from ..sim.exits import Costs, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
@@ -127,8 +127,9 @@ def named_exits() -> dict[str, dict]:
 
 
 def preset_name(payload: dict | None) -> str | None:
-    """The exit preset a sniper ran (`oktech.EXITS`, or another exit on the menu), read back from its config: 'custom'
-    for an exit no preset has, None when no exit settings are on record."""
+    """The exit preset a sniper ran (`oktech.EXITS`, or another exit on the menu), read back from its config, or
+    `holdN` for one sell-all timer of N seconds beside the copy exit (`_hold_name`): 'custom' for an exit no name has,
+    None when no exit settings are on record."""
     spec = exit_spec(payload)
     if spec is None:
         return None
@@ -136,7 +137,42 @@ def preset_name(payload: dict | None) -> str | None:
         ref = exit_spec({"autoSell": autosell(dict(params) | {"copy_exit": True}, [])})
         if ref is not None and _shape(ref) == _shape(spec):
             return name
-    return "custom"
+    return _hold_name(payload, spec) or "custom"
+
+
+def _hold_name(payload: dict | None, spec: dict[str, Any]) -> str | None:
+    """`holdN` when a sniper's only sell rule is one timer that sells everything N seconds after the buy (its copy exit
+    aside), the exit oktech.named_exit sends by that name (the money step's hold12 since 20 Nov 23:03, which measure
+    called 'custom' until the 22 Nov audit); None for any other exit."""
+    if any(spec[k] is not None for k in ("stale_secs", "stop_loss_pct", "trail_pct")) or spec["tp_pcts"]:
+        return None
+    if len(spec["hold_secs"]) != 1:
+        return None
+    a = _part(payload or {}, "autoSell")
+    parts = [a.get("sellPercent")] if _num(a.get("sellAfterSeconds")) else []
+    parts += [st.get("sellPercent") for st in a.get("stages") or []
+              if isinstance(st, dict) and _num(st.get("sellAfterMs"))]  # fmt: skip
+    if any((_num(p) or 0) < 100 - 1e-9 for p in parts):
+        return None  # a timer that sells a part is no holdN
+    name = f"hold{spec['hold_secs'][0]:g}"
+    try:
+        named_exit(name)
+    except ValueError:
+        return None
+    return name
+
+
+def exit_that_ran(payload: dict | None) -> tuple[str, dict] | None:
+    """The buying sniper's exit as the shadow replays it beside the menu: (its name, its snipetech parameters), when
+    oktech.named_exit can build it (a holdN the menu does not hold); None for an exit on the menu, a custom one or none.
+    """
+    name = preset_name(payload)
+    if not name or name == "custom" or any(m.name == name for m in COPY_EXIT_MENU):
+        return None
+    try:
+        return name, named_exit(name)
+    except ValueError:
+        return None
 
 
 def _lamports(sol: float) -> int:
@@ -328,22 +364,38 @@ def tape_without(trades: Iterable[Trade], wallet: str) -> list[Trade]:
 
 
 def _fee_sol(fill: dict) -> float:
-    """What the buy paid to land (priority + tip + base fee): what the replay charges a transaction; the flat cost when
-    its fingerprint is unknown."""
+    """What the buy paid to land (priority + tip + base fee): what the replay charges its buy; the flat cost when its
+    fingerprint is unknown."""
     if fill.get("priority_lamports") is None:
         return SHADOW_TX_SOL
     return (int(fill["priority_lamports"]) + int(fill.get("tip_lamports") or 0) + BASE_FEE_LAMPORTS) / 1e9
 
 
+def _sale_fee_sol(fill: dict, payload: dict | None, cfg: Config | None) -> float:
+    """What one sale of the position pays: the buy's priority (OKTech charges a task's buy priority on every exit),
+    the buying sniper's sell tip (its autoSell.sellTipAmount; [oktech] sell_tip_sol when its config is not on record)
+    and the base fee; the flat cost when the buy's fingerprint is unknown. 22 Nov audit: every replayed sale was
+    charged the buy's whole bid, 0.197 SOL too much on a copy bought at a 0.199 tip whose sales paid 0.001 + 0.002."""
+    if fill.get("priority_lamports") is None:
+        return SHADOW_TX_SOL
+    tip = _num(_part(payload or {}, "autoSell").get("sellTipAmount"))
+    if tip is None:
+        tip = float((cfg or Config()).oktech.sell_tip_sol)
+    return (int(fill["priority_lamports"]) + _lamports(tip) + BASE_FEE_LAMPORTS) / 1e9
+
+
 def shadow_exits(store: Store, buy_fill: dict, menu: Sequence[MenuExit] = COPY_EXIT_MENU, *, cfg: Config | None = None,
-                 now: float | None = None, slot_secs: float | None = None) -> list[dict[str, Any]]:  # fmt: skip
+                 now: float | None = None, slot_secs: float | None = None,
+                 payload: dict | None = None) -> list[dict[str, Any]]:  # fmt: skip
     """What every exit on the menu would have made of one live copy buy, replayed from its real entry: the coin's tape as
     if we had never traded it (`tape_without`), entered at the state just before our buy with the SOL we spent, the
     copied wallet's own sales for the copy exit, each exit as the live sniper runs it (analysis/lab.py menu_exits: the
-    watch delay, a sell a slot after its exit), at the buy's own fee a transaction. One row per exit (buy_sig,
-    exit_name, menu_version, sim_pnl_sol, sim_reason in classify_exit's words, computed_at), written to exit_shadow in
-    place of an earlier replay. Nothing for a buy younger than SHADOW_AFTER_SECS at `now`, one the tape did not record
-    the whole time after, one that copied nobody, or one with no trade before it on the tape."""
+    watch delay, a sell a slot after its exit), the buy at its own fee and each sale at what a sale of the buying
+    sniper pays (`payload`: its config, `_sale_fee_sol`), and beside the menu the exit that sniper ran when the menu
+    has no such exit (`exit_that_ran`: the live hold12, 22 Nov audit). One row per exit (buy_sig, exit_name,
+    menu_version, sim_pnl_sol, sim_reason in classify_exit's words, computed_at), written to exit_shadow in place of an
+    earlier replay. Nothing for a buy younger than SHADOW_AFTER_SECS at `now`, one the tape did not record the whole
+    time after, one that copied nobody, or one with no trade before it on the tape."""
     sig, mint, wallet, leader = (buy_fill.get(k) for k in ("sig", "mint", "wallet", "wallet_copied"))
     if buy_fill.get("side") not in (None, "buy") or not (sig and mint and wallet and leader):
         return []
@@ -364,13 +416,19 @@ def shadow_exits(store: Store, buy_fill: dict, menu: Sequence[MenuExit] = COPY_E
     entry = max((i for i in range(path.n) if path.sigs[i] in before), default=None)
     if entry is None:
         return []
-    costs = Costs(per_tx_lamports=_fee_sol(buy_fill) * 1e9)
+    # every transaction (each sale) at a sale's fee, the rest of the buy's own fee once, on the buy (it may be less)
+    sale = _sale_fee_sol(buy_fill, payload, cfg)
+    costs = Costs(per_tx_lamports=sale * 1e9, entry_bid_lamports=(_fee_sol(buy_fill) - sale) * 1e9)
     prep = prepare(path, entry, sol, costs, EXIT_LATENCY_SLOTS, EXIT_POSITION,
                    leader_frac=leader_sell_fractions(path, leader))  # fmt: skip
     if prep is None:
         return []
     rows = []
-    for name, ex in menu_exits(cfg, menu).items():
+    exits = menu_exits(cfg, menu)
+    ran = exit_that_ran(payload)  # the exit the buying sniper ran, beside the menu: exits are compared replay to replay
+    if ran is not None and ran[0] not in exits:
+        exits |= menu_exits(cfg, (MenuExit(ran[0], ran[1], ("timer", "copy_exit")),))
+    for name, ex in exits.items():
         r = run_exit(prep, ex, costs, end_ts=end)
         reason = "+".join(_SIM_TO_LIVE.get(part, part) for part in r.exit_reason.split("+"))
         rows.append({"buy_sig": sig, "exit_name": name, "menu_version": EXIT_MENU_VERSION, "sim_pnl_sol": round(r.pnl_sol, 6),

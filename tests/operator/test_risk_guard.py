@@ -338,9 +338,10 @@ def test_the_owners_hand_buys_on_the_tape_are_no_result_of_the_bot_either(env):
     assert day["total_sol"] == pytest.approx(-(1.05 + 0.0035), abs=1e-6)
 
 
-def test_a_copy_buy_is_the_bots_whatever_its_fees(env):
-    """22 Nov 00:19:12 a copy of Cented went out with no tip, and the 21 Nov copies paid 0.199: the copied wallet on the
-    fill says it is ours, and a sniper's own priority with no tip is one of its sends too."""
+def test_a_copy_buy_is_the_bots_tipped_or_not(env):
+    """22 Nov 00:19:12 a copy of Cented went out with no tip, and the 21 Nov copies paid 0.199: a sniper's own priority
+    with no tip is one of its sends too, so the untipped copy is the bot's by that fee pair (the copied wallet on the
+    fill says nothing alone since runner#4 of the 22 Nov audit: the owner's tool pays the snipers' priority too)."""
     _paths, store, _cfg = env
     _sniper(store)
     store.put_fill({"sig": "copy", "ts": NOW - 900, "wallet": W, "mint": M1, "side": "buy", "sol": 3.5,
@@ -354,8 +355,8 @@ def test_a_copy_buy_is_the_bots_whatever_its_fees(env):
 
 def test_a_hand_buy_after_a_copied_wallets_is_no_result_of_the_bot(env):
     """Review of 22 Nov: the measure stage writes the copied wallet on every buy of the wallet that came after one of
-    its buys of the coin, the owner's hand buys too, and that alone made a buy the bot's. A copied wallet counts only on
-    a buy whose priority is a sniper's (a copy whose tip changed since its payload was recorded is still ours)."""
+    its buys of the coin, the owner's hand buys too, and that alone made a buy the bot's. A copied wallet says nothing:
+    a buy is the bot's by a sniper's whole fee pair (22 Nov audit: the owner's tool pays the snipers' priority too)."""
     _paths, store, _cfg = env
     _measured(store, NOW - 60)
     _sniper(store)
@@ -364,10 +365,17 @@ def test_a_hand_buy_after_a_copied_wallets_is_no_result_of_the_bot(env):
                     "tokens": 1_000_000, "priority_lamports": 6121, "tip_lamports": 52_000_000,
                     "wallet_copied": cented})  # fmt: skip
     _sell(store, "hand-s", NOW - 800, M2, pnl=-2.0, buy_sig="hand")
+    # runner#4 (22 Nov audit): the copy pays its sniper's own pair (0.001 + 0.049); a sniper's priority alone no longer
+    # makes a buy with a copied wallet on it the bot's
     store.put_fill({"sig": "copy", "ts": NOW - 700, "wallet": W, "mint": M1, "side": "buy", "sol": 1.0,
-                    "tokens": 1_000_000, "priority_lamports": 1_000_000, "tip_lamports": 99_000_000,
+                    "tokens": 1_000_000, "priority_lamports": 1_000_000, "tip_lamports": 49_000_000,
                     "wallet_copied": cented})  # fmt: skip
     _sell(store, "copy-s", NOW - 688, M1, pnl=-0.1, buy_sig="copy")
+    # the owner's own tool at the snipers' priority (2Y2StBPj, 21 Nov 23:07), in a coin a copied wallet bought
+    store.put_fill({"sig": "hand2", "ts": NOW - 600, "wallet": W, "mint": M2, "side": "buy", "sol": 1.485,
+                    "tokens": 1_000_000, "priority_lamports": 1_000_000, "tip_lamports": 16_000_000,
+                    "wallet_copied": cented})  # fmt: skip
+    _sell(store, "hand2-s", NOW - 500, M2, pnl=-0.5, buy_sig="hand2")
     assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)["realised_sol"] == pytest.approx(-0.1)
 
 
