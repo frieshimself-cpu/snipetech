@@ -513,7 +513,8 @@ def test_the_runs_sale_in_the_owners_coin_sells_none_of_theirs_when_the_tape_is_
     sells as many as the tape says the run holds. OKTech's exit had sold them at 112 s, but the tape either read that
     sale as the owner's (in parts, at fees the payload does not name: why a hold on the tape ends at `run_hold_secs`)
     or had it late, and past --sweep-after 20 the run sold 1,000,000 of the owner's own. It sells no more than the
-    wallet holds beyond the owner's tokens (as many as when the coin was first known as theirs, and their buys since)."""
+    wallet holds beyond the owner's tokens (as many as when the coin was first known as theirs, and their buys
+    since)."""
     sold = []
     _run(monkeypatch, lambda now: 7.0 if now < T0 + 100 else (4.0 if now < T0 + 112 else 6.9),
          coins=_owners_coin_copy_sold, payload=payload, tape=_owners_coin_tape() + sale, floor=None, max_loss=5.0,
@@ -685,7 +686,7 @@ def test_the_owners_hand_buy_twenty_slots_behind_a_copied_wallet_is_still_left_a
     assert not [e for e in rep["events"] if "paid fees no sniper" in e]
 
 
-# -- round 2 of the audit (23 Nov), A3: the run's tokens in a coin of the owner's are held for the snipers' own timer ---
+# -- round 2 of the audit (23 Nov), A3: the run's tokens in a coin of the owner's are held for the snipers' timer ------
 
 SLOW_SALE = {"sellTipAmount": 0.002, "sellPriorityFeeSol": 0.0001}
 SLOW_EXITS = {

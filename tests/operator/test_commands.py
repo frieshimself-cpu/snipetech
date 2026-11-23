@@ -498,7 +498,7 @@ def _on_chain(svc, *txs, age=6):
 
 
 def test_stop_holds_while_the_chain_has_a_buy_whose_coin_neither_reading_nor_the_tape_shows(tmp_path):
-    """A2: three of the 24 copies of 20-22 Nov bought coins the tape does not follow. The wallet's own newest
+    """A2: three of the six copies of 20 Nov bought coins the tape does not follow. The wallet's own newest
     transactions say whether it bought one in the last seconds."""
     from tests.chain import swap
 
@@ -512,8 +512,9 @@ def test_a_buy_on_the_chain_that_was_sold_since_or_is_older_holds_no_stop(tmp_pa
     from tests.chain import swap
 
     sold = Readings(tmp_path, [[], []])
-    _on_chain(sold, swap("copy", W, OURS, tokens=38_000_000, sol=1.0, priority=0.001, tip=0.199),
-              swap("exit", W, OURS, tokens=-38_000_000, sol=1.1, priority=0.001, tip=0.002, held=38_000_000))  # fmt: skip
+    bought = swap("copy", W, OURS, tokens=38_000_000, sol=1.0, priority=0.001, tip=0.199)
+    exit_ = swap("exit", W, OURS, tokens=-38_000_000, sol=1.1, priority=0.001, tip=0.002, held=38_000_000)
+    _on_chain(sold, bought, exit_)
     reply, _ = _stop(tmp_path, sold)
     assert sold.calls == [("stop", "s1")], reply
     old = Readings(tmp_path, [[], []])

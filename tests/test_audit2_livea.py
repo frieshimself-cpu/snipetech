@@ -186,7 +186,7 @@ def test_a_buy_at_a_snipers_fees_is_the_bots_with_no_copied_wallet_at_all():
 
 
 def test_a_copy_the_chain_placed_is_the_bots_by_the_blocks_between():
-    """A1: three of the 24 copies of 20-22 Nov bought PumpSwap coins the tape no longer held; the measure stage placed
+    """A1: three of the six copies of 20 Nov bought PumpSwap coins the tape no longer held; the measure stage placed
     them from the blocks (landing_src "chain": blocks_after 0, 0 and 1). Such a fill at fees no payload names is a copy
     by the blocks between the copied buy and ours; a buy that landed ahead of the copied wallet's, or long after it,
     is none."""

@@ -58,7 +58,8 @@ def _lamports(x: Any) -> int | None:
 
 def _copied(payload: dict | None) -> set[str]:
     """The wallets a sniper with this payload follows (none for a hunt or a strategy sniper)."""
-    return {str(w["address"]) for w in (payload or {}).get("ctbotWallets") or [] if isinstance(w, dict) and w.get("address")}  # fmt: skip
+    wallets = (payload or {}).get("ctbotWallets") or []
+    return {str(w["address"]) for w in wallets if isinstance(w, dict) and w.get("address")}
 
 
 def sniper_marks(payloads: Iterable[dict | None], store=None) -> dict[str, Any]:
@@ -438,8 +439,8 @@ def _holding_buys(store, wallet: str, mint: str, marks: dict[str, frozenset]) ->
     for sig, is_buy, ts, slot, pos, base, priority, tip in store._q(
         "SELECT sig, is_buy, ts, slot, pos, base, priority, tip FROM trades WHERE user=? AND mint=?", (wallet, mint)
     ):
-        ours = bool(is_buy) and (not marks["buy"] or _paid(priority, tip, marks["buy"]) is not False
-                                 or (shape is not None and shape.tape(mint, slot, pos, ts, sig) is not None))  # fmt: skip
+        by_fees = not marks["buy"] or _paid(priority, tip, marks["buy"]) is not False
+        ours = bool(is_buy) and (by_fees or (shape is not None and shape.tape(mint, slot, pos, ts, sig) is not None))
         trades.setdefault(sig, {"buy": bool(is_buy), "at": (int(ts), int(slot), int(pos)), "tokens": float(base or 0),
                                 "ours": ours})  # fmt: skip
     cols = ("sig", "side", "ts", "slot", "tokens", "priority_lamports", "tip_lamports", "sniper_id", "wallet_copied",
@@ -543,8 +544,8 @@ class RunCoins:
             at = {"slot": tx.get("slot", s.get("slot")), "blockTime": tx.get("blockTime", s.get("blockTime"))}
             leader = await self._off_tape_copy(str(s["signature"]), at, mint, now)
             if leader:
-                self.odd.append({"sig": str(s["signature"]), "mint": mint, "leader": leader,
-                                 "priority": int(m.priority_lamports or 0), "tip": int(m.tip_lamports or 0)})  # fmt: skip
+                paid = {"priority": int(m.priority_lamports or 0), "tip": int(m.tip_lamports or 0)}
+                self.odd.append({"sig": str(s["signature"]), "mint": mint, "leader": leader} | paid)
             return None if leader is None else ("ours" if leader else "owner")
         return None
 

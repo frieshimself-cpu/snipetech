@@ -2,7 +2,8 @@
 (`operate --commands`); only the owner's chat is obeyed.
 /stop never strands a coin: a running sniper is left alone while the wallet holds a coin one of ours may hold (it is the only
 thing that sells); the owner's ignored coins, the owner's own and strays no buy of ours explains are no sniper's. It
-stops none on one reading: the wallet is read twice, and a buy on the tape or the chain whose coin has not shown holds it.
+stops none on one reading: the wallet is read twice, and a buy on the tape or the chain whose coin has not shown yet
+holds it back.
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py: on the pump.fun curve, or on PumpSwap once the coin has left it, since 7 Nov), never buys, and never
@@ -269,9 +270,9 @@ def _unrecorded(svc, running: list[dict]) -> set[str]:
 
 async def _landed_buys(svc, wallet: str, since: float) -> list[str]:
     """The coins the wallet bought in transactions that landed since `since` and has not sold since, read off its own
-    newest signatures on the chain: a coin the tape does not follow (a PumpSwap coin past the tape's 30 minutes: 3 of
-    the 24 copies of 20-22 Nov) is on no tape. None of the non-coins (wrapped SOL, a stablecoin). Empty with no RPC to
-    ask; a transaction the node cannot serve yet is skipped."""
+    newest signatures on the chain: a coin the tape does not follow (a PumpSwap coin past the tape's 30 minutes: three
+    of the six copies of 20 Nov) is on no tape. None of the non-coins (wrapped SOL, a stablecoin). Empty with no RPC
+    to ask; a transaction the node cannot serve yet is skipped."""
     rpc = getattr(svc, "rpc", None)
     if rpc is None:
         return []
@@ -316,7 +317,8 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
     one whose fees the bot has no record of (_unrecorded), which may have bought the owner's coin. One reading with
     nothing of ours in it is no proof (23 Nov audit: a copy bought a second before the read had not shown yet): before
     any stop the wallet is read again live_test.SECOND_READ_SECS later, that reading weighed by its own amounts, and
-    no sniper is stopped while the tape or the chain has a buy of the wallet whose coin neither showed (`_on_its_way`)."""
+    no sniper is stopped while the tape or the chain has a buy of the wallet whose coin neither reading showed
+    (`_on_its_way`)."""
     loop = asyncio.get_running_loop()
     began = loop.time()
     ignore = list(cfg.operator.ignore_mints or ())
