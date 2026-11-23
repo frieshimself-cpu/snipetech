@@ -536,7 +536,7 @@ the analyst and the deploy guard do what they did before (tests pin each: `tests
 |---|---|---|---|---|
 | in code | `scout` | `tester` | `fees` | `oktech` |
 | question | Who is worth following, and who are they? | Which rule pays where we land? | What is a place worth, and which bid wins it? | Which OKTech feature would make a proven rule land or sell better, and what is its cheapest test? |
-| may start | `winners`, `gmgn`, `playbook`, `leaders-of`, `early-leaders`, `fomo-wallets`, `discover-wallets`, `follow`, `copy`, `copy-rank`, `copy-context`, `stopped-wallets`, `label`, `place-bids --each`, `history amm-backfill` | `lab`, `paper`, `dip-buys`, `launch-tools`, `study`, `copy-context` | `place-bids`, `tips`, `landing`, `playbook`, `copy-context`, and `lab` only with `--copy-position`, `--per-tx` or `--buy-bid` | only commands that read: `landing`, `copy-context`, `playbook`, `launch-tools` |
+| may start | `winners`, `gmgn`, `playbook`, `leaders-of`, `early-leaders`, `fomo-wallets`, `discover-wallets`, `follow`, `copy`, `copy-rank`, `copy-context`, `stopped-wallets`, `label` (since the audit of 22 Nov only as a pick, `--kind cand`), `place-bids --each`, `history amm-backfill`, `sends` (22 Nov) | `lab`, `paper`, `dip-buys`, `launch-tools`, `study`, `copy-context` | `place-bids`, `tips`, `landing`, `playbook`, `copy-context`, `sends` (22 Nov), and `lab` only with `--copy-position`, `--per-tx` or `--buy-bid` | only commands that read: `landing`, `copy-context`, `playbook`, `launch-tools` |
 | its table | `operator/scout-facts.md` | `operator/tester-rules.md` | `operator/fees-bids.md` | `operator/oktech-facts.md` |
 | share of the day's dollars | 20 % | 25 % (35 % until 21 Nov) | 20 % | 10 % |
 
@@ -573,7 +573,8 @@ guard, the budget or a test, or changes a setting. This is kept by code, not by 
   that names the wallet, the size, the cap, the duration and the stop rule. It waits for the owner's yes.
 
 **Queues.** An idea has a `role` field (`operator/ideas.json`). A research idea without one is the tester's. An idea
-of kind code, config or live-test is in nobody's queue and waits for the cloud session or the owner. A role may add
+of kind code, config or live-test is in nobody's queue and waits for the cloud session or the owner (since the audit
+of 22 Nov at most 100 open ones wait there: "What the agents may start and keep" below). A role may add
 an idea to any queue: that is how work is handed on. Only a queue's own role changes or closes its ideas. A queue
 takes no new idea from a role's turn while it holds 15 open ones. From the cloud session:
 `snipetech operate idea --role scout ...` puts an idea in a queue, and `--id I22 --role scout` moves one.
@@ -586,7 +587,8 @@ was already running counts as its own; a `label` job that ended well is never ne
 a restart ended when its log was last written); it was handed an idea; its queue holds an idea nobody tested and none
 of its jobs runs; or, once, its queue holds an idea in testing and none of its jobs runs (a turn that then starts no
 job and closes no idea is not called for it again); another role's table changed (the owner can switch this one off:
-`/budget wake table off`, the file `operator/WAKE_TABLE`); its own news came (a wallet qualified or was banned for
+`/budget wake table off`, the file `operator/WAKE_TABLE`; since the audit of 22 Nov at most once an hour for a role
+whose queue is empty and whose last turn did no work); its own news came (a wallet qualified or was banned for
 the scout; the strategy search ended or a paper rule reached its first 30 or 60 trades for the tester; a new fill of
 ours for the fee and the OKTech analysts); or three hours have passed. Otherwise it writes one log line and costs
 nothing. A job counts as read when the role read its log whole or with read_job_log's default call; one line of it
