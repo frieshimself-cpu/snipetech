@@ -757,9 +757,10 @@ test's block waits for (0.252 SOL beside a 0.2 SOL buy: its sniper's fees, faile
 Limits kept on purpose: an answer about a coin holds while the coin is held, so a mixed holding (the owner's coin,
 then a copy of ours into it) keeps its first answer in the round's snapshot; the runner handles that case itself
 (docs/roadmap.md, 22 Nov 04:45). A sale that closes lots of both makers is credited to one of them. The round's
-clean-up of a live run that died (`operator/leftovers.py`) counts every coin the wallet holds, the owner's own
-included, so a dead run's armed snipers keep running beside a coin the owner bought by hand (the review of the third
-round left it so before the live run of 23 Nov: changing it is the session's or the owner's decision).
+clean-up of a live run that died (`operator/leftovers.py`) counted every coin the wallet holds, the owner's own
+included, so a dead run's armed snipers kept running beside a coin the owner bought by hand; since 23 Nov it leaves out
+the owner's own coins and strays by /stop's rule (`commands._not_ours`), and beside an owner's coin keeps running only a
+sniper whose fees are not on record (`commands._unrecorded`: it may have bought it).
 
 ## The tape: what the audit of 22 Nov changed
 

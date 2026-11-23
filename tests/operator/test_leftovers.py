@@ -253,3 +253,64 @@ def test_a_live_test_refused_beside_a_run_that_is_over_says_so(env):
         LT._driver_words({"id": "x", "argv": ["oktech", "guard", "--id", A]})
         == "an OKTech job is running (x: oktech guard)"
     )
+
+
+# -- the owner's own coin (23 Nov): no holding of a dead run's, as for /stop and the book --------------------------------
+
+
+def _owners_coin(env, tmp_path, *, recorded=(A, B)):
+    """A real store: the run's snipers on record with the fees they pay (`recorded`), and the owner's hand buy of a
+    coin half an hour before the round, at fees no sniper of ours pays (tests/test_audit_book.py's)."""
+    from snipetech.store import Store
+    from tests.test_audit_book import BOOK_PAYLOAD, OWNER_COIN, _hand_buy_on_tape
+
+    st = Store(tmp_path / "owner.db")
+    for i in recorded:
+        st.add_oktech_sniper({"id": i, "external_id": f"e-{i}", "kind": "copy", "source": "L" * 44,
+                              "name": "snipetech copy GakeSide arm:size1", "config_hash": "h",
+                              "payload": BOOK_PAYLOAD, "created_at": NOW - 9000})  # fmt: skip
+    _hand_buy_on_tape(st, NOW - 1800)
+    env.svc.store = st
+    env.svc.readings = [[{"mint": OWNER_COIN, "amount": 1e6, "raw": 10**12, "value_sol": 10.2, "priced": True}]]
+    return st, OWNER_COIN
+
+
+def test_a_coin_the_owner_bought_by_hand_keeps_no_snipers_of_a_dead_run_armed(env, tmp_path):
+    """The round's clean-up counted every coin the wallet holds, the owner's own included: a run that died beside a
+    coin the owner bought by hand left its snipers armed for as long as the owner kept it, each free to buy once more
+    with nobody watching, and the owner was told to /sell their own coin. /stop and the book leave out a coin that is
+    the owner's beyond doubt (every buy of it since its last sale paid fees no sniper of ours pays, and they explain
+    all of it that is held: measure/ours.owner_coins); the clean-up now does the same."""
+    st, coin = _owners_coin(env, tmp_path)
+    try:
+        (said,) = _close(env, _ended(env))
+        assert env.svc.stops == [A, B] and "stopped" in said, said
+        assert coin[:6] in said and "/sell" not in said  # the owner hears it was their own coin, never to sell it
+        assert LT._drivers(env.paths) == []
+    finally:
+        st.close()
+
+
+def test_beside_the_owners_coin_a_sniper_whose_fees_are_not_on_record_keeps_running(env, tmp_path):
+    """An owner's coin is told by the fees of the snipers on record (as /stop, commands._unrecorded): a run's sniper
+    with no payload on record may have bought it, so it keeps running (a stopped sniper strands its coin), and the run
+    stays open until a round finds the wallet empty."""
+    st, coin = _owners_coin(env, tmp_path, recorded=(A,))
+    try:
+        (said,) = _close(env, _ended(env))
+        assert env.svc.stops == [A] and B in said and coin[:6] in said, said
+        assert [d["id"] for d in LT._drivers(env.paths)] == [JOB]
+    finally:
+        st.close()
+
+
+def test_more_of_the_coin_than_the_owners_buys_explain_is_still_a_holding(env, tmp_path):
+    """Weighed on the reading's own amounts: more of the owner's coin than their buys brought in may be a copy of ours
+    into it not written yet, so nothing is stopped and the owner hears the coin, as before."""
+    st, coin = _owners_coin(env, tmp_path)
+    env.svc.readings = [[{"mint": coin, "amount": 2e6, "raw": 2 * 10**12, "value_sol": 20.4, "priced": True}]]
+    try:
+        (said,) = _close(env, _ended(env))
+        assert env.svc.stops == [] and coin in said and "/sell" in said, said
+    finally:
+        st.close()

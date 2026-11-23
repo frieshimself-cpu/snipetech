@@ -578,8 +578,9 @@ takes up every such run once it is over, however it ended. Its snipers still act
 wallet holds nothing on two readings 5 seconds apart and neither the wallet's newest transactions on the chain nor the
 tape show a buy whose coin they did not show (the look `/stop` makes, since the third round: the tape alone missed a
 copy into a coin it does not follow); a landed transaction the node cannot serve yet holds the stops for a round.
-While the wallet holds a coin, any coin, they keep running to sell it (this clean-up counts the owner's own coins too,
-unlike `/stop` and the book): the owner hears which coin, with /sell, and the round looks again every 15 minutes.
+While the wallet holds a coin of ours they keep running to sell it (until 23 Nov this clean-up counted the owner's own
+coins too; since then it leaves them out as `/stop` and the book do): the owner hears which coin, with /sell, and the
+round looks again every 15 minutes.
 Until nothing of the run is armed, the book adds no sniper and no live test starts beside it. The owner hears of a run
 that died, and of what was stopped. A run told to stop (its time limit, a kill or a restart) is worded so, no longer
 as one that ended on an error: since the second round its command ends on one line, "ended: told to stop ...", with
