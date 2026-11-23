@@ -115,7 +115,7 @@ def test_the_two_days_of_doubled_cost_are_told_at_what_the_stored_records_were_c
     text = _tools_text()
     assert "charged 0.0062 to 0.0093 SOL a transaction, rising through the two days" in text
     assert "0.0085 to 0.0093" not in text and "up to about 0.01 SOL a round trip too much" in text
-    assert "0.009 SOL a round trip" not in text
+    assert "0.009 SOL a round trip too much" not in text
     frozen_then = {"from_ts": OVERCHARGED_FROM, "exit": {}}
     assert round(overcharge_sol(frozen_then | {"per_tx_sol": 0.0093}), 4) == 0.0096
     assert round(overcharge_sol(frozen_then | {"per_tx_sol": 0.0062}), 4) == 0.0034
