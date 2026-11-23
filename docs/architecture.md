@@ -671,9 +671,9 @@ Who uses the rule, and what the audit of 22 Nov changed in each:
 time a sniper runs. So a book sniper is made only while plain SOL pays one curve copy after that wrap. With nothing
 wrapped, a 0.2 SOL sniper needs 0.425 SOL of plain SOL: 0.2 for the buy, 0.005 for its costs, 0.22 for the wrap.
 Wrapped SOL alone, which pays only a PumpSwap buy, makes no sniper any more. `/book status` and the book's note name
-the plain SOL one copy needs. Before, with 0.30 SOL of plain SOL the book made a 0.2 SOL sniper, OKTech wrapped 0.22,
-and every curve copy failed and used up one of the sniper's buys. The agents' snapshot (`buys_payable`) does not count
-the wrap yet.
+the plain SOL one copy needs. Before, plain SOL for one buy but not for the wrap as well (0.30 SOL, say) was enough
+to make a 0.2 SOL sniper: OKTech wrapped 0.22, and every curve copy failed and used up one of the sniper's buys. The
+agents' snapshot (`buys_payable`) does not count the wrap yet.
 
 Limits kept on purpose: an answer about a coin holds while the coin is held, so a mixed holding (the owner's coin,
 then a copy of ours into it) keeps its first answer in the round's snapshot; the runner handles that case itself
@@ -745,9 +745,9 @@ The forward paper test:
 - **A new record starts after the tape its lab read.** A freeze used to start the record at its own start time, so it
   could score again the very moments the lab had used to pick the rule. Each record keeps its lab's window.
 - **Records frozen at the doubled cost can be frozen again.** A record frozen between 12 Nov 17:24 and 14 Nov 18:26
-  UTC is charged 0.006 SOL or more a transaction, about twice the true cost. Such a record holds no rule place any
-  more: freezing the rule again makes a new record at today's cost, and the old one runs on beside it, named as
-  overcharged in the freeze's list and the report's `exit_note`.
+  UTC at 0.006 SOL or more a transaction is charged about twice the true cost on every trade. Such a record holds
+  no rule place any more: freezing the rule again makes a new record at today's cost, and the old one runs on
+  beside it, named as overcharged in the freeze's list and the report's `exit_note`.
 - **Trades priced outside the model are marked.** A forward trade keeps its share of the pool and says when its sale
   was priced past the curve's end or on a fallback price. A report row counts them (`outside_model`: how many, their
   SOL, of how many marked trades; `outside_why` explains once). Rows written before 22 Nov carry no mark. The automatic
