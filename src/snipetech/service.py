@@ -1722,12 +1722,10 @@ class Service:
             else:
                 armed_slot[i] = slot_seen
 
-        async def failed_sends() -> dict[str, tuple[float, bool]]:
+        async def failed_sends() -> dict[str, tuple[float, list[str]]]:
             """The snipers OKTech reads spent whose shot the chain says bought nothing, each with how many seconds ago
-            a transaction of the wallet's last failed, and whether every failed transaction since its start was a buy
-            the program refused on its own price limit (`buy_limit.refused_on_limit`: the market-cap ceiling, the
-            rule's own cost that the paper charges and copies on after; such a send is no part of a streak, below; a
-            transaction that cannot be read in time is not one). The wallet's newest signatures are read as /stop reads them
+            a transaction of the wallet's last failed and the failed transactions since its start (`refusal_only`
+            reads them when that sniper is armed again). The wallet's newest signatures are read as /stop reads them
             (operator/commands._landed_buys, the one reader of that list: the buys no sale followed, and the landed
             transactions the node does not serve yet), once a tick, each transaction once a run. A sniper is in the
             answer when a transaction of the wallet's failed in a slot after its last start (`armed_slot`), and
@@ -1752,20 +1750,7 @@ class Service:
             reader = _ListRead(self.rpc, chain_txs)
             unsold: list[tuple[str, str]] = []
             unread: list[str] = []
-            out: dict[str, tuple[float, bool]] = {}
-
-            async def all_refused(sigs: list[str]) -> bool:
-                """Whether each of these failed transactions of the wallet is a buy refused on its own price limit;
-                False when one is not served in FAILED_LOOK_SECS (each is read once while the list holds it)."""
-                from .solana.buy_limit import refused_on_limit
-
-                try:
-                    got = await asyncio.wait_for(asyncio.gather(*(reader.get_transaction(s) for s in sigs)),
-                                                 FAILED_LOOK_SECS)  # fmt: skip
-                except Exception:  # noqa: BLE001 - not read in time: not told a refusal (it counts, as before)
-                    return False
-                return bool(got) and all(refused_on_limit(tx, address) for tx in got)
-
+            out: dict[str, tuple[float, list[str]]] = {}
             try:
                 from .operator.commands import CHAIN_LOOK_SIGS, _landed_buys
 
@@ -1805,7 +1790,7 @@ class Service:
                     # that, and the failed one need not be one of them (the owner's own, a duplicate sale's)
                     if timed[0][1] + (coins_slot - timed[0][0]) * slot_secs < spent_at[i]:
                         continue
-                    out[i] = (max(0.0, time.time() - max(failed)[1]), await all_refused([f[2] for f in failed]))
+                    out[i] = (max(0.0, time.time() - max(failed)[1]), [f[2] for f in failed])
             except Exception as exc:  # noqa: BLE001 - nothing told: the 30 s wait, as before
                 if not look_said:
                     look_said = True
@@ -1815,6 +1800,46 @@ class Service:
                         f"waits its {SPENT_REARM_SECS:g} s, as before")  # fmt: skip
                 return {}
             return out
+
+        async def refusal_only(i: str, sigs: list[str] | None) -> bool:
+            """Whether every failed transaction of the wallet since sniper i's start was a buy the program refused on
+            its own price limit, a limit a coin can meet (`buy_limit.refused_on_limit`: the market-cap ceiling, the
+            rule's own cost, which the paper charges and copies on after): such a send is no part of a streak. Asked
+            only when sniper i is armed again after a send that bought nothing. `sigs`: those transactions as the
+            chain's look found them; None (armed again on its 30 s wait: the look did not answer in time, a node
+            behind) reads the wallet's newest signatures for them. One look inside FAILED_LOOK_SECS as a whole, each
+            transaction read once a run (`refusal_of`); none found, or one not served in time, is no refusal: it
+            counts, as before (review of 23 Nov: each was asked for under its own 10 s, for every sniper, each tick).
+            A failed transaction cannot be told to one sniper: every one of the wallet's since i's start is asked."""
+            from .operator.commands import CHAIN_LOOK_SIGS
+            from .solana.buy_limit import refused_on_limit
+
+            async def look() -> bool:
+                found = sigs
+                if found is None:
+                    start = armed_slot.get(i)
+                    if start is None:
+                        return False
+                    rows = await self.rpc.get_signatures(address, limit=CHAIN_LOOK_SIGS) or []
+                    found = [str(r["signature"]) for r in rows
+                             if r.get("err") is not None and int(r.get("slot") or 0) > int(start[0])]  # fmt: skip
+                if not found:
+                    return False
+                reader = _ListRead(self.rpc, chain_txs)
+                for s in found:
+                    if s not in refusal_of:
+                        tx = await reader.get_transaction(s)
+                        if not tx:  # not served yet: not told, and asked again at the next re-arm that needs it
+                            return False
+                        refusal_of[s] = refused_on_limit(tx, address)
+                    if not refusal_of[s]:
+                        return False
+                return True
+
+            try:
+                return await asyncio.wait_for(look(), FAILED_LOOK_SECS)
+            except Exception:  # noqa: BLE001 - not told in time: no refusal (it counts, as before)
+                return False
 
         async def guard_says(held: list[dict]) -> tuple[bool | None, str]:
             """The owner's wallet-wide guard now (operator/RISK: the day 1 SOL down or the wallet under 10 SOL), read at
@@ -2029,6 +2054,7 @@ class Service:
         armed_slot: dict[str, tuple[int, float]] = {}
         coins_slot: int | None = None  # the slot the node answered the last reading of the wallet's coins at
         chain_txs: dict[str, dict] = {}  # the wallet's transactions that look has read, each once
+        refusal_of: dict[str, bool] = {}  # a failed send of the wallet's: a refusal at the ceiling or not (once)
         look_said = False  # the run has said that the chain could not be read for a failed send
         swept: list[dict] = []  # the coins this run sold itself (`sweep_after`): each sale the chain has
         # when each coin's next sale may go: a minute after one that failed, SWEEP_SOON_SECS after one that did not go
@@ -3196,20 +3222,23 @@ class Service:
                     # or sooner, from the reading after the one that saw it spent, when the chain says that a send
                     # failed since its start and nothing bought since then is unsold (23 Nov: copies refused at the
                     # ceiling; anything else on the chain, or no reading of it, keeps the wait above)
-                    failed_ago, refused = None, False
+                    failed_ago, fast_sigs = None, None
                     if (not (bought or since >= rearm_after or spent)
                             and now - spent_at.get(i, now) >= FAILED_SEND_SETTLE_SECS):  # fmt: skip
                         if freed is None:
                             freed = await failed_sends()
-                        failed_ago, refused = freed.get(i, (None, False))
+                        failed_ago, fast_sigs = freed.get(i, (None, None))
                     if bought or since >= rearm_after or spent or failed_ago is not None:
                         # a send that bought nothing soon after its start adds to the sniper's streak; anything else
-                        # ends it, but a refusal at the ceiling neither adds to it nor ends it: the rule's own cost,
-                        # which the paper charges at every such moment and copies on after (23 Nov: Yugi's came three
-                        # in four minutes). FAIL_STREAK_MAX of them in a row and it rests instead (FAIL_STREAK_*)
+                        # ends it, but a refusal at the ceiling soon after its start neither adds to it nor ends it:
+                        # the rule's own cost, which the paper charges at every such moment and copies on after (23
+                        # Nov: Yugi's came three in four minutes); a slow send of any kind ends it, as before.
+                        # FAIL_STREAK_MAX of them in a row and it rests instead (FAIL_STREAK_*)
                         nothing = (spent or failed_ago is not None) and not bought
-                        if not (nothing and refused):
-                            streaks[i] = streaks.get(i, 0) + 1 if nothing and since < FAIL_STREAK_FAST_SECS else 0
+                        fast = nothing and since < FAIL_STREAK_FAST_SECS
+                        refused = fast and await refusal_only(i, fast_sigs)
+                        if not refused:
+                            streaks[i] = streaks.get(i, 0) + 1 if fast else 0
                         if streaks.get(i, 0) >= FAIL_STREAK_MAX:
                             n = streak_rests.get(i, 0)
                             until = now + min(FAIL_STREAK_REST_SECS * 2**n, FAIL_STREAK_REST_MAX)
@@ -3250,7 +3279,8 @@ class Service:
                             spent_at.pop(i, None)
                             restarts += 1
                             why_now = (f": OKTech had it spent {SPENT_REARM_SECS:g} s with nothing held (a send that "
-                                       "bought nothing)") if spent else ""  # fmt: skip
+                                       "bought nothing"
+                                       f"{', refused at its market-cap ceiling' if refused else ''})") if spent else ""  # fmt: skip
                             if failed_ago is not None:
                                 why_now = (f": OKTech has it spent with nothing held, and a failed send on chain "
                                            f"{failed_ago:.0f} s ago"

@@ -66,10 +66,11 @@ def _refused(name: str, mint: str = X) -> dict:
     return swap(name, W6, mint, tokens=1_000_000, sol=1.0, native=True, priority=0.001, err=REFUSED)
 
 
-def _at_the_ceiling(name: str, prefix: str = "4hC1n7oF") -> dict:
-    """A real refusal at the market-cap ceiling (the sniper wallet's buy of 23 Nov 03:17 on pump.fun's curve, 6042:
-    tests/fixtures/buy_limits_23nov.json) under a signature of its own: the program's log says what the buy would have
-    got against its own least coins."""
+def _at_the_ceiling(name: str, prefix: str = "4BUCDA8G") -> dict:
+    """A real refusal at the market-cap ceiling (the sniper wallet's buy of 23 Nov 03:50 on pump.fun's curve, 6042, at
+    64.6 SOL of market cap: tests/fixtures/buy_limits_23nov.json) under a signature of its own: the program's log says
+    what the buy would have got against its own least coins. "4hC1n7oF": one of OKTech's sends worked out at $200 a
+    SOL, refused on a limit of 23 SOL that no coin can meet."""
     (tx,) = [tx for s, tx in SMOKE["txs"].items() if s.startswith(prefix)]
     tx = copy.deepcopy(tx)
     tx["transaction"]["signatures"] = [sig(name)]
@@ -576,3 +577,61 @@ def test_after_a_fill_the_sniper_oktech_reads_spent_is_armed_again_first(monkeyp
     after = [(i, t) for kind, i, t in client.timed if kind == "start" and t > T0 + 112]
     assert after and after[0][0] == B, [(i[-4:], t - T0) for i, t in after]
     assert rep["fills"] == 1
+
+
+def test_sends_on_a_limit_no_coin_can_meet_still_rest_the_sniper(monkeypatch):
+    """Review of 23 Nov: OKTech's sends worked out at $200 a SOL ask for 23 SOL of market cap, under the 28 SOL every
+    coin starts at, and can only fail: no ceiling's cost, so a streak of them rests the sniper like any other."""
+    from snipetech import service as S
+
+    chain = WalletChain()
+    sends = [T0 + 100, T0 + 160, T0 + 220, T0 + 280, T0 + 340]
+    for k, at in enumerate(sends):
+        chain.at(at, _at_the_ceiling(f"bad price{k}", prefix="4hC1n7oF"))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: sends}), minutes=8)
+    assert len(_starts(client, A, T0 + 100)) == S.FAIL_STREAK_MAX - 1
+    assert [e for e in rep["events"] if "rests until" in e and A[-6:] in e], rep["events"]
+
+
+def test_refusals_never_rest_a_sniper_armed_again_on_its_30_s_wait(monkeypatch):
+    """Review of 23 Nov: with a node 25 s behind, the chain's look answers too late and the sniper is armed again on
+    its 30 s wait; the refusal was then not read and counted toward the streak. It is read at that re-arm too."""
+    chain = WalletChain(lag=25)
+    sends = [T0 + 100, T0 + 160, T0 + 220, T0 + 280, T0 + 340]
+    for k, at in enumerate(sends):
+        chain.at(at, _at_the_ceiling(f"ceiling lag{k}"))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: sends}), minutes=8)
+    assert len(_starts(client, A, T0 + 100)) == len(sends)
+    assert not [e for e in rep["events"] if "rests until" in e], rep["events"]
+    lines = _lines(rep, A)
+    assert lines and all("refused at its market-cap ceiling" in e for e in lines), lines
+
+
+def test_a_failed_send_the_node_never_serves_holds_up_no_tick_and_counts(monkeypatch):
+    """Review of 23 Nov: each failed transaction was asked for under its own 10 s, for every sniper, every tick. It is
+    asked for only when its sniper is armed again after it, once, inside FAILED_LOOK_SECS for the whole look; one the
+    node does not serve in time is no refusal (it counts, as before) and the run goes on."""
+    import asyncio
+
+    import snipetech.service as S
+
+    monkeypatch.setattr(S, "FAILED_LOOK_SECS", 0.05)
+    chain = WalletChain()
+    sends = [T0 + 100, T0 + 160, T0 + 220, T0 + 280, T0 + 340]
+    names = [f"unserved{k}" for k in range(len(sends))]
+    for name, at in zip(names, sends, strict=True):
+        chain.at(at, _at_the_ceiling(name))
+    served = chain.get_transaction
+    asked: list[str] = []
+
+    async def get_transaction(signature):
+        if signature in {sig(n) for n in names}:
+            asked.append(signature)
+            await asyncio.Event().wait()  # never served
+        return await served(signature)
+
+    chain.get_transaction = get_transaction
+    rep, _client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: sends}), minutes=8)
+    assert rep["reason"].startswith("time limit"), rep["reason"]
+    assert [e for e in rep["events"] if "rests until" in e and A[-6:] in e], rep["events"]  # not told: counted
+    assert len(asked) == len(set(asked)) <= S.FAIL_STREAK_MAX  # each asked once, at its own re-arm

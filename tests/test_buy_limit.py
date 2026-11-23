@@ -147,20 +147,33 @@ def test_two_buys_of_the_wallet_with_different_limits_are_not_told_apart():
 QUOTE = json.loads((FIXTURES / "quote_mint_23nov.json").read_text())
 
 
+CEILING = json.loads((FIXTURES / "ceiling_23nov.json").read_text())
+
+
+def ceiling(prefix: str) -> dict:
+    (tx,) = [tx for sig, tx in CEILING["txs"].items() if sig.startswith(prefix)]
+    return tx
+
+
 def test_a_refusal_on_the_buys_own_limit_is_told_from_every_other_failed_send():
     """The runner rests a sniper after a streak of sends that bought nothing (service.FAIL_STREAK_*), but a refusal at
     the market-cap ceiling is the rule's own cost, which the paper charges at every such moment and copies on after
     (lab.REFUSED_SEND_SOL): it must be told from the sends no paper prices. By the program's own log against the buy's
     own least coins, never by the error's number alone: the two programs number their errors apart (6040 is
     PumpSwap's refusal on the least coins and pump.fun's "not enough SOL to cover rent"; 6042 is pump.fun's refusal and
-    PumpSwap's "only pump pools in mayhem mode")."""
-    assert refused_on_limit(smoke("4hC1n7oF"), ME) and refused_on_limit(smoke("4BUCDA8G"), ME)  # the curve's, 6042
-    assert refused_on_limit(smoke("3Tx3daSi"), ME)  # PumpSwap's, 6040
+    PumpSwap's "only pump pools in mayhem mode"). And only on a limit a coin can meet: OKTech's sends worked out at
+    $200 a SOL (23 Nov 03:17) asked for a limit of 23 SOL of market cap, under the 28 SOL every pump.fun coin starts
+    at, so they could only fail: no ceiling's cost, and they count as any other failure (review of 23 Nov)."""
+    assert refused_on_limit(ceiling("4QcT6KSC"), ME)  # PumpSwap's, 6040, at 62.3 SOL
+    assert refused_on_limit(ceiling("5DM3MZUJ"), ME)  # the curve's, 6042, at 63.3 SOL
+    assert refused_on_limit(smoke("4BUCDA8G"), ME)  # the curve's, at 64.6 SOL
+    assert not refused_on_limit(smoke("4hC1n7oF"), ME)  # the curve's, at 23.0 SOL: OKTech's wrong SOL price
+    assert not refused_on_limit(smoke("3Tx3daSi"), ME)  # PumpSwap's, at 23.0 SOL: the same
     assert not refused_on_limit(smoke("gXv9uz3u"), ME)  # a buy that landed
     assert not refused_on_limit(smoke("4YtcQUzh"), ME)  # a buy through two pools that failed on a program id
     assert not refused_on_limit(smoke("5ePdm8Lk"), ME)  # a sale that failed: its log has the two sides too
     ((sig, quoted),) = QUOTE["txs"].items()  # 16:33:01: a copy of a buy in a pool quoted in tokenized Nvidia (6009)
     assert sig.startswith("2TicE4GD") and quoted["meta"]["err"] == {"InstructionError": [4, {"Custom": 6009}]}
     assert not refused_on_limit(quoted, QUOTE["wallet"])
-    assert not refused_on_limit(smoke("4hC1n7oF"), "SomeoneElse1111111111111111111111111111111")  # not our send
+    assert not refused_on_limit(ceiling("4QcT6KSC"), "SomeoneElse1111111111111111111111111111111")  # not our send
     assert not refused_on_limit(None, ME)  # a transaction the node did not serve

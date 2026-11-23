@@ -40,6 +40,8 @@ from itertools import pairwise
 from typing import Any
 
 from .programs import (
+    INITIAL_VIRTUAL_SOL_RESERVES,
+    INITIAL_VIRTUAL_TOKEN_RESERVES,
     LAMPORTS_PER_SOL,
     PUMP_AMM_PROGRAM,
     PUMP_PROGRAM,
@@ -54,6 +56,8 @@ from .tx import _account_keys, ix_data
 from .txmeta import ATA_PROGRAM, TxMeta
 
 COINS = TOKEN_TOTAL_SUPPLY // 10**TOKEN_DECIMALS  # the billion coins of a pump.fun coin
+# the market cap, in SOL, a pump.fun coin starts at (its curve's first price): a limit under it can only fail
+START_MCAP_SOL = INITIAL_VIRTUAL_SOL_RESERVES / INITIAL_VIRTUAL_TOKEN_RESERVES * 10**TOKEN_DECIMALS  # 27.96
 # (the argument that holds the SOL, the argument that holds the coins) of each buy this code reads. SOL in and the
 # least coins out:
 EXACT_IN: dict[tuple[str, str], tuple[str, str]] = {
@@ -265,7 +269,10 @@ def refused_on_limit(tx: dict | None, wallet: str) -> bool:
     OKTech makes of a copy sniper's maxMcapUsd (`tx_limit` reads it and what the refused buy would have got). Told by
     the program's log against the buy's own least coins, never by the error's number: the two programs number their
     errors apart (6040 is PumpSwap's refusal on the least coins and pump.fun's "not enough SOL to cover rent"; 6042 is
-    pump.fun's refusal and PumpSwap's "only pump pools in mayhem mode"). False for every other send, landed or failed,
-    and for a transaction the node did not serve."""
+    pump.fun's refusal and PumpSwap's "only pump pools in mayhem mode"). And only on a limit a coin can meet: OKTech's
+    sends worked out at $200 a SOL asked for 23 SOL of market cap, under the START_MCAP_SOL every pump.fun coin
+    starts at, and could only fail (review of 23 Nov). False for every other send, landed or failed, and for a
+    transaction the node did not serve."""
     lim = tx_limit(tx, wallet)
-    return lim is not None and lim.would_get is not None
+    return (lim is not None and lim.would_get is not None
+            and lim.mcap_sol is not None and lim.mcap_sol >= START_MCAP_SOL)  # fmt: skip
