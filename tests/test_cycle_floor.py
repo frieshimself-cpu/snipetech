@@ -27,7 +27,7 @@ def _coin(value=5.0):
 
 def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, sweeps=None,
          spent=None, sweep_fails=False, payload=None, tape=(), db_dir=None, others=(), launches=(), before=None,
-         sweep_answer=None, hang_at=None, hung=None, seller=None, sold_amounts=None, **kw):  # fmt: skip
+         sweep_answer=None, hang_at=None, hung=None, seller=None, sold_amounts=None, chain=None, **kw):  # fmt: skip
     """The runner over two copy snipers on the fake clock, with `sol(now)` SOL in the wallet, the coins `coins(now)`
     lists (priced) and `unpriced(now)` lists (not on the tape), `wsol(now)` wrapped SOL, and the owner's /stop from
     `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time), and each fails when
@@ -39,7 +39,9 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     the store just before the run (what an earlier run left in it). `sweep_answer(mint)`: what the run's own sale
     answers (a sale that went out, by default). `hang_at`: the first balance read from then never answers (`hung`
     says it came). `seller`: the selling key's wallet (the run's, by default). `sold_amounts`: each sale's coin and
-    the token amount it was asked to sell (None: the whole holding)."""
+    the token amount it was asked to sell (None: the whole holding). `chain`: the wallet's transactions as the RPC
+    lists and serves them (a tests/chain.py Chain with `slot_at(now)`; it is handed the clock), and the node's slot on
+    each reading of the SOL; without one the RPC lists none, as before."""
     from snipetech.models import Trade
 
     clock, flag = {"t": T0}, {"stop": False}
@@ -75,6 +77,15 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
                             unpriced=unpriced, on_sleep=on_sleep)  # fmt: skip
     if seller is not None:
         monkeypatch.setattr(svc, "selling_wallet", lambda: seller)
+    if chain is not None:
+        chain.clock, plain_call = clock, svc._rpc.call
+
+        async def call(method, params):
+            out = await plain_call(method, params)
+            return out | {"context": {"slot": chain.slot_at(clock["t"])}} if method == "getBalance" else out
+
+        svc._rpc.call = call
+        svc._rpc.get_signatures, svc._rpc.get_transaction = chain.get_signatures, chain.get_transaction
     box["store"] = store
     if db_dir is not None:  # a database on disk: the operator's folder beside it holds the runner's lock
         svc.cfg.storage.db_path = str(db_dir / "snipetech.db")
