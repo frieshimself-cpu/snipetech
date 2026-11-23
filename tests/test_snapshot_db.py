@@ -219,12 +219,35 @@ def test_a_copy_is_taken_every_three_hours_from_the_start_of_the_last_one(tmp_pa
         first = snapshot_db(db, every_secs=SNAPSHOT_EVERY_SECS, now=1_000_000.0)
         assert not first.get("skipped")
         st.set_label("W2", "two", "kol")
-        early = snapshot_db(db, every_secs=SNAPSHOT_EVERY_SECS, now=1_000_000.0 + SNAPSHOT_EVERY_SECS - 60)
+        early = snapshot_db(db, every_secs=SNAPSHOT_EVERY_SECS, now=1_000_000.0 + SNAPSHOT_EVERY_SECS - 3600)
         assert "3 h" in early["skipped"] and early["path"] == first["path"]
         assert Store(first["path"], immutable=True).labels("kol") == {"W1": "one"}  # the copy was left alone
         due = snapshot_db(db, every_secs=SNAPSHOT_EVERY_SECS, now=1_000_000.0 + SNAPSHOT_EVERY_SECS)
         assert not due.get("skipped")
         assert Store(first["path"], immutable=True).labels("kol") == {"W1": "one", "W2": "two"}
+    finally:
+        st.close()
+
+
+def test_the_round_seconds_short_of_three_hours_takes_the_copy(tmp_path):
+    """23 Nov: the operator's round starts `snapshot-db` every 30 minutes (operator/standin.py) and a copy's read
+    begins a second after its round did, so the round three hours on came that second short: "the copy is 3.0 h old"
+    at 19:30:15, and the copy of 16:30 was followed only at 20:01 (one every 3.5 hours, not 3). A copy is due once it is
+    within SNAPSHOT_SLACK_SECS of its three hours, less than the rounds' 30 minutes, so no period takes two."""
+    from snipetech.infra.snapshot_db import SNAPSHOT_EVERY_SECS, SNAPSHOT_SLACK_SECS
+
+    assert 0 < SNAPSHOT_SLACK_SECS < 30 * 60
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    try:
+        st.set_label("W1", "one", "kol")
+        assert not snapshot_db(db, every_secs=SNAPSHOT_EVERY_SECS, now=1_000_001.0).get("skipped")
+        st.set_label("W2", "two", "kol")
+        half_hour_on = snapshot_db(db, every_secs=SNAPSHOT_EVERY_SECS, now=1_000_000.0 + 30 * 60)
+        assert "old" in half_hour_on["skipped"]
+        round_after = snapshot_db(db, every_secs=SNAPSHOT_EVERY_SECS, now=1_000_000.0 + SNAPSHOT_EVERY_SECS)
+        assert not round_after.get("skipped")
+        assert Store(round_after["path"], immutable=True).labels("kol") == {"W1": "one", "W2": "two"}
     finally:
         st.close()
 

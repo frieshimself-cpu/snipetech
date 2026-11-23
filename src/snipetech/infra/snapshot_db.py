@@ -29,6 +29,11 @@ LOCK_SUFFIX = ".copy.lock"
 # held the WAL back for as long, and no reader needs the last hour: a lab reads days of tape, the discovery was written
 # for a tape "up to two hours old", and the forward paper test, measure and the book read the live file.
 SNAPSHOT_EVERY_SECS = 3 * 3600
+# The operator's round starts `snapshot-db` every 30 minutes (operator/standin.py) and a copy's read begins a second
+# or so after its round did, so the round three hours on comes that second short of SNAPSHOT_EVERY_SECS: a copy is due
+# once it is within this much of its time (23 Nov: a strict comparison left each copy to the round after, one every
+# 3.5 hours). Less than the rounds' 30 minutes, so no period takes two copies.
+SNAPSHOT_SLACK_SECS = 10 * 60
 # deploy/systemd/snipetech-snapshot.service: TimeoutStartSec=20m. The bare command (the timer's) is held to it; a run
 # starts a copy only when the last copy's time and a quarter more fit the time it was given.
 UNIT_LIMIT_SECS = 20 * 60
@@ -138,7 +143,7 @@ def _snapshot(db: Path, target: Path, disk_free, every_secs: float, limit_secs: 
         p.unlink(missing_ok=True)
     _clear_dead_runs(db)
     last = last_copy(db)
-    if every_secs and last and now - float(last["started"]) < every_secs:
+    if every_secs and last and now - float(last["started"]) < every_secs - min(SNAPSHOT_SLACK_SECS, every_secs / 4):
         return {"path": str(target), "skipped": f"the copy is {_mins(now - float(last['started']))} old; a new one "
                 f"every {every_secs / 3600:g} h (--force copies now)"}  # fmt: skip
     took = float(last.get("secs") or 0)
