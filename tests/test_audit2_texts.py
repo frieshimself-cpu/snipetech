@@ -145,3 +145,47 @@ def test_the_agents_are_told_what_the_snapshots_paper_rows_and_a_report_rows_mar
     report = inspect.getsource(paper.report)
     assert '"outside_model"' in report and '"outside_why"' in report and '["refuted"]' in report
     assert set(paper._outside_count([])) == {"trades", "sol", "of"}
+
+
+def test_the_trades_table_says_what_a_tip_of_nothing_and_a_backfilled_place_are():
+    """Round 1 (tape#4, tape#3). trades.tip counts the trade transaction's own transfers, and the tape receives only
+    transactions that touch pump.fun, LaunchLab or a PumpSwap pool: a bundle's tip paid in a transaction of its own
+    never reaches it, and a buy near the front with tip 0 read as a free place. And until the fix of 22 Nov, deployed
+    23 Nov, a backfill wrote a coin's own order in the block over the place the recorder had written (on the server,
+    slot 472096184: coin 4RJjFrkf's three trades at pos 0, 1, 2, every other coin's at 58 to 237). The bid tables'
+    reading carries the first caveat since round 1; the table an agent's query reads carried neither."""
+    from snipetech.analysis.place_bids import TIP_READING
+
+    words = T.SQL_TABLES["trades"]
+    assert "tip is the trade's own transaction's alone" in words
+    assert "tip 0 near the front of a block means not known, not free" in words
+    assert "never reaches the tape" in words and "never reaches the tape" in TIP_READING  # one caveat, both places
+    assert "pos can be the coin's own order in the block (0, 1, 2), not a block place" in words
+
+
+def test_read_file_says_what_comes_back_of_a_file_too_long_to_give_whole():
+    """Round 1 (ops#6): a file longer than read_file hands out comes back as its end, cut at a whole line, with no
+    line that says so; "0: the whole file" was all an agent was told."""
+    text = _tools_text()
+    assert f"of a file over {T.READ_FILE_CHARS:,} characters its end, from a whole line" in text
+    assert "of one written newest first its start, with a line that says so" in text
+
+
+def test_the_sends_help_says_which_failed_sends_its_fees_cover():
+    """Round 1 (tools#0): sends fetches only the failed sends that landed within 3 slots of a leader's buy, so fee_sol
+    and priority_sol cover those and not every failed send; the result's failed.note says what each sum covers. The
+    help still said "what the failed ones paid"."""
+    from snipetech.analysis.sends import FEES_NOTE
+
+    text = _tools_text()
+    assert "what its failed sends near those buys paid (failed.note says what each sum covers" in text
+    assert "what the failed ones paid" not in text and "fetched sends only" in FEES_NOTE
+
+
+def test_a_dated_report_of_the_research_record_settles_an_angle_as_a_round_does():
+    """Round 1 (docs#1): the research record the agents are sent carries the dated reports beside the rounds (the
+    dip-buys refutation of 12 Nov among them); the rule against testing a refuted angle again named rounds only."""
+    for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM, *P.ROLE_SYSTEM.values()):
+        text = _flat(system)
+        assert "Do not re-test an angle a round refuted" in text
+        assert "a dated report of the record counts as a round" in text

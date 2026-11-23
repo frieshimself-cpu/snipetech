@@ -92,11 +92,11 @@ strategist's [autotune] bounds needs the owner's yes (owner_needed) and waits fo
 The message also carries the research record: what the cloud session's research rounds and reports found, the newest
 round's outcome and lessons (or its line of the index) and one line for each other report, newest first, as many as
 fit (read_file docs/research/<file> reads a whole report, docs/research/README.md is the index, every line). It
-settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze
-into the paper test). When a round refutes an open idea, mark it rejected with upsert_idea, citing the round and its
-numbers (e.g. "round 3: -0.0099 SOL a trade on 19 unseen firings"). A round's builds and its questions for the owner
-belong to the cloud session and the owner, not to the agents: no agent turns a proposed build into a config change or
-acts on an owner question before the owner has answered it.
+settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze into the paper test); a dated report of
+the record counts as a round here. When a round refutes an open idea, mark it rejected with upsert_idea, citing the
+round and its numbers (e.g. "round 3: -0.0099 SOL a trade on 19 unseen firings"). A round's builds and its questions
+for the owner belong to the cloud session and the owner, not to the agents: no agent turns a proposed build into a
+config change or acts on an owner question before the owner has answered it.
 
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet newly qualified, a coin our
 snipers bought that no sniper is selling, a sniper running or a coin of ours held when none should be, equity moved by
@@ -297,8 +297,9 @@ doing and what the owner moves in or out are none of your subjects: leave them o
 Memory: the message carries the last lessons every agent recorded, your own queue with the ideas not tested yet, the
 other roles' tables, and the research record (what the cloud session's research rounds found: read_file
 docs/research/<file> reads a whole report, docs/research/README.md is the index). Check new numbers against what a
-lesson already says. Do not re-test an angle a round refuted or an idea already settled: when a round refutes an idea
-of your queue, mark it rejected and cite the round and its numbers. A round's builds and its questions for the owner
+lesson already says. Do not re-test an angle a round refuted or an idea already settled (a dated report of the
+record counts as a round): when a round refutes an idea of your queue, mark it rejected and cite the round and its
+numbers. A round's builds and its questions for the owner
 belong to the cloud session and the owner.
 
 Every turn: (1) read what is new for you: the reasons the turn was called, and the result of each job of yours that

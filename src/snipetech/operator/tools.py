@@ -54,10 +54,14 @@ def _iso(ts: float) -> str:
 SQL_TABLES: dict[str, str] = {
     "trades": "one row per trade on a pump.fun or LaunchLab curve or a PumpSwap pool. user = the wallet that traded; "
     "quote = lamports of SOL before fees (quote / 1e9 = SOL); base = raw token units; fee = lamports; ts = unix "
-    "seconds; slot = the block, pos = the transaction's place in it; venue = 'curve' (pump.fun), 'amm' (PumpSwap) or "
+    "seconds; slot = the block, pos = the transaction's place in it (on a coin a backfill fetched before 23 Nov, "
+    "pos can be the coin's own order in the block (0, 1, 2), not a block place); venue = 'curve' (pump.fun), 'amm' "
+    "(PumpSwap) or "
     "'launchlab'; q_after / b_after = the reserves after the trade (their ratio is the price); sig = the transaction; "
     "priority, tip = what the transaction bid for its place, in lamports (the same on each trade of one sig), and "
     "payer = who paid its fee when that was not the trader: all three NULL (not known) on rows before 11 Nov 2026. "
+    "tip is the trade's own transaction's alone: a bundle can pay its tip in a transaction of its own, which touches "
+    "no pump.fun program and never reaches the tape, so tip 0 near the front of a block means not known, not free. "
     "tip counts transfers to a fixed list of landing services, and (14 Nov) to the tip accounts the tape learned "
     "from amounts once those are applied (table pay_dests): tip_learned = that learned part in lamports, so "
     "tip - coalesce(tip_learned, 0) is the part paid to the documented services. tip_learned NULL = the row was "
@@ -1527,8 +1531,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         Args:
             path: e.g. reports/2026-11-06/lab-0-start.txt, operator/candidates.json or
                 docs/research/2026-11-07-round-3.md.
-            tail: Only the last this many lines (0: the whole file). For a file that only grows, such as
-                operator/notes.md, the last 60 lines are what was written lately.
+            tail: Only the last this many lines (0: the whole file; of a file over 200,000 characters its end, from
+                a whole line; of one written newest first its start, with a line that says so). For a file that only
+                grows, such as operator/notes.md, the last 60 lines are what was written lately.
         """
         if role is not None and str(path) in roles.ROLE_DOCS.get(role, ()):  # a role's own reading in the checkout
             p = Path(jobs.repo) / str(path)
@@ -1646,9 +1651,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         bids and exits (6Z91). ["sends", "<wallet>", "--leader", "<wallet>", "--json"] reads a bot's sends that failed on
         chain, which the tape does not hold (it holds the trades that happened; 22 Nov, your idea I605): of its
         leaders' first buys of 1.9 SOL or more ("--min-sol"), how many it tried, landed right behind ("adjacent"),
-        behind other buyers in the block, later, tried with failed sends only, or did not try, and what the failed ones
-        paid (a failed send pays its priority; its tip is undone). It costs Helius credits: one a thousand signatures
-        and one a failed send that landed within 3 slots of such a buy, the only ones that can be tries
+        behind other buyers in the block, later, tried with failed sends only, or did not try, and what its failed
+        sends near those buys paid (failed.note says what each sum covers; a failed send pays its priority; its tip
+        is undone). It costs Helius credits: one a thousand signatures and one a failed send that landed within 3
+        slots of such a buy, the only ones that can be tries
         ("--max-credits", 5000 unless told; 200,000 at most and "--hours" 336 at most from an agent, and never more
         than the backfills and the earlier runs left of the month; a buy whose sends the limit left unread is counted
         "unread", not untried). A send that never landed (dropped, or a bundle that lost its auction) leaves nothing on
