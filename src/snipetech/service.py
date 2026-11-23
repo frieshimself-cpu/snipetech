@@ -1938,6 +1938,7 @@ class Service:
         # wallet bought it again: repeats are in the paper) is a new holding, a new buy, with its own sweep timer
         held_since: dict[str, float] = {}
         arrivals, last_arrival = 0, 0.0  # holdings seen begin since the start (each one a buy), and the latest
+        arrived: list[float] = []  # when each of them began: one told as the owner's own later is taken out again
         empty_n = 0  # readings in a row with nothing held and no buy on its way: a re-arm waits for two
         # when the SOL last fell with no coin seen held: a buy on its way (FRESH_HOLD_SECS)
         fresh_at: float | None = None
@@ -1991,7 +1992,7 @@ class Service:
             the owner's own coins gone since the last reading, each with the value the floor counted). Whose a coin is:
             measure/ours.RunCoins, by the buy since the coin first showed (or since `since`). 22 Nov: the owner buys,
             sells and sends coins by hand in this wallet while a run is on; the run sold, counted and waited on them."""
-            nonlocal arrivals
+            nonlocal arrivals, last_arrival
             mints = {str(h["mint"]) for h in held_all if h.get("mint")}
             for m in [m for m in owner_miss if m in mints]:  # back: one reply had left it out
                 del owner_miss[m]
@@ -2045,8 +2046,13 @@ class Service:
                         f"the floor counts it at {v:.4f} SOL while it is held")  # fmt: skip
                     continue
                 if m in held_since:  # counted as the run's while nobody could tell: it was no buy of the run's
-                    del held_since[m]
+                    came = held_since.pop(m)
                     arrivals = max(0, arrivals - 1)
+                    # nor a buy of the snipers armed before it: its arrival re-arms none of them (23 Nov audit: the
+                    # owner's hand buy, once told as theirs, had every sniper stopped and started as after a fill)
+                    if came in arrived:
+                        arrived.remove(came)
+                    last_arrival = max(arrived, default=0.0)
                     if first_seen.get(m, -1.0) >= sight[m]:
                         del first_seen[m]
                 log(f"{m} is the owner's own coin (the buy that brought it in paid none of this run's snipers' fees): "
@@ -2238,6 +2244,7 @@ class Service:
                     if m not in held_since:
                         held_since[m] = now
                         arrivals, last_arrival = arrivals + 1, now
+                        arrived.append(now)
                 for m in [m for m in held_since if m not in mints_now]:
                     del held_since[m]
                 if held:
@@ -2254,7 +2261,13 @@ class Service:
             return held
 
         def fills_now() -> int:
-            return max(fills_since(t0), arrivals, len(first_seen))
+            """The run's fills so far: the larger of its buys on the tape and the coins seen in the wallet. A coin held
+            now that nobody can tell yet (`sort_coins`: it may be the owner's own buy of seconds ago) is in neither
+            count of the wallet's coins until it is told as the run's (23 Nov audit: a run one fill short of its cap
+            ended on the owner's hand buy); one that left before anybody could tell counts, as before."""
+            unsure = [m for m in held_since if coins.known(m) is None]
+            new = sum(1 for m in unsure if first_seen.get(m, -1.0) >= sight.get(m, 0.0))  # first seen in this holding
+            return max(fills_since(t0), arrivals - len(unsure), len(first_seen) - new)
 
         def run_result(held_all: list[dict], now: float) -> float | None:
             """The run's own result in SOL since its start by its trades on the tape: what its buys paid (the quote,
@@ -2898,6 +2911,7 @@ class Service:
                     if m not in held_since:  # a holding begins: a buy (the same coin again is a new one)
                         held_since[m] = now_t
                         arrivals, last_arrival = arrivals + 1, now_t
+                        arrived.append(now_t)
                         if not pend_before and not fell_now:  # its SOL left long before and moved the floor
                             undo_late(m, now_t)
                             fell_now = True  # one move for one buy

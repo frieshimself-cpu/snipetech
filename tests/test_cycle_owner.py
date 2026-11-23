@@ -808,3 +808,57 @@ def test_a_coin_nobody_can_tell_yet_refuses_the_start_and_says_to_start_again(mo
     with pytest.raises(SystemExit, match="not cycling") as refused:
         _run(monkeypatch, lambda now: 9.0, coins=lambda now: [_coin(OURS, 1.0)], payload=FEES, tape=[_copy(T0 - 600)])
     assert "cannot be told yet" not in str(refused.value)
+
+
+# -- round 3 of the audit (23 Nov): a coin nobody can tell yet is no fill of the run's until it is told as one ---------
+
+
+def _hand_buy_told_late(monkeypatch, **kw):
+    """The owner buys a coin by hand 100 s in; the recorder writes the buy 40 s late, so for 40 s nothing tells whose
+    coin it is (since round 2 a hand buy is nobody's for up to half a minute even with the tape current: the chain
+    must settle before it is told)."""
+    return _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 8.0, payload=FEES,
+                coins=lambda now: [_coin(OWN, 2.0)] if now >= T0 + 102 else [], tape=[(T0 + 140, _hand(T0 + 100))],
+                minutes=6, **kw)  # fmt: skip
+
+
+def test_a_coin_nobody_can_tell_yet_never_ends_a_run_one_fill_short_of_its_cap(monkeypatch):
+    """While it was held, a coin nobody could tell counted as a fill: a run with one fill left under --max-fills
+    ended on the owner's own buy ("cap reached: 1 fills since start"). Such a coin is in none of the cap's counts
+    until it is told as the run's; held, it still holds every re-arm back and is never sold."""
+    sweeps = []
+    rep, client = _hand_buy_told_late(monkeypatch, max_fills=1, sweeps=sweeps, sweep_after=20, rearm_after=60)
+    assert rep["reason"].startswith("time limit"), rep["reason"]
+    assert rep["fills"] == 0 and rep["owner_coins"] == [OWN] and sweeps == []
+    assert _starts(client, T0 + 105, T0 + 140) == []  # nothing armed again while nobody could tell
+
+
+def test_a_coin_told_as_the_runs_counts_for_the_cap(monkeypatch):
+    """The other side: the recorder writes the run's own copy 40 s late. Once its buy is read at the snipers' fees the
+    coin is a fill, and the cap of one ends the run."""
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0, payload=FEES,
+                        coins=lambda now: [_coin(OURS, 1.0)] if now >= T0 + 102 else [],
+                        tape=[(T0 + 140, _copy(T0 + 100))], minutes=6, max_fills=1)  # fmt: skip
+    assert rep["reason"].startswith("cap reached: 1 fills"), rep["reason"]
+    assert rep["fills"] == 1 and rep["owner_coins"] == []
+
+
+def test_a_coin_that_left_before_anybody_could_tell_still_counts_as_before(monkeypatch):
+    """A coin the tape does not follow, bought and sold within one holding with no buy of it read: it may have been a
+    copy, so once it has left it counts for the cap as it always did (the recorder missing our buys: a probe made
+    118 buys under a cap of 10)."""
+
+    def unpriced(now):
+        return [{"mint": "OffTape", "amount": 1.0}] if T0 + 102 <= now < T0 + 115 else []
+
+    rep, _client = _run(monkeypatch, lambda now: 10.0, payload=FEES, minutes=6, max_fills=1, unpriced=unpriced)
+    assert rep["reason"].startswith("cap reached: 1 fills"), rep["reason"]
+
+
+def test_the_owners_coin_once_told_starts_no_sniper_again(monkeypatch):
+    """While nobody could tell it, the owner's hand buy counted as a buy of the snipers armed before it; told as the
+    owner's, its fill was taken back but its arrival was not, and both snipers were stopped and started as after a
+    fill: two needless re-arms after each hand buy of the owner's. The owner's coin is no reason to touch a sniper."""
+    rep, client = _hand_buy_told_late(monkeypatch, rearm_after=1800)
+    assert not [(kind, t - T0) for kind, _i, t in client.timed if T0 + 10 < t < T0 + 350], client.timed
+    assert rep["restarts"] == 0 and rep["owner_coins"] == [OWN] and rep["fills"] == 0
