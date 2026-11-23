@@ -2679,6 +2679,18 @@ class Service:
                 log(f"the wrapped SOL could not be read ({type(exc).__name__}): counted as 0")
                 return 0.0
 
+        async def wrapped_read() -> float | None:
+            """The wallet's wrapped SOL for the floor, or None when it cannot be read (said): a refused read is no
+            reading there. 23 Nov 18:18:45: counted as 0 beside plain SOL that is always under the floor while OKTech
+            keeps its wrapped SOL beside the snipers, one refused read made "the wallet reads 0.2630 SOL, under the
+            floor", and a second in a row would have ended the test as an emergency."""
+            try:
+                return await bounded(self.wsol_balance(address))
+            except Exception as exc:  # noqa: BLE001 - said; the reading then counts neither way
+                log(f"the wrapped SOL could not be read ({type(exc).__name__}): this reading says nothing about the "
+                    "floor and arms nothing")  # fmt: skip
+                return None
+
         async def settled(read):
             """A read at the start, tried three times two seconds apart: the moment the owner's SOL lands is no moment
             for one refused RPC call to end the run."""
@@ -3084,11 +3096,15 @@ class Service:
                 # the tape has not priced the wallet's worth is unknown, and nothing is re-armed while it is held anyway
                 priced = sum(float(h["value_sol"]) for h in held if h.get("value_sol") is not None)
                 priced += sum(owner_val.values())  # the owner's own coins at their worth when first known as theirs
-                under, eq = False, b + priced
+                under, eq, unread = False, b + priced, False
                 # no reading counts while the SOL that left may yet show as a coin, a coin held or not
                 if not waiting and not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
-                    eq += await wrapped_sol()
-                    under = eq < floor_sol
+                    w_floor = await wrapped_read()
+                    if w_floor is None:  # unknown, not 0: this reading arms nothing and counts neither way (below)
+                        unread = True
+                    else:
+                        eq += w_floor
+                        under = eq < floor_sol
                 # the run's own trades on the tape, beside the wallet's equity: the owner's moves are in none of it
                 res = run_result(held_all, now_t)
                 if res is not None and res < -loss_cap:
@@ -3102,6 +3118,8 @@ class Service:
                         "lose: no re-arm; the run ends if the next reading agrees")  # fmt: skip
                     continue
                 tape_under_n = 0
+                if unread:  # the wrapped SOL could not be read: nothing told about the floor, `under_n` as it was
+                    continue
                 if under:
                     under_n += 1
                     if under_n >= FLOOR_READINGS:

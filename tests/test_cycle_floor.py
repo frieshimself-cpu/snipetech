@@ -198,6 +198,25 @@ def test_wrapped_sol_counts_for_the_floor(monkeypatch):
     assert rep["reason"].startswith("time limit"), rep["reason"]
 
 
+def test_a_wrapped_sol_the_rpc_cannot_read_is_no_reading_under_the_floor(monkeypatch):
+    """23 Nov 18:18:45, the 0.2 SOL test: the wallet's plain SOL (0.263) is always under the run's floor (0.320) while
+    OKTech keeps 0.22 wrapped beside the snipers, so every reading also reads the wrapped SOL. One refused read
+    counted it as 0: "the wallet reads 0.2630 SOL, under the floor", and a second refused read in a row would have
+    ended the test as an emergency. A wrapped SOL that cannot be read says nothing about the floor: that reading arms
+    nothing and counts neither way, and the run goes on to its end."""
+
+    def wsol(now):
+        if T0 + 100 <= now < T0 + 160:  # the RPC refuses every read for a minute
+            raise RuntimeError("RpcError: the node refused the request")
+        return 0.22
+
+    rep, client = _run(monkeypatch, lambda now: 0.263, wsol=wsol, floor=0.3203, minutes=4)
+    assert rep["reason"].startswith("time limit"), rep["reason"]
+    assert not [e for e in rep["events"] if "under the floor" in e], rep["events"]
+    assert any("could not be read" in e for e in rep["events"])
+    assert not [t for kind, _i, t in client.timed if kind == "start" and T0 + 100 < t < T0 + 160]  # nothing armed then
+
+
 def test_a_real_loss_under_the_floor_still_ends_the_run_and_arms_nothing_after_it(monkeypatch):
     """The copy sold at a loss that takes the wallet under the floor: the two readings agree, the run ends, and no
     sniper is armed again after the sale."""
