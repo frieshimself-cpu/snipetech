@@ -4,7 +4,7 @@ The log of every live test, newest first: each entry's fills are live, with the 
 paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every
 number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
-## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day (written 23 Nov 09:12 UTC, before anything is started)
+## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day: STARTED 23 Nov 09:11 UTC (runner 20261123-091103-3940b3; written 09:10 UTC, before anything was started)
 
 **Why this and not the 1 SOL day.** The owner, 23 Nov ~09:08 UTC: "Left .7 in the wallet for testings". So the 1 SOL day below waits, and the same rule runs now as a test at the most a test may buy. **Under which yes:** the standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet). At 0.2 SOL the copy pays its bid (0.0031 SOL) as 1.5 % of its size, near the paper's economics, where smoke tests at 0.02 paid 15 %: it measures whether the rule makes money live, not only whether the machinery works.
 
@@ -14,7 +14,9 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
 **Stop rules.** 0.3 SOL lost by the run's own trades; plain SOL under 0.22 at a re-arm (one 0.2 SOL curve copy's plain SOL: OKTech keeps 0.22 wrapped beside the snipers); 2 of the last 3 placed copies behind no buy of the copied wallet or more than 8 buyers behind; 24 hours; 100 fills; the owner's /stop; the wallet-wide guard; never a sniper stopped while it holds a coin; a coin OKTech leaves unsold is sold by the run 20 s after it shows; an own-launch or bait copy is sold at once.
 
-## The small-coin copy behind Cented, Decu and Yugi at 1 SOL: PREPARED 23 Nov, WAITS (the owner left 0.7 SOL for testing at ~09:08: the 0.2 SOL test above runs instead); its two idle snipers of 09:02 deleted for the test's (written 23 Nov 03:00 UTC, before anything is made; the third wallet and the run's own fees added 05:03, the wallets' own launches 05:13, the ceiling labs, the snipers and the start 09:05)
+**Started.** The snipers were made at 09:10:4x (Cented 6b040315ca420f45d7755bb3, Decu 6b040315ca420f45d7755bbf, Yugi 6b040315ca420f45d7755bcc: 0.2 SOL a copy, the ceiling $4,700 at the server's SOL price) and armed at 09:11:05-06; OKTech wrapped 0.166 SOL at the start (its top-up to 1.1 times the buy). The 1 SOL entry's two idle snipers (Cented 6b04013dca420f45d77517d2, Decu 6b04013dca420f45d77517de) stay idle for that day; smoke test 4's sniper behind Yugi stays idle and unused. By 10:58 no copy: Yugi's sniper sent two copies (09:20, 09:29), both refused by the ceiling and armed again within 30 s; Cented and Decu bought nothing of 2 SOL or more (their hours are 14:00-01:00 UTC).
+
+## The small-coin copy behind Cented, Decu and Yugi at 1 SOL: PREPARED 23 Nov, WAITS (the owner left 0.7 SOL for testing at ~09:08: the 0.2 SOL test above runs instead); its two idle snipers of 09:02 wait for it (written 23 Nov 03:00 UTC, before anything is made; the third wallet and the run's own fees added 05:03, the wallets' own launches 05:13, the ceiling labs, the snipers and the start 09:05)
 
 **Under which yes.** The owner, 23 Nov ~00:44 UTC: "Aight, I put 8 sol in the wallet, when everything is down to perfection run it". Read as on 22 Nov: the ladder's own step (CLAUDE.md rule 1: the sniper wallet, 1 SOL a copy, a day, stopped at 2 SOL lost) and nothing bigger; 2 SOL copies only on the owner's word, after a day that makes money. "Down to perfection": it starts on the code of the audit's two rounds, after the smoke test below.
 
