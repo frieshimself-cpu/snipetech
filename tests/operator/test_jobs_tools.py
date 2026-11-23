@@ -1839,3 +1839,11 @@ def test_the_scout_and_the_fee_analyst_are_told_what_a_run_of_sends_may_ask_for(
         text = _help(tools(role)["start_job"])
         assert f"{J.AGENT_SENDS_CREDITS:,} at most" in text and f'"--hours" {J.AGENT_SENDS_HOURS:g} at most' in text
         assert "left of the month" in text
+
+
+def test_the_scout_is_told_that_its_screens_keep_a_wallets_name_of_another_kind(rolebox):
+    """Review of 22 Nov (agents#4): early-leaders and fomo-wallets with --label leave a wallet named otherwise (a KOL,
+    the owner's tracked list) its name and list it under "kept"; it goes to qualify all the same."""
+    tools, _, _ = rolebox
+    text = _help(tools("scout")["start_job"])
+    assert 'With either, a wallet that has a name of another kind keeps it ("kept") and goes to qualify too' in text

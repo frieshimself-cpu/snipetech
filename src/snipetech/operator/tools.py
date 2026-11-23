@@ -1691,7 +1691,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         ["leaders-of", "<wallet>", "--json"], which lists the
         wallets a copy bot buys right after (6Z91). ["early-leaders", "--hours", "72", "--json"] ranks wallets like 7aPo (their buys in a coin's first 20
         slots, copied 3 trades behind, 30 s); "--label", "10" labels the best as cand for qualify.
-        ["fomo-wallets", "--days", "3", "--label", "150", "--json"] labels the busiest FOMO app traders cand. A
+        ["fomo-wallets", "--days", "3", "--label", "150", "--json"] labels the busiest FOMO app traders cand. With
+        either, a wallet that has a name of another kind keeps it ("kept") and goes to qualify too. A
         strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,
         whale, kol, momentum, hunt or mig, with its numbers), refused at once with its reason, before any job starts,
         when a number is out of range or OKTech could not run it (a hunt's sol and dev_max are whole numbers). Hunt

@@ -76,6 +76,37 @@ def test_cli_early_leaders_prints_the_ranking_as_json(tmp_path, capsys):
         st.close()
 
 
+def test_a_named_early_leader_keeps_its_name_and_still_goes_to_qualify(tmp_path, capsys):
+    """Review of 22 Nov (agents#4, the same hole through another command): `early-leaders --label N` wrote kind cand
+    over whatever label a wallet had, so a wallet of the owner's tracked list or a KOL that buys early left the groups
+    wallet, kol and big for every lab and forward rule. A wallet named otherwise keeps its name, as a pick does, and
+    still goes to qualify's queue; a wallet with no name is labelled cand as before."""
+    import json
+
+    from snipetech import cli
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    try:
+        for i in range(21):
+            _coin(st, i, "early", True)
+            _coin(st, 50 + i, "early-two", True)
+        st.set_label(addr("early"), "Gake Side", "wallet", "file")
+    finally:
+        st.close()
+    argv = ["--db", str(db), "early-leaders", "--hours", "24", "--min-n", "20", "--label", "2", "--json"]
+    assert cli.main(argv) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["labelled"] == [addr("early-two")] and out["kept"] == [{"wallet": addr("early"), "kind": "wallet"}]
+    st = Store(db)
+    try:
+        assert st.label_kinds()[addr("early")] == ("wallet", "Gake Side") and addr("early-two") in st.labels("cand")
+        queued = {c["wallet"] for c in st.candidates() if "early-leaders" in c["sources"]}
+        assert queued == {addr("early"), addr("early-two")}
+    finally:
+        st.close()
+
+
 def test_a_copy_is_charged_pump_funs_fees_and_two_transactions(tmp_path, capsys):
     """11 Nov: the ranking took 0.009 SOL off each 0.2 SOL copy: two transactions, and nothing for pump.fun's fee (1.25 %
     each way, 0.005 SOL on that copy). Every mean was 0.005 SOL a trade too kind. The command charges the whole round

@@ -813,10 +813,11 @@ class Service:
         if refresh:
             await self.ingestor.backfill_address(wallet, max_sigs=self.cfg.copy.max_signatures, since_ts=since)
         if auto_smart:
-            # wallets with consistently profitable round trips in the same data, as a "smart money" factor
+            # wallets with consistently profitable round trips in the same data, as a "smart money" factor; a wallet
+            # named otherwise (a KOL, the owner's tracked list) keeps its name
             for r in self.discover_wallets(days, 5, auto_smart):
                 if r["wallet"] != wallet and (r.get("ev_lower") or 0) > 0:
-                    self.store.set_label(r["wallet"], "smart", "smart", "auto")
+                    self.store.set_label_unless_named(r["wallet"], "smart", "smart", "auto")
         if backfill_entries:
             # entries outside the tape: fetch each token's market for `entry_window` seconds before the entry
             spans = self.store.tape_spans()
