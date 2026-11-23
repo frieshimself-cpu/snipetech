@@ -558,3 +558,21 @@ def test_a_refusal_between_failures_of_another_kind_neither_adds_to_their_streak
     assert len(again) == len(kinds) - 1, [t - T0 for t in again]  # all but after the third failure of the other kind
     rest = [e for e in rep["events"] if "rests until" in e and A[-6:] in e]
     assert rest and f"{S.FAIL_STREAK_MAX} sends in a row bought nothing" in rest[0], rep["events"]
+
+
+def test_after_a_fill_the_sniper_oktech_reads_spent_is_armed_again_first(monkeypatch):
+    """23 Nov 14:39:30, fill 3: Yugi's sniper bought and sold at 14:39:42, and the runner armed all three snipers again
+    one a tick in their fixed order, Cented's and Decu's (which had bought nothing and were still armed) first: Yugi's
+    came back at 14:40:12, the moment of his next buy, which the paper took and the live sniper missed. A fill cannot
+    be told to one sniper by the tape, but OKTech reads the one that bought finished while the others still run: that
+    one is armed again first."""
+    from tests.test_cycle_floor import _bought_at_100
+    from tests.test_cycle_floor import _coin as held_coin
+
+    def coins(now):  # the copy is held from 100 s and sold at 112 s
+        return held_coin() if T0 + 100 <= now < T0 + 112 else []
+
+    rep, client = _run(monkeypatch, _bought_at_100, coins=coins, spent=_finished({B: [T0 + 100]}), minutes=4)
+    after = [(i, t) for kind, i, t in client.timed if kind == "start" and t > T0 + 112]
+    assert after and after[0][0] == B, [(i[-4:], t - T0) for i, t in after]
+    assert rep["fills"] == 1

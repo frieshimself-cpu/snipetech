@@ -3161,7 +3161,10 @@ class Service:
                 guarded = False
                 # this tick's look at the chain (`failed_sends`), asked once
                 freed: dict[str, tuple[float, bool]] | None = None
-                for i in ids:
+                # the snipers OKTech reads spent first: after a fill the one that bought reads finished while the others
+                # still run, and one restart a tick armed it last in the fixed order (23 Nov, fill 3: Yugi's came back
+                # 30 s after its sale, at the moment of his next buy, which the paper took)
+                for i in sorted(ids, key=lambda i: i not in spent_at):
                     if rests.get(i, 0.0) > now:  # resting (the kinds of copy): not re-armed until its rest is over
                         continue
                     since = now - armed_at.get(i, now)
