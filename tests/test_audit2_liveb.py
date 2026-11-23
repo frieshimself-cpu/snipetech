@@ -757,6 +757,7 @@ def test_review_the_book_hands_a_buys_place_to_the_rule_that_tells_whose_it_is(t
     AB._book_sniper(st)
     AB._tape_trade(st, "ODDCOPY", BT.NOW - 1800, ODD_AT[1], True, ODD_FEES, mint=ODD)
     AB._seen(tmp_path, ODD, BT.NOW - 1800)
+    # twice what that buy brought in: not the owner's own beyond doubt (owner_coins), so the stray rule alone decides
     held = [{"mint": ODD, "amount": RAW / 1e6, "raw": 2 * RAW, "value_sol": 0.2, "priced": True}]
     k1 = [{"id": "k1", "name": BT.K1, "status": "running"}]
     paths = OperatorPaths(tmp_path / "data")
