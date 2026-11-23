@@ -249,6 +249,11 @@ class SolanaRpc:
                 raise
         return None
 
+    async def get_slot_leaders(self, start_slot: int, limit: int) -> list[str]:
+        """The validator that led each slot from `start_slot` on, `limit` of them (5,000 at most a request); a node
+        answers only for epochs whose leader schedule it still holds."""
+        return [str(v) for v in await self.call("getSlotLeaders", [int(start_slot), int(limit)]) or []]
+
     async def get_blocks(self, start_slot: int, end_slot: int) -> list[int]:
         """The slots from `start_slot` to `end_slot` that have a block (a slot whose leader produced none has not)."""
         res = await self.call("getBlocks", [int(start_slot), int(end_slot), {"commitment": self._block_commitment()}])

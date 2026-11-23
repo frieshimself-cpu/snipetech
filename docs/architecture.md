@@ -319,8 +319,10 @@ fee, while a failed send's tip is refunded. `extraParams.globalSendCount 1` does
 Until 8 Nov one setting, `[oktech] sell_fee_sol` (0.002), priced both the landed sell's tip and every twin's priority:
 the three winning copies of 7aPo3n at 12:10–12:20 left four failed twins at 2,000,000 lamports priority each, 0.008
 SOL of a 0.119 SOL gross. The fix splits the two: `[oktech] sell_tip_sol` (0.002) is the bid, carried by the tip and
-refunded when a send fails; `[oktech] sell_priority_sol` (0.0001) is what each failed twin pays. `sell_fee_sol` stays
-readable as a deprecated alias for the bid only: a file that still sets it (the server's may, from the 6 Nov audit
+refunded when a send fails; `[oktech] sell_priority_sol` (0.0001) was to be what each failed twin pays (CORRECTED
+12 Nov, docs/oktech-playbook.md 1d: OKTech does not use a sell priority under the buy's; the sale and each of its
+twins pay the sniper's buy priority, so a buy priority at the 0.001 minimum is what keeps them cheap). `sell_fee_sol`
+stays readable as a deprecated alias for the bid only: a file that still sets it (the server's may, from the 6 Nov audit
 fix) sets `sell_tip_sol` and logs a warning, and never puts the priority back, so the fix deploys whether or not the
 owner's file was edited. The split changes one number and nothing else: each builder keeps the sell tip it bid before
 (the copy builders and the verdict's dev sniper 0.002, from `sell_tip_sol`; the strategy, replica and speed-test
@@ -336,7 +338,8 @@ tips' max at 0.005, the autotune bound the control arm's tip already had). The r
 docstring: a tip is raised above the minimum only where 10+ fills at the higher tip landed measurably earlier than 10+
 at the lower one (`trades_behind`, else `price_gap_pct`, lower; a one-sided test at the 80 % level); otherwise the
 minimum, because the 6 Nov fee test paid 20 times the fee and landed no earlier. Priorities are never raised: the buy
-priority is charged again on every exit, the sell priority on every failed twin. Evidence is per kind and, for
+priority is charged again on every sale and on each of its failed twins, and the sell priority we send is not used
+under it (`fees.RULE`, corrected 22 Nov). Evidence is per kind and, for
 copies, per leader: a leader's fills never price another leader's sniper. The book's arm is the floor of a copy's buy
 bid (the policy may raise the tip above it on evidence, never lower it), sent since 12 Nov with the arm's whole fee in
 the tip and the priority at OKTech's minimum (`book/policy.arm_bid`, `fees.sent_bid`); a verdict's recommended bribe

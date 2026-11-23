@@ -49,8 +49,8 @@ LANDING_KEYS = ("trades_behind", "price_gap_pct")  # lower is earlier; the first
 BIDS = ("buy_tip", "sell_tip")  # the numbers evidence may raise
 RULE = ("a bid is raised above the minimum only where 10+ fills at the higher bid landed measurably earlier "
         "(trades_behind, else price_gap_pct, lower; one-sided at the 80 % level) than 10+ at the lower; otherwise "
-        "the minimum. Priorities are never raised: the buy priority is charged again on every exit, the sell priority "
-        "on every failed twin.")  # fmt: skip
+        "the minimum. Priorities are never raised: the buy priority is charged again on every sale and on each of its "
+        "failed twins, and the sell priority we send is not used under it.")  # fmt: skip
 
 
 # OKTech's minimums per buy (docs/oktech-settings.md: `priorityFee` >= 0.001, `tipAmount` >= 0.002)
@@ -298,7 +298,8 @@ def choose(cfg: Config, kind: str, leader: str | None = None, fills: list[dict] 
             evidence[n] = ev
         else:
             v, words = lo, ("the minimum: charged again on every exit, never raised" if n == "buy_priority"
-                            else "the minimum: what each failed twin pays, never raised")  # fmt: skip
+                            else "the minimum, never raised: sent, but not used under the buy priority, which the "
+                            "sale and its failed twins pay")  # fmt: skip
         words += floored.get(n, "")
         values[n], why[n] = round(v, 6), words
     return FeeChoice(kind, leader, values["buy_priority"], values["buy_tip"], values["sell_tip"], values["sell_priority"],

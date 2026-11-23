@@ -39,7 +39,8 @@ class Chain:
 
     def __init__(self, entries, txs):
         self.entries, self.txs = entries, txs
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple] = []
+        self.leaders: dict[int, str] | Exception = {}  # slot -> the block's leader (a validator), or the refusal
 
     async def get_signatures(self, address, before=None, until=None, limit=1000):
         assert address == BOT
@@ -51,6 +52,12 @@ class Chain:
     async def get_transactions(self, sigs):
         self.calls.append(("txs", len(sigs)))
         return {s: self.txs.get(s) for s in sigs}
+
+    async def get_slot_leaders(self, start, limit):
+        self.calls.append(("leaders", start, limit))
+        if isinstance(self.leaders, Exception):
+            raise self.leaders
+        return [self.leaders.get(s, "V0") for s in range(start, start + limit)]
 
 
 def _world():
@@ -94,6 +101,37 @@ def test_a_failed_send_pays_its_priority_and_says_its_error():
     assert f["sends"] == 2 and f["fetched"] == 2 and f["placed"] == 1
     assert f["placed_fee_sol"] == pytest.approx(0.480005) and f["fee_sol"] == pytest.approx(0.480005 + 0.000006)
     assert f["errors"] == {json.dumps({"InstructionError": [3, {"Custom": 6002}]}, separators=(",", ":")): 2}
+
+
+def test_each_outcome_carries_only_the_fees_of_its_own_failed_sends():
+    """22 Nov, job 20261122-074139-296636 read "15 with only failed sends (2.0497 SOL in their fees)": the 2.0497 SOL
+    was what all 764 failed sends at the 62 tried moments paid, those beside the 46 buys that landed right behind
+    included. The record then quoted 0.0008 SOL a failed send, the average over every failed send read, most of them at
+    no moment; at the tries a failed send cost 0.0027. Each outcome now carries its own failed sends and their fees,
+    and the verdict says what a failed send at a try cost."""
+    store = Store(":memory:")
+    store.add_trades([
+        _t(LEAD, "M1", 1100, 0, 2.5), _t(BOT, "M1", 1100, 1, 6.0),  # landed right behind, two sends lost beside it
+        _t(LEAD, "M2", 1200, 0, 3.0),  # only one failed send here
+    ])  # fmt: skip
+    entries = [
+        {"signature": "f2", "slot": 1201, "err": {"x": 1}, "blockTime": int(T0 + 201 * 0.4)},
+        {"signature": "f1b", "slot": 1101, "err": {"x": 1}, "blockTime": int(T0 + 101 * 0.4)},
+        {"signature": "f1a", "slot": 1100, "err": {"x": 1}, "blockTime": int(T0 + 100 * 0.4)},
+        {"signature": "ok1", "slot": 1100, "err": None, "blockTime": int(T0 + 100 * 0.4)},
+    ]
+    txs = {"f1a": _failed("f1a", 1100, "M1", 1_000_000), "f1b": _failed("f1b", 1101, "M1", 1_000_000),
+           "f2": _failed("f2", 1201, "M2", 1_000_000)}  # fmt: skip
+    out = _run(store, Chain(entries, txs))
+    f = out["failed"]
+    assert out["outcomes"]["adjacent"] == 1 and out["outcomes"]["failed"] == 1
+    assert f["placed"] == 3 and f["placed_fee_sol"] == pytest.approx(0.003)
+    assert f["by_outcome"]["adjacent"] == {"sends": 2, "fee_sol": pytest.approx(0.002)}
+    assert f["by_outcome"]["failed"] == {"sends": 1, "fee_sol": pytest.approx(0.001)}
+    assert f["by_outcome"]["block"] == f["by_outcome"]["later"] == {"sends": 0, "fee_sol": 0.0}
+    assert "1 with only failed sends (0.0010 SOL in their fees)" in out["verdict"]
+    assert ("The 3 failed sends at its tries cost 0.0030 SOL, 0.0010 a send, 0.0020 of it beside the buys that "
+            "landed.") in out["verdict"]  # fmt: skip
 
 
 def test_only_the_failed_transactions_are_fetched_and_every_request_is_counted():
@@ -153,3 +191,113 @@ def test_without_a_leader_the_wallets_its_first_buys_followed_most_are_its_leade
     Store(db).close()
     assert cli.main(["--db", str(db), "sends", BOT]) == 0
     assert got["leaders"] == [LEAD]  # a wallet it followed on fewer than 3 coins is no leader
+
+
+# -- the route check's first step (audit of 22 Nov, goal#1; the fee analyst's I617) ----------------------------------
+
+
+def test_each_moment_is_listed_with_its_outcome_its_failed_sends_and_who_stood_within_three_places():
+    """Before a sender of our own is built: who stands 1-3 block places behind the leaders, and where the bot's failed
+    sends fall. 22 Nov, on the tape: a buy of 0.1 SOL or more stood within 3 places after the leader on 65 % of 386
+    first buys of Cented, Decu and theo side, within 3 places before it on 1. Every moment is listed with its outcome,
+    the bot's failed sends at it (slots after the leader's) and the first other buyer within 3 places, and the verdict
+    counts both sides. A buy in the leader's own transaction is no buyer behind it, nor one under 0.1 SOL."""
+    store, chain = _world()
+    store.add_trades([
+        _t(OTHER, "M3", 1300, 2, 0.05),  # too small to count
+        Trade(sig=_t(LEAD, "M3", 1300, 0, 2.0).sig, ev=1, slot=1300, pos=0, ts=int(T0 + 300 * 0.4), mint="M3",
+              venue="curve", user=OTHER, is_buy=True, quote=round(1.5e9), base=1, fee=0, fee_bps=100, q_after=1,
+              b_after=1),  # the leader's own transaction
+    ])  # fmt: skip
+    out = _run(store, chain)
+    rows = {r["mint"]: r for r in out["moments_list"]}
+    assert [r["mint"] for r in out["moments_list"]] == ["M1", "M2", "M3"]
+    assert rows["M1"]["outcome"] == "adjacent" and rows["M1"]["next_within3"] == {"place": 1, "wallet": BOT, "sol": 6.0}
+    assert rows["M2"]["outcome"] == "failed" and rows["M2"]["next_within3"] == {"place": 1, "wallet": OTHER, "sol": 1.0}
+    assert rows["M2"]["failed_sends"] == {"n": 1, "fee_sol": 0.480005, "slots_after": [1]}
+    assert rows["M3"]["outcome"] == "none" and rows["M3"]["next_within3"] is None
+    assert rows["M1"]["leader"] == LEAD and rows["M1"]["slot"] == 1100 and rows["M1"]["sol"] == 2.5
+    assert "validator" not in rows["M1"] and not any(c[0] == "leaders" for c in chain.calls)
+    assert out["near"] == {"places": 3, "min_sol": 0.1, "taken_after": 2, "taken_before": 0}
+    assert ("Another wallet's buy of 0.1 SOL or more stood within 3 block places after the leader on 2 of the 3, "
+            "before it on 0.") in out["verdict"]  # fmt: skip
+
+
+def test_with_validators_each_moment_names_its_block_leader_and_the_moments_split_by_validator():
+    """Whether the places right behind are sold by some validators (a back-run auction anyone could join) or held by
+    a private route shows in how the taken moments split by the block's leader: getSlotLeaders, one request for up to
+    5,000 slots, counted into the month at a credit a request."""
+    store, chain = _world()
+    chain.leaders = {1100: "V1", 1200: "V2", 1300: "V1"}
+    out = _run(store, chain, validators=True)
+    assert [r["validator"] for r in out["moments_list"]] == ["V1", "V2", "V1"]
+    assert out["by_validator"] == [
+        {"validator": "V1", "moments": 2, "taken_after": 1, "tried": 1, "adjacent": 1},
+        {"validator": "V2", "moments": 1, "taken_after": 1, "tried": 1, "adjacent": 0},
+    ]
+    assert ("leaders", 1100, 201) in chain.calls and out["credits"] == 4  # one listing, two transactions, one leaders
+    assert out["validators_error"] is None
+
+
+def test_the_validators_are_read_before_the_failed_sends_so_a_credit_limit_cuts_those():
+    """Review of 22 Nov: a 72-hour run behind Cented, Decu and theo side spends the 5,000-credit limit on failed sends
+    (job 20261122-074139-296636 stopped at 4,907), and the leaders read after them (about 130 requests for 72 hours)
+    found 93 credits left: the later moments would have had no validator. The leaders are read first; the limit then
+    cuts the failed sends, which the result already says are counted in part."""
+    store, chain = _world()
+    chain.leaders = {1100: "V1", 1200: "V2", 1300: "V1"}
+    out = _run(store, chain, validators=True, max_credits=3)  # the listing and the leaders fit, the two sends do not
+    assert [r["validator"] for r in out["moments_list"]] == ["V1", "V2", "V1"] and out["validators_error"] is None
+    assert out["stopped"] == "credits" and out["failed"]["fetched"] == 0 and out["credits"] == 2
+    assert [c[0] for c in chain.calls] == ["sigs", "leaders"]
+
+
+def test_a_leader_lookup_that_fails_leaves_the_validators_unknown_and_says_why():
+    """A node that no longer has an epoch's leader schedule refuses: the moments keep their places, the validator is
+    unknown, and the result says why rather than failing the job."""
+    store, chain = _world()
+    chain.leaders = RuntimeError("leader schedule for epoch 1 is unavailable")
+    out = _run(store, chain, validators=True)
+    assert all(r["validator"] is None for r in out["moments_list"]) and out["by_validator"] == []
+    assert "leader schedule for epoch 1 is unavailable" in out["validators_error"]
+    assert out["outcomes"]["adjacent"] == 1
+
+
+def test_the_rpc_reads_the_slot_leaders_of_a_range():
+    import httpx
+
+    from snipetech.solana.rpc import SolanaRpc
+
+    asked = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        asked.append((body["method"], body["params"]))
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": ["V1", "V2"]})
+
+    async def run():
+        rpc = SolanaRpc("http://rpc.test", max_rps=500, max_retries=1)
+        await rpc.client.aclose()
+        rpc.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        out = await rpc.get_slot_leaders(1100, 2)
+        await rpc.close()
+        return out
+
+    assert asyncio.run(run()) == ["V1", "V2"] and asked == [("getSlotLeaders", [1100, 2])]
+
+
+def test_the_command_reads_the_validators_only_when_asked(monkeypatch, tmp_path, capsys):
+    from snipetech import cli
+
+    got = []
+
+    async def fake(store, tape, rpc, wallet, leaders, now, **kw):
+        got.append(kw.get("validators"))
+        return {"wallet": wallet, "verdict": "x", "per_leader": {}}
+
+    monkeypatch.setattr(S, "sends", fake)
+    db = tmp_path / "snipetech.db"
+    Store(db).close()
+    assert cli.main(["--db", str(db), "sends", BOT, "--leader", LEAD]) == 0
+    assert cli.main(["--db", str(db), "sends", BOT, "--leader", LEAD, "--validators"]) == 0
+    assert got == [False, True]

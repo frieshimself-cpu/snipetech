@@ -30,7 +30,8 @@ What the keys mean:
   policy itself picks each number inside them: the owner's minimum unless 10+ fills at a higher tip landed measurably
   earlier than 10+ at the lower one. You may lower a kind's cap, never past the owner's outer [fees] bounds, and never
   a minimum (a raised minimum is a raised bid with no evidence, which the rule forbids); the buy priority's are 0.001
-  to 0.001 (charged again on every exit) and the sell priority is what each failed twin pays.
+  to 0.001 (charged again on every sale and on each of its failed twins). The sell priority is sent but not used by
+  OKTech under the buy priority, which the sale and its twins pay instead: a cap on it changes nothing.
 - qualify.max_gap3_pct: the largest price gap to the third buyer behind the leader that still counts as uncrowded.
   qualify.min_n_tape: how many tape trades a wallet needs before its lab number counts. qualify.landing_pos: the
   landing the labs assume ("+6" = up to six trades behind the leader in its slot: the paper test and the event edge

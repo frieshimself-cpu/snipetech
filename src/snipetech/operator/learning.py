@@ -62,7 +62,7 @@ UNTESTED_IDEAS = 3
 UNTESTED_LINE = IDEA_TEXT["test"] + 160  # 810 since round 4 (560 for a test of 400)
 CONTEXT_MAX_CHARS = 4000 + UNTESTED_IDEAS * UNTESTED_LINE + 200
 # the research record every turn sees after the lessons and ideas, on its own cap so neither crowds out the other: the
-# newest round's outcome and lessons, then a line for each older round (research_record)
+# newest round's outcome and lessons, then the index line of every other report, newest first (research_record)
 RESEARCH_MAX_CHARS = 2500
 RESEARCH_INDEX = "README.md"
 DIGEST_LESSONS = 3
@@ -80,7 +80,9 @@ _SECRET_RES = (
     re.compile(r"[1-9A-HJ-NP-Za-km-z]{80,}"),  # a 64-byte key in base58 (a whole signature looks the same)
     re.compile(r"\[(?:\s*\d{1,3}\s*,){31,}\s*\d{1,3}\s*\]"),  # a keypair as a JSON byte array
 )
-_ROUND_RE = re.compile(r"-round-(\d+)\.md$")  # docs/research/<date>-round-<N>.md
+# docs/research/<date>-round-<N>.md, or with its topic after the number (rounds 8 and 9: round-8-fees.md; until the
+# audit of 22 Nov the record did not see those two and named round 7 the newest)
+_ROUND_RE = re.compile(r"-round-(\d+)(?:-[\w-]+)?\.md$")
 _LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")  # a markdown link: [text](target)
 _ITEM_RE = re.compile(r"(?:[-*+]|\d+[.)])\s+")  # where a markdown list item starts
 _HEADING_RE = re.compile(r"#{1,2}\s")  # a heading that ends a "## ..." section
@@ -605,7 +607,7 @@ def _items(lines: list[str]) -> list[tuple[bool, str]]:
 
 
 def _rounds(directory: Path) -> list[tuple[int, str, Path]]:
-    """The round reports (<date>-round-<N>.md) as (N, file name, path)."""
+    """The round reports (<date>-round-<N>.md, or <date>-round-<N>-<topic>.md) as (N, file name, path)."""
     try:
         files = [p for p in directory.iterdir() if p.is_file()]
     except OSError:
@@ -613,19 +615,21 @@ def _rounds(directory: Path) -> list[tuple[int, str, Path]]:
     return [(int(m.group(1)), p.name, p) for p in files if (m := _ROUND_RE.search(p.name))]
 
 
-def _older_rounds(directory: Path, newest: int) -> list[str]:
-    """The index lines (README.md) of the rounds before `newest`, newest first, their links as plain text."""
+def _index(directory: Path) -> list[tuple[str, str]]:
+    """Each report's line in the index (README.md), in the index's order, which is the order they were written in
+    (oldest first): (the report's file, the line with its links as plain text). A list item counts when its first
+    link is a .md file of this directory; a file listed twice keeps its first line."""
     try:
         text = (directory / RESEARCH_INDEX).read_text(errors="replace")
     except OSError:
         return []
-    found: dict[int, str] = {}
+    out: list[tuple[str, str]] = []
     for bullet, item in _items(text.splitlines()):
         link = _LINK_RE.search(item) if bullet else None
-        n = _ROUND_RE.search(link.group(2)) if link else None
-        if n and int(n.group(1)) < newest:
-            found.setdefault(int(n.group(1)), _LINK_RE.sub(r"\1 (\2)", item))
-    return [found[k] for k in sorted(found, reverse=True)]
+        name = link.group(2) if link else ""
+        if name.endswith(".md") and "/" not in name and name not in {f for f, _ in out}:
+            out.append((name, _LINK_RE.sub(r"\1 (\2)", item)))
+    return out
 
 
 def _size(lines: list[str]) -> int:
@@ -645,11 +649,14 @@ def _part(head: str, rows: list[str], more: Callable[[int], str], room: float) -
 def research_record(directory: Path | None, max_chars: int = RESEARCH_MAX_CHARS) -> str:
     """The research record each turn's message carries after the lessons and ideas: the newest round's OUTCOME
     paragraph (the first paragraph under its "## Report") and the lines of its "## Lessons", then the index line
-    (README.md) of each older round, newest first. The newest round has the highest N in docs/research/*-round-<N>.md,
-    compared as a number (round 10 is newer than round 9). Each line is scrubbed of secrets and cut like a lesson's.
-    The older rounds keep up to a third of the block, more when the lessons need less, and the lessons fill the rest;
-    whatever does not fit is counted with the file that holds it, so the agent knows to read it. Empty, never an error,
-    when there is no directory or no round report, or none of the parts is there."""
+    (README.md) of every other report, newest first: the dated reports written after that round come before the rounds
+    older than it (22 Nov: rounds stopped at 9 on 8 Nov, and the record carried nothing of the 13 reports of 9-12 Nov).
+    The newest round has the highest N in docs/research/*-round-<N>[-<topic>].md, compared as a number (round 10 is
+    newer than round 9). A newest round written without both sections shows its own index line in their place, or,
+    with none, says to read it whole. Each line is scrubbed of secrets and cut like a lesson's. The other reports keep
+    up to a third of the block, more when the lessons need less, and the lessons fill the rest; whatever does not fit
+    is counted with the file that holds it, so the agent knows to read it. Empty, never an error, when there is no
+    directory or no round report, or none of the parts is there."""
     rounds = _rounds(Path(directory)) if directory is not None else []
     if not rounds:
         return ""
@@ -660,26 +667,32 @@ def research_record(directory: Path | None, max_chars: int = RESEARCH_MAX_CHARS)
         text = ""
     outcome = _first_paragraph(_section(text, "Report"))
     lessons = [_record_line(f"- {x}") for _, x in _items(_section(text, "Lessons"))]
-    older = [_record_line(f"- {x}") for x in _older_rounds(Path(directory), n)]
-    if not (outcome or lessons or older):
+    index = _index(Path(directory))
+    own = next((line for f, line in index if f == name), None)
+    others = [_record_line(f"- {line}") for f, line in reversed(index) if f != name]
+    if not (outcome or lessons or own or others):
         return ""
-    head = f"Research record (the cloud session's research rounds, docs/research/); the newest, round {n} ({name})"
+    head = (f"Research record (the cloud session's research rounds and reports, docs/research/); the newest round, "
+            f"round {n} ({name})")  # fmt: skip
     if outcome or lessons:
         top = [_record_line(f"{head}:")]
-    else:  # a report written without its sections: say so, a heading over nothing tells an agent nothing
+    elif own:  # a report written without its sections: its line of the index says what it found
+        top = [_record_line(f"{head}, has no outcome paragraph and no lessons list; its line of the index:"),
+               _record_line(f"- {own}")]  # fmt: skip
+    else:  # and without a line there: say so, a heading over nothing tells an agent nothing
         top = [_record_line(f"{head}, has no outcome paragraph and no lessons list: read_file docs/research/{name} "
                             "reads it whole.")]  # fmt: skip
     top += [_record_line(outcome)] if outcome else []
     room = max_chars - _size(top)
     lesson_part = (f"Round {n}'s lessons:", lessons,
                    lambda k: _record_line(f"- … {k} more lessons in docs/research/{name}"))  # fmt: skip
-    older_part = ("Older rounds, newest first (docs/research/README.md):", older,
-                  lambda k: f"- … {k} older rounds in docs/research/README.md")  # fmt: skip
+    other_part = ("Every other report, newest first (docs/research/README.md):", others,
+                  lambda k: f"- … {k} older reports in docs/research/README.md")  # fmt: skip
     wanted = _size(_part(*lesson_part, room=float("inf")))
-    older_room = min(room, max(min(_size(_part(*older_part, room=float("inf"))), max_chars // 3), room - wanted))
-    older_lines = _part(*older_part, room=older_room)
-    lesson_lines = _part(*lesson_part, room=room - _size(older_lines))
-    return _cut("\n".join(top + lesson_lines + older_lines), max_chars)
+    other_room = min(room, max(min(_size(_part(*other_part, room=float("inf"))), max_chars // 3), room - wanted))
+    other_lines = _part(*other_part, room=other_room)
+    lesson_lines = _part(*lesson_part, room=room - _size(other_lines))
+    return _cut("\n".join(top + lesson_lines + other_lines), max_chars)
 
 
 def _role_digest(paths: OperatorPaths, week: dict[str, Any]) -> list[str]:

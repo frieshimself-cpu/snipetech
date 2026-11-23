@@ -40,6 +40,7 @@ NOTE_CHARS = 700
 # a role's turn open once when a write's answer holds them, so the model may shorten the text or let it stand.
 CUT_NOTE = "was cut at"
 RESEARCH_PREFIX = "docs/research/"  # how read_file names a report of the research rounds, in the checkout
+READ_FILE_CHARS = 200_000  # what read_file gives of a longer file: its end, or the start of one written newest first
 
 
 def _iso(ts: float) -> str:
@@ -1534,8 +1535,17 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         text = p.read_text(errors="replace")
         if int(tail or 0) > 0:
             text = "\n".join(text.splitlines()[-int(tail) :])
-        if len(text) > 200_000:  # its end, from a whole line: a cut inside a key handed its rest past the scrub
-            text = text[-200_000:]
+        # a file longer than READ_FILE_CHARS is cut at a line's end, never inside a line: a cut inside a key handed its
+        # rest past the scrub (22 Nov audit)
+        if len(text) > READ_FILE_CHARS and str(path) in roles.NEWEST_FIRST:  # its newest entries
+            head = text[:READ_FILE_CHARS]
+            if "\n" not in head:
+                return "error: the first 200,000 characters of this file are one line, which is never handed out cut"
+            head = head[: head.rfind("\n") + 1]
+            return redact(f"{head}[cut here: the first {len(head):,} of {len(text):,} characters; the file is newest "
+                          "first, so what is left out is its oldest entries]")  # fmt: skip
+        if len(text) > READ_FILE_CHARS:  # its end, from a whole line
+            text = text[-READ_FILE_CHARS:]
             if "\n" not in text:
                 return "error: the last 200,000 characters of this file are one line, which is never handed out cut"
             text = text.split("\n", 1)[1]
@@ -1625,7 +1635,13 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         behind other buyers in the block, later, tried with failed sends only, or did not try, and what the failed ones
         paid (a failed send pays its priority; its tip is undone). It costs Helius credits: one a thousand signatures
         and one a failed send ("--max-credits", 5000 unless told). A send that never landed (dropped, or a bundle that
-        lost its auction) leaves nothing on chain, so the tries it counts are the least the bot made.
+        lost its auction) leaves nothing on chain, so the tries it counts are the least the bot made. Every moment is
+        listed (moments_list: its outcome, the bot's failed sends at it, the first other buyer of 0.1 SOL or more
+        within 3 block places after the leader) and "near" counts such buyers after the leader and before it.
+        "--validators" adds each moment's block leader (getSlotLeaders: one request for up to 5,000 slots, about 130
+        for 72 hours, counted at an assumed credit each and read before the failed sends, so the credit limit cuts the
+        sends and not this) and splits the moments by validator (by_validator): whether some validators sell the place
+        right behind, or a route of the leaders' own holds it, before anyone builds a sender for it.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
         gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
@@ -2137,7 +2153,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         and per copied leader: buy priority, buy tip, sell tip and sell priority in SOL, why each tip is where it is
         (the fills compared), the bounds in force and the owner's outer ones. The rule: a tip is raised above the
         minimum only where 10+ fills at the higher tip landed measurably earlier than 10+ at the lower one; priorities
-        are never raised (the buy priority is charged again on every exit, the sell priority on every failed twin).
+        are never raised (the buy priority is charged again on every sale and on each of its failed twins; the sell
+        priority we send is not used under it).
         Read it before saying a fee should change; the strategist may narrow a kind's bounds, the owner sets the outer
         ones. Nothing here trades or changes a setting.
         """

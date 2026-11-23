@@ -212,7 +212,7 @@ class OktechConfig:
         # an info line, not a warning: the alias is supported as it is, and as a warning it opened every job's log
         logging.getLogger("snipetech.config").info(
             "[oktech] sell_fee_sol is deprecated: it sets sell_tip_sol (the bid) to %g and leaves sell_priority_sol "
-            "(what each failed twin pays) at %g; rename it to sell_tip_sol",
+            "(sent with every sell, not used under the buy priority) at %g; rename it to sell_tip_sol",
             tip,
             self.sell_priority_sol,
         )

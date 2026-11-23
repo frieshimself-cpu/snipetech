@@ -33,7 +33,8 @@ Hard rules (the tools enforce them too):
 - Spend: the round has a dollar cap. Do the minimum reading that answers the question, then write the note.
 - Secrets never appear in notes or reports.
 - Resources (credits, data-API budgets, SOL float, disk, failed sends) are checked and alerted by code every round;
-  the snapshot's `resources` rows are the result. Explain an anomaly if it bears on a decision; never re-alert it.
+  the snapshot's `resources` rows are the result: each check that is not ok (none listed, every check is ok; no
+  `resources` at all, the check did not run). Explain an anomaly if it bears on a decision; never re-alert it.
 
 How a wallet gets money: `discover` (hourly) fills the candidates table from every source; `qualify` (every 30 min,
 one lab at a time) writes a verdict per wallet at the copy landing ("+3x": behind the 3rd buy by others after the
@@ -80,9 +81,10 @@ list_ideas for more). Use them: check new numbers against what a lesson already 
 already settled. add_lesson only from evidence, with its numbers and n; upsert_idea only with the evidence and a
 concrete test. An idea never changes anything by itself: a live test, a code change or a config change outside the
 strategist's [autotune] bounds needs the owner's yes (owner_needed) and waits for it.
-The message also carries the research record: what the cloud session's research rounds found, the newest round's
-outcome and lessons and one line for each older round (read_file docs/research/<file> reads a whole report,
-docs/research/README.md is the index). It settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze
+The message also carries the research record: what the cloud session's research rounds and reports found, the newest
+round's outcome and lessons (or its line of the index) and one line for each other report, newest first, as many as
+fit (read_file docs/research/<file> reads a whole report, docs/research/README.md is the index, every line). It
+settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze
 into the paper test). When a round refutes an open idea, mark it rejected with upsert_idea, citing the round and its
 numbers (e.g. "round 3: -0.0099 SOL a trade on 19 unseen firings"). A round's builds and its questions for the owner
 belong to the cloud session and the owner, not to the agents: no agent turns a proposed build into a config change or
@@ -402,7 +404,12 @@ all comes down to fees", and "priority fee has to be decent if its a gigga copyt
 What you do:
 1. What a place is worth: the same lab at "--copy-position" "+0", "+1" and "+2" at the size meant (your lab always
    names a place or a bid: "--copy-position", "--per-tx" or "--buy-bid"); the difference between two places is the most
-   a bid for the better one may cost.
+   a bid for the better one may cost. "+0" is the price the leader's own buy left, ahead of every buyer after it: a
+   place no send that reacts to the landed buy reaches on every moment (22 Nov: a buy of 0.1 SOL or more stood within
+   3 block places behind 65 % of the first buys of Cented, Decu and theo side, and within 3 before on 1 of 386). Such
+   a send lands some places later and gets that price only where nobody bought in between (at 5 places on 31 % of
+   them, at 15 on 22 %, at 150 on 4 %): in a table of who holds a place, count it open only when no buy of 0.1 SOL or
+   more stands within K block places of the leader, and name K.
 2. Which bid wins it: place-bids (auction.in_bid_order near 1 means the place is bought and win_at says how often a
    bid would have been first; near 0.5 or under, speed takes it and no bid buys it), per followed wallet with "--each"
    or "--wallet". tips is the table of what outsiders bid behind each followed wallet, with a suggested bid for a 50 %
@@ -672,6 +679,11 @@ def _compact_snapshot(snap: Snapshot) -> dict:
             d["paper_own_landing"] = best(own)
         d["paper_research_only"] = sum(1 for s in rows if s.get("research_only"))
         d["paper_refuted"] = len(plain) - len(under)
+    # the code's resource checks (run.py fills them before the turn; the rules point at them): the rows that are not
+    # "ok", an empty list when every check is; left out when the check did not run (audit of 22 Nov: never sent)
+    if getattr(snap, "resources", None):
+        d["resources"] = [{"name": r.get("name"), "status": r.get("status"), "message": r.get("message")}
+                          for r in snap.resources if r.get("status") != "ok"]  # fmt: skip
     return d
 
 

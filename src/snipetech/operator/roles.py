@@ -111,6 +111,9 @@ ROLE_DOCS: dict[str, tuple[str, ...]] = {
     # what OKTech can sell with (its auto-sell, and the unknowns a tiny live test settles), and the live runs' exits
     "exits": ("docs/oktech-settings.md", "docs/oktech-features.md", "docs/live-recipe.md"),
 }
+# The role documents written newest first: a read too long to give whole keeps their start, the newest entries (22 Nov:
+# docs/live-recipe.md stood at 187,643 characters, and read_file kept the last 200,000 of a longer file)
+NEWEST_FIRST = frozenset({"docs/live-recipe.md"})
 # Whose queue a role's findings usually become work for (an idea added there; only the queue's own role moves or
 # closes it). Any role may add to any queue: this is what its instructions name.
 HANDOFF: dict[str, tuple[str, ...]] = {"scout": ("tester", "fees"), "tester": ("fees",), "fees": ("tester",),
