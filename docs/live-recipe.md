@@ -21,7 +21,7 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
 **What runs.** The 1 SOL day's own snipers, unchanged since 20 Nov 19:25: Gake Side 6b009e973601fd350a8e3467, Cooker 6b009e973601fd350a8e3473 (each copies its wallet's buys of 2 SOL or more, first buys and repeats; 1 SOL a copy; one buy a start; priority 0.001 + tip 0.049; pump.fun and PumpSwap; preconfirmations; 100,000 compute units; sells 12 s after the buy or when the wallet sells half, 0.002 sell tip). The runner, through the ops endpoint with a 1,500-minute job limit (24 hours plus the 15-minute watch after its end): `oktech cycle --id 6b009e973601fd350a8e3467 --id 6b009e973601fd350a8e3473 --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --max-loss 2 --keep-plain 1.1 --max-fills 100 --max-minutes 1440 --rearm-after 1800 --sweep-after 20 --place-stop 2/3 --place-max 2`. New since the night: `--sweep-after 20` (OKTech's unsold last buy, copy 6 of the night: the run sells a coin still held 20 s after it shows, about 25 s after the buy, past the 12 s exit) and the watch after any end (3ac64c5).
 
-**Stop rules.** 2 SOL lost from the wallet at the start (plain, wrapped and priced coins); 2 of the last 3 copies with more than 2 buyers ahead of ours, or behind no buy of the copied wallet (bait); 24 hours; 100 fills; plain SOL under 1.1; the owner's /stop; the wallet-wide guard; never a sniper stopped while it holds a coin. Each fill gets a row here, with its place against the paper's and its sale time.
+**Stop rules.** 2 SOL lost from the wallet at the start (plain, wrapped and priced coins); 2 of the last 3 copies with more than 2 buyers ahead of ours, or behind no buy of the copied wallet (bait); 24 hours; 100 fills; plain SOL under 1.1; the owner's /stop; the wallet-wide guard; never a sniper stopped while it holds a coin (since the audit of 22 Nov that also covers the run's own tokens inside a coin the owner holds too: "The ends of a live run" below). Each fill gets a row here, with its place against the paper's and its sale time.
 
 ## The 3.5 SOL night, second run: ENDED 22 Nov 00:54:44 UTC on its 5 SOL floor, -5.23 SOL from 6 copies (runner 20261121-232330-156e10, live from 23:23:31; written 23:15, before it started)
 
@@ -280,7 +280,9 @@ at most; CLAUDE.md rule 1). This test: 0.05 SOL a copy.
 **What runs.** One copy sniper at a time on the sniper wallet (`6VFrZ15V…`), copying Cupseyy (`6DQAGJ…QqqP`), only its
 buys of 1 SOL or more, 0.05 SOL a copy, 3 buys, preconfirmations on, the lab exit (its sale, 1 s without a trade,
 -30 %, 300 s). Arm A: priority 0.005 + tip 0.03 SOL a buy. Arm B, after A's three buys: priority 0.005 + tip 0.1.
-A guard stops everything if the wallet falls under 0.30 SOL or after 3 hours.
+A guard stops everything if the wallet falls under 0.30 SOL or after 3 hours. (How a guard ends changed with the
+audit of 22 Nov: it stops its snipers only once the wallet holds nothing they bought; "The ends of a live run"
+below.)
 
 **What is read.** For every fill, on the tape: the block it landed in against Cupsey's buy, how many outsiders'
 buys were ahead of it, what they bid (priority and tip), and the price it paid against Cupsey's.
@@ -697,6 +699,10 @@ in `operator/autotest.json`).
   the failed sends, sales covering 99 % of a buy's tokens, up to 45 minutes' wait for a buy's sale. A coin still held
   never counts at its whole cost: its block waits until it is sold (its sale counts) or gone (its cost counts 45
   minutes after a round last saw it), and a sale the measure stage writes late replaces a whole cost counted before.
+  Since the audit of 22 Nov a block is judged only on the trades that paid its own sniper's fees: its buys, its
+  sales and its failed sends. The owner's hand trades in the same wallet are never the strategy's result, and a coin
+  the owner bought by hand is never the block's coin and never holds it. A sniper with no fees on record is judged
+  on every trade of the wallet, as before.
 - The strategy may lose 1 SOL by its own trades: the lower of the two readings' sums, failed sends included even in a
   block with no buy. At 1 SOL down, or so near it that another buy and its fees have no room left, it is at its floor
   and dropped, after any block, whatever its number of trades. Each block's floor is the wallet it starts from less
@@ -717,14 +723,22 @@ in `operator/autotest.json`).
   row, a day at most, unless a deploy changes the code or the owner sends `/stop` then `/resume`), OKTech not answering
   or refusing a create, a coin OKTech left unsold (held until it is sold with `/sell` or gone), the wallet unreadable,
   the measure stage stalled 45 minutes past a block. Each round checks again; the owner hears it once when it starts
-  holding and once when it clears, and the same strategy goes on. A wallet without room for a block holds the same way,
+  holding and once when it clears, and the same strategy goes on. Since the audit of 22 Nov a fault that fails
+  another way each round (the balance unreadable, then the coins, then OKTech) is one hold, said again at most once
+  a day, not a line every round; and a dead cycler and a start that left its sniper idle count in one streak toward
+  the 4-hour back-off. A wallet without room for a block holds the same way,
   said once a day: SOL under a buy, its fees and the coin account's rent (about 0.25 SOL; 10:59 that morning the wallet
-  was emptied), a wallet too small for a floor of at least 1 SOL, or SOL without its wrapped SOL at or below the block's
-  floor (the cycler would not start).
+  was emptied), a wallet too small for a floor of at least 1 SOL, or plain SOL that cannot pay one curve buy with its
+  fees and rent (the same 0.25 SOL: a curve buy is paid in plain SOL only). That last rule is the audit's of 22 Nov.
+  It used to read "SOL without its wrapped SOL at or below the block's floor (the cycler would not start)", which
+  held blocks for nothing: the cycler reads plain and wrapped SOL together at its start since 21 Nov. The first block
+  of a strategy has no such plain-SOL check yet.
 - It never turns itself off: only `/test auto off` or `operate autotest --off` does, and a block running then runs to
   its end. `/stop` holds every start while its flag exists (a block running ends at once, its sniper stopped once the
   wallet holds nothing; a sniper holding a coin keeps running until the coin is sold); `/resume` lets the same strategy
-  go on if it still passes on paper. Both replies say so. The guard, while it is on and holds, holds it too.
+  go on if it still passes on paper. Both replies say so. `/resume` also lifts the back-off, and since the audit of
+  22 Nov its reply says so after starts that left their sniper idle as well as after dead cyclers. The guard, while
+  it is on and holds, holds it too.
 - What the owner hears: a strategy starting, a drop, a hold starting and clearing, and a strategy's run ending without
   a drop (the owner's off, another wallet, a strategy that no longer passes on paper). Never a line per block or per
   round: the blocks' own lines are notes, and the day's blocks are in the daily digest. `/status` and `/test auto` show
@@ -908,6 +922,67 @@ pre-execution and the account filter. The sniper config already sent is then the
 2. Batches of 10 buys at 0.2 SOL, each audited against paper (trigger, landing position, exit, PnL).
 3. Raise size / remove the cap only while live per-trade results stay within ~half of paper.
 
+## The ends of a live run and the owner's commands, as they work since the audit of 22 Nov (written 23 Nov)
+
+What the audit of 22 Nov changed in the rules every live test runs under. Each was a hole found in the code and fixed
+test-first. None changes a size, a wallet or what may start. Whose a coin is (the bot's, the owner's own, a stray) is
+told by one rule, in docs/architecture.md ("Whose trade, whose coin").
+
+**`/stop`.** It sets the stop flag, then stops every sniper OKTech runs, unless the wallet holds a coin one of ours may
+hold (a stopped sniper strands its coin). Three kinds of coin are no sniper's and no longer keep any running: a coin on
+the owner's ignore list, the owner's own coin (bought by hand: every buy of it paid fees none of our snipers pays, and
+those buys explain all that is held, across all of its token accounts), and a stray (no buy of ours explains it and the
+unsold-coin watch has seen it for 10 minutes). Beside only such coins every sniper on record is stopped, and the reply
+names the coins. Before, the owner's hand-bought coin kept every sniper running. One exception: a running sniper the
+bot has no record of (one made in OKTech's app) is left running beside a coin read as the owner's, because it may have
+bought it; the reply names it, to be stopped in OKTech once that coin is sold. Each read waits 20 s at most, the stop
+calls together 40 s and a `/sell` sale 60 s, so a service that hangs no longer outlasts the pass; a sniper not answered
+in time is named, with the word to send `/stop` again. Known gap: `/stop` reads the wallet once. A buy of ours made a second
+before, whose coin has not shown yet, can be stopped beside an empty wallet; the unsold-coin watch then sends its
+/sell line.
+
+**A command that waited is refused.** A `/resume`, a `/book on` or a `/book bar <SOL>` that sat more than 5 minutes
+in Telegram's queue (an outage, a restart) changes nothing and asks to be sent again, as `/sell`, `/test` and a `/risk`
+change already did. `/stop` and `/book off` are obeyed whatever their age. A `/resume` with no stop set leaves a
+running test's expectation alone.
+
+**`oktech guard`** (a floor watch over capped snipers). Its emergency is the wallet's equity (SOL, wrapped SOL and the
+tape value of the coins held) under the floor. Every end, the floor, the time limit, a kill or a restart, stops its
+snipers only once two readings agree that the wallet holds nothing they bought. With a coin held it watches for 15
+minutes at most, then leaves them running and lists each coin with its /sell line. Before, a floor breach stopped the
+sniper that held the coin, and the time limit or a kill stopped nothing. A low SOL balance (under 0.005 SOL, about what
+a sale costs) is said once and is no emergency: the old 0.05 SOL reserve called one curve buy from a small wallet an
+emergency. A coin the tape has not priced holds the floor back for 2 minutes, then counts as worth nothing; the owner's
+ignored coins are left out; an airdrop seen 10 minutes keeps no sniper running. `oktech guard` and `oktech start`
+refuse to start a sniper while the `/stop` flag is set, and now also while the owner's wallet-wide guard (`/risk`)
+holds or cannot tell. `oktech start --force` still starts, as under `/stop`; a guard with `--watch-only` starts nothing
+and is not refused. `remote run oktech guard` asks for a job limit of its `--max-minutes` plus 25 minutes (the
+15-minute watch at its end and 10 over), and the guard refuses to start under a limit shorter than its minutes plus
+that watch.
+
+**A live run that is over leaves nothing armed** (`operator/leftovers.py`, `operator/leftovers.json`). A run a session
+starts with `remote run oktech cycle` or `remote run oktech guard` is a job, not a service. When the machine restarts
+it dies at once, with no end of its own, and its one-shot snipers stayed armed with nobody watching. Now the round
+takes up every such run once it is over, however it ended. Its snipers still active on OKTech are stopped once the
+wallet holds nothing on two readings 5 seconds apart and the tape has no buy of the wallet in the last minute whose
+coin they did not show. While the wallet holds a coin they keep running to sell it: the owner hears which coin, with
+/sell, and the round looks again every 15 minutes. Until nothing of the run is armed, the book adds no sniper and no
+live test starts beside it. The owner hears of a run that died, and of what was stopped. A sniper that another
+running job drives, the owner's test's and the book's are never touched.
+
+**The run's tokens and the owner's in one coin** (`oktech cycle`). The run counts, places and sells only what its own
+snipers bought. Its own sale never sells the owner's tokens: not once its own are sold, not before the tape has its
+last sale, and never more than the wallet holds beyond the owner's. A coin the owner kept after the run's copy was sold
+becomes theirs. The run's tokens inside a coin of the owner's keep its snipers armed at an end, in the watch after it
+and on the way out, for 300 s or for as long as `--sweep-after` needs, and are sold past `--sweep-after`. A wallet read
+that fails at an end is read again for up to 15 minutes (15 s on the way out). SOL the owner takes out while a copy is
+held moves the floor and is no loss of the run. Of the kinds of copy, only own-launch and bait copies are sold at
+once; a repeat is only tagged; a copy of another copied wallet's buy in a launcher's coin is a first or a repeat
+copy, not an own launch. docs/roadmap.md (22 Nov 04:45, "Fixed tonight") lists each fix with its commit.
+
+Not built, the owner's to decide: the runner selling a live test's coin by itself (`--sweep-after` for `/test` and the
+automatic test), and a test starting beside the owner's own coin.
+
 ## How a live test starts (7 Nov)
 
 No SSH and no command line: the owner starts and ends a capped live test from Telegram (`operator/live_test.py`).
@@ -924,7 +999,9 @@ No SSH and no command line: the owner starts and ends a capped live test from Te
    wallet-wide guard (above) is clear. It
    offers only strategies whose forward lower bound is above zero also with each gain capped at 2.5 times its buy (the
    7 Nov create-slot bundle artifact made a losing rule look like +10.6 SOL). A message more
-   than 5 minutes old is refused, as for `/sell`.
+   than 5 minutes old is refused, as for `/sell`. "The wallet holds no coin" still counts a coin the owner bought by
+   hand (the audit of 22 Nov left it so: the test's floor does not count the owner's coins yet, and a start beside
+   one would let the test lose more than its 1 SOL; changing it is the owner's decision).
 3. **The next operator round** (within 15 minutes) checks all of it again, writes `starting`, creates the strategy's own
    hunt sniper on OKTech (one buy a start, an externalId of its own) and starts one job:
    `oktech cycle --id <sniper> --address <wallet> --floor <F> --max-minutes 120 --max-fills 10 --json`. The round's jobs
@@ -942,7 +1019,11 @@ No SSH and no command line: the owner starts and ends a capped live test from Te
    next launch that qualifies, past the approved minutes, with nobody watching. The round then checks OKTech: the test
    is done only once its sniper is stopped (the round stops it itself when the cycler could not, after a reboot or a
    kill). While the wallet holds a coin the sniper keeps running to sell it and the test stays `closing`, its sniper
-   and its coin expected; the round that finds the wallet empty stops it. `/stop` cancels a test not started yet and
+   and its coin expected; the round that finds the wallet empty stops it. Since the audit of 22 Nov "empty" takes
+   two readings of the wallet, 5 seconds apart, the second weighed on its own amounts, and no buy by the test's
+   sniper on the tape in the last 2 minutes that no sale followed and whose coin neither reading showed: one wallet
+   reply that left the coin out used to stop the sniper that held it. A coin that is the owner's own no longer keeps
+   the test's sniper running in its close. `/stop` cancels a test not started yet and
    ends a running one (the cycler reads the flag every 5 seconds). The unsold-coin watch and `/sell` cover a coin
    OKTech does not sell (2 of 11 hunt fills on 5 Nov, HOUSE and CAT).
 6. **Recorded:** `operator/TEST.json` (the plan, the sniper, the job, start and end, the cycler's report: fills, start
@@ -1221,6 +1302,10 @@ Owner's yes in chat: "it's funded, I say yes to everything". Wallet 2.92 SOL at 
   capped). A floor breach is the emergency: it strands whatever is held, and the guard lists it for the owner to
   sell by hand. `operator/expected.json` = 6 running, 3 held, so the operator reports deviations, not the test
   itself. `/stop` on Telegram stops the snipers only while nothing is held.
+  (How the guard works changed with the audit of 22 Nov: a low SOL balance, now under 0.005 SOL, is only said; a
+  floor breach no longer stops a sniper that holds a coin; the time limit, a kill or a restart now stop its snipers
+  once the wallet holds nothing they bought. `/stop` no longer counts the owner's own coins as held. "The ends of a
+  live run" above has both as they are.)
 - **Measurement:** every fill becomes a `fills` row with its arm read from the fee it paid (both arms share the
   wallet; OKTech's task documents carry no fills), the copied wallet, buys behind it, price gap, priority, tip and
   relay, and PnL; `bid_model` per arm: n, failed sends, mean/p75 position, mean buys behind, mean gap, mean fee,
@@ -1234,6 +1319,8 @@ Owner's yes in chat: "it's funded, I say yes to everything". Wallet 2.92 SOL at 
 - **Safety while it runs:** `/stop` acts within a minute once `snipetech-commands.timer` is enabled; a manual
   `oktech stop` refuses while a coin is held (add `--force` only to strand it on purpose); `guard` and `start` refuse
   while the `/stop` flag is set.
+  (Since the audit of 22 Nov they also refuse while the owner's wallet-wide guard, `/risk`, holds or cannot tell;
+  `oktech start --force` still starts, as under `/stop`.)
 - **Why the owner runs the create commands and the guard:** the cloud session's safety layer refuses to start
   real-money transactions itself. The commands (from a checkout with the ops key):
 
