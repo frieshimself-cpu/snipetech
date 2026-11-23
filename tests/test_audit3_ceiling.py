@@ -4,20 +4,26 @@ C1: the measure stage keeps each buy's and failed buy's limit on its fills row (
 stood against it (`fill_mcap_sol`), and says once a sniper a day when a limit is far from the ceiling the sniper was
 sent. The transactions are the sniper wallet's own of the 23 Nov smoke test (tests/fixtures/buy_limits_23nov.json),
 served by the test chain as the RPC serves them; nothing here reaches a network.
-C3: a run whose scan of the wallet's signatures failed says so in the measure stage's record and reads the same
-window again."""
+C2: a wallet rule's `max_fill_mcap` holds the lab and the paper test to that same limit: our own fill at the scored
+landing, and a moment over it is a refused send.
+C3: a run whose scan of the wallet's signatures failed leaves the measure stage's cursor where it was and says so."""
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
 
+from snipetech.analysis import lab as L
+from snipetech.analysis import paper
+from snipetech.analysis.lab import collect, parse_trigger, rank
 from snipetech.config import Config
 from snipetech.measure import run as M
 from snipetech.measure.run import run_measure
 from snipetech.oktech import COPY_MAX_MCAP_USD
 from snipetech.service import Service
+from snipetech.sim.exits import ExitParams
 from snipetech.solana.buy_limit import BuyLimit
 from snipetech.solana.programs import PUMP_PROGRAM, WSOL_MINT
 from snipetech.solana.txmeta import PumpIx, TxMeta
@@ -318,3 +324,155 @@ def test_a_check_that_fails_never_fails_the_measure_run(tmp_path, monkeypatch):
         assert st.fill(sig("4hC1n7oF"))["limit_mcap_sol"] == pytest.approx(23.0)
     finally:
         st.close()
+
+
+# -- C2: the lab and the paper test gate on our own fill -------------------------------------------------------------
+#
+# A copy sniper's ceiling is a limit on OUR fill (above), and the lab's `max_mcap` asks the copied buy. `max_fill_mcap`
+# asks our own fill at the scored landing: over it the send is refused, no position, and one failed send is charged.
+
+W0 = int(time.time()) - 7500  # an hour of tape before the freeze, an hour after it
+FREEZE, RUN = W0 + 3600, W0 + 7200
+KOL = addr("c2-followed")
+HOLD60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60.0, sell_on_dev_sell=False)
+PLAIN = {"kind": "kol", "group": "wallet", "sol": 1, "max_mcap": 40}  # the copied buy stands at 32.8 SOL: admitted
+CEILING = PLAIN | {"max_fill_mcap": 40}
+
+
+def _c2_coin(st, k: int, ts: int, ahead: float) -> str:
+    """A coin the followed wallet buys with 2 SOL after the dev's 0.5 (32.8 SOL of market cap after its buy); two
+    other wallets buy `ahead` SOL each right behind it, before a copy at +2x lands; eight buyers then lift the price."""
+    m = Market(st, addr(f"c2-coin-{k}"), addr(f"c2-dev-{k}"), ts, 500_000_000 + (ts - W0) * 5 // 2)  # 0.4 s a slot
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(KOL, 2.0, 50)
+    m.buy(addr(f"c2-first-{k}"), ahead, 51)
+    m.buy(addr(f"c2-second-{k}"), ahead, 52)
+    for j in range(8):
+        m.buy(addr(f"c2-fan-{k}-{j}"), 0.5, 100 + 3 * j)
+    m.sell(addr(f"c2-first-{k}"), 1.0, 400)
+    m.commit()
+    return m.mint
+
+
+def _fill_at(sol_before: float, buy_sol: float = 1.0) -> float:
+    """The market cap at our own fill on a curve that has taken `sol_before` SOL: our SOL, fee included, over our
+    coins, times a billion coins."""
+    q = (30.0 + sol_before) * 1e9
+    b = 30e9 * 1_073_000_000_000_000 / q
+    net = buy_sol * 1e9 / 1.0125  # the curve's 1.25 % fee comes out of what we send
+    return buy_sol * 1e9 / (b * net / (q + net)) * 1e6
+
+
+def _c2_world(st, n=24, t0=W0 + 100):
+    """Every third coin has two 5 SOL buys between the followed wallet and us; the others two of 0.05 SOL."""
+    st.set_label(KOL, "followed", "wallet", "file")
+    crowded, quiet = [], []
+    for k in range(n):
+        big = k % 3 == 1
+        (crowded if big else quiet).append(_c2_coin(st, k, t0 + k * 120, 5.0 if big else 0.05))
+    return crowded, quiet
+
+
+def _c2_cfg() -> Config:
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    return cfg
+
+
+def test_the_fill_ceiling_is_a_wallet_rules_own_field_and_its_label_says_it():
+    rule = parse_trigger({"kind": "kol", "group": "wallet", "sol": 1, "max_fill_mcap": 66})
+    assert rule.max_fill_mcap == 66.0
+    assert rule.label() == ("a tracked wallet (wallet) makes its first buy in the coin, >= 1 SOL, our fill at most "
+                            "66 SOL of market cap")  # fmt: skip
+    both = parse_trigger(CEILING | {"max_mcap": 65, "max_fill_mcap": 66}).label()
+    assert both.endswith("market cap <= 65 SOL, our fill at most 66 SOL of market cap")
+    assert parse_trigger(PLAIN).max_fill_mcap == 0.0 and "our fill" not in parse_trigger(PLAIN).label()
+    with pytest.raises(ValueError, match="does not apply"):
+        parse_trigger({"kind": "hunt", "sol": 4, "window": 1.5, "max_fill_mcap": 66})  # no copy, no ceiling
+    with pytest.raises(ValueError, match="between"):
+        parse_trigger(PLAIN | {"max_fill_mcap": -1})
+    # 23 Nov: OKTech sent 23 SOL, under the 28 SOL every pump.fun coin starts at: such a rule can only be refused
+    with pytest.raises(ValueError, match="28 SOL"):
+        parse_trigger(PLAIN | {"max_fill_mcap": 23})
+
+
+def test_a_rule_frozen_before_the_fill_ceiling_keeps_its_id():
+    ex = HOLD60.to_dict()
+    now = parse_trigger(PLAIN).__dict__
+    before = {k: v for k, v in now.items() if k != "max_fill_mcap"}  # as the store holds a rule of 22 Nov
+    assert paper.strategy_id(now, ex, "+6", 0, 1.0) == paper.strategy_id(before, ex, "+6", 0, 1.0)
+    assert L.Trigger(**before) == parse_trigger(PLAIN)  # and it is read as a rule with no fill ceiling
+    assert paper.strategy_id(parse_trigger(CEILING).__dict__, ex, "+6", 0, 1.0) != paper.strategy_id(
+        now, ex, "+6", 0, 1.0
+    )
+
+
+def test_a_moment_the_copied_buys_ceiling_admits_is_refused_by_the_fill_ceiling_behind_two_big_buys():
+    st = Store(":memory:")
+    crowded, quiet = _c2_world(st)
+    st.set_coverage("tape", {"spans": [[W0, FREEZE]]})
+    data = collect(st, _c2_cfg(), 1.0, 0, "+2x", triggers=[parse_trigger(PLAIN), parse_trigger(CEILING)], mates={},
+                   exits=[HOLD60], workers=1)  # fmt: skip
+    st.close()
+    plain = {r["mint"]: r for r in data["rows"] if r["trigger"] == 0}
+    gated = {r["mint"]: r for r in data["rows"] if r["trigger"] == 1}
+    # the copied buy's ceiling admits every moment: the coin stood at 32.8 SOL after the followed wallet's buy
+    assert sorted(plain) == sorted(gated) == sorted(crowded + quiet) and len(crowded) == 8
+    assert all(r["mcap_sol"] == pytest.approx(32.81, abs=0.01) and not r.get("refused") for r in plain.values())
+    # our own fill behind two 5 SOL buys stands at 58 SOL: over the ceiling of 40, a refused send
+    for mint in crowded:
+        r = gated[mint]
+        assert r["refused"] is True and r["fill_mcap_sol"] == pytest.approx(_fill_at(12.5), rel=1e-6)
+        assert 58.0 < r["fill_mcap_sol"] < 58.5
+        # no position: what the send cost, on every exit; a failed send pays its priority and the base fee, no tip
+        assert r["pnl"] == [-L.REFUSED_SEND_SOL] and L.REFUSED_SEND_SOL == pytest.approx(0.001005)
+        assert "impact" not in r and plain[mint]["fill_mcap_sol"] == r["fill_mcap_sol"]
+    # behind two 0.05 SOL buys it stands at 34 SOL: admitted, and traded exactly as without the ceiling
+    for mint in quiet:
+        r = gated[mint]
+        assert not r.get("refused") and r["fill_mcap_sol"] == pytest.approx(_fill_at(2.6), rel=1e-6)
+        assert r["pnl"] == plain[mint]["pnl"] and r["impact"] == plain[mint]["impact"]
+    # the ranking counts both, and the refusals' cost is in the rule's total
+    rows = {r["trigger_spec"]["max_fill_mcap"]: r for r in rank(data, _c2_cfg(), top=10, min_train=15)}
+    block = rows[40.0]["fill_ceiling"]
+    assert (block["max_fill_mcap"], block["admitted"], block["refused"]) == (40.0, 16, 8)
+    assert block["refused_send_sol"] == pytest.approx(0.001005) and "0.001" in block["note"]
+    newer = sorted(gated.values(), key=lambda r: r["ts"])[int(24 * 0.6) :]
+    assert block["test"]["refused"] == sum(1 for r in newer if r.get("refused")) > 0
+    assert block["test"]["admitted"] + block["test"]["refused"] == rows[40.0]["test"]["n"] == len(newer)
+    assert rows[40.0]["test"]["total"] == pytest.approx(sum(r["pnl"][0] for r in newer))
+    traded = [r["pnl"][0] for r in newer if not r.get("refused")]
+    assert block["test"]["admitted_mean"] == pytest.approx(sum(traded) / len(traded))
+    assert "fill_ceiling" not in rows[0.0]  # a rule without the ceiling says nothing of it
+    # where the rule's moments stood by our own fill, beside the bands by the copied buy's market cap
+    by_fill = {b["band"]: b["n"] for b in rows[0.0]["bands"]["fill_mcap_sol"]}
+    assert by_fill == {"under 50": 16, "50-100": 8, "100-200": 0, "200-410": 0, "410 and up": 0}
+
+
+def test_a_frozen_rule_keeps_its_fill_ceiling_and_the_forward_run_refuses_by_it():
+    st = Store(":memory:")
+    _c2_world(st)
+    st.set_coverage("tape", {"spans": [[W0, FREEZE]]})
+    out = paper.freeze(st, _c2_cfg(), top=4, buy_sol=1.0, per_tx_sol=0.0035, triggers=[parse_trigger(CEILING)],
+                       now=FREEZE, copy_position="+2x")  # fmt: skip
+    (frozen,) = out["frozen"]
+    assert frozen["trigger"]["max_fill_mcap"] == 40.0 and "our fill at most 40 SOL of market cap" in frozen["label"]
+    assert frozen["lab"]["fill_ceiling"]["refused"] == 8
+    quiet = [_c2_coin(st, 100 + k, FREEZE + 300 + k * 120, 0.05) for k in range(3)]
+    crowded = [_c2_coin(st, 150 + k, FREEZE + 360 + k * 120, 5.0) for k in range(2)]
+    st.set_coverage("tape", {"spans": [[W0, RUN]]})
+    ran = paper.run(st, _c2_cfg(), now=RUN)
+    assert ran["new_trades"] == 5
+    trades = {r["mint"]: r for r in st.paper_trades(frozen["id"])}
+    assert sorted(trades) == sorted(quiet + crowded)
+    for mint in crowded:  # refused: no position, one failed send charged, and the row says why
+        t = trades[mint]
+        assert t["reason"] == "refused" and t["pnl"] == pytest.approx(-0.001005)
+        assert t["data"]["refused"] is True and t["data"]["fill_mcap_sol"] == pytest.approx(_fill_at(12.5), rel=1e-4)
+        assert t["exit_ts"] == t["entry_ts"]
+    for mint in quiet:
+        t = trades[mint]
+        assert t["reason"] != "refused" and "refused" not in t["data"]
+        assert t["data"]["fill_mcap_sol"] == pytest.approx(_fill_at(2.6), rel=1e-4)
+    assert ran["refused_sends"] == {frozen["id"]: 2}
+    st.close()

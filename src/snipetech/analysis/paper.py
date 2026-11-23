@@ -61,12 +61,14 @@ from .lab import (
     CREW_SKIP,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
+    FILL_REFUSED,
     LAMPORTS,
     LANDING_VERSION,
     LAUNCH_KINDS,
     MIG_CAP,
     MIG_LAND_SLOTS,
     OUTSIDE_WORDS,
+    REFUSED_SEND_SOL,
     REPEATS_ALSO_FROZEN,
     SIZE_FLOOR_SHARE,
     SIZE_WORDS,
@@ -92,6 +94,8 @@ from .lab import (
     entry_at,
     exit_gap,
     exits_horizon,
+    fill_mcap_at,
+    fill_refused,
     fired_at,
     implausible_coin,
     label_groups,
@@ -210,11 +214,12 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # and a KOL rule's own wallets, its consensus gate over every group and its volume gate (12 Nov evening, the
     # leader profiles: "", the whole group; False, the rule's own group; no window and no limit)
     # and a KOL rule's repeat buys (20 Nov: "", the wallet's first buy in a coin, as every rule before)
+    # and a KOL rule's ceiling on our own fill (23 Nov: 0, no ceiling)
     later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
                   "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0,
                   "teams": False, "gap": 0.0, "bots": "", "min_mcap": 0.0, "max_mcap": 0.0,
                   "min_age": 0.0, "only": "", "known_any": False, "vol_secs": 0.0, "min_vol": 0.0,
-                  "max_vol": 0.0, "repeats": ""}  # fmt: skip
+                  "max_vol": 0.0, "repeats": "", "max_fill_mcap": 0.0}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     if trigger.get("kind") in LAUNCH_KINDS and "crew" in trigger:  # the crew choice of a launch-type rule (14 Nov)
         if trigger["crew"] == CREW_SKIP:
@@ -1593,6 +1598,9 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                             **({"places": r["places"]} if r.get("places") else {}),
                             # how many of its moments were serial crews' coins, known with hindsight (lab.crew_block)
                             **({"crew": {k: v for k, v in r["crew"].items() if k != "line"}} if r.get("crew") else {}),
+                            # a wallet rule with a ceiling on our own fill: the moments it admitted and refused
+                            **({"fill_ceiling": {k: v for k, v in r["fill_ceiling"].items() if k != "note"}}
+                               if r.get("fill_ceiling") else {}),
                             **r["test"]}})  # fmt: skip
         if spec.get("kind") in LAUNCH_KINDS and not spec.get("crew"):
             # scored on every coin the live sniper would buy, serial crews' coins too: the mark a stored launch-type
@@ -1681,8 +1689,11 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
     priced on the curve tape, as the lab scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is
     left out, as in the lab. So is a buy too large for its pool to be replayed, at any rule (`lab.size_gap`: it would
     end its curve, or is most of what the curve still takes or of the pool's coins): its reason is a key of
-    lab.SIZE_WORDS. The third value is the position's share of the pool's coins at its entry (None with no position):
-    what says whether a sale priced past the curve counts as outside the model (`outside_marks`)."""
+    lab.SIZE_WORDS. A wallet rule's ceiling on our own fill (`Trigger.max_fill_mcap`) is asked last, as in the lab:
+    over it the send is refused and the reason is lab.FILL_REFUSED, which is no trade left out but one the run writes
+    (no position, one failed send charged). The third value is the position's share of the pool's coins at its entry
+    (None with no position): what says whether a sale priced past the curve counts as outside the model
+    (`outside_marks`)."""
     gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
     gap = migration_sell_gap(amm_cov, path, e, mig, exits_horizon([ex])) if gated else None
     res, share = None, None
@@ -1697,6 +1708,8 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
             sized = size_gap(prep)  # a buy this size against this pool: left out and counted, as in the lab
             if sized is not None:
                 return None, sized, None
+            if trig.kind == "kol" and fill_refused(trig, prep):  # over the rule's ceiling on our own fill
+                return None, FILL_REFUSED, None
             res, share = run_exit(prep, ex, costs, end_ts=float(end)), float(prep.pool_share)
             if gated and trig.kind in LAUNCH_KINDS:
                 gap = exit_gap(amm_cov, path, prep, res, ex, mig)
@@ -1818,6 +1831,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     added = own_added = research_added = 0
     research = {s["id"] for s, *_ in parsed if research_note(s)}  # records no sniper trades: counted apart
     passed: dict[str, int] = {}  # strategy -> coins its crew choice passed over in this run's window (`crew_skips`)
+    refused: dict[str, int] = {}  # strategy -> sends its ceiling on our own fill refused, each written as a trade
     for a, b in store.tape_spans():
         windows = {d: (max(a, since - d), min(b, until - d)) for d in sorted(set(lag.values()))}
         windows = {d: w for d, w in windows.items() if w[1] > w[0]}
@@ -1899,6 +1913,29 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 res = share = None
                 if gap is None:
                     res, gap, share = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
+                # a wallet rule: the market cap at our own fill, what its ceiling (`max_fill_mcap`) is held to
+                fill = fill_mcap_at(path, e, s["buy_sol"]) if trig.kind == "kol" else None
+                filled = {} if fill is None else {"fill_mcap_sol": round(fill, 6)}
+                if gap == FILL_REFUSED:
+                    # the send the ceiling refuses is a moment of the rule like any other: no position, and what a
+                    # failed send costs (lab.REFUSED_SEND_SOL), written once and kept
+                    at = float(path.ts[e])
+                    wrote = store.put_paper_trade({
+                        "strategy": s["id"], "mint": mint, "trigger_ts": t, "entry_ts": at, "exit_ts": at,
+                        "pnl": -REFUSED_SEND_SOL, "roi": -REFUSED_SEND_SOL / float(s["buy_sol"]),
+                        "reason": FILL_REFUSED,
+                        "data": {"refused": True, **filled, "hold_secs": 0.0, "trigger_slot": t_slot,
+                                 "landing": landing_key(s["latency"], s["position"], bid_of(s)), "behind": e - i,
+                                 "venue": path.venue, "model": FILL_MODEL, "land": LANDING_VERSION,
+                                 "mates": len(own or ()), **({"place": placed["place"]} if placed else {})},
+                    })  # fmt: skip
+                    added += wrote
+                    refused[s["id"]] = refused.get(s["id"], 0) + wrote
+                    if s["id"] in research:
+                        research_added += wrote
+                    elif pinned(s):
+                        own_added += wrote
+                    continue
                 if gap is not None:
                     skipped.setdefault(s["id"], {})
                     skipped[s["id"]][gap] = skipped[s["id"]].get(gap, 0) + 1
@@ -1910,7 +1947,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
                     "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
                              "landing": landing_key(s["latency"], s["position"], bid_of(s)), "behind": e - i,
-                             "venue": path.venue, "model": FILL_MODEL, "land": LANDING_VERSION,
+                             "venue": path.venue, "model": FILL_MODEL, "land": LANDING_VERSION, **filled,
                              # a copy: how many companions of the copied wallet it was scored behind (rows
                              # without the field were entered before 11 Nov 2026, companions counted as outsiders)
                              **({"mates": len(own or ())} if trig.kind == "kol" else {}),
@@ -1962,6 +1999,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
            "retired": retired, "crew_passed": passed, **old_code}  # fmt: skip
     if closed:  # the records left alone: scored in part by other code, their rule made again since
         out["closed"] = closed
+    if refused:  # of the new trades: the sends a rule's ceiling on our own fill refused (no position, one send's cost)
+        out["refused_sends"] = refused
     late = {s["id"]: settle_secs(ex) for s, _, ex, _ in parsed if lag[s["id"]] > 0}
     if late:  # the rules scored later than `until`: seconds after its trigger each one's moment is scored
         out["settles_later"] = late
@@ -1978,6 +2017,7 @@ LEFT_WORDS = {
     "size": "the buy is too large for its pool to be replayed (lab.size_gap): the run scores no such moment any more",
     "backfill": SKIP_WORDS[NO_BACKFILL] + ": the run scores no such moment any more (until 12 Nov evening it wrote "
                 "the fees of a position nothing traded after as a loss)",
+    "refused": "a send the rule's ceiling on our own fill refused: no position to price again",
 }  # fmt: skip
 
 
@@ -2075,6 +2115,9 @@ def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy
         for sid, row, priced in rows:
             s, trig, ex, costs = parsed[sid]
             data = dict(row.get("data") or {})
+            if data.get("refused"):  # a refused send (`Trigger.max_fill_mcap`): it stands as it was written
+                leave(sid, "refused", row, priced)
+                continue
             i = None
             fires = not (trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60))
             if fires and not crew_skips(trig, launch, crews):
@@ -2102,7 +2145,8 @@ def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy
                 continue
             res, gap, share = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
             if gap is not None or res is None:
-                leave(sid, "size" if gap in SIZE_WORDS else "gap" if gap is not None else "position", row)
+                leave(sid, "size" if gap in SIZE_WORDS else "refused" if gap == FILL_REFUSED
+                      else "gap" if gap is not None else "position", row)  # fmt: skip
                 continue
             tally[sid]["rescored"] += 1
             tally[sid]["after"] += float(res.pnl_sol)
@@ -2182,6 +2226,8 @@ def _numbers(store: Store, strategy: dict, conf: float, samples: int, bounds: bo
         nums |= {"mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"),
                  "other_venue": other, **_robust(pnl, strategy["buy_sol"], conf, samples),
                  "outside_model": _outside_count(kept)}  # fmt: skip
+        if (strategy.get("trigger") or {}).get("max_fill_mcap"):  # a ceiling on our own fill: its refused sends
+            nums["refused_sends"] = sum(1 for r in kept if (r.get("data") or {}).get("refused"))
     else:
         nums["mean"] = float(pnl.mean()) if len(pnl) else None
     return nums, not asks_tape and len(rows) == counted
@@ -2238,6 +2284,9 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "venue": strategy_venue(s), "other_venue": other, **robust,
                     # its trades that rest on a price outside the model, as the lab counts them (`_outside_count`)
                     "outside_model": nums.get("outside_model")})  # fmt: skip
+        if nums.get("refused_sends") is not None:
+            # of its n trades: the sends its ceiling on our own fill refused, each a loss of what the send cost
+            out[-1]["refused_sends"] = nums["refused_sends"]
         if s.get("refuted"):  # dropped by the paper test (`retire_refuted`): its row and numbers stay, scored no more
             out[-1]["refuted"] = s["refuted"]
         if any_buyer(s.get("trigger")):  # why its place is no live landing, in the row itself

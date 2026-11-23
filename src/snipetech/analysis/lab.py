@@ -58,6 +58,7 @@ from ..amm_tape import (
 )
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
+from ..fees import OKTECH_MIN_PRIORITY_SOL
 from ..models import LAUNCHLAB, PUMPFUN
 from ..models import is_address as _is_address
 from ..oktech import (
@@ -71,7 +72,8 @@ from ..oktech import (
 )
 from ..sim.exits import Costs, ExitParams, exits_reach, held_path, prepare, round_trip_pnl, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, react_places, slot_secs_from
-from ..solana.programs import SOL_QUOTES
+from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES, SOL_QUOTES
+from ..solana.tips import BASE_FEE_PER_SIGNATURE
 from ..store import Store, file_identity
 from .bid_landing import FAST_TXS, NO_BIDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
 from .bid_landing import SKIP_WORDS as BID_SKIP_WORDS
@@ -241,6 +243,13 @@ class Trigger:
     # copy sniper takes); "only" its buys after its first one (research only, `research_only_why`: no sniper copies
     # repeats alone). A buy under the size is never a moment, a first buy under it included
     repeats: str = ""
+    # kol (23 Nov, the smoke test of the audited runner): a copy sniper's market-cap ceiling as OKTech really runs it.
+    # `oktech copylist --max-mcap` sends maxMcapUsd, and OKTech makes of it the least coins OUR buy must get: a ceiling
+    # on the average price of our own fill, fee included, where `max_mcap` asks the coin right after the followed buy
+    # (no OKTech setting does that). The market cap in SOL at our own fill at the scored landing (`fill_mcap`) is at
+    # most this, else the send is refused: no position, and one failed send is charged (REFUSED_SEND_SOL); the moment
+    # stays one of the rule's moments (`fill_refused`). 0 = no ceiling
+    max_fill_mcap: float = 0.0
     # whale (13 Nov, idea I84, the bot E2x1's coin filter: "any buy of 0.25 to 0.56 SOL by anyone, on a coin whose
     # curve holds 7 to 18 SOL before that buy, 20 to 190 slots old"): four of the fields above gate a whale trigger
     # too (ANY_BUYER_GATES), and make it an any-buyer rule (`any_buyer`). `max_sol`: the trigger buy is at most this
@@ -316,6 +325,7 @@ class Trigger:
                 + ([f"market cap {self.min_mcap:g} to {self.max_mcap:g} SOL"] if self.min_mcap and self.max_mcap
                    else [f"market cap >= {self.min_mcap:g} SOL"] if self.min_mcap
                    else [f"market cap <= {self.max_mcap:g} SOL"] if self.max_mcap else [])
+                + ([f"our fill at most {self.max_fill_mcap:g} SOL of market cap"] if self.max_fill_mcap else [])
                 + ([f"{self.min_vol:g} to {self.max_vol:g} SOL traded {self._vol_window()}"]
                    if self.min_vol and self.max_vol
                    else [f">= {self.min_vol:g} SOL traded {self._vol_window()}"] if self.min_vol
@@ -436,7 +446,7 @@ TRIGGERS = (
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
 # the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
 KOL_GATES = ("known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap", "min_mcap", "max_mcap",
-             "only", "known_any", "vol_secs", "min_vol", "max_vol", "repeats")  # fmt: skip
+             "only", "known_any", "vol_secs", "min_vol", "max_vol", "repeats", "max_fill_mcap")  # fmt: skip
 REPEATS_ALSO, REPEATS_ONLY = "also", "only"
 REPEAT_CHOICES = ("", REPEATS_ALSO, REPEATS_ONLY)
 REPEATS_ONLY_WHY = ("it follows only a wallet's repeat buys in a coin, and no copy sniper can: OKTech copies every buy "
@@ -470,7 +480,7 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
     "max_buyers": (0, 200),
     "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
     "known": (0, 20), "within": (0, 86_400), "max_sol": (0, 100), "min_curve": (0, 85), "max_curve": (0, 85),
-    "gap": (0, 86_400), "min_mcap": (0, 10_000_000), "max_mcap": (0, 10_000_000),
+    "gap": (0, 86_400), "min_mcap": (0, 10_000_000), "max_mcap": (0, 10_000_000), "max_fill_mcap": (0, 10_000_000),
     "vol_secs": (0, 86_400), "min_vol": (0, 10_000_000), "max_vol": (0, 10_000_000),
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
@@ -662,6 +672,10 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         raise ValueError(f"max_curve ({trig.max_curve:g}) is under min_curve ({trig.min_curve:g}): no coin fits")
     if trig.max_mcap and trig.max_mcap < trig.min_mcap:
         raise ValueError(f"max_mcap ({trig.max_mcap:g}) is under min_mcap ({trig.min_mcap:g}): no coin fits")
+    if trig.max_fill_mcap and trig.max_fill_mcap < START_MCAP_SOL:
+        raise ValueError(f"max_fill_mcap ({trig.max_fill_mcap:g}) is under the {START_MCAP_SOL:.0f} SOL of market cap "
+                         "every pump.fun coin starts at: every send would be refused (23 Nov: OKTech sent such a "
+                         "limit, 23 SOL, in a new sniper's first minutes; those sends could only fail)")  # fmt: skip
     if trig.max_age and trig.max_age < trig.min_age:
         raise ValueError(f"min_age ({trig.min_age:g} s) is past max_age ({trig.max_age:g} s): no coin fits")
     if trig.max_vol and trig.max_vol < trig.min_vol:
@@ -1122,6 +1136,66 @@ OUTSIDE_WORDS = {
                   "earlier than the tape says, into a pool that is not short of our coins",
 }  # fmt: skip
 SKIP_WORDS |= SIZE_WORDS
+
+
+# The ceiling on our own fill (`Trigger.max_fill_mcap`, 23 Nov 2026). OKTech's buy says how much SOL it spends and the
+# least coins it must get for it (solana/buy_limit.py): the program refuses a buy that fills above that price, and the
+# send still lands and pays. What it pays: its priority fee, which every sniper of ours sends at OKTech's minimum (the
+# bid goes in the tip, fees.sent_bid, and a failed send's tip is rolled back), and the base fee of its signature; every
+# refused send of the smoke test paid exactly this. The lab keeps no cost of a failed transaction of its own (its
+# transaction cost spreads the failed sends the measure stage counted over the landed ones, qualify.run), so this is
+# the cost a refusal is charged, and every answer that charges one says so (FILL_CEILING_NOTE).
+START_MCAP_SOL = INITIAL_VIRTUAL_SOL_RESERVES / INITIAL_VIRTUAL_TOKEN_RESERVES * 1e6  # 27.96: where a coin starts
+REFUSED_SEND_SOL = OKTECH_MIN_PRIORITY_SOL + BASE_FEE_PER_SIGNATURE / LAMPORTS  # 0.001005
+FILL_REFUSED = "refused"  # a forward trade's reason, and what the paper run's position answers, for a refused send
+FILL_CEILING_NOTE = (
+    "max_fill_mcap is a copy sniper's market-cap ceiling as OKTech runs it (what `oktech copylist --max-mcap` sends): "
+    "a limit on OUR OWN fill, the SOL we send, fee included, over the coins we get, times a billion coins, at the "
+    "landing the lab scores. A moment over it is a refused send: no position, and "
+    f"{REFUSED_SEND_SOL:g} SOL charged ({OKTECH_MIN_PRIORITY_SOL:g} SOL priority and the base fee, no tip: what a "
+    "failed send of ours pays; the lab has no measured cost of a failed transaction, and its cost of a landed one "
+    "already spreads the failed sends the measure stage counted, so a rule with many refusals is charged them "
+    "twice over to that small extent). Refused moments stay in the rule's moments and its numbers (n, mean, total, "
+    "win_rate count each as a loss of that size); `admitted_mean` is the mean of the moments that traded. The same "
+    "moments are scored with and without the ceiling: it is asked after the tape and size checks. Live, OKTech works "
+    "the limit out at its own SOL price, and a sniper's first minutes carried a wrong one (23 SOL for $4,600)"
+)
+
+
+def fill_mcap_at(path: MarketPath, e: int, buy_sol: float) -> float | None:
+    """The market cap in SOL at our own fill of `buy_sol` at state `e`: the SOL the buy sends, fee included, over the
+    coins it gets, times a pump.fun coin's billion coins (`MarketPath.mcap_sol`'s measure, on our own average price).
+    It is what OKTech's limit compares (`solana.buy_limit`): the buy lands only where this is at most the ceiling.
+    None where the pool gives no coins."""
+    asked = float(buy_sol) * LAMPORTS
+    held, _net_in, _ends = path.buy_fill(int(e), asked / (1.0 + path.fee_bps[int(e)] / 10_000.0))
+    return asked / float(held) * 1e6 if np.isfinite(held) and held > 0 else None
+
+
+def fill_mcap(prep) -> float:
+    """`fill_mcap_at` of a position already opened (`sim.exits.prepare`): what it was to spend over what it holds."""
+    return float(prep.asked) / float(prep.held) * 1e6
+
+
+def fill_refused(trig: Trigger, prep) -> bool:
+    """Whether the rule's ceiling on our own fill (`max_fill_mcap`) refuses the send that opened `prep`."""
+    return bool(trig.max_fill_mcap) and fill_mcap(prep) > trig.max_fill_mcap
+
+
+def fill_ceiling_block(trig: Trigger, rs: Sequence[Mapping[str, Any]], newer: Sequence[Mapping[str, Any]],
+                       k: int) -> dict[str, Any]:  # fmt: skip
+    """What a ranked wallet rule with a ceiling on our own fill says of it: of all its moments `rs`, how many the
+    ceiling admitted and how many it refused; of the `newer` ones its exit `k` was scored on (the ones its test
+    numbers are made of) the same two counts and the mean of those that traded; what a refusal was charged, and the
+    note that says what the numbers are."""
+    refused = sum(1 for r in rs if r.get("refused"))
+    scored = [r for r in newer if r["pnl"][k] is not None]
+    traded = [float(r["pnl"][k]) for r in scored if not r.get("refused")]
+    return {"max_fill_mcap": float(trig.max_fill_mcap), "admitted": len(rs) - refused, "refused": refused,
+            "refused_send_sol": REFUSED_SEND_SOL,
+            "test": {"admitted": len(traded), "refused": len(scored) - len(traded),
+                     "admitted_mean": float(np.mean(traded)) if traded else None},
+            "note": FILL_CEILING_NOTE}  # fmt: skip
 
 
 def size_gap(prep) -> str | None:
@@ -1923,9 +1997,10 @@ def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -
 def _buy_gates(trig: Trigger, path: MarketPath, i: int) -> bool:
     """A wallet rule's gates on the followed buy `i` itself, whoever else bought: the buy is at most `max_sol`, the
     SOL in the curve after it inside `min_curve` / `max_curve`, the coin's market cap after it inside `min_mcap` /
-    `max_mcap` (a copy sniper's ceiling), and the SOL traded before it inside `min_vol` / `max_vol`. The one-a-coin
-    rule (`_fire`) and each wallet's own moments (`_first_buys`) both ask here; until 21 Nov the second asked only the
-    volume, so a per-wallet score with a ceiling scored buys the sniper refuses."""
+    `max_mcap` (the coin right after the copied buy: no OKTech setting asks that; a copy sniper's own ceiling is on
+    our fill, `max_fill_mcap`, asked at the entry), and the SOL traded before it inside `min_vol` / `max_vol`. The
+    one-a-coin rule (`_fire`) and each wallet's own moments (`_first_buys`) both ask here; until 21 Nov the second
+    asked only the volume, so a per-wallet score with such a gate scored buys the rule passes over."""
     if trig.max_sol and path.quote[i] > trig.max_sol * LAMPORTS:
         return False
     if trig.min_curve or trig.max_curve:
@@ -2613,15 +2688,23 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             exits = run.mig_exits if trig.kind in AMM_KINDS else run.kind_exits.get(trig.kind, run.exits)
             outside: dict[int, str] = {}
             how: dict[int, list] | None = {} if run.exit_how else None
-            pnl, gaps = exit_pnls(run.amm_cov, path, prep, exits, run.costs, float(b), mig, gap, outside, how)
+            # a wallet rule's ceiling on our own fill, asked last, of a moment that is scored either way: over it
+            # the program refuses the buy, so there is no position, and every exit made what the failed send cost
+            refused = trig.kind == "kol" and fill_refused(trig, prep)
+            if refused:
+                pnl, gaps = [-REFUSED_SEND_SOL] * len(exits), {}
+            else:
+                pnl, gaps = exit_pnls(run.amm_cov, path, prep, exits, run.costs, float(b), mig, gap, outside, how)
             if gaps and len(gaps) == len(exits):  # every exit still held when the coin left its curve: left out whole
                 rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": gap})
                 continue
             row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
-                   "landing": landing_name(pos, lat, run.bid_sol),
-                   # our buy against the pool it met, and what it makes sold straight back (nothing a later buyer adds)
-                   **size_fields(prep), "own_rt": round_trip_pnl(prep, run.costs)}  # fmt: skip
+                   "landing": landing_name(pos, lat, run.bid_sol)}  # fmt: skip
+            if refused:  # no position: nothing of our buy against its pool, and nothing a later buyer could add
+                row |= {"refused": True, "own_rt": -REFUSED_SEND_SOL}
+            else:  # our buy against the pool it met, and what it makes sold straight back (nothing a later buyer adds)
+                row |= {**size_fields(prep), "own_rt": round_trip_pnl(prep, run.costs)}
             if placed:  # the place the bid got among the outsiders, and who stood ahead of it
                 row |= placed
             if gaps:  # the exits left out on this moment (None in `pnl`), and why
@@ -2636,6 +2719,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 # BAND_VOL_SECS before it, both read off the path the moment was found on (no second pass)
                 row["mcap_sol"] = round(path.mcap_sol(i), 3)
                 row["vol60_sol"] = round(volume_before(path, i, BAND_VOL_SECS), 6)
+                # and the market cap at our own fill, what a copy sniper's ceiling is held to (`max_fill_mcap`)
+                row["fill_mcap_sol"] = round(fill_mcap(prep), 6)
                 if in_create_block(path, i):  # the followed buy stood in the create block: no copy lands there
                     row["create_block"] = True
             if any_buyer(trig):  # the coin at the trigger buy: the gates' numbers, and the bands' two
@@ -3329,7 +3414,10 @@ BANDS_NOTE = ("the bands are over all the rule's moments the chosen exit was sco
               "picked on included, and the bands were not chosen before looking: a band that looks good is a "
               "hypothesis to test with the gate, not a result. mcap_sol: the coin's market cap in SOL after the "
               "followed buy (gate: min_mcap / max_mcap). vol60_sol: SOL traded in the coin in the 60 s before the "
-              "followed buy, buys and sells, that buy not counted (gate: vol_secs 60 with min_vol / max_vol). A band "
+              "followed buy, buys and sells, that buy not counted (gate: vol_secs 60 with min_vol / max_vol). "
+              "fill_mcap_sol: the market cap in SOL at our own fill at the scored landing, the same bands (gate: "
+              "max_fill_mcap, what a copy sniper's ceiling really limits; a refused moment stands in its band with "
+              "what the failed send cost). A band "
               f"runs from its lower edge up to, not including, its upper edge; under {BAND_MIN_N} moments it shows n "
               "only")  # fmt: skip
 
@@ -3354,7 +3442,8 @@ def bands(rs: Sequence[Mapping[str, Any]], k: int, conf: float, samples: int) ->
     def split(names: Sequence[str], band_of, key: str) -> list[dict[str, Any]]:
         moments: list[list[Mapping[str, Any]]] = [[] for _ in names]
         for r in scored:
-            moments[band_of(float(r[key]))].append(r)
+            if key in r:
+                moments[band_of(float(r[key]))].append(r)
         out = []
         for name, rows in zip(names, moments):
             xs = [float(r["pnl"][k]) for r in rows]
@@ -3365,9 +3454,12 @@ def bands(rs: Sequence[Mapping[str, Any]], k: int, conf: float, samples: int) ->
             out.append(row)
         return out
 
-    return {"note": BANDS_NOTE, "moments": len(scored), "min_n": BAND_MIN_N,
-            "mcap_sol": split(MCAP_BAND_NAMES, _mcap_band, "mcap_sol"),
-            "vol60_sol": split(VOL_BAND_NAMES, _vol_band, "vol60_sol")}  # fmt: skip
+    out = {"note": BANDS_NOTE, "moments": len(scored), "min_n": BAND_MIN_N,
+           "mcap_sol": split(MCAP_BAND_NAMES, _mcap_band, "mcap_sol"),
+           "vol60_sol": split(VOL_BAND_NAMES, _vol_band, "vol60_sol")}  # fmt: skip
+    if any("fill_mcap_sol" in r for r in scored):  # a wallet rule's rows: by the market cap at our own fill
+        out["fill_mcap_sol"] = split(MCAP_BAND_NAMES, _mcap_band, "fill_mcap_sol")
+    return out
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, trades: bool = False) -> list[dict]:
@@ -3461,6 +3553,8 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
             out[-1]["places"] = bid_places([int(r["place"]) for r in rs if "place" in r])
         if any(r.get("create_block") for r in rs):  # copies of a buy in a create block, placed a block later
             out[-1]["create_block_moments"] = sum(1 for r in rs if r.get("create_block"))
+        if trig.kind == "kol" and trig.max_fill_mcap:  # the moments its ceiling on our own fill admitted and refused
+            out[-1]["fill_ceiling"] = fill_ceiling_block(trig, rs, rs[cut:], k)
         out[-1]["_rows"] = (rs, k)  # for the bands of the rows that are kept
     out.sort(key=lambda r: r["test"].get("ev_lower") or -1e9, reverse=True)
     for j, r in enumerate(out):
@@ -3568,6 +3662,9 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     in `live_exits` (None for a search exit), its parameters and LAB_VERSION. `wallets`: score only these (the qualify
     stage's due list), so none of them is cut by the `top` limit behind wallets nobody asked about.
 
+    A rule with a ceiling on our own fill (`Trigger.max_fill_mcap`) counts a refused send as a copy of the wallet that
+    made what the failed send cost (REFUSED_SEND_SOL), and each row says how many of its `n` those are (`refused`).
+
     The exit a row names and returns (`exit`, `exit_name`, `exit_params`) is the one its numbers were made with: a
     wallet rule's exits wait OKTech's watch delay in the lab (`scored_exits`), so a search exit handed over without
     the delay is named with it, as `rank` names it (until 12 Nov the row named it as handed over, watch_secs 0). The
@@ -3656,6 +3753,8 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                    "moments_all": len(by[w]), "exit_name": names.get(used[k]), "exit_params": used[k].to_dict(),
                    "lab_version": LAB_VERSION, "mates": max((int(rs[i].get("mates") or 0) for i in mine), default=0),
                    } | _copy_plan_stats([rs[i] for i in kept], min_sol)  # fmt: skip
+            if trig.max_fill_mcap:  # of its n copies: the sends the rule's ceiling on our own fill refused
+                row["refused"] = sum(1 for i in mine if rs[i].get("refused"))
             if with_moments:
                 row["moments"] = [[int(rs[i]["ts"]), float(m[i, k])] for i in mine]
             if g is not None:

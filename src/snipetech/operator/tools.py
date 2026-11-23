@@ -1768,7 +1768,13 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         curve ends near 410 SOL of market cap, so "min_mcap": 410 is coins already on PumpSwap: the bigger wallets'
         buys at higher caps). The tape holds a coin's PumpSwap trades for 30 minutes after it leaves its curve, so
         that is how far past the curve any rule can be scored today; older, bigger coins are not on the tape
-        unless a backfill put them there.
+        unless a backfill put them there. "max_fill_mcap": N (23 Nov) is a copy sniper's ceiling as OKTech really
+        runs it, and what "copylist --max-mcap" sends: the market cap in SOL at OUR OWN fill at the scored landing
+        (our SOL, fee included, over our coins, times a billion) is at most N, else the send is refused: no
+        position, 0.001005 SOL charged, and the moment stays in the rule's numbers (the row's fill_ceiling counts
+        admitted and refused moments; bands also split by fill_mcap_sol). "max_mcap" asks the coin right after
+        the followed buy, which no OKTech setting does: score a rule you mean to run with a ceiling on
+        "max_fill_mcap".
         ONE WALLET (12 Nov): a kol trigger takes "only": the full address of the wallet it follows (several with
         commas between them, 20 at most). The rule then fires on a first buy by one of those wallets and on nobody
         else's; they need not be in the group. "group" still says whose first buys "known" counts (the group's
