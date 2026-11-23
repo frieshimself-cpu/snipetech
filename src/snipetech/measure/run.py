@@ -693,7 +693,12 @@ def _hold_to_ceilings(store: Store, cfg: Config, now: float, notes, seen: list[t
     sniper was sent (`far_ceiling`), at the server's own SOL price: the stored one `oktech copylist --max-mcap`
     converts with, and only while it is under CEILING_PRICE_MAX_AGE_SECS old (else `limits["unchecked"]` says so and
     nothing is compared). A line for each sniper found far goes into `limits["far"]`, and into the operator's notes
-    once a sniper a day (CEILING_SAID_KEY), there only for a send under CEILING_NEWS_SECS old."""
+    once a sniper a day (CEILING_SAID_KEY), there only for a send under CEILING_NEWS_SECS old.
+
+    Only the bot's own buys are held, landed or failed (`ours.bot_buy`: a sniper's buy fees, or a copy's shape; a
+    failed buy is no sale, so the fallback sale's fees do not make it the bot's). The owner trades by hand in this
+    wallet through tools whose limit is their own slippage: such a send keeps its limit on its row, and no sniper
+    worked it out (23 Nov review: a hand buy at a sniper's size was laid at that sniper as its ceiling gone wrong)."""
     if not seen:
         return
     price = store.asset(WSOL_MINT) or {}
@@ -701,6 +706,7 @@ def _hold_to_ceilings(store: Store, cfg: Config, now: float, notes, seen: list[t
         limits["unchecked"] = (f"no SOL price on record under {CEILING_PRICE_MAX_AGE_SECS // 3600} hours old: the "
                                "limits are kept, and were not held against the snipers' ceilings")  # fmt: skip
         return
+    marks = fee_marks(store)
 
     def copied(row: dict) -> str | None:
         """The wallet a send copied: the one its row names, else (a failed buy has no place among the coin's trades)
@@ -715,6 +721,8 @@ def _hold_to_ceilings(store: Store, cfg: Config, now: float, notes, seen: list[t
     day, told = time.strftime("%Y-%m-%d", time.gmtime(now)), dict(said)
     named: set[Any] = set()
     for row, lim in sorted(seen, key=lambda x: (x[0].get("ts") or 0, str(x[0].get("sig")))):
+        if not bot_buy(row, marks):
+            continue  # the owner's own buy
         ts = float(row.get("ts") or 0)
         far = far_ceiling(lim, ts, copy_rows, float(price["price_usd"]), copied(row))
         if far is None or far["sniper"] in named:

@@ -71,12 +71,12 @@ def _svc(tmp_path, chain=None):
     return svc, st, cfg
 
 
-def _sniper(st, sid="smoke-1", leader=LEAD, cap=4600, created=T0 - 23, buy=0.02):
+def _sniper(st, sid="smoke-1", leader=LEAD, cap=4600, created=T0 - 23, buy=0.02, priority=0.001):
     """A copy sniper as `copylist --max-mcap` makes it: the ceiling in dollars on the copied wallet."""
     wallet = {"address": leader, "minSol": 2.0} | ({"maxMcapUsd": cap} if cap else {})
     st.add_oktech_sniper({"id": sid, "external_id": sid, "kind": "copy", "source": leader,
                           "name": f"snipetech copy {sid} arm:smoke66", "config_hash": "h", "created_at": created,
-                          "payload": {"ctbotWallets": [wallet], "buyAmount": buy, "priorityFee": 0.001,
+                          "payload": {"ctbotWallets": [wallet], "buyAmount": buy, "priorityFee": priority,
                                       "tipAmount": 0.002}})  # fmt: skip
 
 
@@ -382,6 +382,78 @@ def test_a_limit_that_cannot_be_read_never_costs_a_fill_its_row(tmp_path, monkey
         row = st.fill(ours.sig)
         assert out["buys"] == 1 and row["side"] == "buy" and row["limit_mcap_sol"] is None
         assert out["limits"]["unread"].startswith("1 buy whose limit could not be read (")
+    finally:
+        st.close()
+
+
+def test_a_send_no_sniper_of_ours_paid_for_is_never_laid_at_one(tmp_path):
+    """The owner trades by hand in the sniper wallet, through tools whose limit is their own slippage. Such a send,
+    refused or landed, keeps its limit on its row like any other, but it is no sniper's: a limit far from a sniper's
+    ceiling is said only of the bot's own sends, told as the measure stage tells them everywhere (measure/ours.py: a
+    sniper's fees, or a copy's shape). The snipers on record here pay the live run's 0.0011 SOL priority, and the
+    smoke test's sends paid 0.001 with no copied buy on the tape before them: to this record each is a hand send."""
+    chain = _smoke_chain()
+    svc, st, cfg = _svc(tmp_path, chain)
+    notes = Notes()
+    try:
+        _sniper(st, priority=0.0011)
+        _sol_price(st)
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=T0 - 60, notes=notes))
+        assert out["limits"]["read"] == 5 and out["limits"]["refused"] == 3
+        assert st.fill(sig("4hC1n7oF"))["limit_mcap_sol"] == pytest.approx(23.0)  # kept all the same
+        assert out["limits"]["far"] == [] and notes.lines == [] and st.coverage(M.CEILING_SAID_KEY) == {}
+    finally:
+        st.close()
+
+
+def test_the_runs_own_buy_is_held_to_its_sniper_and_a_hand_buy_before_it_is_not(tmp_path):
+    """The live run's snipers pay 0.0011 SOL priority and a 0.002 tip, so that a book sniper's buy can never read as
+    the run's. A buy at those fees right behind the followed wallet is the run's, and its limit is held to its
+    sniper's ceiling; the owner's hand buy a minute earlier, at the sniper's own size, at the owner's fees and behind
+    no followed wallet, is not, however far its slippage puts its limit."""
+    svc, st, cfg = _svc(tmp_path)
+    notes = Notes()
+    try:
+        _sniper(st, "run-cented", LEAD, 4600, created=T0 - 600, buy=1.0, priority=0.0011)
+        _sol_price(st)
+        hand_coin = Market(st, addr("hand coin"), addr("hand dev"), T0, SLOT0)
+        hand_coin.buy(addr("hand dev"), 1.0, 0)
+        hand = hand_coin.buy(ME, 1.0, 2)
+        hand_coin.commit()
+        coin = Market(st, addr("copied coin"), addr("copied dev"), T0 + 60, SLOT0 + 150)
+        coin.buy(addr("copied dev"), 1.0, 0)
+        coin.buy(LEAD, 2.0, 2)
+        ours = coin.buy(ME, 1.0, 2)
+        coin.commit()
+
+        def meta(t, priority, tip, name, args):
+            return TxMeta(sig=t.sig, slot=t.slot, block_time=t.ts, version=0, fee_payer=ME, signers=[ME],
+                          n_signatures=1, fee=5_000 + priority, priority_lamports=priority, cu_limit=100_000,
+                          cu_price=priority * 10, cu_consumed=60_000,
+                          tips=[{"dest": addr("tip"), "lamports": tip, "service": "astralane"}] if tip else [],
+                          pump_ixs=[PumpIx(PUMP_PROGRAM, name, ME, args, None, t.mint)])  # fmt: skip
+
+        # the owner's tool: 0.00025 SOL priority, no tip, a limit 20 % over a 100 SOL coin (120 SOL)
+        hand_ix = {"spendable_sol_in": 1_000_000_000, "min_tokens_out": 8_333_333_333_333}
+        # the run's copy: OKTech worked $4,600 out at $40 a SOL (115 SOL), not ours ($70: 65.7 SOL)
+        copy_ix = {"spendable_quote_in": 1_000_000_000, "min_tokens_out": 8_695_652_173_913}
+        metas = {hand.sig: meta(hand, 250_000, 0, "buy_exact_sol_in", hand_ix),
+                 ours.sig: meta(ours, 1_100_000, 2_000_000, "buy_exact_quote_in_v3", copy_ix)}  # fmt: skip
+
+        async def ensure(sigs):
+            st.add_tx_meta([metas[s] for s in sigs if s in metas])
+            return len(sigs)
+
+        async def none(wallet, since):
+            return []
+
+        out = asyncio.run(run_measure(svc, cfg, T0 + 300, since_ts=T0 - 60, ensure_meta=ensure, failed_sigs=none,
+                                      notes=notes))  # fmt: skip
+        assert out["limits"]["read"] == 2
+        assert st.fill(hand.sig)["limit_mcap_sol"] == pytest.approx(120.0, abs=1e-3)  # its limit is on its row
+        (line,) = out["limits"]["far"]
+        assert f"send {ours.sig[:8]}" in line and "into 115.0 SOL of market cap" in line and "$40.00" in line
+        assert notes.lines == [line]
     finally:
         st.close()
 
