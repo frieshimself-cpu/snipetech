@@ -1040,8 +1040,12 @@ async def _begin(r: _Round, at: dict) -> dict | None:
 
 def _curve_room(size: float) -> float:
     """The plain SOL one curve buy of `size` needs: the buy, its fees and failed sends (live_test.BUY_FEE_MARGIN_SOL)
-    and the token account's rent. No block starts with less: its sniper's buys would only fail and pay their fees."""
-    return round(float(size) + live_test.BUY_FEE_MARGIN_SOL + RENT_SOL, 4)
+    and the token account's rent. No block starts with less: its sniper's buys would only fail and pay their fees.
+    The same sum as every other reader's (positions.curve_buy_room), with this sniper's own costs; the round's
+    conversion of wrapped SOL keeps this much plain while the test is on (operator/plain_sol.py)."""
+    from ..positions import curve_buy_room
+
+    return round(curve_buy_room(float(size), live_test.BUY_FEE_MARGIN_SOL + RENT_SOL), 4)
 
 
 def _waits_for_oktech(r: _Round, rows: list[dict]) -> None:

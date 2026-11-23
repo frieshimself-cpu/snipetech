@@ -80,6 +80,22 @@ BOOK_FILL_SOL = 0.2  # one copy's size where the snapshot does not carry the boo
 WRAP_TOPUP = 1.1
 
 
+def curve_buy_room(fill_sol: float | None, costs_sol: float = BUY_NATIVE_SOL) -> float:
+    """The plain SOL one curve buy of this fill takes once OKTech's top-up is wrapped: the buy and its costs. The one
+    sum behind every reader's "can the wallet pay a curve buy": a book copy's costs are BUY_NATIVE_SOL (`buys_payable`,
+    the book's rule, the conversion of wrapped SOL); the automatic test's block waits for its own sniper's (fees, failed
+    sends, the account's rent: operator/autotest._curve_room). `curve_plain_need` adds what OKTech still wraps."""
+    return float(fill_sol or BOOK_FILL_SOL) + float(costs_sol)
+
+
+def spare_wsol(wsol: float, fill_sol: float | None) -> float:
+    """The wallet's wrapped SOL above what OKTech keeps wrapped while a sniper of this fill runs (WRAP_TOPUP times the
+    buy). Only that much can be turned into plain SOL and stay plain: what is under it OKTech wraps again within
+    seconds (`after_topup`), so turning it back changes nothing (third round of the 22 Nov audit: the conversion,
+    operator/plain_sol.py, did not know and could swing with OKTech until its day's count ran out)."""
+    return max(0.0, float(wsol) - WRAP_TOPUP * float(fill_sol or BOOK_FILL_SOL))
+
+
 def after_topup(native_sol: float, wsol: float, fill_sol: float | None) -> tuple[float, float]:
     """The wallet's plain and wrapped SOL once a sniper of this fill runs: OKTech has wrapped what was missing of
     WRAP_TOPUP times the buy from plain SOL (all of the plain SOL when there is less than that). The one rule for what
@@ -106,15 +122,15 @@ def buys_payable(native_sol: float | None, wsol: float | None, fill_sol: float |
     eps = 1e-9  # a balance of exactly n buys pays n
     fees = int((plain + eps) // BUY_NATIVE_SOL)
     return {"size_sol": size, "oktech_wraps_sol": round(float(native_sol) - plain, 6),
-            "curve": int((plain + eps) // (size + BUY_NATIVE_SOL)),
+            "curve": int((plain + eps) // curve_buy_room(size)),
             "pumpswap": min(int((wrapped + eps) // size), fees)}  # fmt: skip
 
 
 def curve_plain_need(wsol: float, fill_sol: float | None) -> float:
-    """The plain SOL a running sniper of this fill needs for one curve buy: the buy and its costs (BUY_NATIVE_SOL),
+    """The plain SOL a running sniper of this fill needs for one curve buy: the buy and its costs (`curve_buy_room`),
     and what OKTech wraps from plain SOL to keep WRAP_TOPUP times the buy wrapped."""
     size = float(fill_sol or BOOK_FILL_SOL)
-    return size + BUY_NATIVE_SOL + max(0.0, WRAP_TOPUP * size - float(wsol))
+    return curve_buy_room(size) + max(0.0, WRAP_TOPUP * size - float(wsol))
 
 
 def curve_buy_beside_topup(native_sol: float | None, wsol: float | None, fill_sol: float | None) -> bool | None:

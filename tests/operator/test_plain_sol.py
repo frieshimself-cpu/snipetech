@@ -44,7 +44,7 @@ def test_it_is_off_until_the_owner_s_setting_says_how_many_buys(tmp_path):
 
 
 def test_a_wallet_that_cannot_pay_a_curve_buy_gets_two_buys_of_plain_sol(tmp_path):
-    cfg, paths, snap, notes, calls, convert = _world(tmp_path)
+    cfg, paths, snap, notes, calls, convert = _world(tmp_path, wsol=1.0)
     out = _run(cfg, paths, snap, notes, convert)
     # two buys of 0.205 SOL, less what is already plain, and the conversion's own fee on top
     assert calls == [2 * 205_000_000 - 1_224_377 + FEE_LAMPORTS]
@@ -55,6 +55,59 @@ def test_a_wallet_that_cannot_pay_a_curve_buy_gets_two_buys_of_plain_sol(tmp_pat
     assert "[info]" in note and "0.4088 wrapped SOL into plain SOL" in note and "SIGCONVERT12" in note
     rows = json.loads((paths.root / P.STATE).read_text())
     assert len(rows) == 1 and rows[0]["signature"] == "SIGCONVERT1234567890" and rows[0]["ts"] == NOW
+
+
+def test_what_oktech_keeps_wrapped_is_never_turned_back(tmp_path):
+    """Round 3 of the 22 Nov audit (item 7): while a sniper runs OKTech keeps 1.1 times the buy wrapped and wraps what
+    is missing out of plain SOL within seconds (positions.WRAP_TOPUP). The conversion did not know: with 0.30 SOL
+    wrapped it turned all of it into plain SOL, OKTech wrapped 0.22 again, 0.08 was left, and the next round did the
+    same until the day's six were used up. Only the wrapped SOL above that level is turned back (positions.spare_wsol),
+    and only when that makes a curve copy payable."""
+    cfg, paths, snap, notes, calls, convert = _world(tmp_path, native=0.001, wsol=0.30)
+    assert _run(cfg, paths, snap, notes, convert) is None and calls == []  # 0.08 to spare: no curve copy either way
+    # 11 Nov's own balances: 0.4718 wrapped is 0.2518 above the 0.22 OKTech keeps: that much, one buy and change
+    cfg, paths, snap, notes, calls, convert = _world(tmp_path)
+    assert _run(cfg, paths, snap, notes, convert)["signature"] and calls == [471_817_213 - 220_000_000]
+    assert "0.2518 wrapped SOL into plain SOL" in paths.notes.read_text()
+
+
+def _autotest_on(paths, buy_sol=0.2):
+    from snipetech.operator import autotest
+
+    autotest.set_autotest(paths, True, values={"buy_sol": buy_sol}, words="yes, run it", at=NOW - 3600, by="cli",
+                          now=NOW - 3600, wallet="6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at",
+                          oktech_wallet="SNIPER")  # fmt: skip
+
+
+def test_the_automatic_test_gets_the_plain_sol_its_block_waits_for(tmp_path):
+    """Round 3 of the 22 Nov audit (item 7): a block of the owner's automatic test starts only with one curve buy, its
+    sniper's fees and the account's rent in plain SOL (0.252 SOL for a 0.2 SOL buy: autotest._curve_room), and until
+    it starts none of its snipers runs. The conversion took the wallet for able to pay at 0.205 SOL, and ran only
+    while the book was on or a sniper ran: with 0.22 SOL plain the test waited for good, for SOL the wallet held in
+    wrapped form. While that test is on, at the book's size or under, the conversion keeps what its block waits for."""
+    cfg, paths, snap, notes, calls, convert = _world(tmp_path, native=0.22, wsol=1.5, live=False)
+    assert _run(cfg, paths, snap, notes, convert) is None and calls == []  # nothing of ours can buy: left alone
+    _autotest_on(paths)
+    assert _run(cfg, paths, snap, notes, convert)["signature"]
+    assert calls == [2 * 252_000_000 - 220_000_000 + FEE_LAMPORTS]
+    # with the book on and the test off, 0.22 SOL pays a book copy (0.205): left alone, as the snapshot counts it
+    cfg, paths, snap, notes, calls, convert = _world(tmp_path / "book", native=0.22, wsol=1.5)
+    assert _run(cfg, paths, snap, notes, convert) is None and calls == []
+    # and with both, the test's wait decides
+    _autotest_on(paths)
+    assert _run(cfg, paths, snap, notes, convert)["signature"] and len(calls) == 1
+
+
+def test_a_test_that_buys_more_than_the_books_size_gets_no_conversion_of_its_own(tmp_path):
+    """The owner's yes of 11 Nov is for plain SOL for up to two 0.2 SOL curve buys. A test at a larger buy is theirs to
+    say: the conversion stays at the book's size for it, and does not run for it alone."""
+    cfg, paths, snap, notes, calls, convert = _world(tmp_path, native=0.22, wsol=1.5, live=False)
+    _autotest_on(paths, buy_sol=0.5)
+    assert _run(cfg, paths, snap, notes, convert) is None and calls == []
+    cfg, paths, snap, notes, calls, convert = _world(tmp_path / "book", native=0.1, wsol=1.5)
+    _autotest_on(paths, buy_sol=0.5)
+    assert _run(cfg, paths, snap, notes, convert)["signature"]
+    assert calls == [2 * 205_000_000 - 100_000_000 + FEE_LAMPORTS]
 
 
 def test_a_wallet_that_can_pay_one_curve_buy_is_left_alone(tmp_path):

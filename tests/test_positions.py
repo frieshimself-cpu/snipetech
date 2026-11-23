@@ -96,3 +96,39 @@ def test_the_books_can_pay_rule_and_the_snapshots_count_are_one_rule():
                 plain, wrapped = after_topup(native, wsol, fill)
                 assert abs(plain + wrapped - native - wsol) < 1e-12 and plain >= 0 and wrapped >= wsol
     assert abs(curve_plain_need(0.0, 0.2) - 0.425) < 1e-12 and curve_buy_beside_topup(None, 0.0, 0.2) is None
+
+
+def test_what_a_curve_buy_takes_and_what_can_be_unwrapped_are_the_same_rule_for_every_reader():
+    """Round 3 of the 22 Nov audit: three places said what one curve buy needs in plain SOL, each its own way: the
+    book and the agents' snapshot (0.205 SOL for a 0.2 SOL copy once OKTech's top-up is wrapped), the conversion of
+    wrapped SOL (0.205, the top-up not known to it: it turned back what OKTech wraps again within seconds) and the
+    automatic test's wait (0.252: its sniper's own costs). One function a size and its costs (`curve_buy_room`), one
+    for the wrapped SOL above what OKTech keeps wrapped (`spare_wsol`: all that a conversion can move for good)."""
+    from snipetech import positions as P
+    from snipetech.operator import autotest, live_test
+    from snipetech.positions import buys_payable, curve_buy_room, curve_plain_need, spare_wsol
+
+    BUY_NATIVE_SOL, WRAP_TOPUP = P.BUY_NATIVE_SOL, P.WRAP_TOPUP
+
+    assert abs(curve_buy_room(0.2) - 0.205) < 1e-12 and abs(curve_buy_room(None) - 0.205) < 1e-12
+    assert abs(curve_buy_room(1.0, 0.05) - 1.05) < 1e-12
+    for fill in (0.05, 0.2, 1.0):
+        room = curve_buy_room(fill)
+        assert abs(room - fill - BUY_NATIVE_SOL) < 1e-12
+        for wsol in (0.0, 0.1, 0.22, 0.5, 1.1, 3.0):
+            spare = spare_wsol(wsol, fill)
+            assert abs(spare - max(0.0, wsol - WRAP_TOPUP * fill)) < 1e-12
+            # what one copy needs in plain SOL is its room and what OKTech still wraps
+            assert abs(curve_plain_need(wsol, fill) - room - max(0.0, WRAP_TOPUP * fill - wsol)) < 1e-12
+            # with the spare turned into plain SOL the top-up is still there: every lamport of it pays curve copies
+            for native in (0.0, 0.004, 0.2):
+                can = buys_payable(native + spare, wsol - spare, fill)
+                assert can["oktech_wraps_sol"] == round(min(max(0.0, WRAP_TOPUP * fill - (wsol - spare)),
+                                                            native + spare), 6)  # fmt: skip
+                if wsol >= WRAP_TOPUP * fill:
+                    assert can["oktech_wraps_sol"] == 0 and can["curve"] == int((native + spare + 1e-9) // room)
+    # the automatic test's wait is the same sum with its own sniper's costs (fees, failed sends, the account's rent)
+    costs = live_test.BUY_FEE_MARGIN_SOL + autotest.RENT_SOL
+    for size in (0.05, 0.2, 0.5):
+        assert autotest._curve_room(size) == round(curve_buy_room(size, costs), 4)
+    assert autotest._curve_room(0.2) == 0.252
