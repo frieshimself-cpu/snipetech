@@ -523,19 +523,22 @@ def _holding_buys(store, wallet: str, mint: str, marks: dict[str, frozenset]) ->
 
 
 def _chain_spent(tx: dict, wallet: str, mint: str, services: dict[str, str] | None = None) -> int | None:
-    """What a transaction of the wallet's that brought `mint` in spent on it, in lamports, off the wallet's own
-    balances (chain_landing.read_fill: the quote and the venue's fee, as the tape's `quote + fee` and the fills' `sol`
-    have it; real curve buys read so to the lamport, tests/test_chain_landing.py). 0 for a coin that came in with no
-    pool paid (a claim, a move): no buy at all. None when the transaction cannot be read as one buy of this coin: the
-    size is then not known."""
+    """What a transaction of the wallet's that brought `mint` in spent, in lamports, off the wallet's own balances
+    (chain_landing.read_fill: the quote and the venue's fee, as the tape's `quote + fee` and the fills' `sol` have
+    it; real curve buys read so to the lamport, tests/test_chain_landing.py). 0 for a coin that came in with no pool
+    paid (a claim, a move): no buy at all. In a transaction that moved another coin of the wallet's too (the owner's
+    swap of one coin for another) it is the SOL all of it cost: a copy of ours is one buy that spends its sniper's
+    size, whatever else moved, so that is the size to ask of (asked of the coin that moved the most, such a
+    transaction had no size at all, and its coin was nobody's for as long as it was held: review of round 3). None
+    when the transaction cannot be read at all: the size is then not known."""
     from .chain_landing import read_fill
 
     try:
-        fill = read_fill(tx, wallet, services, ours=True)
+        fill = read_fill(tx, wallet, services, ours=True, coin=mint)
     except Exception:  # noqa: BLE001 - a transaction the reader cannot take apart: not known
         return None
     if not fill or fill.get("mint") != mint:
-        return None  # another coin moved more in it: what this one cost cannot be told from the balances
+        return None  # the wallet's balance of this coin did not change in it
     if fill.get("side") == "transfer":
         return 0
     return _lamports(fill.get("sol")) if fill.get("side") == "buy" else None

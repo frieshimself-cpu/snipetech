@@ -170,12 +170,15 @@ def pool_side(tx: dict, mint: str, bought: bool) -> dict[str, Any] | None:
 MOVE_RENT_LAMPORTS = 2_100_000  # a token account's rent (2,039,280) and a little: what a coin's transfer may carry
 
 
-def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, *, ours: bool = False) -> dict | None:
+def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, *, ours: bool = False,
+              coin: str | None = None) -> dict | None:  # fmt: skip
     """One wallet's side of one transaction (a getTransaction answer, or a block's transaction with its slot added):
-    the coin whose balance of the wallet changed the most, bought or sold; `tokens` (raw units) and `sol`: what the
-    trade itself cost or brought, from the wallet's plain and wrapped SOL before and after, less what `fills` keeps
-    apart (the fee, the tips) and less the rent of a token account of its own opened or closed there. So `sol` is the
-    tape's `sol` (the quote and the venue's fee) wherever the coin trades. `pool_sol`: the SOL at the pool
+    the coin whose balance of the wallet changed the most, bought or sold (`coin`: this one instead, when the
+    wallet's balance of it changed there: for the reader that asks of one coin, in a transaction that moved another
+    one more); `tokens` (raw units) and `sol`: what the trade itself cost or brought, from the wallet's plain and
+    wrapped SOL before and after, less what `fills` keeps apart (the fee, the tips) and less the rent of a token
+    account of its own opened or closed there. So `sol` is the tape's `sol` (the quote and the venue's fee) wherever
+    the coin trades; in a transaction that moved two coins it is what all of it cost. `pool_sol`: the SOL at the pool
     (`pool_side`); `price`: SOL per coin (raw lamports per raw unit) at the pool, else from `sol` (`price_from`).
     `ours`: the wallet is ours, and a payment to an account nobody catalogued is a tip (`classify.fee_fields`); for
     any other wallet it is `other_lamports`. A failed transaction is side "failed" with the coin it named; a coin
@@ -194,7 +197,7 @@ def read_fill(tx: dict, wallet: str, services: Mapping[str, str] | None = None, 
         mint = max(set(coins), key=coins.count) if coins else None
         change = 0
     else:
-        mint = max(delta, key=lambda m: abs(delta[m])) if delta else None
+        mint = coin if coin and delta.get(coin) else (max(delta, key=lambda m: abs(delta[m])) if delta else None)
         change = delta.get(mint, 0) if mint else 0
         if not change:
             return None

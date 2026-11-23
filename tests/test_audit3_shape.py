@@ -390,6 +390,47 @@ def test_a_coin_that_came_in_for_no_sol_is_no_copy():
     assert asyncio.run(coins.whose(held, now - 300, now)) == "owner" and not _walked(chain)
 
 
+def _coin_for_coin(name, sol):
+    """The owner swaps a coin they hold for COIN in one transaction of their own: COIN comes in, more units of the
+    other coin go out, and `sol` SOL crosses beside (0: a pool of the two coins)."""
+    from .chain import _amount
+
+    tx = swap(name, ME, COIN, tokens=38_000_000, sol=sol, priority=0.000006121, tip=0.026993879)
+    keys = tx["transaction"]["message"]["accountKeys"]
+    row = {"accountIndex": keys.index(key("an uncatalogued account")),  # stands for the wallet's account of the other
+           "mint": key("a coin the owner held before"), "owner": ME}  # fmt: skip
+    tx["meta"]["preTokenBalances"].append(row | {"uiTokenAmount": _amount(900_000_000)})
+    tx["meta"]["postTokenBalances"].append(row | {"uiTokenAmount": _amount(0)})
+    return tx
+
+
+@pytest.mark.parametrize("sol", [0.0, 0.4], ids=["no SOL across", "0.4 SOL across too"])
+def test_a_coin_the_owner_swapped_another_coin_for_is_the_owners_not_nobodys_for_good(sol):
+    """S1 (review): the owner swaps one coin for another by hand while a run is on. Another coin moved more in that
+    transaction, so "what this coin cost" was not read off it, and a size that cannot be read is "not known yet":
+    this one never could be, and the coin was nobody's for as long as it was held. The run re-armed nothing more and
+    left its snipers running at its end, on the owner's own trade (before the size rule it was the owner's at the
+    second look). What the transaction spent is the wallet's SOL whatever else moved in it, and a copy spends its
+    sniper's size: this one did not, so the coin is the owner's at the first look, with no walk."""
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S + 1, _coin_for_coin("swap", sol))
+    whose, coins = _chain_whose(chain)
+    assert whose == "owner" and coins.known(COIN) == "owner" and coins.odd == []
+    assert not _walked(chain)
+
+
+def test_a_copy_in_a_transaction_that_moved_another_coin_too_is_still_read_at_its_size():
+    """S1 (review), the other side: the size is asked of the coin the wallet holds, not of whichever coin moved the
+    most. A buy that spent exactly the sniper's 1 SOL right behind the copied wallet is the run's by its place and
+    size, whatever else its transaction moved; no copy is turned into the owner's coin by the reading."""
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S + 1, _coin_for_coin("ours", 1.0))
+    whose, coins = _chain_whose(chain)
+    assert whose == "ours" and [o["leader"] for o in coins.odd] == [CW]
+
+
 @pytest.mark.parametrize("fixture,size", [("tx/48YmS3mVdw*.json", 0.05), ("tx/xqo6FRzqCx*.json", 0.03),
                                           ("pumpswap_buy_landed_10nov.json", 0.2)],
                          ids=["a 0.05 SOL curve copy", "a 0.03 SOL curve copy", "a 0.2 SOL PumpSwap copy"])  # fmt: skip
