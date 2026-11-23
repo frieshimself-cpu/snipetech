@@ -1151,10 +1151,12 @@ def render_paper(action: str, r: dict) -> str:
         # a rule the paper test dropped says so in its own row (the rows' `refuted`, as the dashboard lists it apart):
         # until 23 Nov the text showed it like any rule under test. A table without one keeps its columns
         gone = any(s.get("refuted") for s in some)
-        return table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]),
+        text = table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]),
                        f(s["total"], 3), f(s.get("ev_lower_capped")), pct(s["win_rate"]), f(s["lab_mean"]),
                        *(["refuted" if s.get("refuted") else ""] if gone else [])]
                       for s in some], heads + ["state"] * gone)  # fmt: skip
+        # the word's column is right-aligned like the others: a row without it ends where it did, not in blanks
+        return "\n".join(line.rstrip() for line in text.split("\n")) if gone else text
 
     # a landing asked for at the freeze, or a bid: listed apart, each with its place and bid, and never under the
     # words for where our trades land live

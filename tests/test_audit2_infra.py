@@ -1,7 +1,8 @@
 """The second round of the audit of 22-23 Nov 2026, group "infra": the small leftovers that have no test file of their
-own (the paper report's text, the lab's exit horizon, the month's Helius credits for `sends`). The tape's retention
-rule is pinned in tests/test_retention.py, the job records in tests/test_ops.py and tests/operator/test_job_records.py,
-the wallet profiler's window in tests/test_leader_profiles.py."""
+own (the paper report's text, the lab's exit horizon). The tape's retention rule is pinned in tests/test_retention.py,
+the recorder's prune over a restart in tests/test_short_writes.py, the job records in tests/test_ops.py and
+tests/operator/test_job_records.py, the wallet profiler's window in tests/test_leader_profiles.py, the month's Helius
+credits for `sends` in tests/test_sends.py."""
 
 from snipetech import report as R
 from snipetech.analysis import paper
@@ -27,13 +28,21 @@ def _report_text(rules: list[dict]) -> tuple[dict, str]:
     return rep, R.render_paper("report", rep)
 
 
+def _table_rows(text: str) -> dict[str, str]:
+    """Each rule's row in the report's tables by its id (the ids here end d0000000). A note under the tables starts
+    with an id too ("id, id: ...") and is no row: read by its first ten characters alone, the row of the first rule
+    was that note."""
+    return {line[:10]: line for line in text.splitlines() if line[:10].endswith("d0000000") and line[10:12] == "  "}
+
+
 def test_the_paper_reports_text_marks_a_refuted_rule_in_its_row():
     gone = {"at": 1_794_700_000, "trades": 412, "mean_sol": -0.0213}
     rep, text = _report_text([_stored("a1d0000000", "a rule under test | hold60s"),
                               _stored("b2d0000000", "a rule the test dropped | hold60s", refuted=gone),
                               _stored("c3d0000000", "another under test | hold60s")])  # fmt: skip
     assert [r.get("refuted") for r in rep["strategies"]] == [None, gone, None]  # the JSON rows, since round 1
-    row = {line[:10]: line for line in text.splitlines() if line[:10] in ("a1d0000000", "b2d0000000", "c3d0000000")}
+    row = _table_rows(text)
+    assert sorted(row) == ["a1d0000000", "b2d0000000", "c3d0000000"]
     assert row["b2d0000000"].split()[-1] == "refuted"
     assert "refuted" not in row["a1d0000000"] and "refuted" not in row["c3d0000000"]
     # and once under the tables, what the word means
@@ -46,6 +55,19 @@ def test_a_report_without_a_refuted_rule_reads_as_before():
     assert "refuted" not in text and "state" not in text
     head = next(line for line in text.splitlines() if line.startswith("id "))
     assert head.split()[-2:] == ["lab", "said"]  # the table's last column, as it was
+
+
+def test_the_mark_adds_no_blanks_to_the_rows_without_it():
+    """Review of 23 Nov: the mark's column is right-aligned like every other, so each row without the word ended in
+    blanks as wide as the column (nine characters a row, in a text the agents read whole)."""
+    gone = {"at": 1_794_700_000, "trades": 412, "mean_sol": -0.0213}
+    _rep, text = _report_text([_stored("a1d0000000", "a rule under test | hold60s"),
+                               _stored("b2d0000000", "a rule the test dropped | hold60s", refuted=gone)])  # fmt: skip
+    assert [line for line in text.splitlines() if line != line.rstrip()] == []
+    row = _table_rows(text)
+    assert row["b2d0000000"].endswith("  refuted")  # the word stands under its column's name, as before
+    # the row without it ends at the column before, its cells where they were
+    assert len(row["a1d0000000"]) == len(row["b2d0000000"]) - len("  refuted") and row["a1d0000000"].endswith(" -")
 
 
 # -- I5: the lab's exit horizon counts a timer extension ---------------------------------------------------------------
