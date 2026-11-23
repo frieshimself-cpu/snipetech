@@ -840,11 +840,31 @@ def _band_lines(strategies: list[dict]) -> list[str]:
     for s in banded:
         b = s["bands"]
         out.append(f"  {s['trigger']} | {s['exit']} ({b['moments']} moments)")
-        for title, key in (("By market cap after the followed buy, SOL (gate: min_mcap / max_mcap)", "mcap_sol"),
+        for title, key in ((("By market cap after the followed buy, SOL (gate: min_mcap / max_mcap, on the leader's "
+                             "buy; a copy sniper's ceiling holds our own fill: max_fill_mcap)"), "mcap_sol"),
                            ("By SOL traded in the 60 s before it (gate: vol_secs 60, min_vol / max_vol)",
                             "vol60_sol")):  # fmt: skip
             text = table(rows(b[key]), [title, "n", "mean", "bound", "win", "total"])
             out += ["    " + line for line in text.split("\n")]
+    return out
+
+
+def _ceiling_lines(strategies: list[dict]) -> list[str]:
+    """Each wallet rule with a ceiling on our own fill (`Trigger.max_fill_mcap`, lab.fill_ceiling_block): how many of
+    its moments the ceiling admitted and refused, what a refusal was charged, and the same for the newer moments its
+    test numbers are made of, with the mean of those that traded (a refusal counts as a copy losing its charge)."""
+    out = []
+    for s in strategies:
+        c = s.get("fill_ceiling")
+        if not c:
+            continue
+        t = c.get("test") or {}
+        mean = t.get("admitted_mean")
+        out.append(f"{s['trigger']} | {s['exit']}: the ceiling on our own fill ({c['max_fill_mcap']:g} SOL of market "
+                   f"cap, as a copy sniper's maxMcapUsd holds it) {c['admitted']} admitted, {c['refused']} refused, "
+                   f"each refused send charged {c['refused_send_sol']:g} SOL; of the newer 40 % {t.get('admitted', 0)} "
+                   f"admitted, {t.get('refused', 0)} refused"
+                   + (f", the admitted ones {sol(mean)} a trade" if mean is not None else "") + ".")  # fmt: skip
     return out
 
 
@@ -903,6 +923,7 @@ def render_lab(r: dict) -> str:
     out.append(
         "Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%."
     )
+    out += _ceiling_lines(r["strategies"])
     if r.get("per_tx_sol") is not None:  # what each transaction was charged, and whether that is what live costs
         tx = float(r["per_tx_sol"])
         at = r.get("per_tx_measured_at")
@@ -976,9 +997,13 @@ def render_lab(r: dict) -> str:
             "",
             "Labeled wallets whose first buy in a coin is a signal at this speed (our exit, all of their moments):",
         ]
-        out.append(table([[(w["label"] or "")[:22], w["wallet"][:10], w["trigger"][:34], w["exit"][:30], w["n"], sol(w["mean"]),
-                           sol(w["ev_lower"]), pct(w["win_rate"])] for w in r["wallets"]],
-                         ["label", "wallet", "trigger", "exit", "n", "mean", "bound", "win"]))  # fmt: skip
+        # a ceiling on our own fill counts each refused send among n, charged its priority fee (lab.REFUSED_SEND_SOL)
+        refused = any("refused" in w for w in r["wallets"])
+        out.append(table([[(w["label"] or "")[:22], w["wallet"][:10], w["trigger"][:34], w["exit"][:30], w["n"],
+                           *([w.get("refused", 0)] if refused else []), sol(w["mean"]), sol(w["ev_lower"]),
+                           pct(w["win_rate"])] for w in r["wallets"]],
+                         ["label", "wallet", "trigger", "exit", "n", *(["refused"] if refused else []), "mean", "bound",
+                          "win"]))  # fmt: skip
     return "\n".join(out)
 
 
