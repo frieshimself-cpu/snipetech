@@ -526,3 +526,144 @@ def test_i8_the_agents_are_told_how_the_reports_text_marks_a_refuted_rule():
 
     for system in (P.ANALYST_SYSTEM, P.ROLE_SYSTEM["tester"]):
         assert "(the report's text marks it with the word refuted in a last column, state)" in _flat(system)
+
+
+# -- I10: a /stop that a cut pass left unfinished is acted on by the next pass -----------------------------------------
+
+
+class Cut(BaseException):
+    """The unit's kill at two minutes (snipetech-commands.service), as the pass meets it: nothing after it runs."""
+
+
+def _commands(tmp_path, monkeypatch):
+    """The one-minute pass's world (tests/operator/test_commands.py): one running sniper, an empty wallet, the owner's
+    chat. Returns (paths, store, service) and `go(texts, cut=None, fails=None)`, which runs one pass over the commands
+    the owner sent since the last one and returns what it told them. `cut` names the command the pass is killed in,
+    `fails` the one whose handling raises."""
+    from snipetech.operator import live_test
+    from snipetech.operator import run as OR
+    from tests.operator import test_commands as TC
+
+    monkeypatch.setattr(live_test, "SECOND_READ_SECS", 0.0)  # /stop's wait between its two readings of the wallet
+    paths, st, svc, cfg = TC._commands_env(tmp_path)
+    real, uid = OR.handle_command, [5]
+
+    def go(texts, cut=None, fails=None):
+        async def handle(cmd, **kw):
+            if cmd.name == cut:
+                raise Cut
+            if cmd.name == fails:
+                raise RuntimeError("boom")
+            return await real(cmd, **kw)
+
+        monkeypatch.setattr(OR, "handle_command", handle)
+        batch = [TC._msg(uid[0] + i, 7, text) for i, text in enumerate(texts)]
+        uid[0] += len(texts)
+        sent: list[str] = []
+        asyncio.run(OR.commands_pass(cfg, svc, now=lambda: TC.NOW, send=lambda t: sent.append(t) or True,
+                                     commands_get=lambda url, params: {"result": batch}))  # fmt: skip
+        return sent
+
+    return paths, st, svc, go
+
+
+def test_i10_a_stop_a_cut_pass_left_unfinished_is_acted_on_by_the_next_pass(tmp_path, monkeypatch):
+    """A /sell and a /stop read in one pass, the sale's calls slow: the unit is killed at two minutes with Telegram's
+    offset already past both. The flag was written when the /stop was read, but its stops and its answer never came,
+    and no later pass knew of it: the owner heard nothing and a sniper holding nothing went on copying. The next pass
+    acts on it, first, and says why the answer comes late; the pass after has nothing left to do."""
+    paths, st, svc, go = _commands(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(Cut):
+            go(["/sell", "/stop"], cut="sell")
+        assert paths.stop_flag.exists() and svc.calls == []  # in force since it was read; nothing stopped yet
+        sent = go([])  # a minute later: the owner has sent nothing new
+        assert svc.calls == [("stop", "s1")]
+        assert len(sent) == 1 and "stopped 1 sniper(s): s1" in sent[0], sent
+        assert sent[0].startswith("Your /stop is acted on now: the pass that read it was cut off"), sent[0]
+        assert go([]) == [] and svc.calls == [("stop", "s1")]  # once
+    finally:
+        st.close()
+
+
+def test_i10_a_stop_behind_a_resume_and_a_cut_command_is_not_lost(tmp_path, monkeypatch):
+    """/resume, /sell, /stop in one pass: the flag is not written when they are read (the /resume is acted on first,
+    on the flag as it stood), the /resume lifts it, and the pass is killed in the sale. The owner's last word was
+    /stop, and nothing held it: no flag, no stop, no answer."""
+    paths, st, svc, go = _commands(tmp_path, monkeypatch)
+    paths.stop_flag.write_text("1")  # stopped before
+    try:
+        with pytest.raises(Cut):
+            go(["/resume", "/sell", "/stop"], cut="sell")
+        assert not paths.stop_flag.exists() and svc.calls == []
+        sent = go([])
+        assert paths.stop_flag.exists() and svc.calls == [("stop", "s1")] and "stopped 1 sniper(s)" in sent[0], sent
+    finally:
+        st.close()
+
+
+def test_i10_a_stop_cut_in_the_middle_of_its_own_stops_is_finished_by_the_next_pass(tmp_path, monkeypatch):
+    _paths, st, svc, go = _commands(tmp_path, monkeypatch)
+    svc._snipers.append({"id": "s2", "name": "b", "status": "running"})
+    asked = []
+
+    async def task(action, task_id):  # the first stop is made, the pass is killed in the second
+        asked.append((action, task_id))
+        if len(asked) == 2:
+            raise Cut
+        return {"ok": True}
+
+    svc.oktech_task = task
+    try:
+        with pytest.raises(Cut):
+            go(["/stop"])
+        assert asked == [("stop", "s1"), ("stop", "s2")]
+        sent = go([])
+        assert asked[2:] == [("stop", "s1"), ("stop", "s2")] and "stopped 2 sniper(s): s1, s2" in sent[0], sent
+        assert go([]) == []
+    finally:
+        st.close()
+
+
+def test_i10_a_stop_the_owner_took_back_is_not_acted_on_again(tmp_path, monkeypatch):
+    """The owner's newer word wins. A /resume read behind the /stop in the cut pass, or sent after it: the /stop is
+    not acted on a pass later (it would stop snipers the owner wants running)."""
+    paths, st, svc, go = _commands(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(Cut):
+            go(["/sell", "/stop", "/resume"], cut="sell")
+        assert go([]) == [] and svc.calls == []
+        with pytest.raises(Cut):
+            go(["/sell", "/stop"], cut="sell")
+        sent = go(["/resume"])
+        assert svc.calls == [] and not paths.stop_flag.exists() and len(sent) == 1 and "resumed" in sent[0], sent
+        assert go([]) == [] and svc.calls == []
+    finally:
+        st.close()
+
+
+def test_i10_a_stop_answered_or_sent_again_is_acted_on_once(tmp_path, monkeypatch):
+    _paths, st, svc, go = _commands(tmp_path, monkeypatch)
+    try:
+        assert len(go(["/stop"])) == 1 and svc.calls == [("stop", "s1")]  # answered in its own pass
+        assert go([]) == [] and svc.calls == [("stop", "s1")]
+        with pytest.raises(Cut):
+            go(["/sell", "/stop"], cut="sell")
+        sent = go(["/status", "/stop"])  # the owner, with no answer, sent it again: that one is acted on, in its place
+        assert svc.calls == [("stop", "s1")] * 2 and len(sent) == 2 and "stopped 1 sniper(s)" in sent[1], sent
+        assert not sent[1].startswith("Your /stop is acted on now")
+        assert go([]) == []
+    finally:
+        st.close()
+
+
+def test_i10_a_stop_that_failed_is_not_tried_every_minute(tmp_path, monkeypatch):
+    """A /stop whose handling raised is logged, as before, and is over: only a pass that was cut off leaves one owed
+    (acted on again each minute, a failing /stop would send the owner its line each minute)."""
+    paths, st, svc, go = _commands(tmp_path, monkeypatch)
+    try:
+        assert go(["/stop"], fails="stop") == []
+        assert go([], fails="stop") == [] and go([]) == [] and svc.calls == []
+        assert paths.log.read_text().count("command /stop failed: RuntimeError: boom") == 1
+    finally:
+        st.close()

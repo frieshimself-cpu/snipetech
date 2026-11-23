@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from ..ops import _pid_alive, redact
 from . import learning, leftovers, live_test, outage, plain_sol, postmortem, risk_guard, roles
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
-from .commands import handle_command, poll_commands
+from .commands import Command, handle_command, poll_commands
 from .digest import digest_due, digest_text, mark_sent
 from .gate import Decision, decide, refire_secs
 from .jobs import OperatorJobs
@@ -190,9 +190,55 @@ def _commands_lock(paths: OperatorPaths) -> Iterator[bool]:
             os.close(fd)
 
 
+# The first line of the answer to a /stop that is acted on a pass late (`_owed_stop`)
+STOP_LATE = ("Your /stop is acted on now: the pass that read it was cut off before it had answered (its commands took "
+             "over two minutes, or the server restarted).")  # fmt: skip
+
+
+def _owe_stop(paths: OperatorPaths, when: float) -> None:
+    """Write down that a /stop was read and is not answered yet (paths.stop_owed)."""
+    with suppress(OSError):  # not written: a pass that is cut off loses its /stop's stops, as before
+        paths.ensure()
+        paths.stop_owed.write_text(str(int(when)))
+
+
+def _owed_stop(paths: OperatorPaths) -> Command | None:
+    """The /stop a pass before this one read and was cut off before answering, taken off the record. None when none
+    is owed, and when its mark cannot be taken away: acted on then, it would be acted on every minute."""
+    try:
+        text = paths.stop_owed.read_text()
+        paths.stop_owed.unlink()
+    except OSError:
+        return None
+    try:
+        when = int(float(text.strip()))
+    except ValueError:
+        when = None
+    return Command(name="stop", args=[], chat_id=0, update_id=0, date=when)
+
+
+class _SaidLate:
+    """The notifier for a /stop acted on a pass late: its answer starts by saying so (STOP_LATE)."""
+
+    def __init__(self, notifier):
+        self.notifier = notifier
+
+    def send(self, text: str) -> bool:
+        return self.notifier.send(f"{STOP_LATE}\n{text}")
+
+
 async def run_commands(cfg: Config, svc, paths: OperatorPaths, *, now: float, notifier, notes: NoteSink, snap=None,
                        commands_get: Callable[[str, dict], dict] | None = None) -> list[str]:  # fmt: skip
-    """Poll Telegram once and act on the owner's commands (/stop, /resume, /status). Returns the replies."""
+    """Poll Telegram once and act on the owner's commands (/stop, /resume, /status), in the order they were sent.
+    Returns the replies.
+
+    A /stop is owed from the moment it is read until it is answered (paths.stop_owed). The one-minute pass is killed at
+    two minutes (snipetech-commands.service) with Telegram's offset past every command it read: a /stop behind a /sell
+    whose calls were slow lost its stops and its answer, and one behind a /resume read with it lost its flag too (23
+    Nov audit, R-livetest-5: /sell may take 60 s and /stop 95 s, so no order of the two fits two minutes). The next
+    pass acts on a /stop still owed, first, and its answer says so. Not when the owner's newer word is there: a /resume
+    read behind it in the cut pass, or a /stop or /resume sent since (that one is acted on, in its place). A /stop
+    whose handling raised is over, as before: only a pass that is cut off leaves one owed."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not (token or commands_get):
         return []
@@ -201,15 +247,30 @@ async def run_commands(cfg: Config, svc, paths: OperatorPaths, *, now: float, no
         if not held:
             _log(paths, now, "commands: another poller holds the lock; skipped this pass")
             return []
-        for cmd in poll_commands(token or "", paths, get=commands_get):
+        owed = _owed_stop(paths)
+        cmds = poll_commands(token or "", paths, get=commands_get)
+        if owed is not None and not {"stop", "resume"} & {c.name for c in cmds}:
+            cmds = [owed, *cmds]
+        else:
+            owed = None
+        last_stop = max((i for i, c in enumerate(cmds) if c.name == "stop"), default=None)
+        if last_stop is not None and "resume" not in [c.name for c in cmds[last_stop + 1 :]]:
+            _owe_stop(paths, cmds[last_stop].date or now)
+        for i, cmd in enumerate(cmds):
+            late = cmd is owed
             try:
                 reply = await handle_command(
-                    cmd, svc=svc, cfg=cfg, paths=paths, snap=snap, notifier=notifier, notes=notes, now=now
-                )
-                _log(paths, now, f"command /{cmd.name}: {reply.splitlines()[0][:120]}")
+                    cmd, svc=svc, cfg=cfg, paths=paths, snap=snap, notifier=_SaidLate(notifier) if late else notifier,
+                    notes=notes, now=now,
+                )  # fmt: skip
+                _log(paths, now, f"command /{cmd.name}{' (owed by a pass that was cut off)' if late else ''}: "
+                                 f"{reply.splitlines()[0][:120]}")  # fmt: skip
                 replies.append(reply)
             except Exception as exc:  # noqa: BLE001
                 _log(paths, now, f"command /{cmd.name} failed: {type(exc).__name__}: {exc}")
+            if i == last_stop:  # answered, or over: no later /stop of this pass is owed
+                with suppress(OSError):
+                    paths.stop_owed.unlink(missing_ok=True)
     return replies
 
 
