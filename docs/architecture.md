@@ -349,8 +349,11 @@ duplicate sells 0.0080, net -0.0119; OKTech sending each exit once would have sa
 
 - **Only the bot's own trips.** The post-mortem, its summary to the owner, `read_round_trips` and the measure
   stage's own outputs (the bid model, the live result per copied wallet, the measured landing, the exit shadow, the
-  fee policy's evidence) leave out the owner's hand trades in the same wallet. `read_fills` marks each row `ours`
-  and counts the owner's rows apart (`owner`). The section "Whose trade, whose coin" below has the rule.
+  fee policy's evidence) leave out the owner's hand trades in the same wallet, and since the audit's second round
+  (370728a) so do the strategist's trigger (its count of new live round trips: a hand sale could have been the
+  twentieth that buys a paid turn) and its week's evidence (the arms, what a round trip costs, the exit reasons, the
+  crossed sells). `read_fills` marks each row `ours` and counts the owner's rows apart (`owner`). The section "Whose
+  trade, whose coin" below has the rule.
 - **"Failed duplicate sells" also holds a sale's own failed tries.** `twin_fee_sol` used to be OKTech's extra
   copies of a sale only. It now also holds the tries of the same sale that failed before it landed (a curve sale
   sent after the curve completed fails and still pays its fee), so the trip's result and the day stop count them.
