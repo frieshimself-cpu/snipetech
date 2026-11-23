@@ -744,7 +744,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     A buy's price limit (LIMIT_COLS, `limit_fields`): of a buy on the tape from its fingerprint, of one read off the
     chain from its transaction, of a failed buy from its transaction too, asked for once (a failed buy the chain is
     not read for keeps no limit: nothing is guessed). `limits` in the answer: how many were read, how many buys were
-    refused on theirs, and a line for each sniper whose ceiling OKTech made something else of (`far_ceiling`)."""
+    refused on theirs, a line for each sniper whose ceiling OKTech made something else of (`far_ceiling`), and
+    `unread` when a reading raised: that buy keeps no limit and its fill is written as before (`limit_of`)."""
     store: Store = svc.store
     wallet = cfg.operator.wallet
     m = cfg.measure
@@ -777,11 +778,21 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     # (the row, its `buy_limit.BuyLimit`) of every buy and failed buy whose price limit this run read for the first
     # time, or again in a backfill: each is held against the ceiling its sniper was sent, below
     seen_limits: list[tuple[dict, Any]] = []
+    unread: dict[str, str] = {}  # signature -> why its buy's limit could not be read
+
+    def limit_of(sig: str, read: Callable[..., Any], *args: Any):
+        """A buy's price limit as `read` gives it; None, and counted in `unread`, when the reading raises. The limit
+        is a reading beside the fill: a buy this code trips over keeps none and its fill is written all the same."""
+        try:
+            return read(*args)
+        except Exception as exc:  # noqa: BLE001
+            unread[sig] = f"{type(exc).__name__}: {exc}"
+            return None
 
     def store_fill(t, meta) -> dict:
         row = classify_trade(store, t, leaders_at(copy_rows, t.ts), meta, arms=cfg.book.bid_arms, mates=mates)
         # a buy the tape holds is a trade in SOL: its limit is in its fingerprint
-        lim = buy_limit.meta_limit(meta, wallet, t.mint) if row["side"] == "buy" else None
+        lim = limit_of(t.sig, buy_limit.meta_limit, meta, wallet, t.mint) if row["side"] == "buy" else None
         row.update(limit_fields(lim, row["tokens"], row["sol"]))
         existing = store.fill(t.sig)
         if lim is not None and (reclassify_arms or (existing or {}).get("limit_mcap_sol") is None):
@@ -900,7 +911,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                     continue  # a transfer, a conversion of wrapped SOL: no trade
                 landing = await place(sig, float(fill["ts"] or 0), tx) if fill["side"] == "buy" else None
                 row = _chain_row(fill, landing, cfg.book.bid_arms)
-                lim = buy_limit.tx_limit(tx, wallet) if row["side"] == "buy" else None
+                lim = limit_of(sig, buy_limit.tx_limit, tx, wallet) if row["side"] == "buy" else None
                 row.update(limit_fields(lim, row["tokens"], row["sol"]))
                 if lim is not None:
                     seen_limits.append((row, lim))
@@ -945,7 +956,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             and fm.fee_payer in ("", wallet)
             and (reclassify_arms or not (store.fill(sg) or {}).get("venue"))]  # fmt: skip
     # and a failed buy's price limit, with what the program made of it, is in its own transaction (the fingerprint
-    # keeps no account and no log): asked for once too, and kept on its row
+    # keeps no account and no log): asked for once too, and kept on its row (one no limit is read from is asked for
+    # again while a run's window holds it, `overlap_secs`: as a bare send whose venue cannot be read is)
     limited = {sg for sg in fsigs if read_chain and (fm := fmetas.get(sg)) is not None and fm.fee_payer in ("", wallet)
                and _carries_buy(fm, wallet)
                and (reclassify_arms or (store.fill(sg) or {}).get("limit_mcap_sol") is None)}  # fmt: skip
@@ -983,10 +995,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         venue = before.get("venue")
         lim = None
         if sig in limited:
-            try:
-                lim = buy_limit.tx_limit(failed_txs.get(sig), wallet)
-            except Exception as exc:  # noqa: BLE001
-                chain_error(sig, exc)
+            lim = limit_of(sig, buy_limit.tx_limit, failed_txs.get(sig), wallet)
             if lim is not None:
                 mint = mint or lim.mint or None  # a buy through two pools names its coin in its accounts only
         elif failed_txs.get(sig):
@@ -1021,6 +1030,10 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         _hold_to_ceilings(store, cfg, now, notes, seen_limits, copy_rows, limits)
     except Exception as exc:  # noqa: BLE001 - the limits are on their rows: a check that fails never fails the run
         limits["unchecked"] = f"the check against the snipers' ceilings failed: {type(exc).__name__}: {exc}"
+    if unread:  # said, never silent: these rows have no limit because the reading failed, not because there was none
+        first, why = min(unread.items())
+        limits["unread"] = (f"{len(unread)} buy{'' if len(unread) == 1 else 's'} whose limit could not be read "
+                            f"({first[:8]}…: {why}): each is written without one")  # fmt: skip
     # round trips over the lookback window; a sale closes the lots of its own maker first, the bot's or the owner's
     # (the owner trades by hand in the same wallet: measure/ours.py)
     all_buys = store.fills(wallet=wallet, since_ts=look, side="buy", limit=100_000)

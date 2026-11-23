@@ -329,6 +329,63 @@ def test_a_check_that_fails_never_fails_the_measure_run(tmp_path, monkeypatch):
         st.close()
 
 
+def test_a_limit_that_cannot_be_read_never_costs_a_fill_its_row(tmp_path, monkeypatch):
+    """The limit is a reading beside the fill. A buy whose reading raises (an instruction of a shape nobody has seen)
+    keeps no limit and is counted: its fill, its landing and the run's other sends are written as they were before
+    there was a limit to read. A copy at 1 SOL that is in no fill is a stray to the book."""
+
+    def unseen(*a, **kw):
+        raise RuntimeError("a shape nobody has seen")
+
+    # the landed buy and the failed sends of the smoke test, each read from its transaction
+    chain = _smoke_chain()
+    svc, st, cfg = _svc(tmp_path, chain)
+    try:
+        _sniper(st)
+        _sol_price(st)
+        monkeypatch.setattr(M.buy_limit, "tx_limit", unseen)
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=T0 - 60, notes=Notes()))
+        assert out["buys"] == 1 and out["failed"] == 5 and "scan_failed" not in out
+        landed = st.fill(sig("gXv9uz3u"))
+        assert landed["side"] == "buy" and landed["sol"] == pytest.approx(0.02, abs=1e-3)
+        assert landed["limit_mcap_sol"] is None and landed["fill_mcap_sol"] is None
+        refused = st.fill(sig("4hC1n7oF"))  # the program's own error still says why it failed
+        assert refused["side"] == "failed" and refused["limit_mcap_sol"] is None and "6042" in refused["exit_reason"]
+        assert out["limits"]["read"] == 0
+        assert out["limits"]["unread"].startswith("5 buys whose limit could not be read (")
+        assert "RuntimeError: a shape nobody has seen" in out["limits"]["unread"]
+    finally:
+        st.close()
+
+    # a buy the tape holds, read from its fingerprint
+    svc, st, cfg = _svc(tmp_path / "tape")
+    try:
+        m = Market(st, addr("coin"), addr("dev"), T0, SLOT0)
+        m.buy(LEAD, 2.0, 2)
+        ours = m.buy(ME, 0.02, 2)
+        m.commit()
+        meta = TxMeta(sig=ours.sig, slot=ours.slot, block_time=ours.ts, version=0, fee_payer=ME, signers=[ME],
+                      n_signatures=1, fee=1_005_000, priority_lamports=1_000_000, cu_limit=100_000, cu_price=1,
+                      cu_consumed=60_000, pump_ixs=[PumpIx(PUMP_PROGRAM, "buy_exact_quote_in_v3", ME,
+                                                           {"spendable_quote_in": 20_000_000, "min_tokens_out": 5},
+                                                           None, m.mint)])  # fmt: skip
+
+        async def ensure(sigs):
+            st.add_tx_meta([meta] if ours.sig in sigs else [])
+            return len(sigs)
+
+        async def none(wallet, since):
+            return []
+
+        monkeypatch.setattr(M.buy_limit, "meta_limit", unseen)
+        out = asyncio.run(run_measure(svc, cfg, T0 + 60, since_ts=T0 - 60, ensure_meta=ensure, failed_sigs=none))
+        row = st.fill(ours.sig)
+        assert out["buys"] == 1 and row["side"] == "buy" and row["limit_mcap_sol"] is None
+        assert out["limits"]["unread"].startswith("1 buy whose limit could not be read (")
+    finally:
+        st.close()
+
+
 # -- C2: the lab and the paper test gate on our own fill -------------------------------------------------------------
 #
 # A copy sniper's ceiling is a limit on OUR fill (above), and the lab's `max_mcap` asks the copied buy. `max_fill_mcap`
