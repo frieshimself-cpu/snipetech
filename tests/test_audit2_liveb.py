@@ -593,6 +593,10 @@ def test_b8_a_start_whose_answer_was_lost_is_not_told_as_a_failed_restart(tmp_pa
         assert ("stop", "k1") in svc.calls and ("delete", "k1") not in svc.calls, svc.calls
         (told,) = [t for t in sent if "retire" in t and "k1" in t]
         assert "started again so it can sell it" in told and "failed" not in told and "/sell" not in told, told
+        # review of B8: only OKTech's list said so, so the record stays for the next run (a list can lag); that run
+        # reads the sniper running and drops it
+        assert set(st.coverage(R.RESTART_KEY) or {}) == {"k1"}
+        assert R._restarts(st, [{"id": "k1", "name": BT.K1, "status": "running"}]) == set()
         assert not (st.coverage(R.RESTART_KEY) or {})
     finally:
         st.close()
@@ -808,5 +812,36 @@ def test_review_the_watch_hands_a_buys_place_to_that_rule_too(tmp_path, monkeypa
         assert not hit.get("stray") and hit["buy_sig"] == ODD_SIG, hit
         assert "Nobody is selling coin " + ODD in sent[1] and sent[1].endswith(f"/sell {ODD}"), sent
         assert [e["mint"] for e in st.events(kind="unmanaged")] == [ODD]
+    finally:
+        st.close()
+
+
+class _ListLags(AB._LateCoin):
+    """OKTech's list still shows the sniper running moments after its stop (the list lags behind the stop, or the
+    sniper reads "starting" and never comes up), while every start of it fails."""
+
+    async def oktech_status(self):
+        return {"snipers": [s | {"status": "running"} for s in self._snipers]}
+
+
+def test_review_a_start_only_oktechs_list_vouches_for_stays_on_record_for_the_next_run(tmp_path, monkeypatch):
+    """B8 reads OKTech's list after the start tries failed, and a sniper it shows running is told as started. That
+    reading also took the sniper off the record of starts still owed: had the list lagged behind the stop, the sniper
+    stayed stopped beside its coin and no run started it again (a stopped sniper sells nothing). The record goes only
+    when OKTech answered the start itself; the next run starts a sniper it still finds stopped beside the coin."""
+    from snipetech.book import run as R
+
+    monkeypatch.setattr(R, "RESTART_PAUSE_SECS", 0.0)
+    st, cfg, _ = BT._made_its_buy(tmp_path)
+    svc = _ListLags(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], cfg=cfg, fail={("start", "k1")})
+    try:
+        _book(tmp_path, svc, cfg)
+        assert svc.calls.count(("start", "k1")) == 2 and ("delete", "k1") not in svc.calls, svc.calls
+        assert set(st.coverage(R.RESTART_KEY) or {}) == {"k1"}
+        AB._tape_now(st, BT.NOW + 295)  # the next run five minutes on: OKTech lists it stopped, the coin is still held
+        nxt = BT.FakeSvc(st, snipers=[{"id": "k1", "name": BT.K1, "status": "idle"}], held=AB.LATE, cfg=cfg)
+        asyncio.run(R.run_book(nxt, cfg, BT.NOW + 300, notifier=AB._notifier([]),
+                               balances=lambda w: (10.0, 0.0, AB.LATE)))  # fmt: skip
+        assert ("start", "k1") in nxt.calls, nxt.calls
     finally:
         st.close()

@@ -786,9 +786,9 @@ RESTART_SECS = 45.0
 # second start refused because the first went through, left the sniper running (review of 22 Nov: the owner was told
 # the start had failed, with a /sell line, while it ran)
 RESTART_CHECK_SECS = 20.0
-# the snipers such a start failed for: {sniper id: {"ts": when, "mints": the coins seen then}}. Written before the start
-# (a run cut off on its way leaves it for the next one); the plan starts each while the wallet holds a coin
-# (BookInputs.restart), and one OKTech lists running again, or not at all, leaves it
+# the snipers such a start failed for, or was answered only by OKTech's list: {sniper id: {"ts": when, "mints": the
+# coins seen then}}. Written before the start (a run cut off on its way leaves it for the next one); the plan starts
+# each while the wallet holds a coin (BookInputs.restart), and one OKTech lists running again, or not at all, leaves it
 RESTART_KEY = "book:restart"
 
 
@@ -818,9 +818,8 @@ def _mark_restart(store, sid: str, now: float, mints: list[str], pending: bool) 
 
 
 async def _start_again(svc, sid: str) -> str | None:
-    """Start `sid` again, RESTART_TRIES tries: None once OKTech has started it, else what the last try said. A try that
-    fails here may have gone through there (its answer lost or late): after the tries OKTech's list decides, when it
-    answers (RESTART_CHECK_SECS) and shows the sniper buying again."""
+    """Start `sid` again, RESTART_TRIES tries: None once OKTech has answered a start, else what the last try said. A
+    try that fails here may have gone through there (its answer lost or late): `_listed_buying` asks OKTech's list."""
     said = ""
     for attempt in range(RESTART_TRIES):
         try:
@@ -830,12 +829,17 @@ async def _start_again(svc, sid: str) -> str | None:
             said = f"{type(exc).__name__}: {str(exc)[:120]}".rstrip(": ")
             if attempt + 1 < RESTART_TRIES:
                 await asyncio.sleep(RESTART_PAUSE_SECS)
+    return said
+
+
+async def _listed_buying(svc, sid: str) -> bool:
+    """Whether OKTech's own list shows `sid` buying again, read once (RESTART_CHECK_SECS at most): a start whose answer
+    was lost went through. False when the list does not answer: told as it was seen here, and the next run starts it."""
     try:
         tasks = (await asyncio.wait_for(svc.oktech_status(), RESTART_CHECK_SECS)).get("snipers") or []
-    except Exception:  # noqa: BLE001 - not known: told as it was seen here, and the next run starts it
-        return said
-    runs = any(str(t.get("id")) == str(sid) and str(t.get("status")) in BUYING_STATUSES for t in tasks)
-    return None if runs else said
+    except Exception:  # noqa: BLE001 - not known
+        return False
+    return any(str(t.get("id")) == str(sid) and str(t.get("status")) in BUYING_STATUSES for t in tasks)
 
 
 TOLD_KEY = "book:told"  # the lines of today that Telegram has taken: {"day": "YYYY-MM-DD", "lines": [...]}
@@ -969,8 +973,9 @@ async def _retire(
     sniper started again and nothing is deleted (a stopped sniper sells nothing, so its coin would be stranded). That
     start is tried RESTART_TRIES times; when it fails the owner is told so, with the coin's /sell line, and the next run
     starts the sniper while the wallet holds a coin (RESTART_KEY), the book still copies its wallet and no stop holds
-    (the plan's rule: running, it also buys). The owner's own coins are none of its coins, each reading weighed on its
-    own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`)."""
+    (the plan's rule: running, it also buys). A start only OKTech's list vouches for is told as started, and stays on
+    that record until a run finds the sniper running. The owner's own coins are none of its coins, each reading weighed
+    on its own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`)."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
     now = float(now if now is not None else 0)
     blind = sid in unrecorded  # no fee record of it: a coin read as the owner's may be its own
@@ -986,8 +991,13 @@ async def _retire(
         if store is not None:
             _mark_restart(store, sid, now, mints, pending=True)
         failed = await _start_again(svc, sid)
-        if failed is None:
-            if store is not None:
+        listed = failed is not None and await _listed_buying(svc, sid)
+        if failed is None or listed:
+            # a start OKTech answered leaves nothing to start. One only its list vouches for stays on record: had the
+            # list lagged behind the stop (or the sniper read "starting" and never came up) it would stay stopped beside
+            # its coin with no run to start it again; the next run starts it then, and drops the record once OKTech
+            # lists it running (`_restarts`)
+            if store is not None and not listed:
                 _mark_restart(store, sid, now, mints, pending=False)
             notifier.send(notes.write(f"[book] retire {w6} ({sid}) undone: a coin appeared while it stopped; started again "
                                       "so it can sell it", "decision"))  # fmt: skip
