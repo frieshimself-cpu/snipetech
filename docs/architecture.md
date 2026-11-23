@@ -663,7 +663,11 @@ pass they described its first round, merged as 3b412e0). The rule:
   readers use the payloads on record, never OKTech's); the buy that completes a curve spends less than its buyAmount
   and, at fees no payload names, reads as the owner's; OKTech's PumpSwap multi-hop sends pay more priority than the
   payload names (0.0018 SOL on a 0.001 payload on 23 Nov), so by their fee pair they read as hand sends (all four that
-  day failed at once; one that landed would read as the owner's coin).
+  day failed at once; one that landed would read as the owner's coin); a copy that lands ahead of its leader, or
+  with a hole in the tape between the leader's block and ours, is told by its fees alone; and outside a run (`/stop`,
+  the guard's end, the book) a copy at fees no payload names that the tape does not hold and whose chain landing is
+  missing (not read whole yet, or `chain-none`) reads as the owner's coin, so its sniper can be stopped beside it (the
+  runner walks the blocks itself; a gap since the second round, left as it was before the live run of 23 Nov).
 - **A coin is the owner's own** when every buy of it since its last sale paid fees no sniper of ours pays and had no
   copy's shape, and those buys explain the whole amount held, summed over all the wallet's token accounts of the coin.
   More held than the owner's buys explain, unknown fees, a buy of ours among them, or a buy the chain placed right
