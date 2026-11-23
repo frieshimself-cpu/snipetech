@@ -314,3 +314,75 @@ def test_more_of_the_coin_than_the_owners_buys_explain_is_still_a_holding(env, t
         assert env.svc.stops == [] and coin in said and "/sell" in said, said
     finally:
         st.close()
+
+
+class _Rpc:
+    """The wallet's newest signatures: a copy that landed 3 minutes before the round, outside the chain look."""
+
+    def __init__(self, sigs):
+        self.sigs = sigs
+
+    async def get_signatures(self, wallet, limit=50):
+        return list(self.sigs)
+
+    async def get_transaction(self, sig):
+        return None
+
+
+def _doubled(env, st, coin):
+    """Review of 1cae174: the owner has held `coin` for 30 minutes (the one-minute watch saw it then, the measure stage
+    last ran 5 minutes ago) and the wallet now holds twice what their buy brought in: a copy of ours into it that
+    neither the tape (a PumpSwap coin past its 30 minutes there) nor the fills hold yet."""
+    import json as _json
+
+    (env.paths.root / "watch.json").write_text(_json.dumps({"first_seen": {coin: NOW - 1800}}))
+    st.set_coverage("measure:last_ts", {"ts": NOW - 300})
+    env.svc.readings = [[{"mint": coin, "amount": 2e6, "raw": 2 * 10**12, "value_sol": 20.4, "priced": True}]]
+    env.svc.rpc = _Rpc([{"signature": "COPY" + "c" * 84, "blockTime": NOW - 180, "err": None}])
+
+
+def test_a_copy_into_a_coin_the_owner_has_held_for_long_keeps_the_dead_runs_snipers(env, tmp_path):
+    """Review of 1cae174 (CONFIRMED): more of the owner's coin than their buys explain is no coin of the owner's, and
+    the stray rule (no buy of ours explains it, seen 10 minutes) took it for one that no sniper holds, so both snipers
+    were stopped and the copy was stranded. A coin the wallet bought on record is never a stray, and the clean-up
+    leaves out only the owner's coins beyond doubt: the copy keeps them running, and the owner hears the coin."""
+    st, coin = _owners_coin(env, tmp_path)
+    _doubled(env, st, coin)
+    try:
+        (said,) = _close(env, _ended(env))
+        assert env.svc.stops == [] and coin in said and "/sell" in said, said
+    finally:
+        st.close()
+
+
+def test_a_sniper_without_fees_on_record_is_kept_when_any_reading_showed_the_owners_coin(env, tmp_path):
+    """Review of 1cae174: the owner's coins were taken from the last reading alone, so a first reading with the owner's
+    coin and a second without it (sold, under the dust line, a partial reply) stopped a sniper whose fees are not on
+    record, which may have bought it. Every reading of the round counts."""
+    st, coin = _owners_coin(env, tmp_path, recorded=(A,))
+    row = {"mint": coin, "amount": 1e6, "raw": 10**12, "value_sol": 10.2, "priced": True}
+    env.svc.readings = [[row], []]
+    try:
+        (said,) = _close(env, _ended(env))
+        assert env.svc.stops == [A] and B in said, said
+    finally:
+        st.close()
+
+
+def test_stop_keeps_the_snipers_beside_a_copy_into_the_owners_coin(env, tmp_path, monkeypatch):
+    """The same hole in /stop (commands._not_ours): a coin the wallet bought on record is no stray."""
+    from snipetech.operator import commands as C
+
+    monkeypatch.setattr(LT, "SECOND_READ_SECS", 0.0)
+    st, coin = _owners_coin(env, tmp_path)
+    _doubled(env, st, coin)
+
+    class Notes:
+        def write(self, text, kind):
+            return text
+
+    try:
+        reply = asyncio.run(C._stop_snipers(env.svc, env.cfg, Notes(), env.paths, NOW))
+        assert env.svc.stops == [] and "left running" in reply, reply
+    finally:
+        st.close()

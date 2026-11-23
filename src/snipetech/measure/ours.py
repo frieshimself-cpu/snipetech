@@ -496,6 +496,14 @@ def _owners(store, wallet: str, mint: str, raw: int, marks: dict[str, frozenset]
     return bool(buys) and not any(t["ours"] for t in buys) and raw <= sum(t["tokens"] for t in buys) + 1
 
 
+def any_buy(store, wallet: str, mint: str, marks: dict[str, frozenset]) -> bool:
+    """Whether the wallet bought `mint` since its last sale of it, on the tape or in the measure stage's fills, whoever's
+    buy it was. A coin with one is no stray (operator/commands._not_ours): review of 23 Nov, a copy of ours into a coin
+    the owner had held for half an hour, written nowhere yet, read as one that no buy of ours explains. Raises when the
+    records cannot be read (the coin may be ours)."""
+    return bool(_holding_buys(store, wallet, mint, marks))
+
+
 def bot_bought(store, wallet: str, mint: str, marks: dict[str, frozenset]) -> bool:
     """Whether a buy of the bot's explains the wallet's holding of `mint`: one of its buys of the coin since its last
     sale of it, on the tape or in the measure stage's fills, is the bot's by the module's rule (a sniper's fees, fees

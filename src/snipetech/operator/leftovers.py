@@ -10,9 +10,12 @@ gone) and the round closes what it left (`close`):
 * each of its snipers still active on OKTech is stopped once the wallet holds nothing of ours on two readings
   PAUSE_SECS apart and neither the chain nor the tape has a buy of it whose coin they did not show (`_coming`: the look
   /stop makes; a stopped sniper strands its coin: never while the wallet holds one, CLAUDE.md rule 1). The owner's own
-  coins and strays are no holding of the run's, by /stop's rule (commands._not_ours, 23 Nov: until then a run that
-  died beside a coin the owner bought by hand left its snipers armed for as long as the owner kept it); beside an
-  owner's coin, a sniper whose fees are not on record keeps running (commands._unrecorded: it may have bought it);
+  coins beyond doubt are no holding of the run's (commands._not_ours' hand-bought coins, measure/ours.owner_coins:
+  every buy of the coin since its last sale paid fees no sniper of ours pays and explains all that is held; 23 Nov:
+  until then a run that died beside a coin the owner bought by hand left its snipers armed for as long as the owner
+  kept it). Strays still count as held here, unattended: the review of 23 Nov reproduced a copy of ours taken for one.
+  While any reading of the round showed an owner's coin, a sniper whose fees are not on record keeps running
+  (commands._unrecorded: it may have bought it);
 * while the wallet holds a coin of ours they keep running to sell it: the owner hears which coin, with /sell, and the
   round looks again every 15 minutes until nothing of the run is armed;
 * until then the run still drives the wallet (`armed`, read by `live_test._drivers`): the book adds no sniper beside
@@ -163,6 +166,13 @@ async def _held(svc, cfg, address: str, r: dict) -> list[dict]:
     return list(await asyncio.wait_for(svc.open_positions(address, ignore=_ignored(cfg, r)), READ_SECS) or [])
 
 
+def _owners(svc, address: str, held: list[dict], paths: OperatorPaths, now: float) -> set[str]:
+    """The coins among `held` that are the owner's own beyond doubt, by /stop's rule (commands._not_ours' hand-bought
+    coins, weighed on this reading's own amounts). Its strays are left in: a stray is told by records the measure stage
+    may not have written yet, and here nobody watches (review of 23 Nov)."""
+    return {m for m, why in _not_ours(svc, address, held, paths, now).items() if why == HAND_BOUGHT}
+
+
 def _ignored(cfg, r: dict) -> list[str]:
     return list(dict.fromkeys([*(cfg.operator.ignore_mints or ()), *(r.get("ignore") or [])]))
 
@@ -261,20 +271,21 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
                                                          else "") + "; closed")  # fmt: skip
             continue
         address = r.get("address") or cfg.operator.wallet
-        theirs: dict[str, str] = {}
+        owned: set[str] = set()  # the owner's coins beyond doubt that any reading of this round showed
         try:
             if not address:
                 raise ValueError("no wallet named")
             got = await _held(svc, cfg, address, r)
-            # the owner's own coins and strays are no holding of the run's (/stop's rule, commands._not_ours)
-            theirs = _not_ours(svc, address, got, paths, now)
+            theirs = _owners(svc, address, got, paths, now)
+            owned |= theirs
             held = [h for h in got if str(h.get("mint")) not in theirs]
             seen = {str(h.get("mint")) for h in got}
             if not held:  # a second reading: a buy on its way shows in it
                 await asyncio.sleep(PAUSE_SECS)
                 got = await _held(svc, cfg, address, r)
                 # weighed on its own amounts: more of an owner's coin than their buys explain may be a copy of ours
-                theirs = _not_ours(svc, address, got, paths, now)
+                theirs = _owners(svc, address, got, paths, now)
+                owned |= theirs
                 held = [h for h in got if str(h.get("mint")) not in theirs]
                 seen |= {str(h.get("mint")) for h in got}
             unread = 0
@@ -282,12 +293,12 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
                 coming, unread = await _coming(svc, cfg, address, r, now, seen)
                 held = [{"mint": m} for m in coming]
                 if not held and not unread and theirs:  # weighed once more: the tape may have got a buy of ours since
-                    theirs = _not_ours(svc, address, got, paths, now)
+                    theirs = _owners(svc, address, got, paths, now)
                     held = [h for h in got if str(h.get("mint")) not in theirs]
         except Exception as exc:  # noqa: BLE001 - unknown coins never stop a sniper
             _tell(r, "wallet", f"{head} Its sniper(s) {', '.join(mine)} may still be armed: the wallet's coins could "
                                f"not be read ({type(exc).__name__}), and a sniper is stopped only while the wallet "
-                               "holds nothing. The round looks again every 15 minutes.", words)  # fmt: skip
+                               "holds nothing of ours. The round looks again every 15 minutes.", words)  # fmt: skip
             say(f"{jid}: the wallet could not be read ({type(exc).__name__}); {', '.join(mine)} left running")
             continue
         if held:
@@ -305,7 +316,7 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
             say(f"{jid}: {unread} transaction(s) of the wallet cannot be read yet; {', '.join(mine)} left running")
             continue
         # an owner's coin is told by the fees of the snipers on record: one the bot has no record of may have bought it
-        own = [m for m, why in theirs.items() if why == HAND_BOUGHT]
+        own = sorted(owned)
         unknown = _unrecorded(svc, [{"id": i} for i in mine]) if own else set()
         kept = [i for i in mine if i in unknown]
         stopped, failed = [], []
@@ -316,8 +327,8 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
                 stopped.append(i)
             except Exception as exc:  # noqa: BLE001 - the next round tries again
                 failed.append(f"{i} ({type(exc).__name__})")
-        beside = "; ".join(f"{m[:6]}… {why}" for m, why in list(theirs.items())[:5])
-        beside = f" (it holds only coins no sniper of ours holds: {beside})" if beside else ""
+        beside = ", ".join(f"{m[:6]}…" for m in own[:5])
+        beside = f" (it holds only the owner's own coins, bought by hand: {beside})" if beside else ""
         if failed:
             _tell(r, "stop", f"{head} Its sniper(s) {', '.join(failed)} could not be stopped and may still be armed"
                              + (f" ({', '.join(stopped)} stopped)" if stopped else "")
@@ -328,8 +339,9 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
             coins = ", ".join(f"{m[:6]}…" for m in own[:5])
             _tell(r, "unrecorded", f"{head} " + (f"Its sniper(s) {', '.join(stopped)} were stopped; " if stopped else "")
                   + f"its sniper(s) {', '.join(kept)} still run: there is no record here of the fees they pay, so "
-                  f"{coins}, which the wallet holds, may be their own, and a stopped sniper would strand it. The round "
-                  "stops them once the wallet holds nothing.", words)  # fmt: skip
+                  f"{coins}, which the wallet held, may be their own, and a stopped sniper would strand it. The round "
+                  "stops them once the wallet holds nothing; until then the run counts as live on the wallet (no "
+                  "book sniper and no live test start beside it).", words)  # fmt: skip
             say(f"{jid}: stopped {', '.join(stopped) or 'none'}; {', '.join(kept)} left running beside {coins}")
             continue
         r |= {"closed_at": int(now), "stopped": stopped}
