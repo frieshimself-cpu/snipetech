@@ -755,9 +755,10 @@ The forward paper test:
 - **The report's kept numbers have a version** (`REPORT_VERSION`, 2 since 22 Nov): when it changes, every rule's
   numbers are made again once at the next report. A row of a refuted rule says so (`refuted`: when, on how many
   trades, at what mean).
-- **The round's snapshot ranks by landing.** `paper_top` holds only rules scored where our trades land live.
-  `paper_own_landing` holds the six best of the others (a place asked for, a bid, no live place), each naming its
-  landing and bid: never evidence at our landing. `paper_refuted` says how many refuted rules both lists leave out.
+- **What the agents see of the round's snapshot ranks by landing.** `paper_top` holds the six biggest totals among
+  the rules scored where our trades land live. `paper_own_landing` holds the six biggest of the others (a place
+  asked for, a bid, no live place), each naming its landing and bid: never evidence at our landing.
+  `paper_refuted` says how many refuted rules both lists leave out.
 - **The owner's dashboard** (`tools/dashboard_snapshot.py`) builds its paper tables from the stored rules and the
   report's kept numbers: rules under test first (where our trades land live, then a place asked for or a bid, then
   research records), refuted rules last with their date. Until 22 Nov it showed five rules typed in by id on 11 Nov,
