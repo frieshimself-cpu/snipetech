@@ -904,8 +904,9 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         told.append(b["sig"])
     if untold:
         store.set_coverage(NON_COIN_SAID_KEY, {"sigs": told[-500:], "ts": int(now)})
-    # did the 8 Nov sell-fee split work: the twins' cost per landed sell by the sell priority they paid, and sells
-    # landed per buy before and after it (the first 20 sells after are said one by one; a fall is an alert line)
+    # what the 8 Nov sell-fee split changed: the twins' cost per landed sell by the sell priority its sniper was sent
+    # (the twins pay the buy priority: `twins_per_sell`), and sells landed per buy before and after it (the first 20
+    # sells after are said one by one; a fall is an alert line)
     prio_by_buy = {b["sig"]: sell_priority_of((buying_sniper(copy_rows, b) or {}).get("payload")) for b in all_buys}
     prio_by_sell = {s["sig"]: prio_by_buy.get(first_buy_for_sell.get(s["sig"]) or "") for s in all_sells}
     per_sell = twins_per_sell([s for s in all_sells if bot_sale(s)], failed_flagged, prio_by_sell)

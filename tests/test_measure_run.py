@@ -856,9 +856,10 @@ def test_a_copy_bought_on_the_curve_and_sold_on_pumpswap_gets_its_whole_result(t
 
 
 def test_twins_per_sell_is_split_by_the_sell_priority_the_twins_paid():
-    """Measure tells whether the 8 Nov sell-fee split worked: each landed sell's failed twins cost, grouped by the sell
-    priority those twins paid (0.002 before the split, 0.0001 after). A sell with no twins is placed by the sell
-    priority its sniper was created with; one with neither is 'unknown'."""
+    """Measure tells what the 8 Nov sell-fee split changed: each landed sell's failed twins cost, grouped by the sell
+    priority its sniper was created with and, where that is not known, by what its twins paid (the shape the split
+    was meant to give: 0.002 before it, 0.0001 after; live, the twins pay the sniper's buy priority, since OKTech uses
+    no sell priority under the buy's). A sell with neither is 'unknown'."""
     from snipetech.measure.run import twins_per_sell
 
     sells = [{"sig": "S1", "ts": NOW, "slot": SLOT, "mint": "M1"}, {"sig": "S2", "ts": NOW + 60, "slot": SLOT + 300, "mint": "M2"},

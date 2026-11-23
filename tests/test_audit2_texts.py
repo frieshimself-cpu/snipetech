@@ -94,6 +94,9 @@ def test_no_text_says_the_twins_pay_the_sell_priority_we_send():
             assert stale not in doc, (f.__name__, stale)
     trip = _flat(inspect.getsource(A._trip))
     assert "priced the duplicates" not in trip and "the sniper's buy priority since" in trip
+    # nor the comment where the run makes that table (review of round 2: it still said "the sell priority they paid")
+    table = _flat(inspect.getsource(R.run_measure))
+    assert "by the sell priority they paid" not in table and "by the sell priority its sniper was sent" in table
     for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
         text = _flat(system)
         assert "at each sell priority (twins_per_sell)" not in text

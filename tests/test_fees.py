@@ -93,8 +93,8 @@ def test_copy_fills_are_never_evidence_for_a_launch_kind():
 
 
 def test_priorities_stay_at_the_minimum_whatever_the_fills_say():
-    """A buy priority is charged again on every exit and a sell priority on every failed twin: neither is a bid worth
-    raising, so the evidence rule applies to the tips only."""
+    """A buy priority is charged again on every exit and on each of its failed twins, and the sell priority is sent
+    and not used under the buy's: neither is a bid worth raising, so the evidence rule applies to the tips only."""
     low = [_buy(i, 0.002, 3, 20.0, prio_sol=0.001) for i in range(12)]
     high = [_buy(20 + i, 0.002, 1, 5.0, prio_sol=0.01) for i in range(12)]
     c = F.choose(Config(), "copy", leader=LEADER, fills=low + high)
