@@ -1032,7 +1032,13 @@ def exits_horizon(exits: Sequence[ExitParams]) -> float:
     on as far as its timer extension can move it (`ext_max`, where the extension is on), with the time its last part
     takes when it sells out in parts. Every exit of a lab is scored on the same moments, so the tape must hold that
     long of each. Until 23 Nov the extension was left out: an EXT exit could sell up to `ext_max` past the stretch the
-    PumpSwap tape was checked to hold (`mig_gap`, `amm_buy_gap`, `migration_sell_gap`)."""
+    PumpSwap tape was checked to hold (`mig_gap`, `amm_buy_gap`, `migration_sell_gap`).
+
+    Not counted: a dead exit's pause (`stale_secs`), which `sim.exits.exits_reach` counts since 22 Nov. Its sale lands
+    up to that long after the timer's last trade, so an exit like "STALE158s hold10s" can still sell past the stretch
+    checked here (the menu's dead exits pause 1 to 5 s). Counting it would also move the paper run's settle time
+    (`paper.settle_secs`) for every rule with a dead exit on a 300 s timer, 22 of the 135 stored on 23 Nov: left for a
+    decision."""
 
     def held(ex: ExitParams) -> float:
         ext = float(ex.ext_max) if ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0 else 0.0
