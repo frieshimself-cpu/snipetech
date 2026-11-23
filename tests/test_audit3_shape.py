@@ -252,6 +252,32 @@ def test_a_reader_that_hands_no_size_is_read_by_its_signature_and_one_with_neith
     store.close()
 
 
+def test_the_book_and_the_watch_get_the_whole_rule_through_the_signature_they_hand():
+    """S1, the callers in files that are not this group's (book/run._bought_by_us and its fills' rows,
+    book/watch._owner_sigs): each hands a buy with its fees, signature, coin and place, and no amounts. Their own
+    tests stand in for the rule; here the rule itself answers them: a copy at fees no payload names is a buy of ours
+    to the book's stray rule and no trade of the owner's to the watch, and the owner's 0.99 SOL hand buy in the same
+    place is the owner's to both."""
+    from snipetech.book.run import _bought_by_us
+    from snipetech.book.watch import _owner_sigs
+
+    for name, spent, fees, ours in (("copy", ONE_SOL, ODD, True), ("hand", HAND_99, HAND, False)):
+        store = _store()
+        _buy(store, "lead", LEAD, SLOT - 1, 196)
+        _buy(store, name, W, SLOT, 12, spent=spent, fees=fees)
+        assert _bought_by_us(store, W, MINT) is ours
+        assert _owner_sigs(store, W, MINT, NOW + 60, fee_marks(store)) == (set() if ours else {name})
+        store.close()
+        # and a buy the tape does not hold, in the measure stage's fills: read whole by its signature
+        store = _store()
+        landing = {"wallet_copied": LEAD, "landing_src": "chain", "blocks_after": 1, "landing_verdict": "first"}
+        store.put_fill({"sig": name, "ts": NOW, "slot": SLOT, "wallet": W, "mint": MINT, "side": "buy",
+                        "sol": sum(spent) / 1e9, "tokens": 1e6, "priority_lamports": fees[0],
+                        "tip_lamports": fees[1]} | landing)  # fmt: skip
+        assert _bought_by_us(store, W, MINT) is ours
+        store.close()
+
+
 def test_a_fill_the_chain_placed_is_a_copy_only_at_its_snipers_size():
     """S1, a buy the tape does not hold (the measure stage placed it from the blocks: landing_src "chain"): right
     behind the copied wallet it is a copy only when its `sol` is the size of a sniper that follows that wallet. A row
