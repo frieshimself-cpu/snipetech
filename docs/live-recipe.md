@@ -4,7 +4,17 @@ The log of every live test, newest first: each entry's fills are live, with the 
 paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every
 number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
-## The small-coin copy behind Cented, Decu and Yugi at 1 SOL: PREPARED 23 Nov; Cented's and Decu's snipers made 09:02 UTC, idle; it starts at the switch below (written 23 Nov 03:00 UTC, before anything is made; the third wallet and the run's own fees added 05:03, the wallets' own launches 05:13, the ceiling labs, the snipers and the start 09:05)
+## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day (written 23 Nov 09:12 UTC, before anything is started)
+
+**Why this and not the 1 SOL day.** The owner, 23 Nov ~09:08 UTC: "Left .7 in the wallet for testings". So the 1 SOL day below waits, and the same rule runs now as a test at the most a test may buy. **Under which yes:** the standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet). At 0.2 SOL the copy pays its bid (0.0031 SOL) as 1.5 % of its size, near the paper's economics, where smoke tests at 0.02 paid 15 %: it measures whether the rule makes money live, not only whether the machinery works.
+
+**What it tests.** The 1 SOL entry's rule, unchanged but for the size: copies of Cented's, Decu's and Yugi's buys of 2 SOL or more, 0.2 SOL a copy, under the $4,700 ceiling on our own fill (about 64.6 SOL of market cap), sold 12 s after the buy (Decu's 8 s) or when the wallet sells half. Each fill gets its row here with its place behind the copied buy, the market cap at our fill, its sale, and the paper's copy of the same moment. On paper (the ceiling labs in the 1 SOL entry) the copy makes about 12 % of its size before fees: about +0.02 SOL a copy at 0.2 SOL after the real fees, about 20 copies a day.
+
+**What runs.** Three new copy snipers: `oktech copylist --copy CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o:Cented:2:hold12 --copy 4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9:Decu:2:hold8 --copy AQ46kfYT3hW28Xg5gWHrJkzFSz1oGWBHC3FsTbqgMEco:Yugi:2:hold12 --buy 0.2 --snipes 1 --priority 0.0011 --tip 0.002 --compute-units 100000 --max-mcap 64.6 --platforms pumpfun --tag arm:test02 --create`, made once the 1 SOL entry's two idle snipers and smoke test 4's sniper are deleted (one sniper per copied wallet on the wallet). The runner: `oktech cycle --id <Cented> --id <Decu> --id <Yugi> --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --max-loss 0.3 --keep-plain 0.22 --max-fills 100 --max-minutes 1440 --rearm-after 1800 --sweep-after 20 --place-stop 2/3 --place-max 8`.
+
+**Stop rules.** 0.3 SOL lost by the run's own trades; plain SOL under 0.22 at a re-arm (one 0.2 SOL curve copy's plain SOL: OKTech keeps 0.22 wrapped beside the snipers); 2 of the last 3 placed copies behind no buy of the copied wallet or more than 8 buyers behind; 24 hours; 100 fills; the owner's /stop; the wallet-wide guard; never a sniper stopped while it holds a coin; a coin OKTech leaves unsold is sold by the run 20 s after it shows; an own-launch or bait copy is sold at once.
+
+## The small-coin copy behind Cented, Decu and Yugi at 1 SOL: PREPARED 23 Nov, WAITS (the owner left 0.7 SOL for testing at ~09:08: the 0.2 SOL test above runs instead); its two idle snipers of 09:02 deleted for the test's (written 23 Nov 03:00 UTC, before anything is made; the third wallet and the run's own fees added 05:03, the wallets' own launches 05:13, the ceiling labs, the snipers and the start 09:05)
 
 **Under which yes.** The owner, 23 Nov ~00:44 UTC: "Aight, I put 8 sol in the wallet, when everything is down to perfection run it". Read as on 22 Nov: the ladder's own step (CLAUDE.md rule 1: the sniper wallet, 1 SOL a copy, a day, stopped at 2 SOL lost) and nothing bigger; 2 SOL copies only on the owner's word, after a day that makes money. "Down to perfection": it starts on the code of the audit's two rounds, after the smoke test below.
 
@@ -60,13 +70,21 @@ All three make money under the live ceiling in both weeks: +16.5 and +14.1 SOL a
 
 **What follows.** A day that makes money: the owner is asked about 2 SOL copies and their daily loss cap (the ladder). A day that ends on its 2 SOL: each fill is set beside its paper copy before anything runs again. Either way the rule is frozen in the paper test at the freeze's landing so its forward record runs beside the live one.
 
-## Smoke test 4: does OKTech copy Yugi at all? 0.02 SOL behind Yugi alone (written 23 Nov 08:15 UTC, before anything is started)
+## Smoke test 4: does OKTech copy Yugi at all? YES, in his own block; ended 23 Nov ~09:13 UTC by hand for the 0.2 SOL test (runner 20261123-081015-18bda5; written 08:15 UTC, before anything was started; results 09:12)
 
 **Why.** No copy of Yugi has ever run. His buys go through a router program of his own bot (the outer program of every one of his transactions is not pump.fun's; pump.fun's buy runs inside it), and whether OKTech reads such a transaction and copies it is not known: a sniper behind him might never buy, or buy at a place nobody has measured. His hours are 04:00 to 15:00 UTC, when Cented and Decu are quiet, so this is the hour to find out, before any 1 SOL copy of his. **Under which yes:** the standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet): 0.02 SOL buys, at most about 0.1 SOL in all.
 
 **What runs.** Smoke test 3's sniper behind Yugi, unchanged (6b03e44eca420f45d770b926: 0.02 SOL a copy of his buys of 2 SOL or more, priority 0.0011 + tip 0.002, a $4,600 ceiling on our fill, sold 12 s after the buy or when he sells half, pump.fun's curve asked for; made 06:59, so OKTech's first-minutes SOL price is behind it), and the runner `oktech cycle --id 6b03e44eca420f45d770b926 --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --max-loss 0.2 --keep-plain 0.05 --max-fills 4 --max-minutes 330 --rearm-after 1800 --sweep-after 20 --place-stop 2/3 --place-max 8`.
 
 **Read.** Whether a buy of Yugi's of 2 SOL or more under the ceiling brings a copy of ours; where it lands behind his buy (block, buyers between); the market cap at our fill; who sells it and when. **Stop rules:** 4 fills, 330 minutes (it ends before 14:00 UTC, so the evening's run starts on time), 0.2 SOL lost, the place stop, /stop; never a sniper stopped while it holds a coin.
+
+**What happened.** Seven copies of Yugi's buys of 2 SOL or more in an hour, every one sent within his own block or the next. Six were refused by the ceiling for about 0.0011 SOL each: his buys left those coins at 52 to 220 SOL of market cap, above the paper's 50 SOL line too, and one send carried OKTech's wrong $200 SOL price (a limit of 23 SOL, 19 minutes after a start: that price comes at any send, not only in a new sniper's first minutes). **One was admitted, the rule's moment exactly:**
+
+| # | bought (UTC) | coin | place behind Yugi's 3.42 SOL buy | market cap after his buy / at our fill | sold | by | result before fees |
+|---|---|---|---|---|---|---|---|
+| 1 | 09:08:08 | 3A7iSNHK… | the same block, one buyer between (0.99 SOL) | about 50.8 / 53.3 SOL | 09:08:20 (12 s) | OKTech's 12 s timer (paying the buy's 0.0011 + 0.002) | +0.0022 (+11 %) |
+
+Yugi sold his own at 09:08:29, 9 s after us and lower. So behind Yugi our copy lands second in line, one place better than the lab's 3rd, and OKTech reads his router transactions both ways (it sent the copy; its exit fired on its timer). Ended by hand once the coin was sold and nothing was held, to make room for the 0.2 SOL test of the same rule (above).
 
 ## Smoke test 3, the final code at 0.02 SOL: ENDED 23 Nov 07:23:29 UTC by its place stop, 2 fills, both copies of 6Z91's failed sends, nothing held (runner 20261123-065952-033964; written 06:59 UTC, before anything was made; results written 08:10)
 
