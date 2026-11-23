@@ -3,7 +3,8 @@
 | document | what it answers | who writes it |
 |---|---|---|
 | `roadmap.md` | Where we stand and what is next; the top section is always current | Claude, after every finding |
-| `live-recipe.md` | Every live test with numbers: what ran, what filled, what it cost, the verdict | Claude, the same day |
+| `live-recipe.md` | Every live test with numbers: what ran, what filled, what it cost, the verdict, newest first from 12 Nov; then the standing sections (the first strategy of 5 Nov and why paper is not live, how a live test starts, how a live run ends and the owner's commands) | Claude, the same day |
+| `live-recipe-2026-11-early.md` | The live tests of 5 to 11 Nov, moved out of `live-recipe.md` word for word on 23 Nov 2026 (the agents' reader hands the exit analyst the first 200,000 characters of `live-recipe.md`, and the rule sections at its end had fallen past them) | Claude, 23 Nov |
 | `autopilot.md` | What the cloud session's hourly round does: the owner's standing rules, the current state (what is deployed, what was told to the owner, what is checked), the open work in order. The scheduled task only points here | Claude, whenever the state changes |
 | `audit-2026-11-11.md` | The whole-system audit of 11 Nov: every defect found with its evidence, the fix and how it was checked, what was found right, what is still open | Claude, 11 Nov |
 | `oktech-audit-2026-11-06.md` | The 6 Nov audit of our OKTech integration: what was wrong on our side (fixed), what is known about OKTech, the questions for its owner | Claude, 6 Nov |
