@@ -2,7 +2,8 @@
 strategist's evidence): each test pins one item of the round's brief (B1 to B8, its id in the test's name).
 
 The sniper wallet is the owner's too: the owner buys and sells in it by hand (21-22 Nov: four hand buys of one coin,
-1.5 to 4.95 SOL, at fees no sniper of ours pays). Only the bot's own trades and coins are the bot's (measure/ours.py)."""
+1.5 to 4.95 SOL, at fees no sniper of ours pays). Only the bot's own trades and coins are the bot's
+(measure/ours.py)."""
 
 import asyncio
 
@@ -32,9 +33,10 @@ def _sniper(st, sid="cs1", created=NOW - 7 * 86400):
 def _bot_trip(st, k, ts, pnl=-0.01):
     """One round trip of the bot's in fills: a copy at the sniper's fees and the sale OKTech made of it."""
     buy, mint = f"bot-buy-{k}", f"Coin{k}" + "c" * 38
-    st.put_fill({"sig": buy, "ts": ts, "slot": 1000 + k, "wallet": W, "wallet_copied": LEAD, "mint": mint, "side": "buy",
-                 "sol": 0.2, "tokens": 1e6, "priority_lamports": BOT_BUY_FEES[0], "tip_lamports": BOT_BUY_FEES[1],
-                 "bid_arm": "control", "trades_behind": 1, "price_gap_pct": 2.0, "pos_in_slot": 4})  # fmt: skip
+    st.put_fill({"sig": buy, "ts": ts, "slot": 1000 + k, "wallet": W, "wallet_copied": LEAD, "mint": mint,
+                 "side": "buy", "sol": 0.2, "tokens": 1e6, "priority_lamports": BOT_BUY_FEES[0],
+                 "tip_lamports": BOT_BUY_FEES[1], "bid_arm": "control", "trades_behind": 1, "price_gap_pct": 2.0,
+                 "pos_in_slot": 4})  # fmt: skip
     st.put_fill({"sig": f"bot-sell-{k}", "ts": ts + 12, "slot": 1030 + k, "wallet": W, "mint": mint, "side": "sell",
                  "sol": 0.2 + pnl, "tokens": 1e6, "pnl_sol": pnl, "buy_sig": buy, "bid_arm": "control",
                  "priority_lamports": BOT_SALE_FEES[0], "tip_lamports": BOT_SALE_FEES[1], "exit_reason": "timer",
@@ -181,7 +183,8 @@ def test_b2_a_kill_stops_the_books_snipers_beside_a_coin_the_owner_bought_after_
 
 def test_b2_the_owners_coin_is_no_holding_from_the_moment_its_buy_is_on_record(tmp_path):
     """A stray no buy explains waits ten minutes of the watch seeing it (a buy of ours may not be written yet). A coin
-    whose buy is on record at the owner's fees, the whole holding explained, needs no wait: /stop reads it so at once."""
+    whose buy is on record at the owner's fees, the whole holding explained, needs no wait: /stop reads it so at
+    once."""
     st, cfg = BT._env(tmp_path)
     AB._book_sniper(st)
     AB._hand_buy_in_fills(st, BT.NOW - 400)  # read off the chain by the measure stage; the watch has not seen it yet
@@ -325,3 +328,176 @@ def test_b2_the_clean_up_leaves_an_ended_sniper_with_no_fee_record_beside_the_ow
         assert ("delete", "e1") in svc.calls and ("delete", "e2") not in svc.calls, svc.calls
     finally:
         st.close()
+
+
+# -- B3: the gate and the strays the watch says once a day ------------------------------------------------------------
+
+
+def _round_world(tmp_path):
+    """A store with one sniper on record, the config and the operator's paths, as the round's own tests build them."""
+    from tests import test_audit_round as AR
+
+    st = Store(tmp_path / "snipetech.db")
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "snipetech.db")
+    cfg.operator.wallet = AR.W
+    _sniper(st, created=0)
+    return AR, st, cfg, OperatorPaths(tmp_path).ensure()
+
+
+def _wakes(paths, snap, prev, now):
+    """The gate's held-coin and unmanaged reasons for this round (the states that buy a paid operator turn)."""
+    from snipetech.config import OperatorConfig
+    from snipetech.operator.gate import decide
+
+    return [r for r in decide(snap, prev, now, OperatorConfig(), paths).reasons if "held" in r or "unmanaged" in r]
+
+
+def test_b3_our_sold_copy_with_a_few_unpriced_tokens_left_wakes_no_paid_round(tmp_path):
+    """R-book-0: a copy into an older PumpSwap coin, bought and sold off the tape, can leave a few tokens the tape
+    cannot price, so they are never dust. The round's snapshot holds them as the bot's (its buy is in the fills), and
+    the watch says them once a day as our sold copy. The gate raised "1 coin(s) held", "unmanaged: 1 coin(s) nobody is
+    selling" (hourly) and "held over 30 min" for them, each a paid operator turn, for as long as the dust sat there."""
+    from snipetech.book.watch import watch_pass
+
+    AR, st, cfg, paths = _round_world(tmp_path)
+    try:
+        AR.tick(st, 995)
+        a = AR.take(st, cfg, paths, None, 1000.0, 10.0, [])
+        AR.put_fill(st, "pb", 1200, AR.SWAP, "buy", 3.5, AR.BOT_BUY_FEES, tokens=1e9)
+        AR.put_fill(st, "ps", 1212, AR.SWAP, "sell", 3.4, AR.BOT_SELL_FEES, tokens=1e9 - 4000, buy_sig="pb")
+        left = AR.unpriced(AR.SWAP) | {"amount": 0.004, "raw": 4000}  # what the sale left: never priced, never dust
+        AR.tick(st, 1895)
+        b = AR.take(st, cfg, paths, a, 1900.0, 9.9, [left])
+        assert AR.whose(b) == {AR.SWAP: "ours"}
+        sent: list[str] = []
+        note = Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
+        watch_pass(cfg, st, note, AR.W, [left], [], 1900.0)
+        AR.tick(st, 2295)
+        (hit,) = watch_pass(cfg, st, note, AR.W, [left], [], 2300.0)
+        assert hit["stray"] and hit["sold_copy"] and len(sent) == 1 and "our copy of it was sold" in sent[0]
+        AR.tick(st, 2795)
+        c = AR.take(st, cfg, paths, b, 2800.0, 9.9, [left])
+        assert _wakes(paths, c, b, 2800.0) == []
+        AR.tick(st, 6395)
+        watch_pass(cfg, st, note, AR.W, [left], [], 6300.0)
+        d = AR.take(st, cfg, paths, c, 6400.0, 9.9, [left])  # an hour on: no "held over 30 min" either
+        assert _wakes(paths, d, c, 6400.0) == [] and len(sent) == 1
+    finally:
+        st.close()
+
+
+def test_b3_a_stray_the_watch_calls_the_owners_or_our_sold_copy_is_never_unmanaged(tmp_path):
+    """The gate counts a stray as unmanaged only when the round holds its coin as the bot's (a buy of ours on record
+    the watch did not see). A hit the watch itself calls the owner's own (a coin both bought: the owner's part is what
+    is left) or our sold copy says who holds what is left: nobody is failing to sell it. A plain stray of a coin the
+    round holds as the bot's still counts, and so does every coin the watch does not call a stray."""
+    from tests import test_audit_round as AR
+
+    paths = OperatorPaths(tmp_path).ensure()
+    now = 1_795_321_800.0
+    paths.expected.write_text('{"snipers_running": 0, "held": 1}')
+    held = [AR.coin(AR.SWAP, 0.05) | {"since": now - 600, "whose": "ours", "ours": True}]
+    snap = AR._held_snap(now, held)
+    for flags, said in (({"owner": True}, []), ({"sold_copy": True}, []),
+                        ({}, ["unmanaged: 1 coin(s) nobody is selling (operator/watch.json)"])):  # fmt: skip
+        AR._watch(paths, now, [{"mint": AR.SWAP, "reason": "not_on_tape", "stray": True} | flags])
+        assert _wakes(paths, snap, snap, now) == said, flags
+    AR._watch(paths, now, [{"mint": AR.SWAP, "reason": "past_timer"}])  # a coin of ours nobody sells: as always
+    assert _wakes(paths, snap, snap, now) == ["unmanaged: 1 coin(s) nobody is selling (operator/watch.json)"]
+
+
+# -- B5: what the watch says of a coin with no buy of ours on the tape ------------------------------------------------
+
+PSWAP = "Pswp" + "p" * 40  # a coin on PumpSwap the tape does not record
+
+
+def _watch_env(tmp_path, measured):
+    """The book's test store with its sniper on record, a current tape, and the measure stage last run at `measured`."""
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    BT._fresh_tape(st)
+    st.set_coverage("measure:last_ts", {"ts": int(measured)})
+    return st, cfg
+
+
+def _copy_fill(st, ts, tokens=1e9, sold=None):
+    """Our copy of PSWAP as the measure stage reads it off the chain into fills, and (given `sold`) its paired sale."""
+    buy = "PBUY" + "b" * 84
+    st.put_fill({"sig": buy, "ts": int(ts), "wallet": W, "wallet_copied": BT.L1, "mint": PSWAP, "side": "buy",
+                 "sol": 0.2, "tokens": tokens, "priority_lamports": AB.BOT_FEES[0],
+                 "tip_lamports": AB.BOT_FEES[1]})  # fmt: skip
+    if sold is not None:
+        st.put_fill({"sig": "PSELL" + "s" * 83, "ts": int(ts) + 12, "wallet": W, "mint": PSWAP, "side": "sell",
+                     "sol": 0.2, "tokens": sold, "priority_lamports": AB.BOT_SALE_FEES[0],
+                     "tip_lamports": AB.BOT_SALE_FEES[1], "buy_sig": buy})  # fmt: skip
+
+
+def test_b5_a_coin_is_not_called_a_stray_for_sure_before_the_measure_stage_read_past_it(tmp_path):
+    """R-round-7: "it is not a coin the book bought, so no sniper of ours will sell it" was said of our own copy into a
+    PumpSwap coin the tape never holds. The watch reads such a buy in the measure stage's fills since the first round;
+    what was left: said before that stage had run past the coin's first sighting (it was late, or stood still), the
+    sentence was still wrong, and for a day. Until then the line says what is known; once the fills hold our buy the
+    coin gets the alert with its /sell line, the day's stray line notwithstanding."""
+    from snipetech.book.watch import watch_pass
+
+    st, cfg = _watch_env(tmp_path, measured=BT.NOW - 900)  # the measure stage last ran before the coin showed
+    AB._seen(tmp_path, PSWAP, BT.NOW - 400)
+    held = [{"mint": PSWAP, "amount": 1000.0, "raw": 10**9, "value_sol": None, "priced": False}]
+    sent: list[str] = []
+    try:
+        (hit,) = watch_pass(cfg, st, AB._notifier(sent), W, held, [], BT.NOW)
+        assert hit["stray"] and hit["unread"] and len(sent) == 1
+        assert "probably not a coin the book bought" in sent[0] and "has not run since it showed" in sent[0], sent
+        assert "no sniper of ours will sell it" not in sent[0]
+        assert st.events(kind="unmanaged") == []  # a stray is no position of ours for the weekly evidence
+        _copy_fill(st, BT.NOW - 430)  # the measure stage runs: the coin is our copy, still open
+        st.set_coverage("measure:last_ts", {"ts": int(BT.NOW) + 30})
+        (hit,) = watch_pass(cfg, st, AB._notifier(sent), W, held, [], BT.NOW + 60)
+        assert not hit["stray"] and len(sent) == 2, sent
+        assert "Nobody is selling coin " + PSWAP in sent[1] and sent[1].endswith(f"/sell {PSWAP}")
+        assert [e["mint"] for e in st.events(kind="unmanaged")] == [PSWAP]  # our copy nobody sells is one
+    finally:
+        st.close()
+
+
+def test_b5_once_the_measure_stage_read_past_it_a_coin_no_record_explains_is_said_for_sure(tmp_path):
+    """The airdrop of 22 Nov: neither the tape nor the fills hold a buy of the wallet, the tape is current and the
+    measure stage has run since the coin showed. The firm sentence stands, once a day."""
+    from snipetech.book.watch import watch_pass
+
+    st, cfg = _watch_env(tmp_path, measured=BT.NOW - 60)
+    AB._seen(tmp_path, PSWAP, BT.NOW - 400)
+    held = [{"mint": PSWAP, "amount": 1000.0, "raw": 10**9, "value_sol": None, "priced": False}]
+    sent: list[str] = []
+    try:
+        (hit,) = watch_pass(cfg, st, AB._notifier(sent), W, held, [], BT.NOW)
+        assert hit["stray"] and not hit["unread"] and len(sent) == 1
+        assert "it is not a coin the book bought, so no sniper of ours will sell it" in sent[0], sent
+        assert "nor the wallet's own trades read off the chain" in sent[0]
+    finally:
+        st.close()
+
+
+def test_b5_our_sold_copy_is_said_so_only_of_what_a_sale_leaves_behind(tmp_path):
+    """The gate takes the watch's word that a coin is what our sold copy left (B3). That word is given only for a
+    leftover: a few tokens beside what the copy bought. The fills showing our copy sold while the wallet holds a whole
+    position of the coin (bought again a moment ago, the measure stage not there yet) is a coin nobody may be selling:
+    the alert with its /sell line, as for any buy not on record yet."""
+    from snipetech.book.watch import watch_pass
+
+    for k, (raw, leftover) in enumerate(((4000, True), (10**9, False))):
+        st, cfg = _watch_env(tmp_path / str(k), measured=BT.NOW - 60)
+        _copy_fill(st, BT.NOW - 900, tokens=1e9, sold=1e9 - 4000)
+        AB._seen(tmp_path / str(k), PSWAP, BT.NOW - 880)
+        held = [{"mint": PSWAP, "amount": raw / 1e6, "raw": raw, "value_sol": None, "priced": False}]
+        sent: list[str] = []
+        try:
+            (hit,) = watch_pass(cfg, st, AB._notifier(sent), W, held, [], BT.NOW)
+            assert bool(hit.get("sold_copy")) is leftover and bool(hit["stray"]) is leftover, (k, hit)
+            if leftover:
+                assert "our copy of it was sold" in sent[0] and "/sell" not in sent[0], sent
+            else:
+                assert "Nobody is selling coin " + PSWAP in sent[0] and sent[0].endswith(f"/sell {PSWAP}"), sent
+        finally:
+            st.close()

@@ -833,7 +833,8 @@ def _one_sniper_refused(exc: BaseException) -> bool:
 
 async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], store, now: float,
                        strays: set[str] | frozenset = frozenset(), tape_behind: bool = False,
-                       wanted: set[str] | None = None, unrecorded: set[str] | frozenset = frozenset()) -> int:  # fmt: skip
+                       wanted: set[str] | None = None,
+                       unrecorded: set[str] | frozenset = frozenset()) -> int:  # fmt: skip
     """Delete the book's own snipers that have ended (positions.SPENT_STATUSES: they buy and sell nothing more), and,
     given the wallets the plan keeps a sniper for (`wanted`, first six characters), its stopped ("idle") snipers of any
     other wallet (19 Nov: 8 such tasks were left on the key, one since 9 Nov, a slow leak toward OKTech's 200; a wallet

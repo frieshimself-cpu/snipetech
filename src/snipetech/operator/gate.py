@@ -305,19 +305,25 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
             states.append(f"{len(running)} sniper(s) running, expected {others}")
     # the bot's coins only (snapshot.mark_held): the owner's own coin, and one no buy brought in (an airdrop the watch
     # already says once a day), are nobody's deviation; on 22 Nov an airdrop woke 7 operator turns that paged the owner
-    # about it (audit 22 Nov, round#6, docs#2)
-    bots = [h for h in snap.held if h.get("ours", True)]
+    # about it (audit 22 Nov, round#6, docs#2). Nor is what a sold copy of ours left behind: a few tokens the tape
+    # cannot price, so never dust, which the snapshot holds as the bot's (its buy is in the fills) and the watch says
+    # once a day as our sold copy (`sold_copy`); they raised "held", "unmanaged" and "held over 30 min" for as long as
+    # they sat in the wallet (audit of 22 Nov, second round)
+    hits = current_hits(paths, now)
+    sold = {str(h.get("mint")) for h in hits if h.get("stray") and h.get("sold_copy")}
+    bots = [h for h in snap.held if h.get("ours", True) and str(h.get("mint")) not in sold]
     allowed_held = max(exp["held"], len(runner_running)) + len(book_running)  # each may hold the coin it bought
     if len(bots) > allowed_held:
         states.append(f"{len(bots)} coin(s) held, expected {allowed_held}")
     # the watchdog's coins nobody is selling (written by the one-minute pass), while the wallet still holds them: a
     # decision now, reminded hourly, whatever the book expects to hold. A coin the watch calls a stray (no buy of ours
     # on the tape) counts only when a buy of the bot's is on record after all: a PumpSwap copy the tape never holds,
-    # which the measure stage's fills do (`whose` "ours"; server#1)
+    # which the measure stage's fills do (`whose` "ours"; server#1), and never one the watch itself calls the owner's
+    # own (`owner`: of a coin both bought, the owner's part is what is left) or our sold copy
     held_mints = {str(h.get("mint")) for h in bots if h.get("mint")}
     bought = {str(h.get("mint")) for h in bots if h.get("whose") == "ours"}
-    nobody = [h for h in current_hits(paths, now) if str(h.get("mint")) in held_mints
-              and (not h.get("stray") or str(h.get("mint")) in bought)]  # fmt: skip
+    nobody = [h for h in hits if str(h.get("mint")) in held_mints
+              and (not h.get("stray") or (str(h.get("mint")) in bought and not h.get("owner")))]  # fmt: skip
     if nobody:
         states.append(f"unmanaged: {len(nobody)} coin(s) nobody is selling (operator/watch.json)")
     stuck = [h for h in bots if now - float(h.get("since", now)) > STUCK_SECS]
