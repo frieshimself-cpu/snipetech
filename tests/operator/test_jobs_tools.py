@@ -508,6 +508,36 @@ def test_read_verdicts_tool(toolbox):
     assert "error" in _call(tools["read_verdicts"], status="bogus")
 
 
+def test_read_verdicts_lists_no_banned_wallet_as_qualified(toolbox):
+    """Review of 22 Nov (qualify#1): 7aPo3n and AG89fn were banned with a kept "qualified" verdict, which qualify never
+    looks at again. The book copies no banned wallet and the dashboard's list leaves them out; read_verdicts still
+    handed them to the agents as qualified, beside counts that called them banned, and the agents build
+    set_candidates from it. A banned wallet keeps its last verdict and is listed under banned alone; where every
+    wallet is asked for, its row says it is banned."""
+    tools, paths, _ = toolbox
+    st = Store(paths.data / "snipetech.db")
+    try:
+        rows = (("GOOD", "qualified", 0.3), ("GONE", "qualified", 0.9), ("OUT", "candidate", 0.0))
+        for wallet, status, score in rows:
+            st.upsert_candidate(wallet, "tape", {}, 1_793_923_000)
+            st.put_verdict({"wallet": wallet, "computed_at": 1_793_923_100, "status": status, "score": score,
+                            "n_tape": 25, "mean_sol": 0.02, "lower_sol": 0.004, "reasons": []})  # fmt: skip
+        st.set_candidate_status("GONE", "banned")
+        st.set_candidate_status("OUT", "banned")
+    finally:
+        st.close()
+    out = json.loads(_call(tools["read_verdicts"], status="qualified"))
+    assert out["counts"] == {"banned": 2, "qualified": 1}
+    assert [v["wallet"] for v in out["verdicts"]] == ["GOOD"]  # as many as the counts say
+    assert json.loads(_call(tools["read_verdicts"], status="candidate"))["verdicts"] == []
+    listed = json.loads(_call(tools["read_verdicts"], status="banned"))["verdicts"]
+    assert {v["wallet"] for v in listed} == {"GONE", "OUT"}
+    every = {v["wallet"]: v for v in json.loads(_call(tools["read_verdicts"]))["verdicts"]}
+    assert set(every) == {"GOOD", "GONE", "OUT"}  # each keeps its last verdict
+    assert every["GONE"]["status"] == "qualified" and every["GONE"]["banned"] is True and every["OUT"]["banned"] is True
+    assert "banned" not in every["GOOD"]
+
+
 def test_read_fills_tool(toolbox):
     tools, paths, _ = toolbox
     st = Store(paths.data / "snipetech.db")

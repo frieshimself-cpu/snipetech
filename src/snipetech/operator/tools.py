@@ -2111,7 +2111,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
     @beta_async_tool
     async def read_verdicts(status: str | None = None, limit: int = 50) -> str:
-        """The qualify stage's latest verdict per wallet (qualified = all gates passed at the measured landing).
+        """The qualify stage's latest verdict per wallet (qualified = all gates passed at the measured landing). A
+        banned wallet keeps its last verdict and is never qualified: it is listed under banned alone, and among every
+        wallet its row says "banned": true.
 
         Args:
             status: qualified | candidate | retired | banned, or omit for every wallet (best score first).
@@ -2121,13 +2123,19 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             return "error: status must be qualified, candidate, retired or banned"
         try:
             counts = svc.store.verdict_counts()
+            # a wallet banned after its verdict keeps that verdict, and qualify never looks at it again: it is banned,
+            # as the counts, the book (book.run._qualified) and the dashboard's list say (22 Nov: 7aPo3n and AG89fn
+            # were handed to the agents as qualified)
+            banned = svc.store.candidates(status="banned", limit=1_000_000)
             if status == "banned":
-                rows = [
-                    {"wallet": c["wallet"], "status": "banned", "sources": c["sources"]}
-                    for c in svc.store.candidates(status="banned")
-                ]
+                rows = [{"wallet": c["wallet"], "status": "banned", "sources": c["sources"]} for c in banned]
             else:
+                gone = {c["wallet"] for c in banned}
                 rows = svc.store.latest_verdicts(status)
+                if status is None:
+                    rows = [v | {"banned": True} if v.get("wallet") in gone else v for v in rows]
+                else:
+                    rows = [v for v in rows if v.get("wallet") not in gone]
         except Exception as exc:  # noqa: BLE001
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps({"counts": counts, "verdicts": rows[: max(1, int(limit))]}, default=str))
