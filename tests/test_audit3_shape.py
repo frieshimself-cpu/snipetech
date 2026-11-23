@@ -610,3 +610,99 @@ def test_the_measure_stage_reads_such_a_buy_again_until_its_reading_is_whole(tmp
         assert buy["venue"] and out["from_chain"]["placed"] == 1
     finally:
         st.close()
+
+
+# -- review of round 3: a fill names the nearest followed wallet's buy, and no other ----------------------------------
+
+KOL = key("a wallet a stale sniper on record follows")
+STALE = {"singleSnipe": True, "ctbotWallets": [{"address": KOL}], "buyAmount": 0.05, "priorityFee": 0.001,
+         "tipAmount": 0.049}  # fmt: skip
+HELD_COIN = [{"mint": COIN, "raw": 38_000_000}]
+
+
+def _behind_two_followed_wallets(sol=1.0, priority=0.0015, tip=0.12, kol_at=S + 1):
+    """The copied wallet buys COIN (a coin the tape does not hold); a slot on, a wallet that a stale sniper on record
+    still follows at 0.05 SOL buys it too; a slot on, a buy of our wallet lands. The measure stage places every buy
+    of the wallet against every followed wallet, and its fill names the nearest one alone: the stale sniper's.
+    Returns the chain, a store with both snipers on record and that fill, and the fill."""
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(kol_at, swap("kol", KOL, COIN, tokens=1_000_000_000, sol=1.5, priority=0.002, tip=0.001))
+    chain.put(S + 2, swap("ours", ME, COIN, tokens=38_000_000, sol=sol, priority=priority, tip=tip))
+    store = _sniper_store()
+    store.add_oktech_sniper({"id": "cs0", "external_id": "cs0", "kind": "copy", "source": KOL, "name": "copy",
+                             "config_hash": "h", "created_at": chain.ts(S) - 3 * 86_400, "payload": STALE})  # fmt: skip
+    _landing, row = _measured_row(chain, "ours", leaders=(CW, KOL))
+    assert row["wallet_copied"] == KOL and row["landing_src"] == "chain" and 0 <= row["blocks_after"] <= 3
+    store.put_fill(row)
+    chain.calls.clear()  # the measure stage's own reading is done: what is asked from here is the reader's
+    return chain, store, row
+
+
+def test_the_run_walks_its_own_wallets_when_the_fill_names_another_followed_wallet():
+    """Review: our copy at fees no payload names stands two slots behind the wallet the run copies; a wallet that a
+    stale sniper on record follows bought the coin in between. The runner asked the measure stage's fill first and
+    took its word both ways: the fill names the other wallet, which the run does not follow, so the copy was the
+    owner's coin for good: never counted or sold by the run, its sniper re-armed (stopped) while it held the coin
+    (CLAUDE.md rule 1). A fill says only which followed wallet bought nearest; that it stood behind none of the
+    run's is for the run's own walk to say."""
+    chain, store, _row = _behind_two_followed_wallets()
+    coins = RunCoins(store, chain, ME, sniper_marks([COPY], store=store))
+    now = chain.ts(S + 2) + 40
+    assert asyncio.run(coins.whose(COIN_HELD, now - 300, now)) == "ours"
+    assert [o["leader"] for o in coins.odd] == [CW]
+    store.close()
+
+
+def test_a_fill_that_names_no_wallet_of_the_runs_still_leaves_a_hand_buy_the_owners():
+    """Review, the other side: the owner's hand buys in the same place. At another size (0.99 SOL) the coin is the
+    owner's at the first look, with no walk, whatever the fill names; at exactly the sniper's size with no buy of
+    the run's wallet near (the fill names the other wallet, 100 slots after the run's wallet bought), the run's own
+    walk says the owner's."""
+    chain, store, _row = _behind_two_followed_wallets(sol=0.99, priority=0.000006121, tip=0.026993879)
+    coins = RunCoins(store, chain, ME, sniper_marks([COPY], store=store))
+    now = chain.ts(S + 2) + 40
+    assert asyncio.run(coins.whose(COIN_HELD, now - 300, now)) == "owner" and not _walked(chain)
+    store.close()
+    far = Chain()
+    far.put(S - 100, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    far.put(S + 1, swap("kol", KOL, COIN, tokens=1_000_000_000, sol=1.5, priority=0.002, tip=0.001))
+    far.put(S + 2, swap("hand", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.000006121, tip=0.026993879))
+    store = _sniper_store()
+    _landing, row = _measured_row(far, "hand", leaders=(CW, KOL))
+    assert row["wallet_copied"] == KOL
+    store.put_fill(row)
+    far.calls.clear()
+    coins = RunCoins(store, far, ME, sniper_marks([COPY], store=store))
+    now = far.ts(S + 2) + 40
+    assert asyncio.run(coins.whose(COIN_HELD, now - 300, now)) == "owner" and _walked(far) and coins.odd == []
+    store.close()
+
+
+def test_no_sniper_is_stopped_beside_a_copy_whose_fill_names_another_followed_wallet():
+    """Review, outside a run (/stop, the guard's end: owner_coins and bot_bought with every sniper on record). The
+    same copy: its fill names the stale sniper's wallet, and no sniper spends 1 SOL behind that wallet, so by the
+    size rule the fill is no copy's and the coin was the owner's "beyond doubt": /stop stopped the sniper that held
+    it (by its place alone, before the size rule, it kept the snipers running). The fills name the nearest followed
+    wallet alone; the wallet copied may have bought just before it. A buy right behind a followed wallet's, at the
+    size of a sniper alive then that follows another wallet, may be ours: no sniper is stopped beside it. It is not
+    counted or said as the bot's by that alone."""
+    _chain, store, row = _behind_two_followed_wallets()
+    marks = fee_marks(store)
+    assert owner_coins(store, ME, HELD_COIN, marks) == set() and bot_bought(store, ME, COIN, marks)
+    assert not bot_buy(row, marks) and odd_fill(row, marks) is None
+    store.close()
+
+
+def test_a_hand_buy_whose_fill_names_a_followed_wallet_is_still_the_owners_to_stop():
+    """Review, the other side: only a followed sniper's own size makes such a fill "maybe ours". The owner's 0.99 SOL
+    hand buy in the same place is the owner's coin; so is a buy of exactly 1 SOL whose fill names a followed wallet
+    more than three blocks before it."""
+    _chain, store, row = _behind_two_followed_wallets(sol=0.99, priority=0.000006121, tip=0.026993879)
+    marks = fee_marks(store)
+    assert owner_coins(store, ME, HELD_COIN, marks) == {COIN} and not bot_bought(store, ME, COIN, marks)
+    store.put_fill(row | {"sol": 1.0, "blocks_after": 4})
+    assert owner_coins(store, ME, HELD_COIN, marks) == {COIN} and not bot_bought(store, ME, COIN, marks)
+    store.put_fill(row | {"sol": 1.0, "blocks_after": 1, "landing_verdict": "ahead"})
+    assert owner_coins(store, ME, HELD_COIN, marks) == {COIN} and not bot_bought(store, ME, COIN, marks)
+    store.close()
