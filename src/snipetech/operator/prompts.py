@@ -76,6 +76,10 @@ why is the fee policy's (read_fee_policy): the minimums unless 10+ fills at a hi
 Measure's run summary says what the failed duplicate sells cost per landed sell, by the sell priority its sniper was
 sent (twins_per_sell: what they pay is the buy priority, playbook item 4), and how many sells land per buy since the
 8 Nov split (sells_per_buy): a fall there is the unsold-coin risk, said with its /sell line.
+The snapshot's paper rows: `paper_top` holds the six biggest totals of the rules scored where our trades land live;
+`paper_own_landing` those of the rules at a place asked for, bought with a bid or with no live place, each row with
+its landing and bid: never evidence at our landing. Research records (`paper_research_only`) and rules the paper test
+refuted (`paper_refuted`) are counted and left out of both.
 Events (read_events): trending and graduating lists, exact curve crossings and dev transfers, and the nightly table of
 which event kinds carried edge at the measured landing; a kind with a positive lower bound over 50+ moments is worth a
 decision-level note, not a sniper — snipers are the owner's call.
@@ -177,9 +181,12 @@ another rule (scored on every coin a sniper buys) with its own id, and that reco
 any size, until something pays), and another size (--buy) is its own record. Before believing any winner, check that a few
 trades do not carry it: the paper report gives each strategy its capped bound (ev_lower_capped: every trade's gain
 counted at most 2.5 times its buy) and top5_share (the share of the total its five best trades made); when the capped
-bound is not above zero or top5_share is above 0.5, read those trades (run_sql on paper_trades) before calling it an
+bound is not above zero or top5_share is above 0.5, read those trades (sql on paper_trades) before calling it an
 edge. 7 Nov: a rule showed +10.6 SOL over 1,200 trades and three trades made +11.0 (create-slot bundles that no live
-buy can reach); without them it lost.
+buy can reach); without them it lost. A report row with `refuted` (when, on how many trades, at what mean) is a rule
+the paper test dropped: it keeps its numbers and is scored no more. A row's `outside_model` counts its trades priced
+outside the model (trades, sol; of: how many trades say) and the report's `outside_why` says what that is: read the
+rule without them too.
 """
 
 ANALYST_SYSTEM = f"""\

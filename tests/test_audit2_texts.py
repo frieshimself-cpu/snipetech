@@ -98,3 +98,50 @@ def test_no_text_says_the_twins_pay_the_sell_priority_we_send():
         text = _flat(system)
         assert "at each sell priority (twins_per_sell)" not in text
         assert "by the sell priority its sniper was sent (twins_per_sell" in text
+
+
+def test_the_two_days_of_doubled_cost_are_told_at_what_the_stored_records_were_charged():
+    """Round 1 (paper#3): the text said every lab and freeze of 12 Nov 17:24 to 14 Nov 18:26 UTC charged 0.0085 to
+    0.0093 SOL a transaction. The rules frozen in that window on the server carry per_tx_sol 0.0062 (1 rule), 0.0067
+    (4), 0.0074 (1), 0.0085 (18) and 0.0093 (4), rising through the two days (read-only SQL, 23 Nov). And a hunt's
+    exit_note can now be the cost's note as well as the crews'."""
+    from snipetech.analysis.paper import OVERCHARGED_SOL
+
+    text = _tools_text()
+    assert "charged 0.0062 to 0.0093 SOL a transaction, rising through the two days" in text
+    assert "0.0085 to 0.0093" not in text and "up to about 0.009 SOL a round trip too much" in text
+    assert OVERCHARGED_SOL <= 0.0062  # the lowest of them is one the code calls overcharged
+    assert "has another reason: SERIAL CREWS' COINS or THE COST A LAB CHARGES below" in text
+
+
+def test_the_agents_are_told_what_the_snapshots_paper_rows_and_a_report_rows_marks_mean():
+    """Round 1 (paper#0, paper#5): the round's snapshot ranks the rules scored where our trades land live (paper_top)
+    apart from those at a place asked for, bought with a bid or with no live place (paper_own_landing), and counts
+    the refuted ones it leaves out (paper_refuted); a paper report row says when its rule was refuted and how many of
+    its trades rest on a price outside the model. No text named any of them."""
+    import time
+
+    from snipetech.analysis import paper
+    from snipetech.operator.snapshot import Snapshot
+
+    for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
+        text = _flat(system)
+        assert "`paper_top` holds the six biggest totals of the rules scored where our trades land live" in text
+        assert "`paper_own_landing`" in text and "never evidence at our landing" in text
+        assert "`paper_refuted`" in text and "`paper_research_only`" in text
+    for system in (P.ANALYST_SYSTEM, P.ROLE_SYSTEM["tester"]):
+        text = _flat(system)
+        assert "A report row with `refuted` (when, on how many trades, at what mean)" in text
+        assert "`outside_model`" in text and "`outside_why`" in text
+    # the names are the snapshot's and the report's own
+    rows = [{"id": "live", "total": 1.0, "live_landing": True}, {"id": "bid", "total": 9.0, "live_landing": False},
+            {"id": "gone", "total": 5.0, "live_landing": True, "refuted": {"at": 1, "trades": 30, "mean_sol": -0.01}},
+            {"id": "old", "total": 7.0, "live_landing": True, "research_only": True}]  # fmt: skip
+    snap = Snapshot(ts=time.time(), wallet="W", native_sol=1.0, wsol=0.0, snipers=[])
+    snap.paper = {"strategies": rows}
+    d = P._compact_snapshot(snap)
+    assert [s["id"] for s in d["paper_top"]] == ["live"] and [s["id"] for s in d["paper_own_landing"]] == ["bid"]
+    assert d["paper_refuted"] == 1 and d["paper_research_only"] == 1
+    report = inspect.getsource(paper.report)
+    assert '"outside_model"' in report and '"outside_why"' in report and '["refuted"]' in report
+    assert set(paper._outside_count([])) == {"trades", "sol", "of"}

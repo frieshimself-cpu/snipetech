@@ -1795,7 +1795,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         A lab row or a frozen wallet rule from before (no "copy50%" in its name) is another exit: do not compare
         it with a new row; run the lab again and freeze the rule again (a new id; the old record keeps its trades,
         shows exit_note in paper report and is listed under not_as_live in a freeze). Hunt, launch, whale, burst
-        and MIG rules keep their exits (an exit_note on one of them has another reason: SERIAL CREWS' COINS below)
+        and MIG rules keep their exits (an exit_note on one of them has another reason: SERIAL CREWS' COINS or THE
+        COST A LAB CHARGES below)
         and a recipe's own exit has none. The sale is priced one slot after the
         wallet's sale, ahead of that slot's trades: behind a crowded wallet a live sale can land lower (not
         measured). Several small sales never add up to the half.
@@ -2039,16 +2040,18 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         and are research only: freeze each again. A default lab scores the crews' coins too and takes about half as long
         again. A hunt on a wallet group (bots) is unchanged.
         THE COST A LAB CHARGES (14 Nov): from 12 Nov 17:24 to 14 Nov 18:26 UTC every lab, freeze and qualify verdict
-        charged 0.0085 to 0.0093 SOL a transaction, twice the low bid's real cost (about 0.0044): four buys of the tip
-        test at 0.035 SOL and 50 failed sends of one USDC swap had been counted in it. That was about 0.009 SOL a round
-        trip too much: a rule or a wallet that failed by less than that in those two days is NOT refuted, test it again;
-        a rule frozen in those two days (per_tx_sol 0.0062 to 0.0093 in its record) is charged too much forward:
-        freeze it again, and the freeze makes a new record of it at today's cost (again 1, an id of its own, from zero
-        trades) while the old one keeps its trades and is named under not_as_live. The labs now charge 0.0045 and say per_tx_source "estimate" until the low bid has its 30 buys of a week
-        again; a bid above the low bid is charged on top with "--buy-bid" as before. The hunt {"kind": "hunt", "sol": 5,
-        "window": 1, "max_buyers": 2, "dev_max": 1} at this cost on every coin, 168 h to 14 Nov 05:01 UTC (labs 7299bb
-        and 346941; each half on its own best exit, so rough): at 0.2 SOL -0.002 SOL a trade over 687 test trades; at 1
-        SOL +0.030 a trade (+20.5 SOL), +0.013 without its five best trades, four trades (+6.7 SOL) outside the model.
+        charged 0.0062 to 0.0093 SOL a transaction, rising through the two days to twice the low bid's real cost
+        (about 0.0044): four buys of the tip test at 0.035 SOL and 50 failed sends of one USDC swap had been counted
+        in it. That was up to about 0.009 SOL a round trip too much: a rule or a wallet that failed by less than that
+        in those two days is NOT refuted, test it again; a rule frozen in those two days (per_tx_sol 0.0062 to 0.0093
+        in its record) is charged too much forward: freeze it again, and the freeze makes a new record of it at
+        today's cost (again 1, an id of its own, from zero trades) while the old one keeps its trades and is named
+        under not_as_live. The labs now charge 0.0045 and say per_tx_source "estimate" until the low bid has its 30
+        buys of a week again; a bid above the low bid is charged on top with "--buy-bid" as before. The hunt
+        {"kind": "hunt", "sol": 5, "window": 1, "max_buyers": 2, "dev_max": 1} at this cost on every coin, 168 h to
+        14 Nov 05:01 UTC (labs 7299bb and 346941; each half on its own best exit, so rough): at 0.2 SOL -0.002 SOL a
+        trade over 687 test trades; at 1 SOL +0.030 a trade (+20.5 SOL), +0.013 without its five best trades, four
+        trades (+6.7 SOL) outside the model.
         A WINNING BOT'S RECIPE BY NAME (the owner, 12 Nov: "we cant copy a wallet that is copying because we are
         filled above, we can learn from it"): ["lab", "--recipe", "6z91", "--hours", "24", "--json"] runs the copy
         bot 6Z91's playbook without typing its triggers: a followed wallet's first buy of 1 to 3 SOL in a coin 13 s
