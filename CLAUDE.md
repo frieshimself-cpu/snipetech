@@ -22,7 +22,10 @@ top section of `docs/roadmap.md`; the test log is `docs/live-recipe.md`. Read bo
 
 One Ubuntu box runs the tape recorder, a daily research job, the operator timer and `snipetech-ops`, a signed
 remote-operations endpoint. From a checkout with an authorized key:
-`snipetech remote status | jobs | --wait run <command> | read jobs/<id>.log | sql "<select>" | logs <unit> | update`.
+`snipetech remote status | jobs | --wait run <command> | read <path> [--tail BYTES] | sql "<select>" | logs <unit> | update`.
+`read` gives a file's last 200 kB from a whole line and says when the file is longer (`read jobs/<id>.log --tail
+BYTES` for more of it). `remote status` names two commits: `code`, the checkout's, and `endpoint_code`, the one the
+endpoint itself runs (they differ while a deploy has not restarted it).
 `remote logs kernel --boot -1` and `remote logs systemd --boot -1` are the machine's own last lines before its last
 restart (out of memory, what was starting); a unit's name with `--boot -1` gives that unit's.
 `remote update` restarts `snipetech-ops` and the tape recorder. Since 7 Nov 20:49 (`KillMode=process`, installed by the
@@ -32,7 +35,8 @@ lab reports numbers from old code: the server keeps that rule itself once it run
 `ops.HOLD_UNITS`). `remote update` is refused while a job that reports numbers or a timer-run unit (the agents' round,
 the book run, qualify) is mid-run, and names it; `remote status` lists them under `deploy_waits_for`;
 `remote update --when-quiet` waits for the moment, `--force` deploys all the same. The slice has no CPU quota since
-20:49 (all 6 cores, 12 GB).
+20:49 (all 8 cores; the machine has 32 GB, and the slice may use 29.6 of them: `cpus`, `mem_gb` and
+`slice.memory_max_gb` in `remote status`; on 7 Nov it was 6 cores and a 12.9 GB limit).
 Secrets live only in `/etc/snipetech/env` on the server (Helius, OKTech, Anthropic, OpenRouter, Telegram, TypeSafe
 keys; with an OpenRouter key the agents reach Claude through OpenRouter, `src/snipetech/claude_client.py`). They
 are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
