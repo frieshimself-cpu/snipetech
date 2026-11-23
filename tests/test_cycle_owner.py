@@ -663,3 +663,51 @@ def test_the_owners_hand_buy_twenty_slots_behind_a_copied_wallet_is_still_left_a
     assert sweeps == [] and rep["fills"] == 0 and rep["owner_coins"] == [OWN]
     assert _starts(client, T0 + 160) and rep["left_running"] == []
     assert not [e for e in rep["events"] if "paid fees no sniper" in e]
+
+
+# -- round 2 of the audit (23 Nov), A3: the run's tokens in a coin of the owner's are held for the snipers' own timer ---
+
+SLOW_SALE = {"sellTipAmount": 0.002, "sellPriorityFeeSol": 0.0001}
+SLOW_EXITS = {
+    "a 400 s sell-all timer": FEES | {"autoSell": SLOW_SALE | {"sellAfterSeconds": 400, "sellPercent": 100}},
+    "a 400 s timer stage": FEES | {"autoSell": SLOW_SALE | {"sellPercent": 0, "stages": [
+        {"gainPercent": None, "sellPercent": 100, "delaySellAllSeconds": 0, "sellAfterMs": 400_000}]}},
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("payload", list(SLOW_EXITS.values()), ids=list(SLOW_EXITS))
+def test_the_runs_tokens_in_the_owners_coin_are_held_until_a_long_exit_timer_has_sold_them(monkeypatch, payload):
+    """A3 (the runner review's R-runner-1): without --sweep-after the run's tokens in a coin the owner holds too were
+    held as the run's for RUN_HOLD_MAX_SECS (300 s) after the copy, whatever the snipers' exit: a sniper whose timer
+    sells at 400 s was re-armed (stopped) at 300 s, its copy stranded (CLAUDE.md rule 1). The hold lasts as long as the
+    snipers' longest exit timer and a margin."""
+
+    def coins(now):
+        if C + 1 <= now < C + 400:
+            return [{"mint": OWN, "amount": 2.0, "raw": 2_000_000, "value_sol": 6.0, "priced": True}]
+        return [_coin(OWN, 3.0)]
+
+    rep, client = _run(monkeypatch, lambda now: 7.0 if now < C else (4.0 if now < C + 400 else 6.9), coins=coins,
+                       payload=payload,
+                       tape=[_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(C, mint=OWN, sol=3.0),
+                             _oktech_sale(C + 400, mint=OWN)],
+                       floor=None, max_loss=5.0, rearm_after=60, minutes=12)  # fmt: skip
+    touched = sorted(round(t - C) for _kind, _i, t in client.timed if C < t < C + 400)
+    assert not touched, f"a sniper was stopped or started {touched} s after the copy, before its 400 s exit"
+    assert _starts(client, C + 400), rep["events"][-5:]  # and re-armed once its exit had sold the copy
+
+
+def test_a_short_exit_timer_keeps_the_hold_at_five_minutes():
+    """A3: the hold is never shorter than before (the live snipers sell at 12 s), and a longer timer adds a margin."""
+    from snipetech import service as S
+
+    assert S.RUN_HOLD_MAX_SECS == 300.0 and S.RUN_HOLD_MARGIN_SECS >= 60
+    assert S.run_hold_secs([FEES | {"autoSell": {"sellAfterSeconds": 12, "sellPercent": 100}}], None) == 300.0
+    assert S.run_hold_secs([FEES], None) == 300.0  # no timer on record: as before
+    assert S.run_hold_secs([FEES | {"autoSell": {"enabled": False, "sellAfterSeconds": 900, "sellPercent": 100}}],
+                           None) == 300.0  # fmt: skip
+    long = FEES | {"autoSell": {"sellAfterSeconds": 600, "sellPercent": 100}}
+    assert S.run_hold_secs([FEES, long], None) == 600 + S.RUN_HOLD_MARGIN_SECS
+    # with --sweep-after, long enough for the run's own sale too, as before (two tries of it)
+    assert S.run_hold_secs([FEES], 320) == 320 + 2 * S.SWEEP_RETRY_SECS
+    assert S.run_hold_secs([long], 45) == 600 + S.RUN_HOLD_MARGIN_SECS

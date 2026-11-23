@@ -97,8 +97,11 @@ RUN_GONE_SECS = 60.0
 # and while the tape says the run still holds tokens of a coin the wallet holds (one the owner holds too counts as
 # theirs by its first buy), no sniper is re-armed, for this long after the run's last buy of it at most (an exit
 # whose sale the tape cannot tell as the run's never holds the re-arms back for good), or for --sweep-after and two
-# tries of the run's own sale of them, when that is longer (the sale sees such a coin only while it is held)
+# tries of the run's own sale of them, when that is longer (the sale sees such a coin only while it is held), or for
+# the run's snipers' longest exit timer and RUN_HOLD_MARGIN_SECS, when that is (`run_hold_secs`: a sniper stopped
+# before its timer strands its coin; every live sniper so far sells at 12 s)
 RUN_HOLD_MAX_SECS = 300.0
+RUN_HOLD_MARGIN_SECS = 120.0  # past a timer: the sale's own tries, and the tape that writes it (up to 120 s behind)
 # At a run's end every copied wallet with a buy of a held coin this long before our buy of it may be the one that buy
 # copied: each of their snipers may hold it, and none is stopped (22 Nov review)
 LEAD_WINDOW_SECS = 10.0
@@ -112,6 +115,35 @@ FRESH_HOLD_SECS = 30.0
 MOVE_UNDO_SECS = 120.0
 # `oktech cycle --wait-for-sol`: how often the wallet is read while the run waits for the owner's SOL
 WAIT_POLL_SECS = 15.0
+
+
+def exit_timer_secs(payload: dict | None) -> float:
+    """The longest sell-all timer in a sniper's payload: autoSell.sellAfterSeconds while it sells a share
+    (oktech.autosell: "sellPercent" 0 is no timer), or a stage's sellAfterMs. 0 with none, or with auto-sell off."""
+    sell = (payload or {}).get("autoSell")
+    if not isinstance(sell, dict) or sell.get("enabled", True) is False:
+        return 0.0
+
+    def num(x) -> float:
+        try:
+            return max(0.0, float(x))
+        except (TypeError, ValueError):
+            return 0.0
+
+    timers = [num(sell.get("sellAfterSeconds"))] if num(sell.get("sellPercent")) > 0 else []
+    timers += [num(st.get("sellAfterMs")) / 1000 for st in sell.get("stages") or [] if isinstance(st, dict)]
+    return max(timers, default=0.0)
+
+
+def run_hold_secs(payloads, sweep_after: float | None) -> float:
+    """How long after the run's last buy of a coin the owner holds too its tokens are held as the run's (`oktech_cycle`,
+    `run_parts`): RUN_HOLD_MAX_SECS, or longer when the snipers' longest exit timer and RUN_HOLD_MARGIN_SECS is (23 Nov
+    audit: a sniper whose timer sells at 400 s was re-armed, so stopped, at 300 s), or when --sweep-after and two
+    tries of the run's own sale of them is."""
+    hold = max(RUN_HOLD_MAX_SECS, max((exit_timer_secs(p) for p in payloads), default=0.0) + RUN_HOLD_MARGIN_SECS)
+    if sweep_after is not None:
+        hold = max(hold, float(sweep_after) + 2 * SWEEP_RETRY_SECS)
+    return hold
 
 
 class OverlapError(ValueError):
@@ -1424,7 +1456,8 @@ class Service:
         when it leaves (`owner_coins` in the report). A coin of the run's the owner bought into by hand is sold by the
         run only for the run's own tokens of it, and is theirs once the tape shows those all sold and their own buys
         explain the rest (OWNER_REST_READINGS). A copy into a coin of the owner's leaves it theirs, but while the tape
-        says the run holds tokens of it (RUN_HOLD_MAX_SECS at most, or --sweep-after and two tries of its sale) no
+        says the run holds tokens of it (`run_hold_secs` at most: RUN_HOLD_MAX_SECS, the snipers' longest exit timer
+        and a margin, or --sweep-after and two tries of its sale, whichever is longest) no
         sniper is re-armed or stopped, at the end and on the way out too, and past --sweep-after the run sells its own
         tokens of it, never the owner's (`run_parts`; no more than the wallet holds beyond theirs).
         A coin nobody can tell yet is held as the run's but never sold by it.
@@ -1495,10 +1528,9 @@ class Service:
                              f"{address[:6]}…: it would sell nothing, or that wallet's coin. Run it on the selling key's "
                              "wallet, or without --sweep-after; nothing cycled")  # fmt: skip
         can_sell = seller == address  # without it, a copy of an own launch or of bait is left to its sniper's exit
-        # how long the run's tokens in a coin of the owner's are held as the run's after its last buy (`run_parts`)
-        hold_secs = RUN_HOLD_MAX_SECS
-        if sweep_after is not None:  # and long enough for the run's own sale of them, tried twice
-            hold_secs = max(hold_secs, float(sweep_after) + 2 * SWEEP_RETRY_SECS)
+        # how long the run's tokens in a coin of the owner's are held as the run's after its last buy (`run_parts`):
+        # as long as the snipers' longest exit timer needs, and the run's own sale of them, tried twice
+        hold_secs = run_hold_secs([(mine.get(i) or {}).get("payload") for i in ids], sweep_after)
         from .measure.ours import (
             WHOSE_MARGIN_SECS,
             RunCoins,
@@ -2167,8 +2199,9 @@ class Service:
 
         def run_parts(held_all: list[dict], now: float) -> list[dict]:
             """The owner's own coins in `held_all` of which the tape says the run still holds tokens (its own landed
-            sales the tape has not written yet counted), bought `hold_secs` ago at most (RUN_HOLD_MAX_SECS, or longer
-            for a long --sweep-after): a copy into a coin the owner holds is their coin by its first buy, and the run's
+            sales the tape has not written yet counted), bought `hold_secs` ago at most (`run_hold_secs`: longer than
+            RUN_HOLD_MAX_SECS for a long exit timer or --sweep-after): a copy into a coin the owner holds is their coin
+            by its first buy, and the run's
             count of its own coins sees nothing (22 Nov review). Each is the run's as much as theirs: no sniper is
             re-armed or stopped while one is held, and the run's own sale sells the run's tokens of it (22 Nov audit,
             runner finding 1: the end stopped the sniper that held such a copy, and the run never sold it). Empty when
