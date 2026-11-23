@@ -2075,10 +2075,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
     @beta_async_tool
     async def write_note(text: str, level: str = "info") -> str:
-        """Append a note for the owner. Use level "decision" only for: a wallet clearing all three gates, a sniper
-        running or a coin held when none should be, equity moved by our own trades more than the alert threshold, the
-        tape stalled, a service down, or the budget reached. A move no trade of ours explains is the owner moving SOL
-        in or out: "info" at most, never a question.
+        """Append a note for the owner. Use level "decision" only for: a wallet newly qualified, a coin our snipers
+        bought that no sniper is selling, a sniper running or a coin of ours held when none should be, equity moved by
+        our own trades more than the alert threshold, the tape stalled, a service down, or the budget reached. A move
+        no trade of ours explains is the owner moving SOL in or out: "info" at most, never a question.
 
         Args:
             text: One or two plain sentences.
