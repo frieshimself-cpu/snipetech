@@ -1028,11 +1028,17 @@ SELL_SLOT_SECS = 1.0  # a sell lands a slot after its exit fires, and block time
 
 
 def exits_horizon(exits: Sequence[ExitParams]) -> float:
-    """How long after its buy a position scored on these exits can still be held: the longest timer among them, with
-    the time its last part takes when it sells out in parts. Every exit of a lab is scored on the same moments, so the
-    tape must hold that long of each."""
-    return max((float(ex.max_hold_secs) + (max(1, int(ex.sell_parts)) - 1) * max(0.0, float(ex.sell_part_secs))
-                for ex in exits), default=0.0)  # fmt: skip
+    """How long after its buy a position scored on these exits can still be held: the longest timer among them, moved
+    on as far as its timer extension can move it (`ext_max`, where the extension is on), with the time its last part
+    takes when it sells out in parts. Every exit of a lab is scored on the same moments, so the tape must hold that
+    long of each. Until 23 Nov the extension was left out: an EXT exit could sell up to `ext_max` past the stretch the
+    PumpSwap tape was checked to hold (`mig_gap`, `amm_buy_gap`, `migration_sell_gap`)."""
+
+    def held(ex: ExitParams) -> float:
+        ext = float(ex.ext_max) if ex.ext_velocity > 0 and ex.ext_step > 0 and ex.ext_max > 0 else 0.0
+        return float(ex.max_hold_secs) + ext + (max(1, int(ex.sell_parts)) - 1) * max(0.0, float(ex.sell_part_secs))
+
+    return max((held(ex) for ex in exits), default=0.0)
 
 
 MAX_SELL_PARTS = 20

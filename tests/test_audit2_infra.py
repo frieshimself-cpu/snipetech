@@ -46,3 +46,43 @@ def test_a_report_without_a_refuted_rule_reads_as_before():
     assert "refuted" not in text and "state" not in text
     head = next(line for line in text.splitlines() if line.startswith("id "))
     assert head.split()[-2:] == ["lab", "said"]  # the table's last column, as it was
+
+
+# -- I5: the lab's exit horizon counts a timer extension ---------------------------------------------------------------
+# A lab checks that the tape holds each moment for as long as its exits can hold (`lab.exits_horizon`: the PumpSwap
+# tape behind a MIG buy, a copy that lands on PumpSwap, a migration sell). It counted the timer and the parts of a sale
+# in parts, not how far a timer extension moves the timer (`ext_max`): an EXT exit could sell up to that long past the
+# stretch the tape was checked to hold, on whatever trades the tape happened to have.
+
+
+def test_the_exit_horizon_reaches_as_far_as_an_extended_timer_can_sell():
+    from dataclasses import replace
+
+    from snipetech.analysis.lab import exits_horizon, in_parts
+    from snipetech.sim.exits import exit_from_label, exits_reach
+
+    plain = exit_from_label("hold12s")
+    ext = exit_from_label("hold12s EXT1%/s@2s+4s<20s")  # while the price climbs its timer moves on, to 32 s at the most
+    assert exits_horizon([plain]) == 12.0
+    assert exits_horizon([ext]) == 32.0  # was 12.0
+    assert exits_horizon([plain, ext]) == 32.0 == exits_reach([plain, ext])  # as far as the simulator reads the path
+    # an extension that is off moves no timer, whatever its other fields hold (ext_max is 30 s by default)
+    assert plain.ext_max == 30.0 and exits_horizon([replace(ext, ext_velocity=0.0)]) == 12.0
+    assert exits_horizon([replace(ext, ext_step=0.0)]) == 12.0
+    # the parts of a sale in parts follow the timer where it ended
+    assert exits_horizon(in_parts([ext], 4, 15.0)) == 32.0 + 3 * 15.0
+
+
+def test_a_moment_the_pumpswap_tape_holds_for_the_timer_alone_is_no_moment_of_an_extended_exit():
+    from types import SimpleNamespace
+
+    from snipetech.analysis.lab import exits_horizon, mig_gap
+    from snipetech.sim.exits import exit_from_label
+
+    at = 1_794_000_000
+    # the PumpSwap tape holds the coin for 20 s after its migration (the recorder's run ends there)
+    cov = {"runs": [{"from": at, "to": at + 20, "secs": 1800, "skipped": [], "slot_secs": 0.214}]}
+    mig = SimpleNamespace(ts=at)
+    assert mig_gap(cov, None, None, mig, exits_horizon([exit_from_label("hold12s")])) is None  # 12 s and a slot
+    ext = exit_from_label("hold12s EXT1%/s@2s+4s<20s")
+    assert mig_gap(cov, None, None, mig, exits_horizon([ext])) == "end"  # up to 32 s: past what the tape holds
