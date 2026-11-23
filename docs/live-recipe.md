@@ -936,8 +936,9 @@ unsold-coin watch has seen it for 10 minutes). Beside only such coins every snip
 names the coins. Before, the owner's hand-bought coin kept every sniper running. One exception: a running sniper the
 bot has no record of (one made in OKTech's app) is left running beside a coin read as the owner's, because it may have
 bought it; the reply names it, to be stopped in OKTech once that coin is sold. Each read waits 20 s at most, the stop
-calls together 40 s and a `/sell` sale 60 s, so a service that hangs no longer outlasts the pass; a sniper not answered
-in time is named, with the word to send `/stop` again. Known gap: `/stop` reads the wallet once. A buy of ours made a second
+calls together 40 s and a `/sell` sale 60 s, so one service that hangs no longer outlasts the pass (a `/stop` and a
+`/sell` in the same minute, both hanging, still can: the pass is killed at 2 minutes); a sniper not answered in time
+is named, with the word to send `/stop` again. Known gap: `/stop` reads the wallet once. A buy of ours made a second
 before, whose coin has not shown yet, can be stopped beside an empty wallet; the unsold-coin watch then sends its
 /sell line.
 
@@ -949,9 +950,10 @@ running test's expectation alone.
 **`oktech guard`** (a floor watch over capped snipers). Its emergency is the wallet's equity (SOL, wrapped SOL and the
 tape value of the coins held) under the floor. Every end, the floor, the time limit, a kill or a restart, stops its
 snipers only once two readings agree that the wallet holds nothing they bought. With a coin held it watches for 15
-minutes at most, then leaves them running and lists each coin with its /sell line. Before, a floor breach stopped the
-sniper that held the coin, and the time limit or a kill stopped nothing. A low SOL balance (under 0.005 SOL, about what
-a sale costs) is said once and is no emergency: the old 0.05 SOL reserve called one curve buy from a small wallet an
+minutes at most, then leaves them running and lists each coin with its /sell line; told to stop by a kill or a restart
+it looks once and goes, and the round takes the run up (next paragraph). Before, a floor breach stopped the sniper that
+held the coin, and the time limit or a kill stopped nothing. A low SOL balance (under 0.005 SOL, about what a sale
+costs) is said once and is no emergency: the old 0.05 SOL reserve called one curve buy from a small wallet an
 emergency. A coin the tape has not priced holds the floor back for 2 minutes, then counts as worth nothing; the owner's
 ignored coins are left out; an airdrop seen 10 minutes keeps no sniper running. `oktech guard` and `oktech start`
 refuse to start a sniper while the `/stop` flag is set, and now also while the owner's wallet-wide guard (`/risk`)
