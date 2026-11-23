@@ -182,7 +182,7 @@ _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_
               "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
               "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol",
               "leader_progress", "landing_src", "blocks_after", "ahead_bids", "ahead_bid_max", "ahead_bid_p50",
-              "landing_verdict", "venue", "pack_ahead")  # fmt: skip
+              "landing_verdict", "venue", "pack_ahead", "limit_mcap_sol", "fill_mcap_sol")  # fmt: skip
 _BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at",
              "mean_behind", "tipped_share", "mean_overhead_sol")  # fmt: skip
 # columns added after a table first shipped: (table, column, type); added to existing databases on open
@@ -244,14 +244,26 @@ _ADDED_COLUMNS = (
     # 8D92Hh's pack read 12 behind). A column and not a key of ahead_bids: that JSON is a list of buyers and only the
     # chain reading writes it.
     ("fills", "pack_ahead", "INTEGER"),
+    # a buy of ours, landed or failed: the price limit its instruction carried and where the buy stood against it
+    # (23 Nov; solana/buy_limit.py), both as the market cap in SOL of a billion coins. limit_mcap_sol: above it the
+    # program refuses the buy; it is what OKTech makes of a copy sniper's maxMcapUsd (a ceiling on OUR fill, fee
+    # included, not on the copied buy). fill_mcap_sol: where a landed buy filled, as the limit reads a fill, and
+    # where a buy refused on its limit would have filled (the program log's "Left"). NULL: not read: a row written
+    # before, a sell, a buy on another program, a buy paid in another token, a failed buy the chain was not read for.
+    # `SELECT side, limit_mcap_sol, fill_mcap_sol FROM fills WHERE wallet=? AND limit_mcap_sol IS NOT NULL`
+    ("fills", "limit_mcap_sol", "REAL"),
+    ("fills", "fill_mcap_sol", "REAL"),
 )
 # indexes on columns of _ADDED_COLUMNS: created after those are added
 _ADDED_INDEXES = ("CREATE INDEX IF NOT EXISTS pay_dests_applied ON pay_dests(applied, address, applied_since)",)
 # Columns a reader of the tape does not need: a copy taken before they existed still serves the labs (`schema_gaps`),
 # and a study that wants them asks `has_columns` first.
 OPTIONAL_COLUMNS = frozenset(
-    {("trades", "payer"), ("trades", "priority"), ("trades", "tip"), ("trades", "tip_learned")}
-)
+    {("trades", "payer"), ("trades", "priority"), ("trades", "tip"), ("trades", "tip_learned"),
+     # a fill's price limit (23 Nov): the measure stage writes and reads it in the live file; of the fills a lab asks
+     # the copy only whose wallets are ours (bid_landing.own_wallets)
+     ("fills", "limit_mcap_sol"), ("fills", "fill_mcap_sol")}
+)  # fmt: skip
 # Tables a reader of the tape does not need either: the destinations the recorder learned to be tip accounts
 # (14 Nov; solana/pay_dests.py). The recorder writes it and `tips --accounts` reads it from the live database; on a
 # file without it `pay_dests` and `tip_accounts` answer that nothing is learned.
