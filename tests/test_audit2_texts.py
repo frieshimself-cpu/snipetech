@@ -205,3 +205,14 @@ def test_the_agents_are_told_what_a_running_sniper_wraps_beside_a_curve_buy():
         assert "OKTech also keeps 1.1 times its buy wrapped, taken from plain SOL" in text
         assert "with nothing wrapped a 0.2 SOL copy needs 0.425 SOL plain" in text
         assert "buys_payable does not count that, and the book makes no sniper under it" in text
+
+
+def test_the_verdicts_table_says_a_banned_wallet_keeps_its_verdict_and_is_not_qualified():
+    """Review of round 1 (qualify#1): a banned wallet keeps its last verdict row, so a query for status = 'qualified'
+    over `verdicts` lists it, as read_verdicts did until this round. The ban is in candidates.status, and the words
+    an agent's query reads for the table say so."""
+    from snipetech.store import table_columns
+
+    words = T.SQL_TABLES["verdicts"]
+    assert "candidates.status = 'banned'" in words and "keeps its last verdict and is not qualified" in words
+    assert "status" in table_columns()["candidates"] and "wallet" in table_columns()["candidates"]

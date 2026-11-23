@@ -111,7 +111,9 @@ SQL_TABLES: dict[str, str] = {
     "bid in lamports, vs = more or less than our bid), ahead_bid_max and ahead_bid_p50 (lamports), landing_verdict "
     "(first, fees, speed, unclear, ahead; and inside, from the tape), venue",
     "verdicts": "one row per wallet and qualify run (the newest computed_at is the wallet's verdict). status = "
-    "qualified, candidate or retired; n_tape, mean_sol, lower_sol = its copies on the tape at landing_pos; "
+    "qualified, candidate or retired (a wallet banned since, candidates.status = 'banned', keeps its last verdict "
+    "and is not qualified: read_verdicts leaves it out); n_tape, mean_sol, lower_sol = its copies on the tape at "
+    "landing_pos; "
     "copy_plan, forward, create_slot, kept_armed = JSON. A candidate whose reasons say 'same actor as <wallet>: one "
     "signal, one sniper' (13 Nov) passed every gate: another wallet of its operator holds the place, its numbers "
     "stand, it is not a failure; the book adds no sniper for it and paper freeze skips a second wallet of an actor "
@@ -1863,14 +1865,14 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         lower bound is a reason to ask for one small live copy to measure the place, never proof the rule pays. A
         hunt can ask for one labelled sniper among the buyers ("bots": "sniper", scored at +3@1); no sniper is
         built for either form yet.
-        EACH WALLET'S OWN BUYS (22 Nov): "--each" (lab and place-bids, wallet rules named with "--trigger") makes
-        every followed wallet's own first buy in a coin a moment, as its own copy sniper copies it; without it a
-        rule fires once a coin, at the first followed wallet in. A consensus gate ("known" of 2 or more, "gap",
-        "teams", "known_any") is refused with "--each": a copy sniper of one wallet sees no other, so run such a rule
+        EACH WALLET'S OWN BUYS (22 Nov): "--each" (on place-bids, and on a lab of wallet rules named with
+        "--trigger") makes every followed wallet's own first buy in a coin a moment, as its own copy sniper copies
+        it; without it a rule fires once a coin. A consensus gate ("known" of 2 or more, "gap", "teams",
+        "known_any") is refused with "--each": a copy sniper of one wallet sees no other, so run such a rule
         without it. "repeats": "also" takes every buy of the wallet at the rule's size, its repeats in a coin too:
         what a live copy sniper copies. It is scored only with "--each": lab and place-bids refuse it without, paper
-        freeze refuses it (a forward record holds one trade a coin), and the records frozen with it before 22 Nov
-        are research only (exit_note "research only: one trade a coin, where its copy sniper takes every buy").
+        freeze refuses it (a forward record holds one trade a coin), and the records frozen with it earlier are
+        research only (exit_note "research only: one trade a coin, where its copy sniper takes every buy").
         With "repeats": "also" a coin gives several moments in a lab: test.coins is how many coins the newer moments
         are, and ev_lower draws a coin's moments together, so read n beside coins (26 moments in 18 coins are 18
         draws).
