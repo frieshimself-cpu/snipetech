@@ -396,6 +396,17 @@ def _position(v: str) -> str:
                                      "landing is --hunt-landing +N@D (e.g. +7@1)")  # fmt: skip
 
 
+def _rearm_secs(text: str) -> float:
+    """`lab --rearm`: seconds, 0 or more."""
+    try:
+        secs = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"seconds, 0 or more, not {text!r}") from exc
+    if not secs >= 0:
+        raise argparse.ArgumentTypeError(f"seconds, 0 or more, not {text!r}")
+    return secs
+
+
 def _hunt_landing(v: str) -> tuple[int, str]:
     """--hunt-landing +N@D: where the run's hunt, whale and burst triggers land (paper.parse_hunt_landing)."""
     from .analysis.paper import parse_hunt_landing
@@ -760,6 +771,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "too): what a paid place costs, e.g. --copy-position +0 --buy-bid 2 for the first place "
                          "behind a wallet everyone buys on top of. No upper limit (default 0; with --recipe the "
                          "bot's bid)")  # fmt: skip
+    sp.add_argument("--rearm", type=_rearm_secs, default=None, metavar="SECS",
+                    help="score only the buys a live sniper takes: it buys once a start and is armed again SECS after "
+                         "its refusal, or after its sale (put at the exits' longest hold): the wallet's buys inside "
+                         "that time are dropped, one sniper per followed wallet (23 Nov: 20 to 45 s live). Each row "
+                         "says how many it dropped (`rearm`). Default: every buy, as before")  # fmt: skip
     sp.add_argument("--sell-parts", type=int, default=1, metavar="N",
                     help="every exit sells out in N equal parts (2 to 20) instead of one sale: what selling slowly is "
                          "worth at a size (--buy 5, 10, 30). Each part is priced into the pool the earlier parts left "
@@ -2118,6 +2134,8 @@ async def _run(args, cfg: Config) -> int:
             except lab_window.OutsideTape as exc:  # the end asked for is not on the tape the lab opened
                 print(f"lab: {exc}", file=sys.stderr)
                 return 2
+            if args.rearm:  # only the buys a live sniper takes (lab.live_takes), in both rankings
+                data["rearm_secs"] = float(args.rearm)
             top = max(args.top, len(hypotheses)) if hypotheses else args.top  # --top never hides a hypothesis
             ranked = [r | paper.landing_fields(r, copy_pos, buy_bid)
                       for r in lab_rank(data, cfg, top, trades=args.trades)]  # fmt: skip
@@ -2129,6 +2147,10 @@ async def _run(args, cfg: Config) -> int:
                    "strategies": ranked}  # fmt: skip
             if buy_bid:  # a bid paid once on every buy, on top of per_tx_sol
                 res["buy_bid_sol"] = float(buy_bid)
+            if args.rearm:
+                from .analysis.lab import REARM_NOTE
+
+                res["rearm"] = {"secs": float(args.rearm), "note": REARM_NOTE}
             if rec is not None:
                 # the bot's own exit on every trigger of the recipe, whichever exit the ranking picked: `strategies`
                 # says what the best exit of the search set makes of the same moments

@@ -530,7 +530,9 @@ What you do:
    exits carry the copy exit (sold when the followed wallet sells half) unless "--no-copy-exit".
 2. The place, the size and the bid are the live ones: "--copy-position" where our copies stand (landing says where
    each buy of ours stood and who was ahead; read_fills says the same from the record; the fee analyst's fees-bids says
-   what a bid buys), "--buy" the live size, "--buy-bid" and "--per-tx" the live bid. copy-context says which buys pay,
+   what a bid buys), "--buy" the live size, "--buy-bid" and "--per-tx" the live bid, and "--rearm", "30": only the
+   buys a live sniper takes (it buys once a start and is armed again about 30 s after its sale or its refusal; 23 Nov:
+   the buys inside that time were up to a quarter of a week's paper result). copy-context says which buys pay,
    entered late. The live rules and their exits are in docs/live-recipe.md (the newest entries first) and in the
    tester's table (tester-rules). Start from what is known: on 21 Nov, 3.5 SOL copies of Cented and Decu at 3rd and 4th
    in line (the wallet's buys up to 66 SOL of market cap), no stop, trailing stop or momentum hold of the 14 tried beat

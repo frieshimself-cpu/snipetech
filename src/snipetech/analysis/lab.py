@@ -1193,6 +1193,35 @@ def fill_ceiling_block(trig: Trigger, rs: Sequence[Mapping[str, Any]], newer: Se
             "note": FILL_CEILING_NOTE}  # fmt: skip
 
 
+# The live sniper's dead time after each send (23 Nov 2026, the 0.2 SOL test). A copy sniper buys once a start (its
+# `singleSnipe`) and the runner arms it again some seconds after its sale or its refusal, so the wallet's buys inside
+# that time go uncopied; the lab copies every one of them unless asked (`collect(rearm_secs=...)`, `lab --rearm`).
+# After fill 3 (23 Nov 14:39:30) Yugi's sniper came back 30 s after its sale, at the moment of his next buy; offline on
+# the ceiling labs of 08:05, dead 30 s after a refusal and after a sale took the newer week's three wallets from +6.91
+# to +5.18 SOL at 1 SOL a copy (docs/live-recipe.md).
+REARM_NOTE = ("rearm: only the buys a live sniper takes are scored. It buys once a start and is armed again `secs` "
+              "after its refusal, or after its sale, put at the exits' longest hold (`hold_secs`) after the buy: the "
+              "wallet's buys inside that time are dropped (`dropped`). One sniper per followed wallet; a rule that "
+              "follows none is one sniper")  # fmt: skip
+
+
+def live_takes(rs: Sequence[Mapping[str, Any]], rearm_secs: float, hold_secs: float) -> list:
+    """Of a rule's moments `rs` (oldest first), the ones a live sniper takes: after each it keeps, the same sniper (one
+    per followed wallet, `who`; one for a rule that follows none) is spent until `rearm_secs` after a refused send, or
+    `hold_secs` + `rearm_secs` after a buy that traded. `rearm_secs` 0: every moment, as the lab always scored."""
+    if not rearm_secs or rearm_secs <= 0:
+        return list(rs)
+    until: dict[Any, float] = {}
+    out = []
+    for r in rs:
+        who = r.get("who")
+        if float(r["ts"]) < until.get(who, float("-inf")):
+            continue
+        out.append(r)
+        until[who] = float(r["ts"]) + float(rearm_secs) + (0.0 if r.get("refused") else float(hold_secs))
+    return out
+
+
 def size_gap(prep) -> str | None:
     """Why a position of this size cannot be replayed on the tape that follows it (a key of SIZE_WORDS), or None when
     it can. Read from the buy against the pool it met alone (`sim.exits.prepare`), in this order: the buy ends the
@@ -3494,12 +3523,15 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
     hours = max(data["tape_hours"], 1e-6)
     window = data.get("window") or {}
     out = []
+    rearm = float(data.get("rearm_secs") or 0.0)
     for ti, trig in enumerate(data.get("triggers") or TRIGGERS):
-        rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
+        exits = (data.get("mig_exits") or curve_exits) if trig.kind in AMM_KINDS else curve_exits
+        every = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
+        hold = exits_reach(by_kind.get(trig.kind, exits))
+        rs = live_takes(every, rearm, hold)  # the buys a live sniper takes (`lab --rearm`); every one without
         if len(rs) < min_train + 5:
             continue
         m = pnl_matrix(rs)  # moments x exits, NaN where an exit was left out
-        exits = (data.get("mig_exits") or curve_exits) if trig.kind in AMM_KINDS else curve_exits
         cut = int(len(rs) * TRAIN_SHARE)
         k, train_means = pick_exit(m, cut, min_train + 5)
         if k is None:  # no exit scored on enough of the trigger's moments, or a pick its newer moments cannot judge
@@ -3538,6 +3570,8 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
         crews = ((data.get("crew") or {}).get("triggers") or {}).get(trig.label())
         if crews is not None:  # a launch-type rule: how many of its moments are serial crews' coins (`crew_block`)
             out[-1]["crew"] = crews
+        if rearm > 0:  # scored on the buys a live sniper takes: says so, and how many it passed over
+            out[-1]["rearm"] = {"secs": rearm, "hold_secs": float(hold), "dropped": len(every) - len(rs)}
         # the newer moments one by one: their digest always, the list when asked for (`lab --trades`)
         listed, left = trades_of(rs[cut:], k)
         out[-1]["test_digest"] = trades_digest(listed)
@@ -3695,10 +3729,12 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     cols = [j for j, ex in enumerate(exits) if j == g or names.get(ex) in MENU] if g is not None else []
     choose = len(cols) > 1
     best: dict[str, dict] = {}
+    rearm = float(data.get("rearm_secs") or 0.0)
     for ti, trig in enumerate(data.get("triggers") or TRIGGERS):
         if trig.kind != "kol":
             continue
         rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
+        rs = live_takes(rs, rearm, exits_reach(exits))  # the buys a live sniper takes (`lab --rearm`)
         if len(rs) < 10:
             continue
         m = pnl_matrix(rs)  # NaN where an exit was left out on a moment
