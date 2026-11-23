@@ -626,9 +626,13 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     That needs the leader's transaction before it runs. Today OKTech reacts to the landed buy (our five copies behind
     Yugi on 23 Nov landed 36 to 277 block places after his buy, outside any bundle, each tip to a different landing
     service). Can it get a followed wallet's transaction before it lands, and through which route?
+31. (23 Nov) Can a copy sniper skip a pool quoted in another token, or swap into its quote? Cented's sniper copied his
+    buys in two PumpSwap pools quoted in Xsc9qvGR… at 16:33:01 and 16:35:45 UTC; OKTech sent both with SOL and both
+    failed on the quote (InvalidQuoteMint, 6009), 0.0011 SOL each. Do the quote whitelist (SOL alone) or
+    `pumpAutoSwap` hold in copy mode, as `platforms` does not?
 
 Questions 1, 2, 3, 4 and 5 decide the real-size copy. **The 22 Nov plan's six, in its order: 6 (the signer check),
-20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26, and the 0.2 SOL test 27 to 29: each costs a live run copies, shots or exits today.
+20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26, and the 0.2 SOL test 27 to 29 and 31: each costs a live run copies, shots or exits today. Question 30 decides whether the place right behind the big wallets can be ours at all.
 The rest can wait a day.
 
 ---
