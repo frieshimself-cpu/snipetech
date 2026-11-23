@@ -6,6 +6,38 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 23 Nov, 21:15 UTC: the owner's goal, 100 SOL a day in six days: the one route that reaches it, and what each step needs
+
+- **The owner, 23 Nov ~21:05 UTC:** "6 days left until we want 100 SOL a day. Do everything possible in ur power to get
+  there."
+- **What we have.** The small-coin copy behind Cented and Yugi through OKTech (copies land a few buyers behind the
+  leader): on paper at 1 SOL a copy, 3rd in line, with the re-arm gap, about +5 SOL a week (19:15 labs), about 1 SOL a
+  day; at 0.2 SOL live since the 15:34 restart about half the paper (four fills). Size does not grow it: at 1 SOL our
+  own buy moves these coins' price 4.6 %, and the 3.5 SOL night of 21-22 Nov lost 5.2 SOL on six copies. So this
+  route makes about 1 to 2 SOL a day at best this week.
+- **The one route on paper at about 100 a day** (22 Nov, below): every first buy of 1.9 SOL or more by Cented and
+  Decu copied at 6 SOL **right behind** the leader: +1.32 and +1.07 SOL a copy with a 0.6 SOL bid charged, about 650
+  copies a week. Two places further back the same copies lose. Nobody reaches that place by reacting to the landed
+  buy (OKTech never has: 0 of 13 tipped buys). The buyers who stand there have the leader's transaction before it
+  runs: inside Jito they ride in the bundle the leader's platform's sender builds (103 of 200; 23 Nov 16:30), and
+  outside Jito they land right behind with large fees (8r6N8w 30 times, 0.72 SOL; a "Harmonic8SoAf…" signer next
+  to the leader in 4 of 20 sampled slots). **New at 21:10:** the programs the in-bundle buyers trade through are not
+  Axiom's: Axiom's FLASHX8D… is upgraded by AxDepcBgx…, the 3.457 SOL operator's L2TExMFK… has no upgrade
+  authority (frozen), and the 6.42 SOL buyer's 5kZmvKba… is upgraded by G6iAiWP7… (read off the chain). So the seat is
+  not Axiom's copy trading; it is sold to outside traders, by the networks that sell exactly this place: Harmonic's
+  searcher network (validator side; KYC/KYB, a 7 to 14 day pilot) and Inertia (apps send their flow; a 50 ms
+  auction; searcher API by application).
+- **So 100 a day needs the owner's application to those networks** (an identity or a company, their terms, their
+  price for the place, which the 0.6 SOL bid of the paper may not match). Only the owner can apply. With a seat, our
+  side is a new buy path the repo does not have (it signs only sales today): a pump.fun buy builder pinned by a test
+  on a landed buy, a bundle client for the network, and rule 1's caps and guard; a few days of work, built once the
+  owner says go. Without a seat, the week's ceiling is the OKTech route's 1 to 2 SOL a day.
+- **What runs meanwhile:** the 0.2 SOL test to 09:11; then the two-buys check (0.1 SOL a copy); then the 1 SOL day
+  with the evening's changes (Yugi without the copy exit, two buys a start if the check passes, the run's own sale 15
+  s after the buy), when the wallet holds what it needs (about 5 SOL at the least, docs/live-recipe.md); the labs of
+  the place right behind at 6 SOL with an in-bundle tip (0.003 SOL) instead of the 0.6 bid (21:10). The server's
+  agents have had no API credit since 22 Nov 23:01 and do no research until it is topped up.
+
 ## 23 Nov, 16:30 UTC: the place right behind the big wallets is bought with their own transaction (the route check)
 
 - **The question** (22 Nov 07:50, below): another wallet's buy stands within 3 block places after most first buys of
