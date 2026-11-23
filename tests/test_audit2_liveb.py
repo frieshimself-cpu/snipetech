@@ -851,3 +851,31 @@ def test_review_a_start_only_oktechs_list_vouches_for_stays_on_record_for_the_ne
         assert ("start", "k1") in nxt.calls, nxt.calls
     finally:
         st.close()
+
+
+class _AnswersOnce(BT.FakeSvc):
+    """The wallet answers the run's first reading; every later one gets no answer (counted in `asked`)."""
+
+    asked = 0
+
+    async def open_positions(self, address, ignore=()):
+        self.asked += 1
+        if self.asked > 1:
+            raise TimeoutError()
+        return await super().open_positions(address, ignore)
+
+
+def test_review_a_wallet_that_stops_answering_ends_the_runs_stops_at_the_first(tmp_path):
+    """Each stop waits up to 20 s for the wallet's reading. With several snipers to stop and a wallet that no longer
+    answers, every stop would wait as long, and the machine ends the book's unit after four minutes. The first reading
+    that gets no answer ends the run's stops: nothing is stopped, and the next run plans again."""
+    st, cfg = BT._env(tmp_path)  # the book is off: its kill path stops its snipers that hold nothing
+    AB._book_sniper(st)
+    AB._book_sniper(st, sid="k2", name=K2, created_at=BT.NOW - 3000)
+    snipers = [{"id": "k1", "name": BT.K1, "status": "running"}, {"id": "k2", "name": K2, "status": "running"}]
+    svc = _AnswersOnce(st, snipers=snipers, held=[], cfg=cfg)
+    try:
+        assert _book(tmp_path, svc, cfg)["kill_reason"] == "book off" and svc.calls == [], svc.calls
+        assert svc.asked == 2, svc.asked  # the run's own reading, and one more before the first stop
+    finally:
+        st.close()
