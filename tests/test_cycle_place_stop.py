@@ -13,6 +13,7 @@ from dataclasses import replace
 import pytest
 
 from snipetech.models import Trade
+from tests.test_cycle_floor import _as_made
 from tests.test_oktech import SNIPER_IDS, W6, _cycle_svc, _SpentClient
 
 T0 = 1_794_045_600.0
@@ -56,6 +57,7 @@ def _place_run(monkeypatch, fills, *, copies=True, mates=None, coin_value=5.0, *
                 for k, (at, *_rest) in enumerate(fills) if T0 + at <= now < T0 + at + 12]  # fmt: skip
 
     client = _SpentClient(clock, SNIPER_IDS, lambda i, now, last_start: False)
+    _as_made(client)
     svc, store = _cycle_svc(monkeypatch, client, {"stop": False}, clock=clock, coins=coins, on_sleep=on_sleep)
     box["store"] = store
     wallets = [{"address": LEAD, "minSol": 0.95}] if copies else []

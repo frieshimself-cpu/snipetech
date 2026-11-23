@@ -1511,7 +1511,10 @@ class Service:
         sniper is re-armed or stopped, at the end and on the way out too, and past --sweep-after the run sells its own
         tokens of it, never the owner's (`run_parts`; no more than the wallet holds beyond theirs).
         A coin nobody can tell yet is held as the run's but never sold by it.
-        The run starts beside the owner's coins; only one of its snipers' refuses the start.
+        The run starts beside the owner's coins; only one of its snipers' refuses the start. The start stops each
+        sniper before it arms it, so when OKTech reads one of them armed already (a run that died left it so) the
+        wallet is read a second time first, and the tape and the chain are asked for a buy on its way, as /stop asks
+        them (`second_look`): such a sniper may have bought a second ago, and a stopped sniper strands its coin.
 
         Every read of the loop has READ_SECS (one that does not answer is a failed reading, said), every stop at the
         end is tried STOP_TRIES times, a sniper counts as armed from the moment its start is sent (a lost answer), and
@@ -2608,6 +2611,71 @@ class Service:
                     log(f"a read at the start failed ({type(exc).__name__}); trying again")
                     await asyncio.sleep(2.0)
 
+        def held_refusal(held: list[dict]) -> SystemExit:
+            """Why a run does not start beside the coins `held` (the run's, or nobody's yet): its start stops each
+            sniper first, and a stopped sniper strands its coin."""
+            # a coin nobody can tell yet (no buy of it read; a buy of seconds ago, which a walk of the chain that
+            # finds no copied buy says nothing of: measure/ours.CHAIN_SETTLE_SECS) may be the owner's own
+            unsure0 = [f"{str(h['mint'])[:6]}…" for h in held
+                       if h.get("mint") and coins.known(str(h["mint"])) is None]  # fmt: skip
+            return SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({float(h.get('value_sol') or 0):.4f} SOL)"
+                                                              for h in held)
+                              + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
+                              "pass --ignore-mint MINT for a position no sniper manages."
+                              + (f" Whose coin {', '.join(unsure0)} is cannot be told yet (no buy of it is read, or "
+                                 "one of seconds ago): if it is the owner's own, start the run again in a minute."
+                                 if unsure0 else ""))  # fmt: skip
+
+        async def second_look(live: list[str], first: list[dict], began: float) -> None:
+            """OKTech reads the run's own snipers `live` armed at its start (a run that died left them so), and the
+            start stops each one before it arms it. One of them can have bought a second ago: its tokens are not in
+            the one reading yet (`first`, begun at `began`). So before that stop the wallet is read a second time
+            SECOND_READ_SECS later, and the tape and the wallet's newest signatures are asked for a buy whose coin
+            neither reading showed (operator/commands._on_its_way, the look /stop makes before it stops a sniper);
+            the owner's coins are then weighed once more by the tape, read last as /stop reads it (a copy into a
+            coin they hold, written while the wallet and the chain were read). A coin of the run's, a coin that came
+            in between the readings, a buy on its way or a landed transaction the node does not serve yet refuses
+            the start (SystemExit) with nothing touched (23 Nov review)."""
+            from .measure.ours import tape_whose
+            from .operator.commands import _on_its_way
+            from .operator.live_test import SECOND_READ_SECS
+
+            who = ", ".join(tag(i) for i in live)
+            log(f"OKTech reads {who} armed already (a run that ended without its own end left it so): before it is "
+                "stopped the wallet is read a second time, and the tape and the chain for a buy on its way")  # fmt: skip
+            await asyncio.sleep(SECOND_READ_SECS)
+            again_all = await settled(open_positions)
+            again, _, _ = await sort_coins(again_all, time.time(), since=0)
+            if again:
+                raise held_refusal(again)
+            shown = {str(h.get("mint")) for h in first}
+            came = [str(h["mint"]) for h in again_all if h.get("mint") and str(h["mint"]) not in shown]
+            try:
+                coming, unread = await _on_its_way(self, self.cfg, address, shown | set(came), began)
+            except Exception as exc:  # noqa: BLE001 - not known is no ground for a stop
+                raise SystemExit(f"OKTech reads {who} armed already, and the tape and the chain could not be asked "
+                                 f"for a buy on its way ({type(exc).__name__}): not cycling (the start stops each "
+                                 "sniper before it arms it, and a stopped sniper strands its coin). Start the run "
+                                 "again in a minute.") from None  # fmt: skip
+            coming = [m for m in coming if m not in (ignore_mints or ())]
+            into = [m for m in owner_val if tape_whose(self.store, address, m, 0, run_marks) == "ours"]
+            why = []
+            if came:  # the owner's own, bought as the run began: the floor was read before it
+                why.append(f"{', '.join(m[:6] + '…' for m in came[:5])} came into the wallet as the run was starting")
+            if into:
+                why.append(f"a sniper bought into {', '.join(m[:6] + '…' for m in into[:5])}, a coin the owner holds "
+                           "too, moments ago")  # fmt: skip
+            if coming:
+                why.append(f"the wallet bought {', '.join(m[:6] + '…' for m in coming[:5])} moments ago and what it "
+                           "bought has not shown in the wallet yet")  # fmt: skip
+            if unread:
+                why.append(f"{unread} transaction(s) of the wallet landed moments ago and cannot be read yet (one may "
+                           "be a buy)")  # fmt: skip
+            if why:
+                raise SystemExit(f"OKTech reads {who} armed already, and {'; '.join(why)}: not cycling (the start "
+                                 "stops each sniper before it arms it, and a stopped sniper strands its coin). Start "
+                                 "the run again in a minute.")  # fmt: skip
+
         async def last_stop() -> None:
             """The job was told to stop (its time limit, a kill, a restart: SIGTERM, and SIGKILL 30 s on): stop what
             strands nothing, at once. With nothing held on two readings and no buy on its way, every sniper the run
@@ -2715,21 +2783,12 @@ class Service:
                 t0 = time.time()  # the run's minutes and fills count from its start, not from the wait
             b0 = await settled(balance)
             w0 = await wrapped_sol()
+            began0 = time.time()
             held0_all = await settled(open_positions)  # before any sniper is touched: a stopped sniper strands its coin
             # the owner's own coins strand nothing: the newest buy of each says whose it is
             held0, _, _ = await sort_coins(held0_all, time.time(), since=0)
             if held0:
-                # a coin nobody can tell yet (no buy of it read; a buy of seconds ago, which a walk of the chain that
-                # finds no copied buy says nothing of: measure/ours.CHAIN_SETTLE_SECS) may be the owner's own
-                unsure0 = [f"{str(h['mint'])[:6]}…" for h in held0
-                           if h.get("mint") and coins.known(str(h["mint"])) is None]  # fmt: skip
-                raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({float(h.get('value_sol') or 0):.4f} SOL)"
-                                                                 for h in held0)
-                                 + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
-                                 "pass --ignore-mint MINT for a position no sniper manages."
-                                 + (f" Whose coin {', '.join(unsure0)} is cannot be told yet (no buy of it is read, or "
-                                    "one of seconds ago): if it is the owner's own, start the run again in a minute."
-                                    if unsure0 else ""))  # fmt: skip
+                raise held_refusal(held0)
             owner0 = round(sum(owner_val.values()), 6)  # the owner's own coins at their worth now, counted in
             how = ""
             if max_loss is not None:
@@ -2755,7 +2814,8 @@ class Service:
                 )
             # a sniper armed beside the run (by hand, by the book, by a test) buys into the same wallet: the run would
             # sell, count and floor its coins as its own
-            beside = [t for t in await settled(client.tasks)
+            tasks0 = await settled(client.tasks)
+            beside = [t for t in tasks0
                       if str(t.get("status")) in ACTIVE_STATUSES and str(t.get("id")) not in ids]  # fmt: skip
             if beside:
                 raise SystemExit("OKTech has " + ", ".join(f"{tag(str(t.get('id')))} ({t.get('name') or t.get('status')})"
@@ -2763,6 +2823,12 @@ class Service:
                                  + " armed beside this run: its buys would land in the same wallet, and the run would "
                                  "sell, count and floor them as its own. Stop it first (one driver per wallet); not "
                                  "cycling")  # fmt: skip
+            # one of the run's own that OKTech reads armed (a run that died left it so) is stopped below before it is
+            # armed again, and may have bought a second ago: one reading of the wallet does not show that yet
+            live0 = [i for i in ids if rests.get(i, 0.0) <= time.time()
+                     and any(str(t.get("id")) == i and str(t.get("status")) in ACTIVE_STATUSES for t in tasks0)]  # fmt: skip
+            if live0:
+                await second_look(live0, held0_all, began0)
             for i in ids:
                 if rests.get(i, 0.0) > time.time():  # an earlier run rested it (the kinds of copy): armed once over
                     armed_at[i] = 0.0

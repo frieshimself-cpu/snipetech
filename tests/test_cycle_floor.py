@@ -25,13 +25,27 @@ def _coin(value=5.0):
     return [{"mint": "M1", "amount": 1.0, "value_sol": value, "priced": True}]
 
 
+def _as_made(client, left_running=()):
+    """OKTech reads a sniper that was never started "idle", as a freshly made one (the fake client reads every sniper
+    "running" until it is spent), but those in `left_running`: a run that died left them armed."""
+    listed = client.tasks
+
+    async def tasks():
+        return [dict(t, status="idle") if t["status"] == "running" and t["id"] not in client.started_at
+                and t["id"] not in left_running else t for t in await listed()]  # fmt: skip
+
+    client.tasks = tasks
+
+
 def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, sweeps=None,
          spent=None, sweep_fails=False, payload=None, tape=(), db_dir=None, others=(), launches=(), before=None,
-         sweep_answer=None, hang_at=None, hung=None, seller=None, sold_amounts=None, chain=None, **kw):  # fmt: skip
+         sweep_answer=None, hang_at=None, hung=None, seller=None, sold_amounts=None, chain=None, left_running=(),
+         **kw):  # fmt: skip
     """The runner over two copy snipers on the fake clock, with `sol(now)` SOL in the wallet, the coins `coins(now)`
     lists (priced) and `unpriced(now)` lists (not on the tape), `wsol(now)` wrapped SOL, and the owner's /stop from
     `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time), and each fails when
-    `sweep_fails`. OKTech reads a sniper "finished" (and refuses to stop it) while `spent(i, now, last_start)`.
+    `sweep_fails`. OKTech reads a sniper "finished" (and refuses to stop it) while `spent(i, now, last_start)`, and
+    "idle" until its first start but those in `left_running` (`_as_made`).
     `payload`: more of each sniper's payload (the fees it pays, the wallets it copies). `tape`: trades the recorder
     writes once the clock reaches each one's time, or (time, trade) for one it writes late; with any, a stranger's
     trade each tick keeps the tape current. `db_dir`: the database's folder (the operator's files, the runner's lock);
@@ -46,6 +60,7 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
 
     clock, flag = {"t": T0}, {"stop": False}
     client = _SpentClient(clock, SNIPER_IDS, spent or (lambda i, now, last_start: False))
+    _as_made(client, left_running)
     due = sorted(((t.ts, t) if isinstance(t, Trade) else t for t in tape), key=lambda x: x[0])
     box, ticks = {}, itertools.count()
 
