@@ -112,9 +112,10 @@ def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = 
 
 def _bought_by_us(store, wallet: str, mint: str, marks: dict | None = None) -> bool:
     """Whether a buy of ours explains holding `mint`: a buy of the bot's by the wallet on the tape, or a buy fill of
-    the bot's in the wallet (measure/ours.py: the fees a sniper of ours pays, a sniper or copied wallet the measure stage
-    tied it to, or fees nobody recorded; `marks`: fee_marks, read here when not given). The owner's own buy at other
-    fees explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Each buy
+    the bot's in the wallet (measure/ours.py: the fees a sniper of ours pays, a sniper the measure stage tied it to,
+    fees nobody recorded, or at other fees a copy's shape right behind a followed wallet's buy; a copied wallet named
+    on a fill says nothing alone; `marks`: fee_marks, read here when not given). The owner's own buy at other fees
+    explains nothing (22 Nov audit: three hand buys of one coin held every book sniper armed beside it). Each buy
     goes to that rule whole (`_tape_buy`: its signature, coin and place, not its fees alone), so that whatever else
     the rule tells a buy of ours by is asked here too. Any read that fails counts as ours (the coin then keeps equity
     unknown, as before)."""
