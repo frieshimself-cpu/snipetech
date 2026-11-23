@@ -665,11 +665,12 @@ Who uses the rule, and what the audit of 22 Nov changed in each:
   last digest, which was mostly the owner's own transfers. **The restart notice** names the snipers still armed on
   OKTech, or says that OKTech could not be read; it used to say that nothing was traded.
 - **The unsold-coin watch** (`book/watch.py`). A coin the owner bought by hand gets one line a day, worded as their
-  own trade, with no /sell line. Seen 10 minutes, it keeps no book sniper running under a halt, holds back no retire
-  and no clean-up, and is no sniper's buy in the book's count. A coin both bought is told by whose part is left (a
-  sale goes to its own side's buys first). A copy of ours the tape does not hold (a copy into an older PumpSwap coin,
-  which only the measure stage's fills hold) gets the 15-minute alert with its /sell line, not the airdrop line; once
-  the fills show it sold, a few unpriced tokens left over are said once a day as our sold copy.
+  own trade, with no /sell line. Seen 10 minutes, it keeps no book sniper running under a halt and holds back no
+  retire and no clean-up, unless the bot also bought that coin at some time: the book then still counts it as held. An
+  owner's buy is no sniper's buy in the book's count. In the watch's own lines a coin both bought is told by whose
+  part is left (a sale goes to its own side's buys first). A copy of ours the tape does not hold (a copy into an older
+  PumpSwap coin, which only the measure stage's fills hold) gets the 15-minute alert with its /sell line, not the
+  airdrop line; once the fills show it sold, a few unpriced tokens left over are said once a day as our sold copy.
 - **`/stop`, the close of a live test, the automatic test's judging and the runner (`oktech cycle`)** use the same
   rule. docs/live-recipe.md has what each does.
 
