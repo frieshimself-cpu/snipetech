@@ -1540,11 +1540,12 @@ class Service:
         armed again after SPENT_REARM_SECS, or from the reading after the one that saw it spent when the chain says
         sooner that its shot bought nothing (`failed_sends`: a transaction of the wallet's failed since the sniper's
         last start, no buy of the wallet's since that start is unsold, and the reading of the wallet's coins that
-        showed nothing held was answered at a block FAILED_SEND_AGE_SECS after that failed transaction; 23 Nov smoke
-        test: each copy refused at the market-cap ceiling kept its sniper out about a minute). Anything else on the
-        chain (a buy whose coin has not shown, a transaction the node does not serve yet, a list that does not reach
-        back to the start, a node that has not come that far past the failed send, or that does not say how far it
-        has come) and a chain that cannot be read keep the SPENT_REARM_SECS wait.
+        showed nothing held was answered at a block FAILED_SEND_AGE_SECS after that failed transaction and after the
+        moment OKTech was first seen to read the sniper spent; 23 Nov smoke test: each copy refused at the market-cap
+        ceiling kept its sniper out about a minute). Anything else on the chain (a buy whose coin has not shown, a
+        transaction the node does not serve yet, a list that does not reach back to the start, a node that has not
+        come that far, or that does not say how far it has come) and a chain that cannot be read keep the
+        SPENT_REARM_SECS wait.
 
         `keep_plain` (SOL; None: off): one curve copy's plain SOL (the buy with pump.fun's fee inside, the bid, the
         token account's rent). OKTech keeps the wrapped SOL at 1.1 times the buy the whole time a sniper runs, whatever
@@ -1725,7 +1726,11 @@ class Service:
             a block FAILED_SEND_AGE_SECS after the newest of those failed transactions (`coins_slot` against its
             slot, at the seconds a slot takes by the list's own newest and oldest rows): a second send of the same
             start has landed and shows by then, and a node that is behind has not come that far (review of 23 Nov).
-            Empty when the chain cannot be read (said once): the SPENT_REARM_SECS wait holds, as before."""
+            And at a block past the moment OKTech was first seen to read the sniper spent (`spent_at`, against the
+            chain's clock at that block): every send of its start came before then, and the failed transaction need
+            not be one of them (the owner's own failed hand trade: a node 25 s behind showed it, and not the sniper's
+            buy of 17 s before, in the review of round 3). Empty when the chain cannot be read (said once): the
+            SPENT_REARM_SECS wait holds, as before."""
             nonlocal look_said
             asked = {i: armed_slot[i] for i in ids if i in spent_at and i in armed_slot}
             if not asked or coins_slot is None:  # no slot on the coins' reading: how far that node had come is not told
@@ -1768,6 +1773,11 @@ class Service:
                         continue
                     # how far past the newest of them the node that showed nothing held had come, in seconds
                     if slot_secs is None or (coins_slot - max(failed)[0]) * slot_secs < FAILED_SEND_AGE_SECS:
+                        continue
+                    # and that node had come past the moment OKTech was first seen to read this sniper spent, by the
+                    # chain's clock at its slot (off the list's newest timed row): every send of its start came before
+                    # that, and the failed one need not be one of them (the owner's own, a duplicate sale's)
+                    if timed[0][1] + (coins_slot - timed[0][0]) * slot_secs < spent_at[i]:
                         continue
                     out[i] = max(0.0, time.time() - max(failed)[1])
             except Exception as exc:  # noqa: BLE001 - nothing told: the 30 s wait, as before

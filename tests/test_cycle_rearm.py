@@ -440,3 +440,30 @@ def test_a_list_too_short_to_tell_how_long_a_slot_takes_keeps_the_30_s_wait(monk
     again = _starts(client, A, T0 + 100)
     assert len(again) == 1 and again[0] >= T0 + 147, [t - T0 for t in again]
     assert "spent 30 s with nothing held" in _lines(rep, A)[0]
+
+
+def test_a_failed_transaction_older_than_the_snipers_own_shot_frees_nothing_a_node_behind_has_not_seen(monkeypatch):
+    """The failed transaction the look finds need not be the sniper's own shot: the owner's hand trade that failed 40 s
+    in (or a duplicate sale of OKTech's). A's copy buys at 90 s (paid from wrapped SOL, a coin the tape does not
+    follow), OKTech never sells it and reads A finished from 102 s. Every node is 25 s behind: at 107 s the list shows
+    the failed transaction and not the buy, the coins show nothing until 115 s, and the coins' reading is 42 s past
+    the failed one. Every send of A's start came before OKTech was seen to read it spent (102 s), and the node had
+    not come that far: A is never touched."""
+    chain = WalletChain(lag=25)
+    chain.at(T0 + 40, _refused("the owner's failed hand trade", key("an owner's coin")))
+    chain.at(T0 + 90, _copy("copy"))
+    _rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 90]}), minutes=4,
+                        coins=lambda now: [_coin()] if now >= T0 + 115 else [])  # fmt: skip
+    assert not _touched(client, A, T0 + 90, T0 + 240), _touched(client, A, T0 + 90, T0 + 240)
+
+
+def test_a_chain_clock_a_few_seconds_behind_ours_still_frees_a_refused_sniper(monkeypatch):
+    """The moment OKTech was seen to read A spent is on our clock, the node's place on the chain's. On 23 Nov the two
+    agreed within 2 s (the run's sale on chain at 03:37:09, said by the run at 03:37:11). With the chain's clock 4 s
+    behind ours the refused send of 100 s still arms A again at the reading of 122 s, ahead of the 30 s rule."""
+    chain = WalletChain(behind=4)
+    chain.at(T0 + 100, _refused("refused"))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 100]}), minutes=4)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == 1 and T0 + 117 < again[0] < T0 + 130, [t - T0 for t in again]
+    assert "failed send on chain" in _lines(rep, A)[0]
