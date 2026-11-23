@@ -1708,12 +1708,30 @@ class Service:
             reader = _ListRead(self.rpc, chain_txs)
             unsold: list[tuple[str, str]] = []
             unread: list[str] = []
+            out: dict[str, float] = {}
             try:
                 from .operator.commands import CHAIN_LOOK_SIGS, _landed_buys
 
                 look = _landed_buys(SimpleNamespace(rpc=reader), address, since_ts, unsold, unread)
                 await asyncio.wait_for(look, FAILED_LOOK_SECS)
                 rows = [(str(r["signature"]), int(r["slot"]), r.get("blockTime"), r.get("err")) for r in reader.rows]
+                # what the reader looked at, newest first: up to the first row older than it was asked back to, or all
+                last = next((k for k, row in enumerate(rows) if row[2] is not None and int(row[2]) < since_ts),
+                            len(rows))  # fmt: skip
+                looked = rows[: last + 1]
+                whole = last == len(rows) and len(rows) < CHAIN_LOOK_SIGS  # the wallet's every transaction
+                slot_of = {sig: slot for sig, slot, _when, _err in rows}
+                maybe_held = [sig for _mint, sig in unsold] + unread  # each may be a coin a sniper still holds
+                for i, (start, _at) in asked.items():
+                    if not (whole or any(slot < start for _sig, slot, _when, _err in looked)):
+                        continue  # the look did not reach back past this start
+                    if any(when is None for _sig, slot, when, _err in rows if slot >= start):
+                        continue
+                    if any(slot_of.get(sig, start) >= start for sig in maybe_held):
+                        continue
+                    failed_at = [int(when) for _sig, slot, when, err in rows if slot > start and err is not None]
+                    if failed_at:
+                        out[i] = max(0.0, time.time() - max(failed_at))
             except Exception as exc:  # noqa: BLE001 - nothing told: the 30 s wait, as before
                 if not look_said:
                     look_said = True
@@ -1722,23 +1740,6 @@ class Service:
                     log(f"the wallet's transactions could not be read for a failed send ({why}): a spent sniper "
                         f"waits its {SPENT_REARM_SECS:g} s, as before")  # fmt: skip
                 return {}
-            # what the reader looked at, newest first: up to the first row older than it was asked back to, or all
-            last = next((k for k, row in enumerate(rows) if row[2] is not None and int(row[2]) < since_ts), len(rows))
-            looked = rows[: last + 1]
-            whole = last == len(rows) and len(rows) < CHAIN_LOOK_SIGS  # the wallet's every transaction
-            slot_of = {sig: slot for sig, slot, _when, _err in rows}
-            maybe_held = [sig for _mint, sig in unsold] + unread  # each may be a coin a sniper still holds
-            out: dict[str, float] = {}
-            for i, (start, _at) in asked.items():
-                if not (whole or any(slot < start for _sig, slot, _when, _err in looked)):
-                    continue  # the look did not reach back past this start
-                if any(when is None for _sig, slot, when, _err in rows if slot >= start):
-                    continue
-                if any(slot_of.get(sig, start) >= start for sig in maybe_held):
-                    continue
-                failed_at = [int(when) for _sig, slot, when, err in rows if slot > start and err is not None]
-                if failed_at:
-                    out[i] = max(0.0, time.time() - max(failed_at))
             return out
 
         async def guard_says(held: list[dict]) -> tuple[bool | None, str]:

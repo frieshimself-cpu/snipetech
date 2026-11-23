@@ -300,3 +300,20 @@ def test_of_two_snipers_only_the_one_started_after_the_buy_is_armed_on_a_failed_
     one, two = _lines(rep, A)[:2]
     assert "spent 30 s with nothing held" in one and "failed send on chain" in two, (one, two)
     assert not _touched(client, B, T0 + 3, T0 + 175), _touched(client, B, T0 + 3, T0 + 175)
+
+
+def test_a_list_the_look_cannot_make_sense_of_never_ends_the_run(monkeypatch):
+    """The node lists a signature with no slot (an answer the look was not written for): nothing is told, the 30 s
+    rule holds and the run goes on to its own end. An error out of the look would have ended the run."""
+    chain = WalletChain()
+    chain.at(T0 + 100, _refused("refused"))
+    listed = chain.get_signatures
+
+    async def odd(*a, **k):
+        return [{key_: v for key_, v in row.items() if key_ != "slot"} for row in await listed(*a, **k)]
+
+    chain.get_signatures = odd
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 100]}), minutes=4)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == 1 and again[0] >= T0 + 147, [t - T0 for t in again]
+    assert rep["reason"].startswith("time limit") and rep["left_running"] == []
