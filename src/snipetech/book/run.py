@@ -644,7 +644,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
             own = ex is not None and ex.source == "wallet"
             name, extra = (ex.name, {"exit_params": dict(ex.params)}) if own else ("lab", {})
             if caps.get(a.wallet):
-                extra["max_mcap_sol"] = caps[a.wallet]  # the owner's cap: only the leader's buys below it
+                extra["max_mcap_sol"] = caps[a.wallet]  # the owner's cap: a ceiling on our own fill (maxMcapUsd)
             try:
                 # salt = this run's second: a sniper replaced within 5 minutes needs an externalId of its own. The arm
                 # is the floor of the buy bid, sent with the bid in the tip and the priority at OKTech's minimum

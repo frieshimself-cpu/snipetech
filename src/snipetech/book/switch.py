@@ -69,9 +69,11 @@ def book_mcaps(paths: OperatorPaths) -> dict[str, float]:
 
 
 def book_mcap(paths: OperatorPaths, wallet: str, value: float | None, by: str, now: float | None = None) -> dict:
-    """Set (or with None clear) the owner's cap for one wallet: the book's copy sniper on it copies only its buys below
-    this market cap in SOL (OKTech maxMcapUsd). 8 Nov I15/I21: a leader's early buys pay at our landing, its late
-    re-buys lose. Only the owner sets it (`snipetech book mcap <wallet> <SOL>|off`)."""
+    """Set (or with None clear) the owner's cap for one wallet, in SOL: sent to the book's copy sniper on it as OKTech's
+    maxMcapUsd, a ceiling on our own fill (23 Nov smoke test: OKTech turns it into the buy's least coins, so a copy
+    that would fill above it fails on chain and pays its priority fee; it is no filter on the leader's buys). 8 Nov
+    I15/I21: a leader's early buys pay at our landing, its late re-buys lose. Only the owner sets it (`snipetech book
+    mcap <wallet> <SOL>|off`)."""
     if value is not None and not 1 <= float(value) <= 100_000:
         raise ValueError("the market-cap cap is SOL, between 1 and 100000")
     paths.ensure()

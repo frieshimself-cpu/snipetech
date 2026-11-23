@@ -408,7 +408,7 @@ def test_list_copy_sniper_fee_and_send_count_overrides():
 
 
 def test_copylist_cli_sends_a_market_cap_cap_given_in_sol(tmp_path, capsys, monkeypatch):
-    """`--max-mcap SOL` on copylist: copy the leader's buys only below this market cap, sent as OKTech's maxMcapUsd at
+    """`--max-mcap SOL` on copylist: a ceiling on our own fill's market cap, sent as OKTech's maxMcapUsd at
     the SOL price (the service had it for the book; the command line could not ask for it). 20 Nov: behind Cupseyy
     the paper's whole profit is in coins under 100 SOL (labs 3d13e5, fe1626 at 5 SOL; idea I442)."""
     from snipetech import cli, meta
@@ -2471,3 +2471,20 @@ def test_copylist_max_mcap_help_says_the_ceiling_is_on_our_own_fill():
     helps = {o: a.help for a in oktech._actions for o in a.option_strings}
     assert "our own fill" in helps["--max-mcap"] and "max_fill_mcap" in helps["--max-mcap"]
     assert "leaders' buys only below" not in helps["--max-mcap"]
+
+
+def test_book_mcap_help_and_printout_say_the_cap_is_on_our_own_fill(tmp_path, capsys):
+    """The owner's `book mcap WALLET SOL` is sent as the same maxMcapUsd (book/run.py), which the 23 Nov smoke test
+    showed is a ceiling on our own fill: a copy that would fill above it fails on chain and pays its priority fee. Its
+    help said "copy that wallet's buys only below this market cap" and its printout "below 60 SOL", which the owner
+    reads as a free filter on the leader's buys."""
+    from snipetech import cli
+
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    action = next(a for a in sub.choices["book"]._actions if a.dest == "action")
+    assert "our own fill" in action.help and "priority fee" in action.help
+    assert "buys only below" not in action.help
+    rc = cli.main(["--db", str(tmp_path / "snipetech.db"), "book", "mcap", "W1111111111111111111111111111111", "60"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "our own fill below 60 SOL" in out

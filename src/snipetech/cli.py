@@ -1250,8 +1250,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("action", choices=["run", "on", "off", "status", "bar", "mcap", "fresh", "drop"],
                     help="run: one book pass; on/off: the owner's switch for the live book (no SSH needed); status; "
-                         "bar [SOL a trade|default]: the score a wallet needs to be copied; mcap [WALLET SOL|off]: copy "
-                         "that wallet's buys only below this market cap in SOL (OKTech maxMcapUsd); fresh WALLET: lift its live pause "
+                         "bar [SOL a trade|default]: the score a wallet needs to be copied; mcap [WALLET SOL|off]: a "
+                         "ceiling in SOL on our own fill's market cap behind that wallet (OKTech maxMcapUsd: a copy "
+                         "that would fill above it fails on chain and pays its priority fee, 23 Nov smoke test); "
+                         "fresh WALLET: lift its live pause "
                          "and judge it only on trips after now; drop WALLET: the owner's word that this wallet is "
                          "never copied again, whatever its verdict says (the next pass stops its sniper once it "
                          "holds nothing)")  # fmt: skip
@@ -3366,7 +3368,10 @@ def _main(args) -> int:
                 except ValueError as exc:
                     raise SystemExit(f"book mcap: not changed: {exc}") from None
             caps = book_mcaps(bpaths)
-            print("market-cap caps: " + (", ".join(f"{w[:6]}… below {v:g} SOL" for w, v in caps.items()) or "none"))
+            print(
+                "market-cap caps: "
+                + (", ".join(f"{w[:6]}… our own fill below {v:g} SOL" for w, v in caps.items()) or "none")
+            )
             return 0
         if args.action == "status":
             from .book.state import last_run_line

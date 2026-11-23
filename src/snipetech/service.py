@@ -3300,8 +3300,9 @@ class Service:
         is made, naming that sniper, unless `allow_overlap`. `exit_params`: the exit itself instead of a preset's name
         (the book's per-wallet exit, book/policy.exit_for), for every spec. Each sniper's fees are the fee policy's for
         a copy of its leader over the measure stage's fills (fees.choose), `fee_floor` (the book's arm) as the floor;
-        `priority_fee` / `tip` given by hand win over the policy's buy bid. `max_mcap_sol`: copy only the leaders' buys
-        below this market cap, sent as OKTech's maxMcapUsd at the SOL price, asked for here when the stored one is over
+        `priority_fee` / `tip` given by hand win over the policy's buy bid. `max_mcap_sol`: a ceiling on our own fill's
+        market cap, sent as OKTech's maxMcapUsd at the SOL price (OKTech turns it into the buy's least coins: a copy
+        that would fill above it fails on chain and pays its priority fee, 23 Nov smoke test), asked for here when the stored one is over
         an hour old (until 11 Nov only the nightly job's `oktech plan` refreshed it: a day old, two when that job
         died). An RPC that gives none leaves the stored price in use; with no price at all the sniper is refused, so
         a cap the owner set is never silently dropped. `bid` (SOL): the whole buy bid, sent with the priority at

@@ -731,9 +731,11 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     (`fees`, fees.choose for a copy of this leader; without one, the policy with no evidence: the minimums, sells at
     `[oktech] sell_tip_sol` + `sell_priority_sol`). `priority_fee` / `tip` (SOL) asked for by hand (the fee test's
     flags) win over the policy's buy bid and are said so. `send_count` / `compute_units` go to extraParams (see
-    execution_params); `salt` makes a fresh externalId for a replacement with the same settings. `max_mcap_usd`: copy only
-    the leader's buys below this market cap (OKTech's per-wallet maxMcapUsd; 8 Nov I15: a leader's early buys pay, its
-    late re-buys lose); `min_mcap_usd` only above this one (minMcapUsd). The 21 Nov floor test showed OKTech applies
+    execution_params); `salt` makes a fresh externalId for a replacement with the same settings. `max_mcap_usd`: a ceiling
+    on our own fill's market cap (OKTech's per-wallet maxMcapUsd, which it turns into the buy's least coins at its own
+    SOL price: a copy that would fill above it fails on chain and pays its priority fee, 23 Nov smoke test; 8 Nov I15:
+    a leader's early buys pay, its late re-buys lose); `min_mcap_usd` copies only the leader's buys above this one
+    (minMcapUsd). The 21 Nov floor test showed OKTech applies
     neither minMcapUsd nor minSol to a copy of a coin's creation (a sniper sent a 35 SOL floor and minSol 0.95 bought the
     copied wallet's own creates at 29 SOL with 0.487 SOL dev buys), so no floor sent here stops create-bait. Every such sniper is kept to coins (`keep_to_coins`: platforms pump.fun + PumpSwap and a
     market-cap ceiling where no tighter cap is given), and a buy priority above OKTech's minimum is sent as asked and
