@@ -330,6 +330,75 @@ def test_b2_the_clean_up_leaves_an_ended_sniper_with_no_fee_record_beside_the_ow
         st.close()
 
 
+# -- B8: what the book reviewer left ----------------------------------------------------------------------------------
+
+
+class _LostAnswer(AB._LateCoin):
+    """OKTech starts the sniper, and its answer never arrives (the call is cut off at RESTART_SECS, or the connection
+    drops): the caller sees a failure, OKTech's own list shows it running."""
+
+    async def oktech_task(self, action, task_id):
+        out = await super().oktech_task(action, task_id)
+        if action == "start":
+            raise TimeoutError()
+        return out
+
+
+def test_b8_a_start_whose_answer_was_lost_is_not_told_as_a_failed_restart(tmp_path, monkeypatch):
+    """R-book-3: a retire undone by a coin starts its sniper again, each try cut off at 45 s. When OKTech started it
+    and the answer came too late, the owner was told the start had failed and nothing sold the coin, with a /sell
+    line, though the sniper ran. After its tries the book reads OKTech's list once: a sniper it shows running was
+    started, and nothing is left to start at the next run."""
+    from snipetech.book import run as R
+
+    monkeypatch.setattr(R, "RESTART_PAUSE_SECS", 0.0)
+    st, cfg, _ = BT._made_its_buy(tmp_path)
+    svc = _LostAnswer(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], cfg=cfg)
+    sent: list[str] = []
+    try:
+        _book(tmp_path, svc, cfg, sent)
+        assert ("stop", "k1") in svc.calls and ("delete", "k1") not in svc.calls, svc.calls
+        (told,) = [t for t in sent if "retire" in t and "k1" in t]
+        assert "started again so it can sell it" in told and "failed" not in told and "/sell" not in told, told
+        assert not (st.coverage(R.RESTART_KEY) or {})
+    finally:
+        st.close()
+
+
+def test_b8_the_failed_restart_line_promises_only_what_the_next_run_does(tmp_path, monkeypatch):
+    """R-book-3: the line told the owner "the next run tries to start it again". The plan starts such a sniper only
+    while the book still copies its wallet and no stop holds: running, it also buys for that wallet, so starting one
+    the book dropped, or under a stop, is the owner's call (the watch's alert and /sell cover the coin). The line says
+    so, and the plan's rule is pinned here."""
+    from snipetech.book import run as R
+    from snipetech.book.policy import BookInputs, plan_book
+
+    monkeypatch.setattr(R, "RESTART_PAUSE_SECS", 0.0)
+    st, cfg, _ = BT._made_its_buy(tmp_path)
+    svc = AB._LateCoin(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], cfg=cfg, fail={("start", "k1")})
+    sent: list[str] = []
+    try:
+        _book(tmp_path, svc, cfg, sent)
+        (told,) = [t for t in sent if "retire" in t and "k1" in t]
+        assert "unless the book no longer copies L1xxxx by then or a stop holds" in told, told
+        assert told.endswith(f"/sell {AB.LATE[0]['mint']}")
+    finally:
+        st.close()
+
+    def plan(qualified, **kw):
+        inp = BookInputs(equity_sol=10, day_realised_sol=0, day_risk_used_sol=0, qualified=qualified, live={},
+                         bid_model={}, snipers=[{"id": "k1", "name": BT.K1, "status": "idle"}],
+                         holdings=[{"mint": AB.LATE[0]["mint"], "amount": 1.0, "value_sol": 0.2}], now=BT.NOW,
+                         holdings_known=True, buys_by_sniper={"k1": 1}, native_sol=10, wsol=0, restart={"k1"},
+                         **kw)  # fmt: skip
+        return [a.kind for a in plan_book(inp, Config().book).actions if a.sniper_id == "k1"]
+
+    ranked = [{"wallet": BT.L1, "score": 0.03, "copy_plan": {"min_leader_sol": 0.3}}]
+    assert plan(ranked) == ["start"]  # still copied, a coin held: started so it can sell it
+    assert plan([]) == []  # its wallet left the ranking: not started (the owner's call)
+    assert plan(ranked, stopped=True) == []  # under the owner's /stop nothing starts
+
+
 # -- B3: the gate and the strays the watch says once a day ------------------------------------------------------------
 
 

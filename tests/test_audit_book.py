@@ -214,11 +214,20 @@ LATE = [{"mint": "Late" + "n" * 40, "amount": 1.0, "value_sol": 0.2, "priced": T
 
 
 class _LateCoin(FakeSvc):
-    """The coin shows on the third holdings read: bought while the retire's stop was on its way."""
+    """The coin shows on the third holdings read: bought while the retire's stop was on its way. OKTech's list follows
+    what was asked of it (audit round 2, B8: a start that seemed to fail is read there once more): a stopped sniper
+    reads idle, one started again running."""
 
     async def open_positions(self, address, ignore=()):
         self._reads += 1
         return list(LATE) if self._reads >= 3 else []
+
+    async def oktech_task(self, action, task_id):
+        out = await super().oktech_task(action, task_id)  # raises when the call is set to fail: nothing changed then
+        status = {"stop": "idle", "start": "running"}.get(action)
+        if status:
+            self._snipers = [s | {"status": status} if s["id"] == task_id else s for s in self._snipers]
+        return out
 
 
 class _FlakyStart(_LateCoin):

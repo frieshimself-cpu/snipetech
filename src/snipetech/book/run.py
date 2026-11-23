@@ -25,6 +25,7 @@ from ..positions import SPENT_STATUSES, curve_plain_need, is_active
 from ..qualify.non_coin import NON_COIN_REASON, non_coin_traders
 from .policy import (
     BOOK_NAME_RE,
+    BUYING_STATUSES,
     CANNOT_PAY,
     GUARD_KILL,
     ONE_SNIPER,
@@ -738,6 +739,10 @@ async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | 
 RESTART_TRIES = 2
 RESTART_PAUSE_SECS = 2.0
 RESTART_SECS = 45.0
+# after the tries failed, OKTech's own list is read once, this long at most: a start whose answer came too late, or a
+# second start refused because the first went through, left the sniper running (review of 22 Nov: the owner was told
+# the start had failed, with a /sell line, while it ran)
+RESTART_CHECK_SECS = 20.0
 # the snipers such a start failed for: {sniper id: {"ts": when, "mints": the coins seen then}}. Written before the start
 # (a run cut off on its way leaves it for the next one); the plan starts each while the wallet holds a coin
 # (BookInputs.restart), and one OKTech lists running again, or not at all, leaves it
@@ -770,7 +775,9 @@ def _mark_restart(store, sid: str, now: float, mints: list[str], pending: bool) 
 
 
 async def _start_again(svc, sid: str) -> str | None:
-    """Start `sid` again, RESTART_TRIES tries: None once OKTech has started it, else what the last try said."""
+    """Start `sid` again, RESTART_TRIES tries: None once OKTech has started it, else what the last try said. A try that
+    fails here may have gone through there (its answer lost or late): after the tries OKTech's list decides, when it
+    answers (RESTART_CHECK_SECS) and shows the sniper buying again."""
     said = ""
     for attempt in range(RESTART_TRIES):
         try:
@@ -780,7 +787,12 @@ async def _start_again(svc, sid: str) -> str | None:
             said = f"{type(exc).__name__}: {str(exc)[:120]}".rstrip(": ")
             if attempt + 1 < RESTART_TRIES:
                 await asyncio.sleep(RESTART_PAUSE_SECS)
-    return said
+    try:
+        tasks = (await asyncio.wait_for(svc.oktech_status(), RESTART_CHECK_SECS)).get("snipers") or []
+    except Exception:  # noqa: BLE001 - not known: told as it was seen here, and the next run starts it
+        return said
+    runs = any(str(t.get("id")) == str(sid) and str(t.get("status")) in BUYING_STATUSES for t in tasks)
+    return None if runs else said
 
 
 TOLD_KEY = "book:told"  # the lines of today that Telegram has taken: {"day": "YYYY-MM-DD", "lines": [...]}
@@ -913,8 +925,9 @@ async def _retire(
     gone. The holdings are read before the stop and again after it (with the tape): a coin bought in between gets its
     sniper started again and nothing is deleted (a stopped sniper sells nothing, so its coin would be stranded). That
     start is tried RESTART_TRIES times; when it fails the owner is told so, with the coin's /sell line, and the next run
-    starts the sniper while the wallet holds a coin (RESTART_KEY). The owner's own coins are none of its coins, each
-    reading weighed on its own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`)."""
+    starts the sniper while the wallet holds a coin (RESTART_KEY), the book still copies its wallet and no stop holds
+    (the plan's rule: running, it also buys). The owner's own coins are none of its coins, each reading weighed on its
+    own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`)."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
     now = float(now if now is not None else 0)
     blind = sid in unrecorded  # no fee record of it: a coin read as the owner's may be its own
@@ -938,9 +951,13 @@ async def _retire(
             return False
         coin = f" ({', '.join(m[:8] for m in mints)})" if mints else ""
         sell = f" Sell it now: /sell {mints[0]}" if len(mints) == 1 else ""
+        # the plan starts it again only while the book still copies its wallet and no stop holds (running, it also
+        # buys for that wallet): the line promises no more than that (review of 22 Nov)
         notifier.send(notes.write(f"[book] retire {w6} ({sid}) undone: a coin appeared while it stopped{coin}, and its "
                                   f"start after the stop failed ({failed}): nothing sells that coin while it stays "
-                                  f"stopped; the next run tries to start it again.{sell}", "decision"))  # fmt: skip
+                                  f"stopped; the next run tries to start it again, unless the book no longer copies "
+                                  f"{w6} by then or a stop holds (then /sell, or a start in OKTech, sells it).{sell}",
+                                  "decision"))  # fmt: skip
         return False
     try:
         await svc.oktech_task("delete", sid)
