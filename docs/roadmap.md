@@ -27,6 +27,16 @@ first on the server's recording and only then run live in capped batches.
   not Axiom's copy trading; it is sold to outside traders, by the networks that sell exactly this place: Harmonic's
   searcher network (validator side; KYC/KYB, a 7 to 14 day pilot) and Inertia (apps send their flow; a 50 ms
   auction; searcher API by application).
+- **What the place is worth with a seat's small tip (labs of 21:16-21:19 UTC, the tape copy of 20:01, the week to 23
+  Nov 20:01; every first buy of 1.9 SOL or more, copied at 6 SOL, sold at 12 s or on the leader's half sale, a 0.003
+  SOL tip charged instead of the 0.6 SOL bid above; paper, the place assumed on every moment):** right behind (+0)
+  Cented +1.90 SOL a copy over 353 copies (+672 SOL in the week; the newer 40 % +1.83), Decu +1.68 over 321 (+538;
+  +1.82), theo side (Bi4rd5FH…) +1.03 over 166 (+171; +1.20): **about +1,380 SOL a week, about 200 a day**, before
+  any competition for the place. One trade further back Cented makes +0.69 a copy (+244 in the week), two back +0.22
+  (+77; the newer 40 % +0.09). At 6 SOL our own buy moves these coins' price 29 % at the median: the profit is the
+  later buyers' money, so the place and the crowd behind it are the whole edge. Jobs 20261123-211654-04467b,
+  -211737-0d5e42, -211738-128568, -211838-92fa2b, -211839-98b055. (The same moments at a seat taken only part of the
+  time, or at a higher auction price, scale down from there: at a quarter of them, about 50 a day.)
 - **So 100 a day needs the owner's application to those networks** (an identity or a company, their terms, their
   price for the place, which the 0.6 SOL bid of the paper may not match). Only the owner can apply. With a seat, our
   side is a new buy path the repo does not have (it signs only sales today): a pump.fun buy builder pinned by a test
