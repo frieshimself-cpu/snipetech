@@ -1909,6 +1909,71 @@ def test_the_scout_and_the_fee_analyst_are_told_what_a_run_of_sends_may_ask_for(
         assert "left of the month" in text
 
 
+def test_the_agents_are_told_what_each_and_repeats_score_and_what_refuses_them(rolebox):
+    """Round 1 of the 22 Nov audit (lab#0, lab#1, docs#0). The exit analyst is told to run its labs with "--each", and
+    the agents froze 17 rules with "repeats": "also" whose forward records held one trade a coin; no text said what
+    either is. Since the audit a rule that takes every buy is refused without --each and by a freeze, a consensus
+    gate is refused with --each, and a coin's moments are one draw of the bound. Every role that runs a lab or the
+    table of bids is told the rule; who runs a lab is told how to read its bound."""
+    from snipetech.analysis.lab import check_each_gates, check_repeats, parse_trigger
+    from snipetech.analysis.paper import REPEATS_NOTE
+    from snipetech.analysis.place_bids import EACH_DEFAULT_TRIGGER
+
+    tools, _, _ = rolebox
+    for role in ("tester", "fees", "exits", "scout"):
+        text = _help(tools(role)["start_job"])
+        assert "EACH WALLET'S OWN BUYS (22 Nov):" in text, role
+        assert '"repeats": "also" takes every buy of the wallet at the rule\'s size' in text
+        assert 'It is scored only with "--each"' in text and "paper freeze refuses it" in text
+        assert f'exit_note "{REPEATS_NOTE}"' in text
+        assert 'A consensus gate ("known" of 2 or more, "gap", "teams", "known_any") is refused with "--each"' in text
+    assert "EACH WALLET'S OWN BUYS" not in _help(tools("oktech")["start_job"])
+    bound = "test.coins is how many coins the newer moments are"
+    for role, told in (("tester", True), ("fees", True), ("exits", True), ("scout", False)):
+        assert (bound in _help(tools(role)["start_job"])) is told, role
+    # the refusals the text names are the code's own
+    every = parse_trigger('{"kind": "kol", "group": "big", "sol": 0.95, "repeats": "also"}')
+    with pytest.raises(ValueError, match="Score it with --each"):
+        check_repeats([every], False)
+    check_repeats([every], True)
+    with pytest.raises(ValueError, match="Run this rule without --each"):
+        check_each_gates([parse_trigger('{"kind": "kol", "group": "big", "sol": 1, "known": 2}')])
+    # the table of bids: with --each its own rule has no consensus gate
+    assert "known" not in EACH_DEFAULT_TRIGGER
+    for role in ("scout", "fees"):
+        assert 'every wallet\'s own first buy of 1 to 3 SOL, with no "known"' in _help(tools(role)["start_job"])
+
+
+def test_the_agents_are_told_what_plus_zero_is_and_how_to_score_a_send_that_reacts(rolebox, jobs):
+    """Review of the 22 Nov audit (docs, goal#0 and goal#2). The lab text said "--copy-position", "+0" scores a copy
+    "at the bid that buys the place": on 65 % of the big wallets' first buys a buyer stood within 3 block places, and
+    no bid of a send that reacts to the landed buy is known to buy the place ahead of them. "+0" is the price the
+    leader's buy left; "react:K" scores where a reacting send lands, in the lab and forward."""
+    from snipetech.analysis.paper import hypothesis_landing
+    from snipetech.cli import build_parser
+    from snipetech.operator.prompts import ROLE_SYSTEM
+
+    tools, _, _ = rolebox
+    for role in ("tester", "fees", "exits"):
+        text = _help(tools(role)["start_job"])
+        assert "at the bid that buys the place" not in text, role
+        assert "at the price the leader's buy left" in text
+        assert "gets that price only where nobody bought in between" in text
+        assert '"--copy-position", "react:K"' in text and "a paper place, never a live landing" in text
+    for role in ("scout", "fees"):  # where the table of bids sends its reader on to "+0"
+        assert '"+0" stands ahead of every buyer after the leader' in _help(tools(role)["start_job"])
+    fees = " ".join(ROLE_SYSTEM["fees"].split())
+    assert '"--copy-position", "react:K"' in fees and '("react:15", "react:50", "react:200")' in fees
+    # the place is one the lab, the freeze and the job runner take as written
+    assert hypothesis_landing("+3x", "react:15") == (0, "react:15")
+    argv = ["lab", "--trigger", '{"kind": "kol", "group": "big", "sol": 2}', "--copy-position", "react:15",
+            "--buy", "2", "--per-tx", "0.0045", "--hours", "72", "--json"]  # fmt: skip
+    assert build_parser().parse_args(argv).copy_position == "react:15"
+    assert jobs.start(argv)["id"]
+    freeze = ["paper", "freeze", "--trigger", argv[2], "--copy-position", "react:15", "--buy", "2", "--hours", "72"]
+    assert build_parser().parse_args(freeze).copy_position == "react:15"
+
+
 def test_the_scout_is_told_that_its_screens_keep_a_wallets_name_of_another_kind(rolebox):
     """Review of 22 Nov (agents#4): early-leaders and fomo-wallets with --label leave a wallet named otherwise (a KOL,
     the owner's tracked list) its name and list it under "kept"; it goes to qualify all the same."""

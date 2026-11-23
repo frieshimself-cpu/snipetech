@@ -1659,12 +1659,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         holds it, before anyone builds a sender for it.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
-        gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
+        gives another kol trigger; "--each" takes every wallet's own first buy of 1 to 3 SOL, with no "known";
+        "--wallet" one followed wallet) the
         outsiders' first buys in the wallet's own block, companions left out: the bid of place 1, 2 and 3 (priority
         fee plus tip), who holds the first place, each followed wallet's regulars and where our own copies landed.
         In place-bids' answer, auction.in_bid_order near 1 means the place is bought, and win_at says what share of
         moments a bid would have been first in; near 0.5 or under, speed takes the place and no bid buys it. Score
-        the rule next with "--copy-position", "+0" and "--per-tx" at the bid place-bids' table names.
+        the rule next with "--copy-position", "+0" and "--per-tx" at the bid place-bids' table names. "+0" stands
+        ahead of every buyer after the leader, a place no send that reacts to the landed buy reaches on every moment:
+        the lab's "react:K" scores where such a send lands.
         ["tips", "--group", "big", "--hours", "30", "--json"] is the tip table, one line a followed wallet (the
         group's, or "--wallet", "<wallet>" for any one): its blocks with outsiders, the first outsider's bid
         (median, 75th, 90th percentile), the bid that was above every outsider in 50, 75 and 90 % of its blocks,
@@ -1728,10 +1731,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         scored behind the followed wallet's companions (the wallets its operator buys with: in the next transactions
         of the block, or in its block in changing order, ahead of it as often as behind, which a copier never is; no
         copy lands among them; the result's copy_companions says how many wallets had some).
-        "--copy-position", "+0" with "--per-tx" scores a copy right behind them at the bid that buys the place
-        (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
+        "--copy-position", "+0" with "--per-tx" scores a copy right behind them, at the price the leader's buy left,
+        with the bid charged (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
         "--trigger", '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}', "--copy-position",
-        "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"].
+        "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"]. No bid is known to buy that place on
+        every moment: a send that reacts to the landed buy lands some block places later and gets that price only
+        where nobody bought in between. "--copy-position", "react:K" (22 Nov) scores that send: the copy stands
+        behind every trade of the coin up to K block places after the followed wallet's own transaction ("react:15",
+        "react:50", "react:200": how fast the sender is). It is a paper place, never a live landing; a freeze with
+        the same "--copy-position" scores it forward at the same place.
         A PLACE THAT FOLLOWS THE BID (wallet rules): "--copy-position", "bid-", "--buy-bid", "0.05" puts each copy
         where that bid would stand among the wallets that really bought behind the followed one: behind its
         companions, behind every outsider that bid at least as much (in its block and the ten after it) and behind an
@@ -1846,6 +1854,17 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         lower bound is a reason to ask for one small live copy to measure the place, never proof the rule pays. A
         hunt can ask for one labelled sniper among the buyers ("bots": "sniper", scored at +3@1); no sniper is
         built for either form yet.
+        EACH WALLET'S OWN BUYS (22 Nov): "--each" (lab and place-bids, wallet rules named with "--trigger") makes
+        every followed wallet's own first buy in a coin a moment, as its own copy sniper copies it; without it a
+        rule fires once a coin, at the first followed wallet in. A consensus gate ("known" of 2 or more, "gap",
+        "teams", "known_any") is refused with "--each": a copy sniper of one wallet sees no other, so run such a rule
+        without it. "repeats": "also" takes every buy of the wallet at the rule's size, its repeats in a coin too:
+        what a live copy sniper copies. It is scored only with "--each": lab and place-bids refuse it without, paper
+        freeze refuses it (a forward record holds one trade a coin), and the records frozen with it before 22 Nov
+        are research only (exit_note "research only: one trade a coin, where its copy sniper takes every buy").
+        With "repeats": "also" a coin gives several moments in a lab: test.coins is how many coins the newer moments
+        are, and ev_lower draws a coin's moments together, so read n beside coins (26 moments in 18 coins are 18
+        draws).
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
         trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when

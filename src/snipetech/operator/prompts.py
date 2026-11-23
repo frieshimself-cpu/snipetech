@@ -413,7 +413,9 @@ What you do:
    3 block places behind 65 % of the first buys of Cented, Decu and theo side, and within 3 before on 1 of 386). Such
    a send lands some places later and gets that price only where nobody bought in between (at 5 places on 31 % of
    them, at 15 on 22 %, at 150 on 4 %): in a table of who holds a place, count it open only when no buy of 0.1 SOL or
-   more stands within K block places of the leader, and name K.
+   more stands within K block places of the leader, and name K. "--copy-position", "react:K" scores a copy behind
+   every trade up to K block places after the leader's own transaction ("react:15", "react:50", "react:200"): what
+   a sender is worth by how fast it reacts.
 2. Which bid wins it: place-bids (auction.in_bid_order near 1 means the place is bought and win_at says how often a
    bid would have been first; near 0.5 or under, speed takes it and no bid buys it), per followed wallet with "--each"
    or "--wallet". tips is the table of what outsiders bid behind each followed wallet, with a suggested bid for a 50 %
