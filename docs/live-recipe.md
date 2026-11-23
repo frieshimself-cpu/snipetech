@@ -592,9 +592,9 @@ buyAmount, to 0.1 % (OKTech spends exactly the buyAmount, the quote and the venu
 ones recorded when the snipers were made with `oktech copylist ... --create`; the run never reads them back from
 OKTech. So, while a run is on:
 
-- a hand buy from the sniper wallet is the owner's at once, never counted, sold or waited on, unless it spends exactly
-  a run sniper's size within 3 slots behind a buy of a wallet the run copies, or pays exactly the run's buy priority
-  with no tip the bot can see. Axiom keeps 1 % of what is typed: a typed 1 SOL spends 0.99 and stays the owner's, a
+- a hand buy from the sniper wallet is the owner's at once, never counted, sold or waited on, unless it lands within
+  3 slots behind a buy of a wallet the run copies and spends exactly the size of the run's sniper that follows that
+  wallet, or pays exactly the run's buy priority with no tip the bot can see. Axiom keeps 1 % of what is typed: a typed 1 SOL spends 0.99 and stays the owner's, a
   typed 1.01 spends 0.9999 and is taken for a 1 SOL copy and sold at `--sweep-after`. Sizing the run's snipers at an
   amount nobody types (1.003 SOL, say) would close that: the owner's decision, not built;
 - never change a run's sniper (size, fees, wallets) in OKTech's app: a copy whose size and fees both differ from the
