@@ -923,9 +923,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="copylist: extraParams.computeUnits (OKTech default 150000; our buys use 54-79k)",
     )
     sp.add_argument("--max-mcap", type=float,
-                    help="copylist: copy the leaders' buys only below this market cap in SOL, sent as OKTech's "
-                         "maxMcapUsd at the SOL price (above it the buy fails on chain and pays its priority fee). "
-                         "20 Nov: behind Cupseyy the paper's profit is in coins under 100 SOL")  # fmt: skip
+                    help="copylist: a ceiling on our own fill's market cap in SOL (the lab's max_fill_mcap), sent as "
+                         "OKTech's maxMcapUsd at the SOL price: OKTech turns it into the buy's least coins at its own "
+                         "SOL price, and a buy that would fill above it fails on chain and pays its priority fee "
+                         "(23 Nov smoke test: on our own fill, not on the leaders' buys)")  # fmt: skip
     sp.add_argument("--min-mcap", type=float,
                     help="copylist: sent as OKTech's minMcapUsd at the SOL price (the leaders' buys only above this "
                          "market cap in SOL). DOES NOT STOP create-bait: the 21 Nov floor test (docs/live-recipe.md) "

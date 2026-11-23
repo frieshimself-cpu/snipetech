@@ -291,9 +291,11 @@ def keep_to_coins(config: dict[str, Any], notes: list[str], platforms: tuple[str
         left_out = (". PumpSwap left out: OKTech tops the wallet's wrapped SOL up to 1.1 times the buy at each start "
                     "for PumpSwap buys (6 Nov 0.22 beside 0.2 SOL buys; 20 Nov 0.055 beside 0.05 and 1.1 beside 1), "
                     "and a buy on pump.fun's curve is paid in plain SOL only")  # fmt: skip
-    return (f"kept to coins, UNVERIFIED in copy mode: sent {' and '.join(sent)}. {why}. Whether a copy sniper reads "
-            "platforms is not known, and that USDC was bought on PumpSwap: check the first fills and the measure "
-            f"stage's non_coin_buys{left_out}")  # fmt: skip
+    # 23 Nov smoke test: a copy sniper sent platforms pumpfun copied PumpSwap trades (the ceiling refused two, four
+    # failed at once): in copy mode only the ceiling keeps a copy to coins
+    return (f"kept to coins in copy mode only by the ceiling: sent {' and '.join(sent)}. {why}. A copy sniper does not "
+            "keep to platforms (23 Nov: one sent pumpfun copied PumpSwap trades, refused by the ceiling or failing at "
+            f"once), and a copy bought USDC on PumpSwap on 12 Nov: check the measure stage's non_coin_buys{left_out}")  # fmt: skip
 
 
 def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[float, float]:

@@ -1890,9 +1890,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         nothing is said, and enough for every exit of the lab's set sold in one sale), into the tape's own tables;
         "--wallet", "<address>" (repeatable) names wallets instead of a group. It trades nothing and changes no
         setting. A lab that sells in parts needs a longer stretch: with "--sell-parts" it holds
-        (parts - 1) x part-secs longer than the 300 s of its longest exit, and a moment whose stretch ends before
-        that is skipped (no_backfill), every one of them after a backfill at 300: "--sell-parts", "4",
-        "--sell-part-secs", "15" holds 345 s, so backfill those wallets with "--after-secs", "360" first (a second
+        (parts - 1) x part-secs longer than the 305 s of its longest exit (its dead exits pause up to 5 s), and a
+        moment whose stretch ends before that is skipped (no_backfill), every one of them after a backfill at 300:
+        "--sell-parts", "4", "--sell-part-secs", "15" holds 350 s, so backfill those wallets with "--after-secs", "360" first (a second
         run with the longer time fetches only the seconds that are missing).
         Without "--json" its text lists what it left out, one line a reason with its count and the result's own key
         in brackets (on_tape, buys_too_recent, buys_outside_tape, buys_non_coin, no_cursor, no_pool,
@@ -2012,7 +2012,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at
         that size; it is research only (no live sniper sells in parts yet: a winner is a finding for the owner, not a
         sniper to propose). Past the curve a lab in parts needs a longer backfill than a lab that sells at once: it
-        holds (parts - 1) x part-secs longer than the 300 s of its longest exit (345 s for 4 parts 15 s apart), and
+        holds (parts - 1) x part-secs longer than the 305 s of its longest exit (350 s for 4 parts 15 s apart), and
         a backfill at the 300 s given when nothing is said keeps 330 s after a buy, so every such moment comes back
         skipped (no_backfill) until the wallets are backfilled with "--after-secs", "360" (THE BACKFILL).
         A LAB ON A FIXED WINDOW (14 Nov, your idea I161): a lab's window ends where the hourly copy it reads ends,

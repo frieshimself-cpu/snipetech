@@ -2287,7 +2287,9 @@ def test_a_copy_sniper_is_kept_to_pump_fun_and_pumpswap_under_a_market_cap_ceili
     # the summary says it, and that it is unverified: whether copy mode reads `platforms` is a question for OKTech
     said = [s for s in p.summary if s.startswith("kept to coins")]
     assert len(said) == 1
-    assert "UNVERIFIED" in said[0] and "platforms pumpfun, pumpswap" in said[0] and "$50,000,000" in said[0]
+    assert "platforms pumpfun, pumpswap" in said[0] and "$50,000,000" in said[0]
+    # 23 Nov smoke test: a pumpfun-only copy sniper copied PumpSwap trades: only the ceiling holds in copy mode
+    assert "only by the ceiling" in said[0] and "does not keep to platforms" in said[0] and "UNVERIFIED" not in said[0]
     assert "no setting on record that refuses a coin by its address" in said[0] and "USDC twice on 12 Nov" in said[0]
     # the first line's "below $X market cap" is the owner's cap only: the ceiling is no rule about which coins to copy
     assert "below $" not in " ".join(p.summary)
@@ -2341,7 +2343,7 @@ def test_every_copy_mode_payload_carries_the_same_protections_and_no_other_kind_
         assert c["platforms"] == ["pumpfun", "pumpswap"], name
         assert all(0 < w["maxMcapUsd"] <= 50_000_000 for w in c["ctbotWallets"]), name
         summary = _every_builder()[name].summary
-        assert any(s.startswith("kept to coins") and "UNVERIFIED" in s for s in summary), name
+        assert any(s.startswith("kept to coins") and "only by the ceiling" in s for s in summary), name
     # the launch, hunt and replica snipers buy pump.fun launches only, as before
     for name, p in _every_builder().items():
         if p.config.get("mode") != "ctbot":
@@ -2455,3 +2457,17 @@ def test_a_copy_snipers_stop_is_sent_with_its_confirm_window_and_the_notes_say_t
     assert any("confirm window of 250 ms" in n and "the lab's stop fires at once" in n for n in p.notes)
     hold = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3, exit_name="hold60")
     assert "stopLoss" not in hold.config["autoSell"] and not any("confirm window" in n for n in hold.notes)
+
+
+def test_copylist_max_mcap_help_says_the_ceiling_is_on_our_own_fill():
+    """23 Nov smoke test: OKTech turns maxMcapUsd into the buy's least coins at its own SOL price, a ceiling on our own
+    fill. The help said "copy the leaders' buys only below this market cap", which an agent reads as a rule about the
+    copied wallet's buys (labs then scored `max_mcap`, a gate no OKTech setting runs)."""
+    from snipetech import cli
+
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    oktech = sub.choices["oktech"]
+    helps = {o: a.help for a in oktech._actions for o in a.option_strings}
+    assert "our own fill" in helps["--max-mcap"] and "max_fill_mcap" in helps["--max-mcap"]
+    assert "leaders' buys only below" not in helps["--max-mcap"]

@@ -870,7 +870,8 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     parts_told = text[text.index("SELLING OUT IN PARTS:"):text.index("A WINNING BOT'S RECIPE BY NAME")]
     backfill_told = text[text.index("THE BACKFILL (12 Nov):"):text.index("A lab with a wallet rule then scores")]
     for told in (parts_told, backfill_told):  # the tester reads the first, whoever backfills reads the second
-        assert '"--after-secs", "360"' in told and "345 s" in told and "no_backfill" in told
+        assert '"--after-secs", "360"' in told and "350 s" in told and "no_backfill" in told
+        assert "345 s" not in told and "305 s" in told  # C4: the horizons the simulator really reaches
         assert "(parts - 1) x part-secs" in told
     # the same day: "even 2-5 sol fees to copytrade could be worth... 1 to 30 isnt the limit"
     assert '"--buy-bid", "2"' in text and "paid once on the buy" in text and "no upper limit" in text
