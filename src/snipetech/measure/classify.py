@@ -165,8 +165,8 @@ COPY_SHAPE_SLOTS = 3
 # 74, asked of the server's fills and snipers with this rule's own code): to the lamport on the curve (987,654,320 +
 # 12,345,680 for 1 SOL), one lamport short on PumpSwap (197,530,861 + 2,469,138 for 0.2 SOL); `fills.sol` keeps six
 # decimals (500 lamports at the most: a 20,000th of the smallest sniper, 0.01 SOL). The owner's hand buys were 1.485,
-# 4.95, 2.475 and 2.97 SOL: each 1 % under a round size (Axiom keeps 1 % of what is typed), ten times this far from
-# any sniper's, and at a size no sniper alive then bought at.
+# 4.95, 2.475 and 2.97 SOL: each 1 % under a round size (Axiom keeps 1 % of what is typed), so a hand buy typed at a
+# sniper's round size stands ten times this far from it.
 COPY_SIZE_TOL = 0.001
 
 

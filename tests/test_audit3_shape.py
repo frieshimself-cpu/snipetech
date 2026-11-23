@@ -11,8 +11,8 @@ with a copied wallet on record spent the buyAmount of a sniper alive then that f
 9 Nov), to the lamport on the curve (987,654,320 + 12,345,680 = 1 SOL) and one lamport short on PumpSwap (197,530,861
 + 2,469,138); every one of the 33 buys the tape holds is an exact-in instruction. The owner's hand buys were 1.485,
 4.95, 2.475 and 2.97 SOL, each 1 % under a round size (Axiom keeps 1 % of what is typed), and none of the 5 buys on
-record at fees no payload names is at a size any sniper alive then bought at. A buy is copy-shaped only when it also
-spent what a sniper that follows THAT wallet is set to spend.
+record at fees no payload names is at a size a sniper that followed a wallet bought at then. A buy is copy-shaped
+only when it also spent what a sniper that follows THAT wallet is set to spend.
 
 S2, S3. A chain reading that failed is no reading: a list of blocks that could not be read is not "the next block",
 and a copied wallet's transaction that could not be fetched is not "no copied buy" (measure/chain_landing.py; its own
