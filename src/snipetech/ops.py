@@ -518,6 +518,7 @@ class Ops:
         out["units_mem_gb"] = _units_mem_gb(CGROUP_ROOT / SLICE)
         out["machine"] = _machine(CGROUP_ROOT)
         out["deploy_waits_for"] = self.deploy_waits_for(jobs)  # what `update` would refuse for now
+        out["build_tools"] = _build_tools()  # what an update's install would build with, were pip not to fetch them
         return out
 
     def op_run(self, argv: list[str], timeout: int = 6 * 3600) -> dict[str, Any]:
@@ -1021,6 +1022,26 @@ def _machine(root: Path) -> dict[str, Any] | None:
     boot = boot_ts()
     if boot is not None:  # after an outage: did the machine restart, or did it stand still
         out["boot_ts"] = boot
+    return out
+
+
+BUILD_TOOLS = ("setuptools", "wheel")  # pyproject.toml's build-system: what building the package takes
+
+
+def _build_tools() -> dict[str, str | None]:
+    """The version of each build tool in the environment this endpoint runs in (the checkout's .venv, where an
+    update's `pip install -e` builds the package); None for one that is not there. With build isolation, as now, pip
+    fetches them from the package index at every deploy (22 Nov audit: an index out of reach fails the install). An
+    install without it (`--no-build-isolation`) needs them here, setuptools 77 or newer: this is the look at the
+    server's environment that change waits for."""
+    from importlib import metadata
+
+    out: dict[str, str | None] = {}
+    for name in BUILD_TOOLS:
+        try:
+            out[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            out[name] = None
     return out
 
 

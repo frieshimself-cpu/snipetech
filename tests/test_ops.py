@@ -812,6 +812,25 @@ def test_update_waits_for_a_timer_unit_that_is_mid_run(env, monkeypatch):
     assert req(ops, key, "update")["argv"] == ["update"]
 
 
+def test_status_names_the_build_tools_of_the_environment_the_endpoint_runs_in(env, monkeypatch):
+    """Audit round 2 (R-ops-0): an update builds the package with `pip install -e`, and pip fetches its build tools
+    (setuptools 77 or newer, wheel: pyproject.toml) from the package index at every deploy. An install without build
+    isolation needs them in the checkout's own environment, and no read of the server said whether they are there:
+    `remote status` now does, for the environment the endpoint runs in (the same one)."""
+    from importlib import metadata
+
+    ops, key = env
+    real = metadata.version
+
+    def version(name):
+        if name == "wheel":
+            raise metadata.PackageNotFoundError(name)
+        return "80.9.0" if name == "setuptools" else real(name)
+
+    monkeypatch.setattr(metadata, "version", version)
+    assert req(ops, key, "status")["build_tools"] == {"setuptools": "80.9.0", "wheel": None}
+
+
 def test_status_names_the_jobs_an_update_would_wait_for(env, monkeypatch):
     ops, key = env
     now = time.time()
