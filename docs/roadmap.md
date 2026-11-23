@@ -6,6 +6,57 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 23 Nov, 11:10 UTC: the whole system audited and fixed in three rounds; one rule holds in both weeks under the filter the live snipers use; it runs as a 0.2 SOL test
+
+- **The audit (the owner, 22 Nov: "Go through every single thing and find as much as you can to fix or improve").**
+  Round 1: fifteen areas, each read by one auditor and checked by one skeptic against the code and the server's
+  data; 115 findings confirmed (1 high, 22 medium, the rest low), about 105 fixed test-first by thirteen fixers, each
+  branch reviewed by a second reader; 171 commits, deployed 23 Nov 01:05 UTC (3b412e0). Round 2 took what round 1
+  left: the live path, the agents' texts, the tape's disk rule and job records, the docs (about 70 commits). Round 3
+  took what round 2's reviewers left on the path that holds the owner's SOL, and what the smoke tests showed.
+  Deployed 23 Nov 07:10 UTC (9197324).
+- **What was wrong, in one line each.** The owner's own coins, airdrops and hand trades read as the bot's in a dozen
+  places, and a copy at fees no sniper was sent read as the owner's: one rule now everywhere: a buy is the bot's by
+  the fees its snipers pay, or when it stands at most 3 slots right behind a buy of a wallet a sniper of ours follows
+  AND spent exactly that sniper's size. /stop read the wallet once and could stop a sniper whose buy was on its way:
+  it reads twice and looks at the chain. A machine restart left a dead run's snipers armed with nobody watching: the
+  round takes them up. A restarted recorder could cut the tape from 14 days to 6 for good, and its disk rule would
+  have walked it down by itself (the one high finding): both fixed. A refused send kept its sniper out a minute or
+  more: 20 to 35 s now (seen live). The lab counted several buys in one coin as independent, so its lower bounds were
+  too kind. The dashboard showed rules that were dropped. A failed Telegram send printed the bot's token. The agents'
+  idea file was full at 100, and an agent could replace the whole paper test or spend Helius credits without a cap.
+- **The number that was wrong in this record.** "About 100 SOL a day" stood at a place no sender that reacts can take
+  (corrected in the 07:50 section below). Nothing in the audit found a faster way to that place.
+- **The one rule that holds** (labs of 23 Nov; docs/live-recipe.md names each job). Copying the big wallets as before
+  does not hold: at the place our buys land, every one of them lost in the week of 9-16 Nov. One rule holds in both
+  weeks at every landing from 3rd to 5th in line, with the full 0.05 SOL bid charged: **copy a wallet's buys of 2 SOL
+  or more only in coins that are seconds old.** It is no rule by itself (over all 3,049 labeled wallets it loses 0.17
+  SOL a copy); it holds behind three of 46 wallets: Cented, Decu and Yugi.
+- **Under the filter the live snipers really use, it still holds.** OKTech cannot gate on the coin after the wallet's
+  buy, only on our own fill (its ceiling, about 64.6 SOL of market cap). Scored that way (labs
+  20261123-080537-9e473b and -080538-5a8bfc), all three make money in both weeks: +16.5 and +14.1 SOL a week together
+  at 1 SOL a copy, about 2 SOL a day, on about 20 copies a day, with the full 0.05 bid charged where the snipers pay
+  0.0031. The weak spot: Yugi's newest three days are about flat.
+- **What the smoke tests showed** (23 Nov 03:04-03:56, 06:59-07:23, 08:10-09:10 UTC, 0.02 SOL copies). OKTech's
+  ceiling is on our own fill, worked out at OKTech's own SOL price, exact to the SOL; that price is sometimes $200, at
+  any send, and such a send fails for 0.0011 SOL. OKTech copies a followed wallet's send before it knows it fails
+  (both fills of smoke test 3 were copies of a test wallet's failed buys). `platforms: ["pumpfun"]` does not keep a
+  copy to pump.fun's curve. OKTech leaves some copies with no exit; the run sells them at 20 to 25 s. Behind Yugi,
+  OKTech copies his router transactions in his own block: the first admitted copy stood second in line and made
+  +11 % at 12 s.
+- **What the paper leaves out.** A followed wallet's buys in coins it created itself (the lab skips them, OKTech
+  copies them; the run sells such a copy at once and rests that sniper three hours) and copies of sends that fail.
+- **What runs** (the owner, 23 Nov 00:44 UTC: "when everything is down to perfection run it"; at ~09:08 the wallet was
+  left for testing): the rule as a test at 0.2 SOL a copy behind Cented, Decu and Yugi since 09:11 UTC, stopped at
+  0.3 SOL lost or after a day. On paper that is about +0.02 SOL a copy after fees. The 1 SOL day (the ladder's step,
+  stopped at 2 SOL lost) is prepared and waits. docs/live-recipe.md has both entries and every fill.
+- **What it would take to scale, if the test pays.** The same copies at 1 SOL (paper: about 2 SOL a day), then 2 SOL
+  (the ladder's next step; its daily loss cap is the owner's to set). More wallets of this kind (the scout's next
+  question: who else buys coins in their first seconds, and pays at our place).
+- **Open with the owner.** The OpenRouter account is empty since 22 Nov 20:16 UTC, so the server's agents cannot think
+  (add credit at openrouter.ai/settings/credits, then send /credit <dollars>). Yes or no on a sender of our own for the
+  place right behind the big wallets (the 07:50 section). After a test that makes money: bigger copies and their cap.
+
 ## 22 Nov, 07:50 UTC: what the place right behind costs, and how its bot takes it (I605, I608, I609, `sends`)
 
 - **The bot's rule** (the scout, I605). 8r6N8w copies only the first buy of a coin by Cented, Decu or theo side
