@@ -14,13 +14,20 @@ and create-bait: no copied buy stands before those). So each sniper is asked by 
 wallet since then that is still unsold may be its own, whoever sent the failed one.
 """
 
+import copy
+import json
+from pathlib import Path
+
 from tests.chain import Chain, key, noise, sig, swap
 from tests.test_cycle_floor import T0, _run
 from tests.test_oktech import SNIPER_IDS, W6
 
 A, B = SNIPER_IDS
 X = key("coin X")  # the coin a copy buys
-REFUSED = {"InstructionError": [4, {"Custom": 6042}]}  # pump.fun's BuySlippageBelowMinTokensOut: the ceiling's refusal
+# a failed send's error as the wallet's list gives it. The number alone tells no refusal at the ceiling (the two programs
+# number their errors apart): `_at_the_ceiling` is one, read off the program's log as the chain gave it
+REFUSED = {"InstructionError": [4, {"Custom": 6042}]}
+SMOKE = json.loads((Path(__file__).parent / "fixtures" / "buy_limits_23nov.json").read_text())
 
 
 class WalletChain(Chain):
@@ -57,6 +64,16 @@ class WalletChain(Chain):
 def _refused(name: str, mint: str = X) -> dict:
     """A copy the chain refused: it paid its fee and moved nothing."""
     return swap(name, W6, mint, tokens=1_000_000, sol=1.0, native=True, priority=0.001, err=REFUSED)
+
+
+def _at_the_ceiling(name: str, prefix: str = "4hC1n7oF") -> dict:
+    """A real refusal at the market-cap ceiling (the sniper wallet's buy of 23 Nov 03:17 on pump.fun's curve, 6042:
+    tests/fixtures/buy_limits_23nov.json) under a signature of its own: the program's log says what the buy would have
+    got against its own least coins."""
+    (tx,) = [tx for s, tx in SMOKE["txs"].items() if s.startswith(prefix)]
+    tx = copy.deepcopy(tx)
+    tx["transaction"]["signatures"] = [sig(name)]
+    return tx
 
 
 def _copy(name: str, mint: str = X) -> dict:
@@ -474,8 +491,7 @@ def test_a_sniper_whose_sends_keep_failing_rests_instead_of_burning_a_fee_a_minu
     the moment of their launch, which OKTech copies before they fail), and the runner armed it again after every one:
     0.0011 SOL a minute for nothing, about 0.07 an hour. After FAIL_STREAK_MAX sends in a row that bought nothing, each
     within FAIL_STREAK_FAST_SECS of its start, the sniper rests (FAIL_STREAK_REST_SECS) and the run says why; the
-    other sniper is untouched. (Yugi's refusals at the ceiling that day came 4 to 20 minutes after each start: none
-    of them would rest him.)"""
+    other sniper is untouched. (A refusal at the ceiling never counts: the test after the next.)"""
     from snipetech import service as S
 
     chain = WalletChain()
@@ -504,3 +520,41 @@ def test_a_fill_or_a_slow_failure_breaks_the_streak(monkeypatch):
                        minutes=int(sends[-1] - T0) // 60 + 2)  # fmt: skip
     assert len(_starts(client, A, T0 + 100)) == S.FAIL_STREAK_MAX
     assert not [e for e in rep["events"] if "rests until" in e]
+
+
+def test_refusals_at_the_ceiling_never_rest_a_sniper_however_fast_they_come(monkeypatch):
+    """A refusal at the market-cap ceiling is the rule's own cost: the paper charges it at every such moment and copies
+    on after it (lab.REFUSED_SEND_SOL). Yugi's came three in four minutes on 23 Nov (08:44:55, 08:47:38, 08:48:38): a
+    streak of them would have rested his sniper half an hour while the paper copied on. Five in a row, each within a
+    minute of the sniper's start, arm it again every time, and nothing rests."""
+    from snipetech import service as S
+
+    chain = WalletChain()
+    sends = [T0 + 100, T0 + 160, T0 + 220, T0 + 280, T0 + 340]
+    for k, at in enumerate(sends):
+        chain.at(at, _at_the_ceiling(f"ceiling{k}"))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: sends}), minutes=8)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == len(sends) > S.FAIL_STREAK_MAX, [t - T0 for t in again]
+    assert not [e for e in rep["events"] if "rests until" in e], rep["events"]
+    lines = _lines(rep, A)
+    assert len(lines) == len(sends) and all("refused at its market-cap ceiling" in e for e in lines), lines
+
+
+def test_a_refusal_between_failures_of_another_kind_neither_adds_to_their_streak_nor_ends_it(monkeypatch):
+    """23 Nov, Cented's sniper: copies of his buys in pools quoted in tokenized Nvidia failed (6009) with a refusal at
+    the ceiling between them (16:54:37, 16:57:34, 16:59:08). The failures no paper prices are what the guard is for:
+    FAIL_STREAK_MAX of them, refusals between them, still rest the sniper."""
+    from snipetech import service as S
+
+    chain = WalletChain()
+    kinds = ["other", "ceiling", "other", "ceiling", "other"]
+    sends = [T0 + 100 + 60 * k for k in range(len(kinds))]
+    for k, (kind, at) in enumerate(zip(kinds, sends, strict=True)):
+        tx = _refused(f"other{k}", mint=key(f"coin {k}")) if kind == "other" else _at_the_ceiling(f"ceiling{k}")
+        chain.at(at, tx)
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: sends}), minutes=8)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == len(kinds) - 1, [t - T0 for t in again]  # all but after the third failure of the other kind
+    rest = [e for e in rep["events"] if "rests until" in e and A[-6:] in e]
+    assert rest and f"{S.FAIL_STREAK_MAX} sends in a row bought nothing" in rest[0], rep["events"]

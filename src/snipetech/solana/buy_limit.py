@@ -258,3 +258,14 @@ def tx_limit(tx: dict | None, wallet: str) -> BuyLimit | None:
     if lim is None or not lim.exact_in:
         return lim
     return replace(lim, would_get=refused_at(tx, lim.tokens))
+
+
+def refused_on_limit(tx: dict | None, wallet: str) -> bool:
+    """Whether `tx` is `wallet`'s buy that the program refused on the buy's own price limit: the market-cap ceiling
+    OKTech makes of a copy sniper's maxMcapUsd (`tx_limit` reads it and what the refused buy would have got). Told by
+    the program's log against the buy's own least coins, never by the error's number: the two programs number their
+    errors apart (6040 is PumpSwap's refusal on the least coins and pump.fun's "not enough SOL to cover rent"; 6042 is
+    pump.fun's refusal and PumpSwap's "only pump pools in mayhem mode"). False for every other send, landed or failed,
+    and for a transaction the node did not serve."""
+    lim = tx_limit(tx, wallet)
+    return lim is not None and lim.would_get is not None

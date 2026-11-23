@@ -1722,9 +1722,12 @@ class Service:
             else:
                 armed_slot[i] = slot_seen
 
-        async def failed_sends() -> dict[str, float]:
+        async def failed_sends() -> dict[str, tuple[float, bool]]:
             """The snipers OKTech reads spent whose shot the chain says bought nothing, each with how many seconds ago
-            a transaction of the wallet's last failed. The wallet's newest signatures are read as /stop reads them
+            a transaction of the wallet's last failed, and whether every failed transaction since its start was a buy
+            the program refused on its own price limit (`buy_limit.refused_on_limit`: the market-cap ceiling, the
+            rule's own cost that the paper charges and copies on after; such a send is no part of a streak, below; a
+            transaction that cannot be read in time is not one). The wallet's newest signatures are read as /stop reads them
             (operator/commands._landed_buys, the one reader of that list: the buys no sale followed, and the landed
             transactions the node does not serve yet), once a tick, each transaction once a run. A sniper is in the
             answer when a transaction of the wallet's failed in a slot after its last start (`armed_slot`), and
@@ -1749,7 +1752,20 @@ class Service:
             reader = _ListRead(self.rpc, chain_txs)
             unsold: list[tuple[str, str]] = []
             unread: list[str] = []
-            out: dict[str, float] = {}
+            out: dict[str, tuple[float, bool]] = {}
+
+            async def all_refused(sigs: list[str]) -> bool:
+                """Whether each of these failed transactions of the wallet is a buy refused on its own price limit;
+                False when one is not served in FAILED_LOOK_SECS (each is read once while the list holds it)."""
+                from .solana.buy_limit import refused_on_limit
+
+                try:
+                    got = await asyncio.wait_for(asyncio.gather(*(reader.get_transaction(s) for s in sigs)),
+                                                 FAILED_LOOK_SECS)  # fmt: skip
+                except Exception:  # noqa: BLE001 - not read in time: not told a refusal (it counts, as before)
+                    return False
+                return bool(got) and all(refused_on_limit(tx, address) for tx in got)
+
             try:
                 from .operator.commands import CHAIN_LOOK_SIGS, _landed_buys
 
@@ -1778,7 +1794,7 @@ class Service:
                         continue
                     if any(slot_of.get(sig, start) >= start for sig in maybe_held):
                         continue
-                    failed = [(slot, int(when)) for _sig, slot, when, err in rows if slot > start and err is not None]
+                    failed = [(slot, int(when), s) for s, slot, when, err in rows if slot > start and err is not None]
                     if not failed:
                         continue
                     # how far past the newest of them the node that showed nothing held had come, in seconds
@@ -1789,7 +1805,7 @@ class Service:
                     # that, and the failed one need not be one of them (the owner's own, a duplicate sale's)
                     if timed[0][1] + (coins_slot - timed[0][0]) * slot_secs < spent_at[i]:
                         continue
-                    out[i] = max(0.0, time.time() - max(failed)[1])
+                    out[i] = (max(0.0, time.time() - max(failed)[1]), await all_refused([f[2] for f in failed]))
             except Exception as exc:  # noqa: BLE001 - nothing told: the 30 s wait, as before
                 if not look_said:
                     look_said = True
@@ -3143,7 +3159,8 @@ class Service:
                     tasks_read_at = now
                     await read_spent(now)
                 guarded = False
-                freed: dict[str, float] | None = None  # this tick's look at the chain (`failed_sends`), asked once
+                # this tick's look at the chain (`failed_sends`), asked once
+                freed: dict[str, tuple[float, bool]] | None = None
                 for i in ids:
                     if rests.get(i, 0.0) > now:  # resting (the kinds of copy): not re-armed until its rest is over
                         continue
@@ -3158,18 +3175,21 @@ class Service:
                     # or sooner, from the reading after the one that saw it spent, when the chain says that a send
                     # failed since its start and nothing bought since then is unsold (23 Nov: copies refused at the
                     # ceiling; anything else on the chain, or no reading of it, keeps the wait above)
-                    failed_ago = None
+                    failed_ago, refused = None, False
                     if (not (bought or since >= rearm_after or spent)
                             and now - spent_at.get(i, now) >= FAILED_SEND_SETTLE_SECS):  # fmt: skip
                         if freed is None:
                             freed = await failed_sends()
-                        failed_ago = freed.get(i)
+                        failed_ago, refused = freed.get(i, (None, False))
                     if bought or since >= rearm_after or spent or failed_ago is not None:
                         # a send that bought nothing soon after its start adds to the sniper's streak; anything else
-                        # ends it. FAIL_STREAK_MAX of them in a row and it rests instead (FAIL_STREAK_*)
+                        # ends it, but a refusal at the ceiling neither adds to it nor ends it: the rule's own cost,
+                        # which the paper charges at every such moment and copies on after (23 Nov: Yugi's came three
+                        # in four minutes). FAIL_STREAK_MAX of them in a row and it rests instead (FAIL_STREAK_*)
                         nothing = (spent or failed_ago is not None) and not bought
-                        streaks[i] = streaks.get(i, 0) + 1 if nothing and since < FAIL_STREAK_FAST_SECS else 0
-                        if streaks[i] >= FAIL_STREAK_MAX:
+                        if not (nothing and refused):
+                            streaks[i] = streaks.get(i, 0) + 1 if nothing and since < FAIL_STREAK_FAST_SECS else 0
+                        if streaks.get(i, 0) >= FAIL_STREAK_MAX:
                             n = streak_rests.get(i, 0)
                             until = now + min(FAIL_STREAK_REST_SECS * 2**n, FAIL_STREAK_REST_MAX)
                             streak_rests[i], streaks[i] = n + 1, 0
@@ -3212,8 +3232,9 @@ class Service:
                                        "bought nothing)") if spent else ""  # fmt: skip
                             if failed_ago is not None:
                                 why_now = (f": OKTech has it spent with nothing held, and a failed send on chain "
-                                           f"{failed_ago:.0f} s ago with no buy since its start (a send that bought "
-                                           "nothing)")  # fmt: skip
+                                           f"{failed_ago:.0f} s ago"
+                                           f"{' (refused at its market-cap ceiling)' if refused else ''} with no buy "
+                                           "since its start (a send that bought nothing)")  # fmt: skip
                             log(f"re-armed {tag(i)} after {since:.0f}s (fills so far {fills}){why_now}: "
                                 f"{ans.get('task', {}).get('status', ans)}")  # fmt: skip
                         except Exception as exc:

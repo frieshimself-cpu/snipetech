@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from snipetech.solana.buy_limit import ix_limit, mcap_sol, meta_limit, tx_limit
+from snipetech.solana.buy_limit import ix_limit, mcap_sol, meta_limit, refused_on_limit, tx_limit
 from snipetech.solana.programs import PUMP_AMM_PROGRAM, PUMP_PROGRAM
 from snipetech.solana.txmeta import extract_tx_meta
 
@@ -142,3 +142,25 @@ def test_two_buys_of_the_wallet_with_different_limits_are_not_told_apart():
     one.pump_ixs += other.pump_ixs  # a transaction that carried both: which limit a fill had is not known
     assert meta_limit(one, ME) is None
     assert meta_limit(one, ME, "8LXGpgYJL7JkiWcQf6HuJNvnjuo6w2cB1YtHqkU1HLYp").mcap_sol == pytest.approx(23.0)
+
+
+QUOTE = json.loads((FIXTURES / "quote_mint_23nov.json").read_text())
+
+
+def test_a_refusal_on_the_buys_own_limit_is_told_from_every_other_failed_send():
+    """The runner rests a sniper after a streak of sends that bought nothing (service.FAIL_STREAK_*), but a refusal at
+    the market-cap ceiling is the rule's own cost, which the paper charges at every such moment and copies on after
+    (lab.REFUSED_SEND_SOL): it must be told from the sends no paper prices. By the program's own log against the buy's
+    own least coins, never by the error's number alone: the two programs number their errors apart (6040 is
+    PumpSwap's refusal on the least coins and pump.fun's "not enough SOL to cover rent"; 6042 is pump.fun's refusal and
+    PumpSwap's "only pump pools in mayhem mode")."""
+    assert refused_on_limit(smoke("4hC1n7oF"), ME) and refused_on_limit(smoke("4BUCDA8G"), ME)  # the curve's, 6042
+    assert refused_on_limit(smoke("3Tx3daSi"), ME)  # PumpSwap's, 6040
+    assert not refused_on_limit(smoke("gXv9uz3u"), ME)  # a buy that landed
+    assert not refused_on_limit(smoke("4YtcQUzh"), ME)  # a buy through two pools that failed on a program id
+    assert not refused_on_limit(smoke("5ePdm8Lk"), ME)  # a sale that failed: its log has the two sides too
+    ((sig, quoted),) = QUOTE["txs"].items()  # 16:33:01: a copy of a buy in a pool quoted in tokenized Nvidia (6009)
+    assert sig.startswith("2TicE4GD") and quoted["meta"]["err"] == {"InstructionError": [4, {"Custom": 6009}]}
+    assert not refused_on_limit(quoted, QUOTE["wallet"])
+    assert not refused_on_limit(smoke("4hC1n7oF"), "SomeoneElse1111111111111111111111111111111")  # not our send
+    assert not refused_on_limit(None, ME)  # a transaction the node did not serve
