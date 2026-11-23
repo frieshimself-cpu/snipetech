@@ -380,7 +380,7 @@ def test_the_runs_sale_of_its_part_goes_once_the_tape_has_the_owners_own_sale(mo
         if now < T0 + 102 or (gone["at"] is not None and now >= gone["at"]):
             return []
         if T0 + 106 <= now < T0 + 115:
-            return [{"mint": OURS, "amount": 2.0, "raw": 2_000_000, "value_sol": 2.0, "priced": True}]
+            return [{"mint": OURS, "amount": 2.2, "raw": 2_200_000, "value_sol": 2.2, "priced": True}]
         return [_coin(OURS, 1.0)]
 
     def sweep_answer(mint):
@@ -390,9 +390,11 @@ def test_the_runs_sale_of_its_part_goes_once_the_tape_has_the_owners_own_sale(mo
     def sol(now):
         return 10.0 if now < T0 + 100 else (9.0 if now < T0 + 106 else (8.0 if now < T0 + 115 else 8.9))
 
-    their_sale = replace(_hand(T0 + 115, mint=OURS, sol=0.9), is_buy=False)
-    _run(monkeypatch, sol, coins=coins, payload=PAY, tape=[_copy(T0 + 100), _hand(T0 + 106, mint=OURS, sol=1.0),
-                                                            (T0 + 135, their_sale)],
+    # A4 (audit round 2): the owner's 1,200,000 are another amount than the copy's 1,000,000, as real buys are: a sale
+    # of exactly one buy's tokens is that sniper's exit, whatever it paid
+    their_buy = replace(_hand(T0 + 106, mint=OURS, sol=1.0), base=1_200_000)
+    their_sale = replace(_hand(T0 + 115, mint=OURS, sol=0.9), is_buy=False, base=1_200_000)
+    _run(monkeypatch, sol, coins=coins, payload=PAY, tape=[_copy(T0 + 100), their_buy, (T0 + 135, their_sale)],
          sweeps=sweeps, sold_amounts=sold, sweep_answer=sweep_answer, sweep_after=20, minutes=4)  # fmt: skip
     assert sold == [(OURS, None)] and sweeps[0][1] >= T0 + 135, (sold, [t - T0 for _m, t in sweeps])
 
@@ -493,18 +495,28 @@ def _owners_coin_copy_sold(now):
     return [_coin(OWN, 3.0)]
 
 
-@pytest.mark.parametrize("payload,sale", [(FEES, _oktech_sale(T0 + 112, mint=OWN)),
-                                          (PAY, (T0 + 127, _oktech_sale(T0 + 112, mint=OWN)))],
+def _exit_in_two_parts(ts, mint=OWN):
+    """OKTech's exit of a 1,000,000 copy in two sales of the same block (a staged exit): neither is a whole buy's
+    tokens."""
+    from dataclasses import replace
+
+    return [_oktech_sale(ts, mint=mint, base=600_000), replace(_oktech_sale(ts, mint=mint, base=400_000), pos=1)]
+
+
+# A4 (audit round 2): the exit the tape reads as the owner's is now one in two parts: a sale of exactly one buy's
+# tokens is its sniper's exit whatever it paid, and the tape reads it right
+@pytest.mark.parametrize("payload,sale", [(FEES, _exit_in_two_parts(T0 + 112)),
+                                          (PAY, [(T0 + 127, _oktech_sale(T0 + 112, mint=OWN))])],
                          ids=["the tape reads its exit as the owner's", "the tape has its exit 15 s late"])  # fmt: skip
 def test_the_runs_sale_in_the_owners_coin_sells_none_of_theirs_when_the_tape_is_wrong(monkeypatch, payload, sale):
     """Review of the runner fixes (22 Nov), runner finding 1: the run's own sale of its tokens in a coin of the owner's
     sells as many as the tape says the run holds. OKTech's exit had sold them at 112 s, but the tape either read that
-    sale as the owner's (it paid fees the payload does not name: why a hold on the tape ends at RUN_HOLD_MAX_SECS) or
-    had it late, and past --sweep-after 20 the run sold 1,000,000 of the owner's own. It sells no more than the wallet
-    holds beyond the owner's tokens (as many as when the coin was first known as theirs, and their buys since)."""
+    sale as the owner's (in parts, at fees the payload does not name: why a hold on the tape ends at `run_hold_secs`)
+    or had it late, and past --sweep-after 20 the run sold 1,000,000 of the owner's own. It sells no more than the
+    wallet holds beyond the owner's tokens (as many as when the coin was first known as theirs, and their buys since)."""
     sold = []
     _run(monkeypatch, lambda now: 7.0 if now < T0 + 100 else (4.0 if now < T0 + 112 else 6.9),
-         coins=_owners_coin_copy_sold, payload=payload, tape=_owners_coin_tape() + [sale], floor=None, max_loss=5.0,
+         coins=_owners_coin_copy_sold, payload=payload, tape=_owners_coin_tape() + sale, floor=None, max_loss=5.0,
          sold_amounts=sold, sweep_after=20, minutes=4)  # fmt: skip
     assert sold == [], f"the run sold the owner's tokens: {sold}"
 
@@ -711,3 +723,60 @@ def test_a_short_exit_timer_keeps_the_hold_at_five_minutes():
     # with --sweep-after, long enough for the run's own sale too, as before (two tries of it)
     assert S.run_hold_secs([FEES], 320) == 320 + 2 * S.SWEEP_RETRY_SECS
     assert S.run_hold_secs([long], 45) == 600 + S.RUN_HOLD_MARGIN_SECS
+
+
+# -- round 2 of the audit (23 Nov), A4: an exit at fees the payload does not name still closes the run's tokens --------
+# FEES names no sale fees: OKTech's exit at the buy's priority and a 0.002 tip (`_oktech_sale`) is none of its marks.
+
+
+def test_an_exit_at_fees_no_payload_names_still_hands_the_owners_rest_to_them(monkeypatch):
+    """A4 (the runner review's R-runner-0): the owner bought into a copy's coin and OKTech's exit sold the copy at fees
+    the payload does not name. The tape read that sale as the owner's, so the run's tokens stayed unsold on it for
+    good: past --sweep-after the run's own sale sold the owner's holding, and the coin was never handed to them (no
+    re-arm while they kept it). A sale of exactly the tokens one buy of the run's bought is that sniper's exit,
+    whatever it paid (every exit of 20-22 Nov sold its buy's tokens to the unit)."""
+    sold = []
+    rep, client = _run(monkeypatch, _sol_owner_keeps, coins=_owner_keeps, payload=FEES, tape=_owner_keeps_tape(),
+                       sold_amounts=sold, sweep_after=20, rearm_after=60, minutes=4)  # fmt: skip
+    assert sold == [], f"the run sold the owner's tokens: {sold}"
+    assert rep["owner_coins"] == [OURS] and rep["left_running"] == [] and rep["fills"] == 1
+    assert _starts(client, T0 + 112) and not _starts(client, T0 + 100, T0 + 112)
+
+
+def test_an_exit_at_fees_no_payload_names_counts_in_the_runs_own_result(monkeypatch):
+    """A4: read as the owner's sale, the exit left the copy unsold on the tape, and the run's own result counted its
+    tokens at the tape's last price for the rest of the run: here a copy sold for 0.9 SOL read as lost once the coin
+    fell, past a 0.5 SOL max loss, and ended the run on a loss it never made."""
+    from dataclasses import replace
+
+    crash = replace(_copy(T0 + 130, sol=0.001), sig="crash", user="SomeoneElse", is_buy=False, pos=7)
+
+    def coins(now):
+        return [_coin(OURS, 1.0)] if T0 + 102 <= now < T0 + 112 else []
+
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else (9.0 if now < T0 + 112 else 9.9),
+                        coins=coins, payload=FEES, tape=[_copy(T0 + 100), _oktech_sale(T0 + 112), crash], floor=None,
+                        max_loss=0.5, minutes=5)  # fmt: skip
+    assert "EMERGENCY" not in rep["reason"] and rep["reason"].startswith("time limit"), rep["reason"]
+
+
+def test_the_owners_hand_sale_of_another_amount_is_still_theirs(monkeypatch):
+    """A4 turns no hand sale of the owner's into an exit of the run's: only a sale of exactly a buy's tokens is one.
+    The owner sells 600,000 of their own 1,000,000 by hand while the run's copy is held: the run's own sale still
+    sells its own 1,000,000, and no more."""
+    from dataclasses import replace
+
+    sold, sweeps = [], []
+    hand_sale = replace(_hand(T0 + 115, mint=OURS, sol=0.5), sig="handsale", is_buy=False, base=600_000)
+
+    def coins(now):
+        if now < T0 + 102:
+            return []
+        raw = 1_000_000 if now < T0 + 106 else (2_000_000 if now < T0 + 115 else 1_400_000)
+        raw -= 1_000_000 if sweeps and now > sweeps[0][1] else 0
+        return [{"mint": OURS, "amount": raw / 1e6, "raw": raw, "value_sol": raw / 1e6, "priced": True}]
+
+    _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else (9.0 if now < T0 + 106 else 8.0), coins=coins,
+         payload=FEES, tape=[_copy(T0 + 100), _hand(T0 + 106, mint=OURS, sol=1.0), hand_sale], sweeps=sweeps,
+         sold_amounts=sold, sweep_after=20, minutes=4)  # fmt: skip
+    assert sold[:1] == [(OURS, 1_000_000)], sold

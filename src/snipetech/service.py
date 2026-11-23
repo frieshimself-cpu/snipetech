@@ -1455,9 +1455,10 @@ class Service:
         keep a sniper running, and the floor counts each at its worth when first known as theirs and moves with it
         when it leaves (`owner_coins` in the report). A coin of the run's the owner bought into by hand is sold by the
         run only for the run's own tokens of it, and is theirs once the tape shows those all sold and their own buys
-        explain the rest (OWNER_REST_READINGS). A copy into a coin of the owner's leaves it theirs, but while the tape
-        says the run holds tokens of it (`run_hold_secs` at most: RUN_HOLD_MAX_SECS, the snipers' longest exit timer
-        and a margin, or --sweep-after and two tries of its sale, whichever is longest) no
+        explain the rest (OWNER_REST_READINGS); a sale of exactly the tokens one buy of the run's bought is that
+        sniper's exit, whatever fees it paid (`run_tokens`). A copy into a coin of the owner's leaves it theirs, but
+        while the tape says the run holds tokens of it (`run_hold_secs` at most: RUN_HOLD_MAX_SECS, the snipers'
+        longest exit timer and a margin, or --sweep-after and two tries of its sale, whichever is longest) no
         sniper is re-armed or stopped, at the end and on the way out too, and past --sweep-after the run sells its own
         tokens of it, never the owner's (`run_parts`; no more than the wallet holds beyond theirs).
         A coin nobody can tell yet is held as the run's but never sold by it.
@@ -2141,11 +2142,16 @@ class Service:
             """By the wallet's trades on the tape since the run's start: the run's tokens of each coin (its buys less
             its sales; a sale at the owner's own fees is theirs), each coin's last buy of the run's, what the run's
             trades came to in SOL, and the owner's own tokens of each coin bought since then (their buys, less what of
-            each sale the run's tokens do not explain)."""
+            each sale the run's tokens do not explain). A sale of exactly the tokens one buy of the run's still holds
+            is that sniper's exit, whatever it paid: every exit of 20-22 Nov sold its buy's tokens to the unit, and
+            read as the owner's by fees the payload does not name it left the run's tokens unsold on the tape for
+            good (23 Nov audit: the run's sale then sold the owner's holding of a coin they had bought into, the coin
+            was never handed to them, and the run's own result counted a sold copy at the tape's last price)."""
             from .measure.ours import _paid
 
             trades = self.store.trades_for_user(address, int(t0), fees=True)
             left: dict[str, float] = {}
+            lots: dict[str, list[float]] = {}  # each buy of the run's still unsold, oldest first: its tokens left
             owner: dict[str, float] = {}
             last_buy: dict[str, float] = {}
             total = 0.0
@@ -2157,6 +2163,7 @@ class Service:
                         owner[t.mint] = owner.get(t.mint, 0.0) + float(t.base)
                         continue
                     left[t.mint] = left.get(t.mint, 0.0) + float(t.base)
+                    lots.setdefault(t.mint, []).append(float(t.base))
                     last_buy[t.mint] = float(t.ts)
                     total -= (int(t.quote) + int(t.fee)) / 1e9 + fees
                     continue
@@ -2164,11 +2171,23 @@ class Service:
                 if n <= 0:
                     continue
                 theirs = bool(run_marks["sell"]) and _paid(prio, tip, run_marks["sell"]) is False  # the owner's sale
+                open_lots = lots.get(t.mint, [])
+                exact = next((k for k, lot in enumerate(open_lots) if abs(lot - n) < 1), None) if theirs else None
+                if exact is not None:  # exactly one buy's tokens: that sniper's exit, at fees the payload does not name
+                    theirs = False
                 if left.get(t.mint, 0.0) > 0 and not theirs:
                     take = min(n, left[t.mint])
                     total += (int(t.quote) - int(t.fee)) / 1e9 * take / n - fees
                     left[t.mint] -= take
                     n -= take
+                    if exact is not None:
+                        open_lots.pop(exact)
+                    while exact is None and take > 0 and open_lots:  # the lots it sold, oldest first
+                        sold_of = min(take, open_lots[0])
+                        take -= sold_of
+                        open_lots[0] -= sold_of
+                        if open_lots[0] < 1:
+                            open_lots.pop(0)
                 if n > 0 and t.mint in owner:  # what the run's tokens do not explain came out of the owner's
                     owner[t.mint] = max(0.0, owner[t.mint] - n)
             return left, last_buy, total, owner
