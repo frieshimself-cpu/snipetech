@@ -166,6 +166,16 @@ def test_a_run_that_died_with_nothing_armed_is_told_once(env):
     assert "None of its snipers is armed" in said and env.svc.stops == []
 
 
+def test_a_run_that_was_told_to_stop_is_not_said_to_have_ended_on_an_error():
+    """23 Nov: a runner ended with `remote kill` (or by its job's limit) left exit code -15 behind, 143 since its
+    command ends on a plain line; the owner's words called both "ended on an error". It was told to stop."""
+    for code in (143, -15):
+        words = L._run_words("20261123-030427-f4f265", {"started": 1795403067, "kind": "cycle", "exit_code": code})
+        assert "was told to stop (its time limit, a kill or a restart)" in words and "error" not in words
+    assert "ended on an error (exit 2)" in L._run_words("j", {"started": 1, "kind": "cycle", "exit_code": 2})
+    assert L._run_words("j", {"started": 1, "kind": "cycle", "exit_code": 0}).endswith(" ended.")
+
+
 def test_what_is_not_a_session_s_live_run_over_is_never_touched(env):
     """The round's own /test and automatic test close their own (live_test.finish_ended); any other job is no live
     run."""

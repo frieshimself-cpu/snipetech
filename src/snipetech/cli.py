@@ -2364,35 +2364,41 @@ async def _run(args, cfg: Config) -> int:
             if args.action == "cycle":
                 if not (args.id and args.address and (args.floor is not None or args.max_loss is not None)):
                     raise SystemExit("cycle: give --id (one or more), --address and --floor or --max-loss")
-                rep = await svc.oktech_cycle(
-                    args.id,
-                    args.address,
-                    args.floor,
-                    args.max_minutes,
-                    args.max_fills,
-                    args.rearm_after,
-                    args.ignore_mint,
-                    sweep_after=args.sweep_after,
-                    place_stop=args.place_stop,
-                    place_max=args.place_max,
-                    max_loss=args.max_loss,
-                    wait_for_sol=args.wait_for_sol,
-                    wait_minutes=args.wait_minutes,
-                    keep_plain=args.keep_plain,
-                )
+                try:
+                    rep = await svc.oktech_cycle(
+                        args.id,
+                        args.address,
+                        args.floor,
+                        args.max_minutes,
+                        args.max_fills,
+                        args.rearm_after,
+                        args.ignore_mint,
+                        sweep_after=args.sweep_after,
+                        place_stop=args.place_stop,
+                        place_max=args.place_max,
+                        max_loss=args.max_loss,
+                        wait_for_sol=args.wait_for_sol,
+                        wait_minutes=args.wait_minutes,
+                        keep_plain=args.keep_plain,
+                    )
+                except asyncio.CancelledError:
+                    return _told_to_stop()
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
             if args.action == "guard":
                 if not (args.id and args.address and args.floor is not None):
                     raise SystemExit("guard: give --id (one or more), --address and --floor")
-                rep = await svc.oktech_guard(
-                    args.id,
-                    args.address,
-                    args.floor,
-                    args.max_minutes,
-                    start=not args.watch_only,
-                    allow_uncapped=args.allow_uncapped,
-                )
+                try:
+                    rep = await svc.oktech_guard(
+                        args.id,
+                        args.address,
+                        args.floor,
+                        args.max_minutes,
+                        start=not args.watch_only,
+                        allow_uncapped=args.allow_uncapped,
+                    )
+                except asyncio.CancelledError:
+                    return _told_to_stop()
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
             if args.action == "docs":
@@ -3125,6 +3131,19 @@ def _profiled(args, argv: list[str] | None) -> int:
             (data / "jobs" / f"profile-{args.cmd}-{int(t0)}.log").write_text(text.getvalue())
         except Exception as exc:  # noqa: BLE001
             print(f"profile not written: {exc}", file=sys.stderr)
+
+
+TOLD_TO_STOP = 143  # the shell's code for a job its SIGTERM ended (128 + 15)
+
+
+def _told_to_stop() -> int:
+    """The end of `oktech cycle` or `oktech guard` after a stop signal (its job's limit, a kill, a restart). The run
+    has said what it stopped and what it left running before it raised the cancellation (service.oktech_cycle,
+    oktech_guard); the command ends on one plain line and the shell's code, not on a traceback (23 Nov: a killed
+    runner's log ended in asyncio.CancelledError and read as a crash)."""
+    print("ended: told to stop (the job's time limit, a kill or a restart); the lines above say what was stopped "
+          "and what was left running", flush=True)  # fmt: skip
+    return TOLD_TO_STOP
 
 
 def main(argv: list[str] | None = None) -> int:

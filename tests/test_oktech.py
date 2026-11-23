@@ -490,6 +490,32 @@ def test_cycle_cli_hands_sweep_after_to_the_cycler(tmp_path, monkeypatch, capsys
     capsys.readouterr()
 
 
+def test_a_run_told_to_stop_ends_on_a_plain_line_and_the_shells_code_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """23 Nov smoke test: `remote kill` of a runner stopped both snipers ("on the way out: nothing left armed") and the
+    job then ended on a Python traceback (asyncio.CancelledError out of the cycler, exit -15): it read as a crash and
+    the job's log had no last line. The runner and the guard say what they stopped and raise the cancellation, as
+    before; the command ends on one plain line and 143, the shell's code for a job that was told to stop."""
+    import asyncio
+
+    from snipetech import cli
+    from snipetech.service import Service
+
+    async def told_to_stop(self, *a, **kw):
+        print("  … 03:11:08 on the way out: nothing left armed")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Service, "oktech_cycle", told_to_stop)
+    monkeypatch.setattr(Service, "oktech_guard", told_to_stop)
+    db = ["--db", str(tmp_path / "snipetech.db")]
+    assert cli.main([*db, "oktech", "cycle", "--id", "a", "--address", W6, "--floor", "0.1"]) == 143
+    out = capsys.readouterr().out
+    assert "on the way out: nothing left armed" in out and out.rstrip().splitlines()[-1].startswith(
+        "ended: told to stop"
+    )
+    assert cli.main([*db, "oktech", "guard", "--id", "a", "--address", W6, "--floor", "0.1"]) == 143
+    assert capsys.readouterr().out.rstrip().splitlines()[-1].startswith("ended: told to stop")
+
+
 def test_copylist_cli_accepts_fee_test_flags():
     from snipetech.cli import build_parser
 

@@ -123,11 +123,18 @@ def _hm(ts) -> str:
         return "an unknown time"
 
 
+# How a run that was told to stop ends: 143 since its command ends on a plain line (cli._told_to_stop), -15 before
+# (the job's record of a process its SIGTERM ended). Neither is an error (23 Nov smoke test).
+TOLD_TO_STOP_CODES = (143, -15)
+
+
 def _run_words(jid: str, r: dict) -> str:
     """The run and how it ended, in the owner's words."""
     code = r.get("exit_code")
     how = ("died before its own end: its process is gone (the machine restarted, or it was killed)" if code is None
-           else "ended" if code == 0 else f"ended on an error (exit {code})")  # fmt: skip
+           else "ended" if code == 0
+           else "was told to stop (its time limit, a kill or a restart)" if code in TOLD_TO_STOP_CODES
+           else f"ended on an error (exit {code})")  # fmt: skip
     return f"The live run started at {_hm(r.get('started'))} (oktech {r.get('kind')}, job {jid}) {how}."
 
 
