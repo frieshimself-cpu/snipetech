@@ -113,9 +113,12 @@ the lab), and `lab.secs.size`, the size score's share of the lab's time, which m
 
 **Beside the verdict: the score at the size that pays (21 Nov, the audit of 22 Nov).** The verdict is scored at the
 book's 0.2 SOL copy with no bid, where nothing pays. So each measured wallet also gets a score at 5 SOL a copy with
-a 0.2 SOL bid, only coins under 100 SOL market cap at the wallet's buy, the 12 s hold, 3rd in line (`[qualify]
-size_*`; `size_position` "+2x": the place that bid has bought live, 2.1 buyers behind on average on 21-22 Nov; it
-stood 2nd in line until 23 Nov). Since the audit of 22 Nov it takes every buy of the wallet of 0.95 SOL or more,
+a 0.2 SOL bid, a 100 SOL ceiling on our own fill (since 23 Nov, as a copy sniper's maxMcapUsd holds it: a send
+that would fill above it is a refused send charged its fee; until then the ceiling was held on the market cap at
+the wallet's buy, which no OKTech setting does; a ceiling under a coin's 28 SOL start is not used and the record
+says so), the 12 s hold, 3rd in line (`[qualify] size_*`; `size_position` "+2x": the place that bid has bought live,
+2.1 buyers behind on average on 21-22 Nov; it stood 2nd in line until 23 Nov). A wallet is named as paying at size
+on the copies that traded, the refused sends left out of that count (`size_pass` says how many were refused). Since the audit of 22 Nov it takes every buy of the wallet of 0.95 SOL or more,
 its repeats in a coin too, at that fixed floor: what a copy sniper with that minimum copies. Before, it took first
 buys only, above each wallet's own floor, and left out most of a big wallet's copies. The score is said, never a
 gate. The run's answer names a wallet under `size_pass` when the score's lower bound is above 0 on as many copies as

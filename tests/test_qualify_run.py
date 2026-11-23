@@ -1491,9 +1491,12 @@ def test_a_run_stops_at_its_next_chunk_while_a_deploy_waits_for_it(tmp_path, mon
         assert calls == [["W0", "W1"]]  # the first chunk always runs
         assert out["evaluated"] == 2 and out["left_due"] == 3 and out["chunks"] == 1
         assert out["stopped"] == "a deploy waits for this run"
+        # review of c68b499: the stop is no finished lab, so the next run (on the new code) is not held back by the
+        # qualify interval: it finds the lab's last mark as it was before this run
+        assert not (st.coverage(R.LAST_LAB_KEY) or {}).get("ts")
         (data / ops.DEPLOY_WAITS).write_text(_json.dumps({"since": t - 4000, "asked": t - 600}))  # stale: holds nothing
         calls.clear()
-        out = run_qualify(svc, svc.cfg, data / "jobs", NOW + 1, early=True,  # the next run, past the lab interval
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW + 1,  # the next run: no interval holds it
                           lab_runner=lambda ws, pos: calls.append(list(ws)) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
         assert calls == [["W2", "W3"], ["W4"]] and out["left_due"] == 0 and "stopped" not in out
     finally:

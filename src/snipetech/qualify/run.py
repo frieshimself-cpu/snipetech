@@ -166,17 +166,33 @@ def _size_exit(cfg: Config):
 
 # what each entry of a run's `size_pass` says it was scored at, beside its numbers (CLAUDE.md rule 2: a paper result
 # names its landing and the bid that buys it)
-SIZE_PASS_AT = ("buy_sol", "bid_sol", "position", "floor_sol")
+SIZE_PASS_AT = ("buy_sol", "bid_sol", "position", "floor_sol", "max_fill_mcap_sol")
+
+
+def _size_ceiling(cfg: Config) -> float:
+    """The size score's ceiling on our own fill, SOL ([qualify] size_max_mcap_sol), or 0 for none: a value under the
+    market cap a pump.fun coin starts at would refuse every send (review of 8a4857e), so it is not used (`size_record`
+    says so)."""
+    from ..analysis.lab import START_MCAP_SOL
+
+    ceiling = float(cfg.qualify.size_max_mcap_sol or 0.0)
+    return ceiling if ceiling >= START_MCAP_SOL else 0.0
 
 
 def size_record(cfg: Config, stats: dict | None = None) -> dict[str, Any]:
     """A wallet's size score: what it was scored at ([qualify] size_*) and its numbers (n 0 and no mean when none of
     its buys fits the size rule). `max_fill_mcap_sol` is the ceiling on our own fill, as a copy sniper's maxMcapUsd
     runs it; `refused`, of its n copies, the sends that ceiling refused (each charged 0.001005 SOL, lab.REFUSED_SEND_SOL)."""
+    from ..analysis.lab import START_MCAP_SOL
+
     q = cfg.qualify
+    ceiling = _size_ceiling(cfg)
     base = {"buy_sol": q.size_sol, "bid_sol": q.size_bid_sol, "position": q.size_position, "floor_sol": q.size_floor_sol,
-            "min_mcap_sol": q.size_min_mcap_sol, "max_fill_mcap_sol": q.size_max_mcap_sol,
+            "min_mcap_sol": q.size_min_mcap_sol, "max_fill_mcap_sol": ceiling or None,
             "exit": _size_exit(cfg).label()}  # fmt: skip
+    if q.size_max_mcap_sol and not ceiling:  # asked for, and under a coin's start: scored without one
+        base["note"] = (f"[qualify] size_max_mcap_sol {float(q.size_max_mcap_sol):g} is under a coin's start "
+                        f"({START_MCAP_SOL:.0f} SOL of market cap): scored without a ceiling")  # fmt: skip
     nums = {"n": 0, "mean": None, "ev_lower": None, "win_rate": None, "total": 0.0, "refused": 0}
     return base | nums | {k: stats.get(k) for k in nums if stats and k in stats}
 
@@ -197,7 +213,7 @@ def size_scores(svc, cfg: Config, tape, wallets: list[str], kols: dict, mates: d
     # copy that would fill above it fails on chain and pays its priority fee); until 23 Nov it was held on the market
     # cap after the leader's buy (`max_mcap`), a gate no OKTech setting runs
     rule = L.Trigger("kol", sol=q.size_floor_sol, group="cand", min_mcap=q.size_min_mcap_sol,
-                     max_fill_mcap=q.size_max_mcap_sol, repeats=L.REPEATS_ALSO)  # fmt: skip
+                     max_fill_mcap=_size_ceiling(cfg), repeats=L.REPEATS_ALSO)  # fmt: skip
     data = L.collect(tape, cfg, q.size_sol, 0, q.size_position, per_tx_sol=lab_tx_cost(svc.store, cfg),
                      groups=("cand",), triggers=[rule], exits=[ex], kols=kols, mates=mates,
                      buy_bid_sol=q.size_bid_sol)  # fmt: skip
@@ -584,9 +600,13 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         # answer when it pays on the copies its verdict would need (audit of 22 Nov: the run-wide least, 10, named
         # wallets without a strong history on 10-11 copies), with the size, bid and place it was scored at, never a gate
         size = (row.get("size") if row else None) or {}
-        if int(size.get("n") or 0) >= want and size.get("ev_lower") is not None and float(size["ev_lower"]) > 0:
-            out.setdefault("size_pass", []).append({"wallet": w, "n": size["n"], "mean": size["mean"],
-                                                    "ev_lower": size["ev_lower"],
+        # the copies it needs are counted on the ones that traded: a send the ceiling on our own fill refused is
+        # among n as a small loss (review of 8a4857e: "n 30" could be 10 trades and 20 refusals)
+        refused = int(size.get("refused") or 0)
+        traded = int(size.get("n") or 0) - refused
+        if traded >= want and size.get("ev_lower") is not None and float(size["ev_lower"]) > 0:
+            out.setdefault("size_pass", []).append({"wallet": w, "n": size["n"], "refused": refused,
+                                                    "mean": size["mean"], "ev_lower": size["ev_lower"],
                                                     **{k: size.get(k) for k in SIZE_PASS_AT}})  # fmt: skip
         store.put_verdict(v)
         store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,
@@ -652,7 +672,8 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
     out["secs"] = {k: round(t, 1) for k, t in secs.items()}
     if lab_info:
         out["lab"] = lab_info
-    store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": out["lab_wallets"]})
+    if not out.get("stopped"):  # a run stopped for a deploy is no finished lab: the next one goes on at once
+        store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": out["lab_wallets"]})
     return out
 
 

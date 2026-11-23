@@ -246,3 +246,39 @@ def test_the_gate_takes_a_pick_and_leaves_a_plain_candidate_alone():
     assert out["reasons"][-1].startswith(NON_COIN_REASON) and out["next_review"] == NOW + NON_COIN_DAYS * 86400
     plain = {"wallet": A, "status": "candidate", "reasons": ["too few copies"], "forward": None}
     assert not_a_coin_trader(plain, WORDS, cfg.qualify, NOW) is plain  # holds no place: nothing to release
+
+
+def test_gating_a_pick_makes_the_wallets_that_yielded_to_it_due_at_once(tmp_path):
+    """Review of 5b041bf (reproduced): `release` made due only the wallets in the gated wallet's own `over` list, and a
+    wallet picked first never gets one: LEAD, measured three hours after TAIL's pick, yields to it ("the actor is
+    already under test") and TAIL's record is not touched. When TAIL is then gated for swapping USDC, its place is
+    free and LEAD stayed parked until its own review a day later. The wallets of the gated wallet's actor that yield
+    to it are made due too."""
+    from snipetech.book.state import record_copying
+    from snipetech.qualify.run import run_qualify
+    from tests.test_qualify_one_actor import LEAD, TAIL, _latest, _runner, _same_as
+    from tests.test_qualify_one_actor import _tape as _actor_tape
+    from tests.test_qualify_run import NOW, STRONG, _svc
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _actor_tape(st)
+        record_copying(st, set(), NOW - 120)
+        st.upsert_candidate(TAIL, "solanatracker", STRONG, NOW - 3600)
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=_runner())  # TAIL picked, alone
+        later = NOW + 3 * 3600
+        record_copying(st, set(), later - 120)
+        st.upsert_candidate(LEAD, "solanatracker", STRONG, later - 60)
+        run_qualify(svc, svc.cfg, data / "jobs", later, lab_runner=_runner())  # LEAD yields to TAIL
+        by = _latest(st)
+        assert by[TAIL]["forward"] is not None and _same_as(by[LEAD])
+        then = NOW + 25 * 3600
+        record_copying(st, set(), then - 120)
+        st.add_trades([_swap(TAIL, USDC, then - 600 - i, 9100 + i) for i in range(3)])
+        run_qualify(svc, svc.cfg, data / "jobs", then, lab_runner=_runner(), early=True)
+        by = _latest(st)
+        assert by[TAIL]["forward"] is None  # gated: the place is free
+        due = [c["wallet"] for c in st.candidates(due_before=then + 60)]
+        assert LEAD in due, due  # and LEAD, which stood aside for it, may take it at the next lab
+    finally:
+        st.close()

@@ -106,8 +106,30 @@ def test_a_size_score_is_said_beside_the_verdict_and_qualifies_nothing(tmp_path)
         # the run names the wallets that pay at size on the copies each one needs (4 are too few to say anything; 15
         # are too few for a wallet without a strong history, as for its verdict: audit of 22 Nov, qualify#2), each
         # with the size, the bid and the place in line it was scored at (CLAUDE.md rule 2: a paper result names them)
-        assert out["size_pass"] == [{"wallet": "W1", "n": 30, "mean": 0.7, "ev_lower": 0.5, "buy_sol": 5.0,
-                                     "bid_sol": 0.2, "position": "+2x", "floor_sol": 0.95}]  # fmt: skip
+        assert out["size_pass"] == [{"wallet": "W1", "n": 30, "refused": 0, "mean": 0.7, "ev_lower": 0.5,
+                                     "buy_sol": 5.0, "bid_sol": 0.2, "position": "+2x", "floor_sol": 0.95,
+                                     "max_fill_mcap_sol": 100.0}]  # fmt: skip
+    finally:
+        st.close()
+
+
+def test_a_size_pass_rests_on_the_copies_that_traded_not_on_the_refused_sends(tmp_path):
+    """Review of 8a4857e: with the ceiling on our own fill a refused send counts among n (a loss of 0.001005 SOL), so a
+    wallet's "n 30" could be 5 trades and 25 refusals, and the run named it as paying at size on 30 copies. The copies
+    a wallet needs are counted on the ones that traded, and each named wallet says how many were refused."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W1"])
+        st.upsert_candidate("W1", "solanatracker", STRONG, NOW - 3600)
+        # 30 copies, 25 of them refused: 5 trades, under the 10 even a wallet with a strong history needs
+        mostly_refused = size_record(svc.cfg, {"n": 30, "refused": 25, "mean": 0.2, "ev_lower": 0.05, "win_rate": 0.3,
+                                               "total": 6.0})  # fmt: skip
+
+        def runner(wallets, pos):
+            return [dict(_row("W1", 12, -0.01, -0.02, []), size=mostly_refused)]
+
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        assert "size_pass" not in out, out.get("size_pass")
     finally:
         st.close()
 
@@ -189,5 +211,19 @@ def test_a_lab_that_never_reads_the_size_score_does_not_make_it(tmp_path, monkey
                         "reasons": ["crowded: gap to the 3rd follower 23.7 % > 15 %"], "gap3_pct": 23.7})  # fmt: skip
         out = S.stopped_wallets(svc, svc.cfg, data / "jobs", NOW)
         assert out["wallets"] == 1 and asked == {"with_size": False} and made == []
+    finally:
+        st.close()
+
+
+def test_a_size_ceiling_under_a_coins_start_is_not_used_and_the_record_says_so(tmp_path):
+    """Review of 8a4857e: [qualify] size_max_mcap_sol under the market cap a pump.fun coin starts at (about 28 SOL)
+    refused every send without a word (n 12, refused 12). Such a ceiling is not used, and the record says so."""
+    svc, st, _data = _world(tmp_path)
+    try:
+        svc.cfg.qualify.size_max_mcap_sol = 20.0
+        (row,) = default_lab_runner(svc, svc.cfg)(["BIG"], "+6")
+        size = row["size"]
+        assert size["max_fill_mcap_sol"] is None and "under a coin's start" in size.get("note", ""), size
+        assert size["n"] == 12 and not size.get("refused")
     finally:
         st.close()

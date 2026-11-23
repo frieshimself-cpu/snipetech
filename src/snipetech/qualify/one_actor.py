@@ -250,11 +250,20 @@ class OneActor:
         """Before `wallet`'s new verdict `v` is written: when it was its actor's candidate over other wallets and `v`
         no longer holds the place, those wallets are due for review at once (their verdicts as they are, only the
         review date moves: Store.review_now), so one of them can take the place in the next lab instead of a day
-        later. Returns how many were made due."""
-        over = [r for r in actor_block(self.store, wallet).get("over") or () if r != wallet]
+        later. Those are the wallets in its own `over` and the wallets of its actor whose record says they yield to
+        it (`same_as`): a wallet picked first never gets an `over` when one of its actor yields to it later (review
+        of 5b041bf: the non-coin gate freed the place and the wallet behind it waited a day). Returns how many were
+        made due."""
+        block = actor_block(self.store, wallet)
         status = v.get("status")
         holds = status == "qualified" or (status == "candidate" and bool(v.get("forward")) and v.get("gate") != GATE)
-        return 0 if holds or not over else self.store.review_now(over, now)
+        if holds:
+            return 0
+        over = [r for r in block.get("over") or () if r != wallet]
+        near = actor_links(block) | set(self._mates.get(wallet, ()))  # its companions and twins, as its record has them
+        behind = [r for r in sorted(near - {wallet, *over}) if actor_block(self.store, r).get("same_as") == wallet]
+        due = [*over, *behind]
+        return self.store.review_now(due, now) if due else 0
 
     def order(self, chunk: list[dict], rows: Mapping[str, dict], need: int | Mapping[str, int]) -> list[dict]:
         """The wallets of one lab in the order to judge them: as they came, unless the rule needs another. Wallets
