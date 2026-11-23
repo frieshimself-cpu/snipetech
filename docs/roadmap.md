@@ -27,8 +27,13 @@ first on the server's recording and only then run live in capped batches.
   - **0** took the place with a bundle of their own. **97** stood there outside Jito (8r6N8w 30 times, FfW5e8 8,
     6Z91 7, 9AGtz3 5): another route, which Jito's explorer cannot see.
   - The leaders do not send through Jito themselves: their buy was in a Jito bundle on 109 of the 200, 103 of them
-    a follower's. Cented and Decu buy through one trading platform's program (FLASHX8D…), theo side through GMGN's
-    (GMgnVFR8…). Yugi has almost nobody right behind (3 of 75 moments).
+    a follower's. Cented, Decu and Yugi buy through one trading platform's program (FLASHX8D…, each buy paying about
+    0.004 SOL to one of a rotating set of accounts), theo side through GMGN's (GMgnVFR8…). Yet Yugi has almost nobody
+    right behind (3 of 75 moments): the bundling buyers choose whom they follow.
+  - Our own copies (OKTech's five buys behind Yugi today, read off the chain at 16:40) landed 36 to 277 block places
+    after his buy in the same block, none in a Jito bundle, with their 0.002 SOL tips paid to a different landing
+    service each time (AsTRAD…, FLaShB…, 4ACfpU…, noz…; fill 1 paid none). OKTech reacts to the landed buy, as the
+    place says; it does not carry the leader's transaction.
 - **What it means.** The place right behind exists and has a price: the highest Jito tip among the bundles that
   carry the leader's transaction, usually 0.002 to 0.02 SOL, up to about 1 SOL when 8r6N8w bids. On paper the place
   is worth about +1.1 to +1.3 SOL a copy at 6 SOL (22 Nov, below). The entry ticket is the leader's signed
