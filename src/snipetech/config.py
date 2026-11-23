@@ -531,9 +531,11 @@ class QualifyConfig:
     # The score at the size that pays, beside the verdict (21 Nov 2026): the verdict is scored at the book's 0.2 SOL
     # fill with no bid, where nothing can pay; the edge is at 5 SOL with a 0.2 bid, a market-cap ceiling, in the first
     # two places (labs a5f6b5, 15062c). Each measured wallet's buys of `size_floor_sol` or more, its repeats in a coin
-    # too (what a copy sniper sent that minSol copies), between the two market caps (in SOL, at the wallet's buy: the
-    # ceiling is where the profit is; no floor by default, since the 21 Nov floor test showed OKTech's minMcapUsd does
-    # not stop a copy of a buy in a fresh coin), at `size_sol` with `size_bid_sol` at `size_position` on `size_exit`.
+    # too (what a copy sniper sent that minSol copies), between the two market caps (in SOL; the floor at the wallet's
+    # buy, the ceiling on our own fill, as OKTech's maxMcapUsd holds it since the 23 Nov smoke test, a refused send
+    # charged its priority fee: the ceiling is where the profit is; no floor by default, since the 21 Nov floor test
+    # showed OKTech's minMcapUsd does not stop a copy of a buy in a fresh coin), at `size_sol` with `size_bid_sol` at
+    # `size_position` on `size_exit`.
     # The place is the one that bid has bought live: the 7 buys at a 0.2 SOL bid on 21-22 Nov stood 1 to 3 buyers
     # behind, 2.1 on average, so the score stands 3rd in line ("+2x"; "+1x" until 23 Nov, a place nobody held).
     # Said, never a gate. size_sol 0: no size score
@@ -541,7 +543,7 @@ class QualifyConfig:
     size_bid_sol: float = 0.2
     size_floor_sol: float = 0.95
     size_min_mcap_sol: float = 0.0
-    size_max_mcap_sol: float = 100.0
+    size_max_mcap_sol: float = 100.0  # the ceiling on our own fill (the lab's max_fill_mcap), as maxMcapUsd runs it
     size_position: str = "+2x"
     size_exit: str = "hold12"
 

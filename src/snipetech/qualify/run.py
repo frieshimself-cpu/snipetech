@@ -169,11 +169,13 @@ SIZE_PASS_AT = ("buy_sol", "bid_sol", "position", "floor_sol")
 
 def size_record(cfg: Config, stats: dict | None = None) -> dict[str, Any]:
     """A wallet's size score: what it was scored at ([qualify] size_*) and its numbers (n 0 and no mean when none of
-    its buys fits the size rule)."""
+    its buys fits the size rule). `max_fill_mcap_sol` is the ceiling on our own fill, as a copy sniper's maxMcapUsd
+    runs it; `refused`, of its n copies, the sends that ceiling refused (each charged 0.001005 SOL, lab.REFUSED_SEND_SOL)."""
     q = cfg.qualify
     base = {"buy_sol": q.size_sol, "bid_sol": q.size_bid_sol, "position": q.size_position, "floor_sol": q.size_floor_sol,
-            "min_mcap_sol": q.size_min_mcap_sol, "max_mcap_sol": q.size_max_mcap_sol, "exit": _size_exit(cfg).label()}  # fmt: skip
-    nums = {"n": 0, "mean": None, "ev_lower": None, "win_rate": None, "total": 0.0}
+            "min_mcap_sol": q.size_min_mcap_sol, "max_fill_mcap_sol": q.size_max_mcap_sol,
+            "exit": _size_exit(cfg).label()}  # fmt: skip
+    nums = {"n": 0, "mean": None, "ev_lower": None, "win_rate": None, "total": 0.0, "refused": 0}
     return base | nums | {k: stats.get(k) for k in nums if stats and k in stats}
 
 
@@ -189,8 +191,11 @@ def size_scores(svc, cfg: Config, tape, wallets: list[str], kols: dict, mates: d
 
     q = cfg.qualify
     ex = _size_exit(cfg)
+    # the ceiling is held on our own fill (23 Nov smoke test: OKTech turns maxMcapUsd into the buy's least coins, so a
+    # copy that would fill above it fails on chain and pays its priority fee); until 23 Nov it was held on the market
+    # cap after the leader's buy (`max_mcap`), a gate no OKTech setting runs
     rule = L.Trigger("kol", sol=q.size_floor_sol, group="cand", min_mcap=q.size_min_mcap_sol,
-                     max_mcap=q.size_max_mcap_sol, repeats=L.REPEATS_ALSO)  # fmt: skip
+                     max_fill_mcap=q.size_max_mcap_sol, repeats=L.REPEATS_ALSO)  # fmt: skip
     data = L.collect(tape, cfg, q.size_sol, 0, q.size_position, per_tx_sol=lab_tx_cost(svc.store, cfg),
                      groups=("cand",), triggers=[rule], exits=[ex], kols=kols, mates=mates,
                      buy_bid_sol=q.size_bid_sol)  # fmt: skip

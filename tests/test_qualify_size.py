@@ -51,7 +51,7 @@ def test_each_measured_wallet_also_carries_a_score_at_the_size_that_pays(tmp_pat
         # 3rd in line: the 7 live buys at a 0.2 SOL bid stood 2.1 buyers behind on average (21-22 Nov), and a score at
         # a better place than its bid has bought is no evidence (CLAUDE.md rule 2; it stood at "+1x" until 23 Nov)
         assert size["n"] == 12 and size["buy_sol"] == 5.0 and size["bid_sol"] == 0.2 and size["position"] == "+2x"
-        assert size["floor_sol"] == 0.95 and size["max_mcap_sol"] == 100.0 and size["exit"].startswith("hold12s")
+        assert size["floor_sol"] == 0.95 and size["max_fill_mcap_sol"] == 100.0 and size["exit"].startswith("hold12s")
         assert {"mean", "ev_lower", "win_rate", "total"} <= set(size)
         assert rows["SMALL"]["size"]["n"] == 0  # its 0.5 SOL buys are under the size floor
         assert rows["BIG"]["n"] == 12 and rows["SMALL"]["n"] == 12  # the small fill's own numbers stand beside it
@@ -126,6 +126,41 @@ def test_the_size_score_takes_every_buy_a_copy_sniper_at_the_size_floor_copies(t
         (row,) = default_lab_runner(svc, svc.cfg)(["TOPS"], "+6")
         assert row["size"]["n"] == 48 and row["size"]["floor_sol"] == 0.95
         assert row["n"] == 12  # the verdict's own numbers: the wallet's first buys, as before
+    finally:
+        st.close()
+
+
+def _late_buyer(st, w, coins=12):
+    """`w` buys 1 SOL in coins the creator opened with 24.5 SOL: the market cap after its buy is about 96 SOL, under
+    the size score's 100 SOL ceiling, but a 5 SOL fill behind two of the crowd's buys pays an average price of about
+    108 SOL of market cap, over it."""
+    D = addr("dev")
+    for k in range(coins):
+        m = Market(st, addr(f"{w}:late{k}"), D, NOW - 7000 + k * 250, SLOT + k * 625)
+        m.buy(D, 24.5, 0)
+        m.buy(w, 1.0, 5)
+        for j in range(4):
+            m.buy(addr(f"{w}:late{k}:f{j}"), 0.3 + 0.1 * j, 6 + j)
+        m.sell(w, 1.0, 30)
+        m.commit()
+    st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
+
+
+def test_the_size_score_holds_the_ceiling_on_our_own_fill_as_the_live_sniper_does(tmp_path):
+    """23 Nov smoke test: OKTech turns a copy sniper's maxMcapUsd into the buy's least coins, a ceiling on OUR OWN fill,
+    and a copy that would fill above it fails on chain and pays its priority fee. The size score held its 100 SOL on
+    the market cap after the leader's buy (`max_mcap`), a gate no OKTech setting runs: behind a leader buying at 96 SOL
+    it scored 5 SOL fills at 108 SOL as trades. As the sniper runs it, each is a refused send that costs 0.001005 SOL."""
+    from snipetech.analysis import lab as L
+
+    svc, st, _data = _svc(tmp_path)
+    try:
+        _late_buyer(st, "LATE")
+        svc.cfg.verdict.bootstrap_samples = 50
+        (row,) = default_lab_runner(svc, svc.cfg)(["LATE"], "+6")
+        size = row["size"]
+        assert size["n"] == 12 and size["max_fill_mcap_sol"] == 100.0 and "max_mcap_sol" not in size
+        assert abs(size["mean"] + L.REFUSED_SEND_SOL) < 1e-9 and size["win_rate"] == 0.0
     finally:
         st.close()
 
