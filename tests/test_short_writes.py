@@ -490,6 +490,75 @@ def test_the_maintenance_tick_goes_on_while_the_prune_runs(tmp_path, monkeypatch
     st.close()
 
 
+def _prunes_started(w, monkeypatch, secs: float = 0.2) -> list[float]:
+    """The prunes the maintenance loop of `w` starts in `secs` of ticks (a tick every 10 ms)."""
+    w.cfg.live.rescore_interval_secs = 0.01
+    started: list[float] = []
+
+    async def go():
+        async def prune(now):
+            started.append(now)
+
+        monkeypatch.setattr(w, "_prune", prune)
+        monkeypatch.setattr(w, "_flush", lambda hot=False: None)
+        tick = asyncio.create_task(w._maintenance())
+        await asyncio.sleep(secs)
+        tick.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tick
+
+    asyncio.run(go())
+    return started
+
+
+def test_a_restart_within_the_hour_of_the_last_prune_does_not_prune_again(tmp_path, monkeypatch):
+    """Audit round 2 (I6): when the last prune ran was held in memory alone, so every new process (each deploy restarts
+    the recorder) pruned at its first tick, ten seconds in, while its replay caught up with the chain (a 5.1 s hold of
+    the loop was seen there). The prune leaves its time in the database, beside the day of its walk."""
+    from snipetech import live as L
+    from tests.test_live_amm import watcher
+
+    st = Store(tmp_path / "t.db")
+    _old_tape(st)
+    before = watcher(store=st)
+    before.cfg.storage.retain_days = 1.0
+    now = time.time()
+    asyncio.run(before._prune(now))  # the hourly prune of the process before the restart (its first: it walks too)
+    assert st.coverage(L.PRUNE_KEY) == {"walked": int(now), "pruned": int(now)}
+    assert _prunes_started(watcher(store=st), monkeypatch) == []  # a new process, minutes later: was one prune
+    # a prune that walks nothing keeps the day of the last walk
+    asyncio.run(before._prune(now + 3700))
+    assert st.coverage(L.PRUNE_KEY) == {"walked": int(now), "pruned": int(now + 3700)}
+    # the last prune more than an hour back (the recorder was down for longer): the new process prunes at once
+    st.set_coverage(L.PRUNE_KEY, {"walked": int(now), "pruned": int(now - 3700)})
+    assert len(_prunes_started(watcher(store=st), monkeypatch)) == 1
+    st.close()
+
+
+def test_a_prune_record_that_cannot_be_read_prunes_at_once_as_before(tmp_path, monkeypatch):
+    from snipetech import live as L
+    from tests.test_live_amm import watcher
+
+    st = Store(tmp_path / "t.db")
+    st.set_coverage(L.PRUNE_KEY, {"walked": 5, "pruned": "lately"})  # not a time
+    assert len(_prunes_started(watcher(store=st), monkeypatch)) == 1
+    st.set_coverage(L.PRUNE_KEY, {"walked": 5})  # the record of the code before: no time of a prune
+    assert len(_prunes_started(watcher(store=st), monkeypatch)) == 1
+    st.set_coverage(L.PRUNE_KEY, {"pruned": time.time() + 86400})  # a time ahead of the clock holds no prune back
+    assert len(_prunes_started(watcher(store=st), monkeypatch)) == 1
+    real = st.coverage
+
+    def coverage(key):
+        if key == L.PRUNE_KEY:
+            raise sqlite3.OperationalError("database is locked")
+        return real(key)
+
+    w = watcher(store=st)
+    monkeypatch.setattr(st, "coverage", coverage)
+    assert len(_prunes_started(w, monkeypatch)) == 1  # and the maintenance loop goes on
+    st.close()
+
+
 # -- the jobs ---------------------------------------------------------------------------------------------------------
 
 
