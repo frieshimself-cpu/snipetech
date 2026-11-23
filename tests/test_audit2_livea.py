@@ -27,8 +27,10 @@ LEAD = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"  # a wallet our copy snipe
 STRANGER = "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"  # a wallet no sniper on record follows
 MINT = "Coin1" + "1" * 39
 NOW, SLOT = 1_795_300_603, 472_308_766  # our copy of 21 Nov 22:36:43 UTC
-PAYLOAD = {"singleSnipe": True, "ctbotWallets": [{"address": LEAD}], "priorityFee": 0.001, "tipAmount": 0.199,
-           "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}  # fmt: skip
+# S1 (audit round 3): the shape asks the buy's size too, so the sniper has one: what `_buy` and the synthetic market's
+# 1 SOL buy spend, the quote and a 1 % fee
+PAYLOAD = {"singleSnipe": True, "ctbotWallets": [{"address": LEAD}], "buyAmount": 1.01, "priorityFee": 0.001,
+           "tipAmount": 0.199, "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}  # fmt: skip
 PAID = (1_000_000, 199_000_000)  # what the payload's sniper pays on a buy
 ODD = (1_500_000, 120_000_000)  # a pair no payload on record names (OKTech changing what it pays)
 HAND = (6_121, 26_993_879)  # the owner's hand buy of 22 Nov 02:40
@@ -192,7 +194,8 @@ def test_a_copy_the_chain_placed_is_the_bots_by_the_blocks_between():
     is none."""
     store = _store()
     marks = fee_marks(store)
-    row = {"sig": "3Ud95jGc", "ts": NOW, "slot": SLOT, "wallet": W, "mint": MINT, "side": "buy", "sol": 0.05,
+    # S1 (audit round 3): at the sniper's size (PAYLOAD's 1.01 SOL), as every copy on record was
+    row = {"sig": "3Ud95jGc", "ts": NOW, "slot": SLOT, "wallet": W, "mint": MINT, "side": "buy", "sol": 1.01,
            "tokens": 1_000_000.0, "priority_lamports": ODD[0], "tip_lamports": ODD[1], "wallet_copied": LEAD,
            "trades_behind": 1, "landing_src": "chain", "venue": "PumpSwap"}  # fmt: skip
     assert bot_buy(row | {"blocks_after": 0, "landing_verdict": "fees"}, marks)
@@ -249,7 +252,9 @@ def _chain_whose(chain, payload, store=None, now=None, since=None):
     return asyncio.run(coins.whose(coin, now - 300 if since is None else since, now)), coins
 
 
-COPY = {"singleSnipe": True, "ctbotWallets": [{"address": CW}], "priorityFee": 0.001, "tipAmount": 0.199}
+# S1 (audit round 3): a 1 SOL sniper, the size of the fake chain's buys of ours below
+COPY = {"singleSnipe": True, "ctbotWallets": [{"address": CW}], "buyAmount": 1.0, "priorityFee": 0.001,
+        "tipAmount": 0.199}  # fmt: skip
 
 
 @pytest.mark.parametrize("our_slot", [S, S + 1], ids=["the copied wallet's own block", "the next block"])
@@ -466,8 +471,10 @@ def _measured(tmp_path):
     st = Store(tmp_path / "t.db")
     cfg = Config()
     cfg.storage.db_path, cfg.operator.wallet = str(tmp_path / "t.db"), W
+    # S1 (audit round 3): the sniper's size is what the synthetic market's 1 SOL buy spends with its 1.25 % fee
     st.add_oktech_sniper({"id": "cs1", "external_id": "cs1", "kind": "copy", "source": LEAD, "name": "copy lead",
-                          "config_hash": "h", "created_at": NOW - 86_400, "payload": PAYLOAD})  # fmt: skip
+                          "config_hash": "h", "created_at": NOW - 86_400,
+                          "payload": PAYLOAD | {"buyAmount": 1.0125}})  # fmt: skip
     dev = addr("a2-dev")
     m = Market(st, addr("a2-copied"), dev, NOW - 3_000, SLOT)
     m.buy(dev, 1.0, 0)
@@ -560,8 +567,9 @@ def _guard_beside(monkeypatch, behind_slots):
     svc, store, client, _clock = B._guard(monkeypatch, sol=lambda t: 1.3 if t < bought else 0.3,
                                           coin=lambda t: None if t < bought else 198_000_000, price=5.0)  # fmt: skip
     store.add_oktech_sniper({"id": "a", "kind": "copy", "source": B.L1, "created_at": B.NOW - 86_400,
-                             "payload": {"singleSnipe": True, "totalSnipes": 3, "priorityFee": 0.001,
-                                         "tipAmount": 0.199, "ctbotWallets": [{"address": B.L1}]}})  # fmt: skip
+                             "payload": {"singleSnipe": True, "totalSnipes": 3, "buyAmount": 1.0,
+                                         "priorityFee": 0.001, "tipAmount": 0.199,
+                                         "ctbotWallets": [{"address": B.L1}]}})  # fmt: skip
     for name, user, slot, pos, fees in (("lead", B.L1, 400_600_000, 40, (5_000, 0)),
                                         ("ours", B.W, 400_600_000 + behind_slots, 2, ODD)):  # fmt: skip
         store.add_trades([Trade(sig=name, ev=0, slot=slot, pos=pos, ts=int(bought), mint=B.MINT, venue="curve",

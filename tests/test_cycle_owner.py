@@ -602,7 +602,8 @@ def test_no_rearm_while_the_run_holds_tokens_of_a_coin_the_owner_holds_too(monke
 # -- round 2 of the audit (23 Nov), A1: a copy at fees no payload names is still the run's ----------------------------
 
 ODD = (1_500_000, 120_000_000)  # a (priority, tip) pair no payload names: OKTech changing what it pays
-COPIES = FEES | {"ctbotWallets": [{"address": LEADER}]}  # the run's snipers copy LEADER
+# the run's snipers copy LEADER at 1 SOL a copy (S1, audit round 3: the shape asks the buy's size too)
+COPIES = FEES | {"ctbotWallets": [{"address": LEADER}], "buyAmount": 1.0}
 
 
 def _lead(ts, mint=OURS, slots=1):
@@ -684,6 +685,50 @@ def test_the_owners_hand_buy_twenty_slots_behind_a_copied_wallet_is_still_left_a
     assert sweeps == [] and rep["fills"] == 0 and rep["owner_coins"] == [OWN]
     assert _starts(client, T0 + 160) and rep["left_running"] == []
     assert not [e for e in rep["events"] if "paid fees no sniper" in e]
+
+
+# -- round 3 of the audit (23 Nov), S1: a copy is told by its place AND its size ---------------------------------------
+
+
+@pytest.mark.parametrize("slots", [0, 1, 2, 3], ids=["its own block", "the next block", "two slots on", "three on"])
+def test_a_hand_buy_right_behind_a_copied_wallet_at_another_size_is_never_counted_or_sold(monkeypatch, slots):
+    """S1: the owner buys a coin by hand (0.99 SOL: 1 SOL typed in Axiom, which keeps 1 %) within three slots of a buy
+    of it by a wallet the run copies at 1 SOL. By its place alone that was a copy at fees no payload names: the run
+    counted it as a fill and SOLD it at --sweep-after, the owner's own coin (measured chance for a hand buy within a
+    minute of the copied wallet's first buy: Cented 7.8 %, Decu 2.1 %). A copy spends exactly its sniper's buyAmount;
+    this one did not: the owner's, never sold, counted or waited on, and nothing is said about OKTech's fees."""
+    from dataclasses import replace
+
+    sweeps = []
+
+    def coins(now):
+        return [_coin(OWN, 0.99)] if now >= T0 + 102 else []
+
+    hand = replace(_buy(T0 + 100, OWN, 0.99, 6121, 26_993_879), pos=7)  # behind the copied buy in its own block too
+    rep, client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0, coins=coins, payload=COPIES,
+                       tape=[_lead(T0 + 100, OWN, slots=slots), hand], sweeps=sweeps, sweep_after=20, rearm_after=60,
+                       minutes=6)  # fmt: skip
+    assert sweeps == [] and rep["swept"] == []
+    assert rep["fills"] == 0 and rep["owner_coins"] == [OWN]
+    assert _starts(client, T0 + 160) and rep["left_running"] == []  # the re-arms went on beside the owner's coin
+    assert not [e for e in rep["events"] if "paid fees no sniper" in e]
+
+
+def test_a_hand_buy_at_the_other_snipers_size_behind_this_ones_wallet_is_the_owners_too(monkeypatch):
+    """S1: the size must be that of a sniper that follows the wallet bought behind. The run has a 1 SOL sniper behind
+    one wallet and a 0.5 SOL sniper behind another: the owner's 0.5 SOL hand buy right behind the first wallet's buy
+    is no copy (nothing of the run's spends 0.5 SOL behind that wallet)."""
+    sweeps = []
+    second = "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"
+
+    def payload(i):
+        return COPIES if i == SNIPER_IDS[0] else FEES | {"ctbotWallets": [{"address": second}], "buyAmount": 0.5}
+
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.5,
+                        coins=lambda now: [_coin(OWN, 0.5)] if now >= T0 + 102 else [], payload=payload,
+                        tape=[_lead(T0 + 100, OWN), _buy(T0 + 100, OWN, 0.5, 6121, 26_993_879)], sweeps=sweeps,
+                        sweep_after=20, minutes=4)  # fmt: skip
+    assert sweeps == [] and rep["fills"] == 0 and rep["owner_coins"] == [OWN]
 
 
 # -- round 2 of the audit (23 Nov), A3: the run's tokens in a coin of the owner's are held for the snipers' timer ------

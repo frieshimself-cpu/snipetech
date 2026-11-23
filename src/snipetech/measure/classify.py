@@ -155,8 +155,26 @@ LEADER_WINDOW_SLOTS = 150
 # A copy's shape, the signal beside its fees that a buy of the wallet is one of our copy snipers' (measure/ours.py): a
 # wallet a sniper of ours follows bought the coin at a place before ours and at most this many slots earlier (a slot is
 # 0.22 to 0.4 s). Every copy on record whose copied buy the tape still holds landed in that buy's block or the next (25
-# of 25, 9-22 Nov); no hand buy lands within a second of another wallet's.
+# of 25, 9-22 Nov). The place alone is not enough: the owner's hand buy can land within a second of a followed wallet's
+# (the wallets we copy buy a coin again within a minute: 7.8 % of that minute behind Cented, 2.1 % behind Decu), so
+# the shape asks the buy's size too (COPY_SIZE_TOL).
 COPY_SHAPE_SLOTS = 3
+# and it spent what a sniper that follows that wallet is set to spend (its payload's buyAmount), to within this share
+# of it. OKTech sends BuyExactQuoteIn: the trade's quote and the venue's fee together are the buyAmount. Every buy of
+# 9-23 Nov with a copied wallet on record spent the buyAmount of a sniper alive then that followed that wallet (35 of
+# 35): to the lamport on the curve (987,654,320 + 12,345,680 for 1 SOL), one lamport short on PumpSwap (197,530,861
+# + 2,469,138 for 0.2 SOL); `fills.sol` keeps six decimals (500 lamports at the most: a 20,000th of the smallest
+# sniper, 0.01 SOL). The owner's hand buys were 1.485, 4.95, 2.475 and 2.97 SOL: each 1 % under a round size (Axiom
+# keeps 1 % of what is typed), ten times this far from any sniper's.
+COPY_SIZE_TOL = 0.001
+
+
+def copy_sized(spent: int | None, size: int | None) -> bool:
+    """Whether a buy that spent `spent` lamports (the quote and the venue's fee) is one of a sniper set to spend
+    `size` lamports on a buy (COPY_SIZE_TOL). Never when either is not known."""
+    if spent is None or not size or size <= 0:
+        return False
+    return abs(int(spent) - int(size)) <= int(size) * COPY_SIZE_TOL
 
 
 def leader_buy_at(store: Store, mint: str, slot: int, pos: int, leaders: Collection[str],

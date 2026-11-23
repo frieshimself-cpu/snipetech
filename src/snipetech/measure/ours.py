@@ -7,15 +7,20 @@ the bot's loss and stopped every live trade for the day). None of that is the bo
 A buy is the bot's when the measure stage tied it to a sniper, or when it paid the fees one of our snipers pays (the
 payloads we sent OKTech: its priority and tip on a buy, and the same priority with no tip, as a copy of 22 Nov 00:19
 went out), or when it has a copy's shape (`CopyShape`): a wallet one of our snipers follows bought the same coin at a
-place before it and at most classify.COPY_SHAPE_SLOTS slots earlier. The shape is asked only of a buy whose fees are no
-sniper's, so it only ever turns "the owner's" into "the bot's": OKTech varies what it pays (the untipped copy; its
-"smart fees"), and a copy at a pair no payload names read as the owner's coin, its sniper free to be stopped while it
-held it (23 Nov audit). A copied wallet on the buy within the measure stage's 150 slots says nothing alone: the
-owner's own tool pays the snipers' priority too, and a hand buy a minute behind a copied wallet's is no copy. A sale
-is the bot's when it closes such a buy, or when it paid a sniper's sale fees (OKTech pays a sale the buy's priority:
-every sale since 20 Nov paid 0.001 SOL and its 0.002 tip under a sellPriorityFeeSol of 0.0001) or the fees of the
-run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees not known, nothing tells a
-hand trade apart, and the trade counts as the bot's, as before.
+place before it and at most classify.COPY_SHAPE_SLOTS slots earlier, AND the buy spent what a sniper that follows that
+wallet is set to spend (its buyAmount, to classify.COPY_SIZE_TOL: OKTech spends exactly that, quote and venue's fee
+together). The shape is asked only of a buy whose fees are no sniper's, so it only ever turns "the owner's" into "the
+bot's": OKTech varies what it pays (the untipped copy; its "smart fees"), and a copy at a pair no payload names read
+as the owner's coin, its sniper free to be stopped while it held it (23 Nov audit). The place alone made the owner's
+hand buy a copy whenever it landed within a second of a followed wallet's buy of that coin: a run sold it, and the day
+guard counted it (round 3 of that audit); the owner's hand buys stand 1 % under a round size, never at a sniper's.
+A copy whose size was changed in OKTech's app after its payload was recorded, at fees no payload names either, reads
+as the owner's, as before the shape. A copied wallet on the buy within the measure stage's 150 slots says nothing
+alone: the owner's own tool pays the snipers' priority too, and a hand buy a minute behind a copied wallet's is no
+copy. A sale is the bot's when it closes such a buy, or when it paid a sniper's sale fees (OKTech pays a sale the
+buy's priority: every sale since 20 Nov paid 0.001 SOL and its 0.002 tip under a sellPriorityFeeSol of 0.0001) or the
+fees of the run's own fallback sale (solana/sell.py, `sweep`). With no sniper on record, or with fees not known,
+nothing tells a hand trade apart, and the trade counts as the bot's, as before.
 
 `RunCoins` asks the same of a coin the wallet holds, for one run of the runner (service.oktech_cycle), live: the tape's
 buy of it since it showed, or the chain's when the tape has none.
@@ -68,11 +73,19 @@ def _copied(payload: dict | None) -> set[str]:
     return {str(w["address"]) for w in wallets if isinstance(w, dict) and w.get("address")}
 
 
+def _size(payload: dict | None) -> int | None:
+    """What a sniper with this payload is set to spend on a buy, in lamports (its buyAmount: the quote and the venue's
+    fee together, OKTech sends BuyExactQuoteIn); None when the payload names none."""
+    size = _lamports((payload or {}).get("buyAmount"))
+    return size if size and size > 0 else None
+
+
 def sniper_marks(payloads: Iterable[dict | None], store=None) -> dict[str, Any]:
     """The (priority, tip) lamports snipers with these payloads pay on a buy and on a sale. Empty sets when no payload
     names a priority: then nothing tells a hand trade apart. With `store` (the tape), and a payload that follows a
-    wallet, the marks carry the copy's shape too (`SHAPE`: a buy right behind one of those wallets' buys is these
-    snipers', whatever it paid): what one run or one test tells its own snipers' trades by."""
+    wallet, the marks carry the copy's shape too (`SHAPE`: a buy right behind one of those wallets' buys, of the size
+    the payload that follows it buys at, is these snipers', whatever it paid): what one run or one test tells its own
+    snipers' trades by."""
     payloads = [p or {} for p in payloads]
     buy: set[tuple[int, int]] = set()
     sell: set[tuple[int, int]] = {SWEEP_FEES}
@@ -87,16 +100,18 @@ def sniper_marks(payloads: Iterable[dict | None], store=None) -> dict[str, Any]:
     if not buy:  # no sniper on record: no mark at all, so every trade counts
         return {"buy": frozenset(), "sell": frozenset()}
     marks: dict[str, Any] = {"buy": frozenset(buy), "sell": frozenset(sell)}
-    wallets = set().union(*(_copied(p) for p in payloads)) if store is not None else set()
-    if wallets:
-        marks[SHAPE] = CopyShape(store, wallets=wallets)
+    # each payload that follows a wallet, whenever (no times: one run's or one test's own snipers)
+    rows = [{"wallets": _copied(p), "payload": p} for p in payloads] if store is not None else []
+    if any(r["wallets"] for r in rows):
+        marks[SHAPE] = CopyShape(store, rows)
     return marks
 
 
 def fee_marks(store) -> dict[str, Any]:
     """The (priority, tip) lamports our snipers pay on a buy and on a sale, from every payload on record (removed
     snipers too: last week's fills are theirs), and, when one of them follows a wallet, the copy's shape (`SHAPE`: by
-    the wallets followed at the time of a buy). Empty sets when none is on record or the store cannot say."""
+    the wallets followed at the time of a buy, each at the size the sniper that followed it then bought at). Empty
+    sets when none is on record or the store cannot say."""
     try:
         snipers = store.oktech_snipers(active=False)
     except Exception:  # noqa: BLE001 - nothing on record: nothing tells a hand trade apart
@@ -107,52 +122,72 @@ def fee_marks(store) -> dict[str, Any]:
 
         rows = copying_rows(snipers, kinds=None)
         if rows:
-            marks[SHAPE] = CopyShape(store, rows=rows)
+            marks[SHAPE] = CopyShape(store, rows)
     return marks
 
 
 class CopyShape:
     """The second signal that a buy of the wallet is the bot's, beside its fees: the copy's shape. A wallet one of our
-    snipers follows bought the same coin at a place before ours and at most classify.COPY_SHAPE_SLOTS slots earlier.
-    Every copy on record landed in the copied wallet's block or the next; the owner's hand buys followed no copied
-    wallet that closely. Fee marks carry it (`SHAPE`), so every reader of `bot_buy` and `bot_tape_buy` asks it, and
-    only of a buy whose fees are no sniper's.
+    snipers follows bought the same coin at a place before ours and at most classify.COPY_SHAPE_SLOTS slots earlier,
+    and our buy spent what a sniper that follows that wallet is set to spend (its buyAmount, to
+    classify.COPY_SIZE_TOL). Every copy on record landed in the copied wallet's block or the next and spent exactly
+    its sniper's buyAmount (the quote and the venue's fee); the owner's hand buys were 1 % under a round size, and
+    one of them can land right behind a followed wallet's buy by chance (round 3 of the 23 Nov audit: by its place
+    alone it was a copy, sold by a run and counted by the day guard). Fee marks carry it (`SHAPE`), so every reader
+    of `bot_buy` and `bot_tape_buy` asks it, and only of a buy whose fees are no sniper's.
 
-    `rows`: the snipers that follow a wallet, with when each lived (classify.copying_rows, every kind): only one alive
-    at a buy can have made it (`fee_marks`). `wallets`: the wallets one run's or one test's own snipers follow,
-    whenever (`sniper_marks`). The reads raise when the store cannot answer: where a coin's owner is decided that is
-    "not known", never "the owner's"."""
+    `rows`: the snipers that follow a wallet, each with its wallets, its payload (the size it buys at) and when it
+    lived (classify.copying_rows, every kind): only one alive at a buy can have made it (`fee_marks`). A row with no
+    times is one run's or one test's own sniper, whenever (`sniper_marks`). A sniper whose payload names no size
+    gives no shape. A buy whose size the reader does not hand is read off the tape by its signature; one whose size
+    cannot be known is answered as one whose place cannot: nothing new. The reads raise when the store cannot
+    answer: where a coin's owner is decided that is "not known", never "the owner's"."""
 
-    def __init__(self, store, rows: Iterable[dict] | None = None, wallets: Iterable[str] | None = None):
+    def __init__(self, store, rows: Iterable[dict] | None = None):
         self.store = store
-        self.rows = list(rows or [])
-        self.wallets = frozenset(str(w) for w in wallets or ())
+        self.rows = [{"wallets": frozenset(str(w) for w in r["wallets"]), "created_at": r.get("created_at"),
+                      "removed_at": r.get("removed_at"), "size": _size(r.get("payload"))}
+                     for r in rows or [] if r.get("wallets")]  # fmt: skip
         self._behind: dict[str, str] = {}  # each buy on the tape found right behind a copied buy: signature -> wallet
 
     def __bool__(self) -> bool:
-        return bool(self.rows or self.wallets)
+        return bool(self.rows)
 
-    def leaders(self, ts: Any = None) -> set[str]:
-        """The wallets followed at `ts` (by a sniper alive then; every one ever followed when the time is not known)."""
-        out = set(self.wallets)
-        if self.rows and ts is None:
-            return out.union(*(r["wallets"] for r in self.rows))
-        if self.rows:
-            from .classify import leaders_at
+    def leaders(self, ts: Any = None, spent: Any = None) -> set[str]:
+        """The wallets followed at `ts` (by a sniper alive then; every one ever followed when the time is not known).
+        With `spent` (what a buy spent, lamports): only those a sniper set to spend just that followed then."""
+        from .classify import copy_sized, snipers_at
 
-            out |= leaders_at(self.rows, float(ts))
-        return out
+        rows = self.rows if ts is None else snipers_at(self.rows, float(ts))
+        if spent is not None:
+            rows = [r for r in rows if copy_sized(int(spent), r["size"])]
+        return set().union(*(r["wallets"] for r in rows)) if rows else set()
 
-    def tape(self, mint: Any, slot: Any, pos: Any, ts: Any = None, sig: Any = None) -> str | None:
-        """The followed wallet whose buy of `mint` on the tape a buy at (`slot`, `pos`) stands right behind; None with
-        none, or with no place to ask of (a reader that knows only the buy's fees)."""
+    def _tape_spent(self, sig: str, mint: str) -> int | None:
+        """What the buy `sig` of `mint` spent as the tape has it (quote and fee, lamports); None when it has none."""
+        rows = self.store._q("SELECT quote, fee FROM trades WHERE sig=? AND mint=? AND is_buy=1 ORDER BY ev LIMIT 1",
+                             (sig, mint))  # fmt: skip
+        return int(rows[0][0]) + int(rows[0][1]) if rows else None
+
+    def tape(self, mint: Any, slot: Any, pos: Any, ts: Any = None, sig: Any = None, spent: Any = None) -> str | None:
+        """The followed wallet whose buy of `mint` on the tape a buy at (`slot`, `pos`) that spent `spent` lamports
+        (quote and fee) stands right behind, a sniper that follows it being set to spend just that; None with none,
+        with no place to ask of (a reader that knows only the buy's fees), or with no size to ask of (`spent` not
+        handed, and no signature the tape holds to read it by)."""
         if sig and str(sig) in self._behind:
             return self._behind[str(sig)]
         if not mint or slot is None or pos is None:
             return None
+        if spent is None and sig:
+            spent = self._tape_spent(str(sig), str(mint))
+        if spent is None:
+            return None
+        leaders = self.leaders(ts, spent)
+        if not leaders:
+            return None  # no sniper that follows a wallet buys at this size: no copy of ours, wherever it stands
         from .classify import COPY_SHAPE_SLOTS, leader_buy_at
 
-        row = leader_buy_at(self.store, str(mint), int(slot), int(pos), self.leaders(ts), COPY_SHAPE_SLOTS)
+        row = leader_buy_at(self.store, str(mint), int(slot), int(pos), leaders, COPY_SHAPE_SLOTS)
         if row is None:
             return None
         if sig:
@@ -162,20 +197,23 @@ class CopyShape:
     def fill(self, row: dict) -> str | None:
         """The same of a buy in `fills`: by the tape while it holds the trade, else by the measure stage's own reading
         off the blocks (landing_src "chain": the copied wallet it names, 0 to COPY_SHAPE_SLOTS blocks before ours and
-        not behind us in its block). A row handed over in part is read whole by its signature. A row the tape placed
-        that the tape no longer holds tells nothing (it names a copied wallet up to 150 slots before)."""
+        not behind us in its block; a list of blocks that could not be read leaves the slots between there,
+        chain_landing.read_landing) and the row's own size (`sol`, six decimals). A row handed over in part is read
+        whole by its signature. A row the tape placed that the tape no longer holds tells nothing (it names a copied
+        wallet up to 150 slots before)."""
         sig = str(row["sig"]) if row.get("sig") else None
         if sig:
             if sig in self._behind:
                 return self._behind[sig]
             mint = row.get("mint")
-            at = self.store._q("SELECT mint, slot, pos, ts FROM trades WHERE sig=? AND is_buy=1"
+            at = self.store._q("SELECT mint, slot, pos, ts, quote, fee FROM trades WHERE sig=? AND is_buy=1"
                                + (" AND mint=?" if mint else "") + " ORDER BY ev LIMIT 1",
                                (sig, str(mint)) if mint else (sig,))  # fmt: skip
-            who = self.tape(*at[0], sig=sig) if at else None
+            who = self.tape(*at[0][:4], sig=sig, spent=int(at[0][4]) + int(at[0][5])) if at else None
             if who:
                 return who
-        full = row if "landing_src" in row or not sig else (self.store.fill(sig) or row)
+        whole = ("landing_src" in row and "sol" in row) or not sig
+        full = row if whole else (self.store.fill(sig) or row)
         who, src, ahead = full.get("wallet_copied"), full.get("landing_src"), full.get("landing_verdict") == "ahead"
         if src != "chain" or not who or ahead:
             return None
@@ -185,8 +223,11 @@ class CopyShape:
             blocks = int(full["blocks_after"])
         except (KeyError, TypeError, ValueError):
             return None
+        spent = _lamports(full.get("sol"))
+        if spent is None or not 0 <= blocks <= COPY_SHAPE_SLOTS:
+            return None
         ts = full.get("ts") if full.get("ts") is not None else row.get("ts")
-        return str(who) if 0 <= blocks <= COPY_SHAPE_SLOTS and str(who) in self.leaders(ts) else None
+        return str(who) if str(who) in self.leaders(ts, spent) else None
 
 
 def _shape(marks: dict) -> CopyShape | None:
@@ -194,14 +235,25 @@ def _shape(marks: dict) -> CopyShape | None:
     return shape if shape else None
 
 
+def _spent(quote: Any, fee: Any) -> int | None:
+    """What a buy on the tape spent, in lamports: its quote and the venue's fee (models.Trade); None when either is
+    not handed."""
+    try:
+        return None if quote is None or fee is None else int(quote) + int(fee)
+    except (TypeError, ValueError):
+        return None
+
+
 def copied_tape_buy(t, marks: dict) -> str | None:
-    """The followed wallet a buy on the tape stands right behind (`CopyShape.tape`): None with none, with no wallet
-    followed, or for a trade that carries no place. Raises when the tape cannot be read."""
+    """The followed wallet a buy on the tape stands right behind at its sniper's size (`CopyShape.tape`): None with
+    none, with no wallet followed, or for a trade that carries no place. A trade handed without its amounts (`quote`,
+    `fee`) is sized off the tape by its signature. Raises when the tape cannot be read."""
     shape = _shape(marks)
     if shape is None:
         return None
     return shape.tape(getattr(t, "mint", None), getattr(t, "slot", None), getattr(t, "pos", None),
-                      getattr(t, "ts", None), getattr(t, "sig", None))  # fmt: skip
+                      getattr(t, "ts", None), getattr(t, "sig", None),
+                      _spent(getattr(t, "quote", None), getattr(t, "fee", None)))  # fmt: skip
 
 
 def copied_fill_buy(row: dict, marks: dict) -> str | None:
@@ -232,11 +284,11 @@ def _fee_buy(row: dict, marks: dict[str, frozenset]) -> bool:
 def bot_buy(row: dict, marks: dict[str, frozenset]) -> bool:
     """Whether a buy in `fills` is the bot's (the module's rule): one tied to a sniper, one whose fees are a sniper's
     whole (priority, tip) pair or unknown, as on the tape (`bot_tape_buy`), or one with a copy's shape
-    (`CopyShape.fill`: right behind a followed wallet's buy). A copied wallet on it (`wallet_copied`) says nothing
-    alone: the measure stage writes it on a buy of the wallet up to 150 slots after a copied wallet's buy of the coin,
-    the owner's hand buys too (22 Nov review), and the owner's own tool pays the snipers' 0.001 SOL priority (22 Nov
-    audit: 2Y2StBPj, 1,000,000 priority and a 16,000,000 tip, no sniper armed). A store that cannot be read for the
-    shape leaves the fees to decide, as before."""
+    (`CopyShape.fill`: right behind a followed wallet's buy, at its sniper's size). A copied wallet on it
+    (`wallet_copied`) says nothing alone: the measure stage writes it on a buy of the wallet up to 150 slots after a
+    copied wallet's buy of the coin, the owner's hand buys too (22 Nov review), and the owner's own tool pays the
+    snipers' 0.001 SOL priority (22 Nov audit: 2Y2StBPj, 1,000,000 priority and a 16,000,000 tip, no sniper armed).
+    A store that cannot be read for the shape leaves the fees to decide, as before."""
     if _fee_buy(row, marks):
         return True
     try:
@@ -268,8 +320,9 @@ def bot_sale_fees(row: dict, marks: dict[str, frozenset]) -> bool:
 def bot_tape_buy(t, marks: dict[str, frozenset]) -> bool:
     """Whether a buy on the tape (read with its fees, `Store.trades_for_user(fees=True)`) is the bot's: by its fees (a
     sniper's pair; unknown fees count as the bot's), or, at other fees, by a copy's shape (`CopyShape.tape`: right
-    behind a followed wallet's buy of the coin). A reader that hands over the fees alone, with no coin and place, is
-    told by the fees alone; so is every reader while the tape cannot be read for the shape."""
+    behind a followed wallet's buy of the coin, at the size its sniper buys at). A reader that hands over the fees
+    alone, with no coin and place, is told by the fees alone; so is one whose buy's size cannot be known (neither
+    handed nor on the tape under its signature), and every reader while the tape cannot be read for the shape."""
     if not marks["buy"]:
         return True
     paid = _paid(getattr(t, "priority", None), getattr(t, "tip", None), marks["buy"])
@@ -373,24 +426,26 @@ def _brought_in(tx: dict, wallet: str, mint: str) -> bool:
 def tape_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str, frozenset]) -> str | None:
     """Whose the wallet's holding of `mint` is by the tape: the newest buy of it by the wallet since `since_ts` and
     after the wallet's last sale of it (a buy before that sale belonged to a holding that has ended) says "ours" (a
-    sniper's fees, fees nobody recorded, or a copy's shape: `CopyShape.tape`) or "owner" (other fees, behind no
-    followed wallet); None with no such buy, or a tape that cannot be read. With no marks every coin is ours."""
+    sniper's fees, fees nobody recorded, or a copy's shape: `CopyShape.tape`) or "owner" (other fees, and behind no
+    followed wallet or at no size a sniper that follows it buys at); None with no such buy, or a tape that cannot be
+    read. With no marks every coin is ours."""
     if not marks["buy"]:
         return "ours"
     try:
         sold = store._q("SELECT slot, pos FROM trades WHERE user=? AND mint=? AND is_buy=0 "
                         "ORDER BY slot DESC, pos DESC LIMIT 1", (wallet, mint))  # fmt: skip
         s_slot, s_pos = sold[0] if sold else (-1, -1)
-        rows = store._q("SELECT priority, tip, slot, pos, ts, sig FROM trades WHERE user=? AND mint=? AND is_buy=1 "
-                        "AND ts>=? AND (slot>? OR (slot=? AND pos>?)) ORDER BY slot DESC, pos DESC LIMIT 1",
-                        (wallet, mint, int(since_ts), s_slot, s_slot, s_pos))  # fmt: skip
+        rows = store._q("SELECT priority, tip, slot, pos, ts, sig, quote, fee FROM trades WHERE user=? AND mint=? "
+                        "AND is_buy=1 AND ts>=? AND (slot>? OR (slot=? AND pos>?)) ORDER BY slot DESC, pos DESC "
+                        "LIMIT 1", (wallet, mint, int(since_ts), s_slot, s_slot, s_pos))  # fmt: skip
         if not rows:
             return None
-        priority, tip, slot, pos, ts, sig = rows[0]
+        priority, tip, slot, pos, ts, sig, quote, fee = rows[0]
         if _paid(priority, tip, marks["buy"]) is not False:
             return "ours"
         shape = _shape(marks)
-        return "ours" if shape is not None and shape.tape(mint, slot, pos, ts, sig) else "owner"
+        copied = shape is not None and shape.tape(mint, slot, pos, ts, sig, _spent(quote, fee))
+        return "ours" if copied else "owner"
     except Exception:  # noqa: BLE001 - not readable now: the chain, or the next reading
         return None
 
@@ -399,12 +454,12 @@ def owner_coins(store, wallet: str, held: list[dict], marks: dict[str, frozenset
     """The coins among `held` (the wallet's coins, open_positions rows) that are the owner's own beyond doubt, so that no
     sniper with `marks` holds any of them: every buy of the coin by the wallet since its last sale of it, on the tape and
     in the measure stage's fills (22 Nov: the owner's hand buys of H8WTvo3Z are in the fills and not on the tape), paid
-    fees that are none of `marks` and stood right behind no followed wallet's buy (the copy's shape, `CopyShape`), and
-    those buys brought in at least what the wallet holds of it now. A coin with no buy on record since its last sale
-    (an airdrop, a buy not written yet), with a buy of ours or one of unknown fees among them, or with more of it held
-    than they explain (a buy of ours not recorded yet) is not: what is held counts across every token account of the
-    coin (a row each; a seed account is a second one). With no marks none is; a coin whose records cannot be read is
-    not."""
+    fees that are none of `marks` and had no copy's shape (`CopyShape`: right behind a followed wallet's buy, at its
+    sniper's size), and those buys brought in at least what the wallet holds of it now. A coin with no buy on record
+    since its last sale (an airdrop, a buy not written yet), with a buy of ours or one of unknown fees among them, or
+    with more of it held than they explain (a buy of ours not recorded yet) is not: what is held counts across every
+    token account of the coin (a row each; a seed account is a second one). With no marks none is; a coin whose
+    records cannot be read is not."""
     if not marks["buy"]:
         return set()
     rows: dict[str, list[dict]] = {}
@@ -442,15 +497,17 @@ def _holding_buys(store, wallet: str, mint: str, marks: dict[str, frozenset]) ->
     transaction once): each with its tokens and whether it is the bot's ("ours")."""
     shape = _shape(marks)
     trades: dict[str, dict[str, Any]] = {}  # one transaction once, whichever record has it: the tape first
-    for sig, is_buy, ts, slot, pos, base, priority, tip in store._q(
-        "SELECT sig, is_buy, ts, slot, pos, base, priority, tip FROM trades WHERE user=? AND mint=?", (wallet, mint)
+    for sig, is_buy, ts, slot, pos, base, priority, tip, quote, fee in store._q(
+        "SELECT sig, is_buy, ts, slot, pos, base, priority, tip, quote, fee FROM trades WHERE user=? AND mint=?",
+        (wallet, mint),
     ):
         by_fees = not marks["buy"] or _paid(priority, tip, marks["buy"]) is not False
-        ours = bool(is_buy) and (by_fees or (shape is not None and shape.tape(mint, slot, pos, ts, sig) is not None))
+        ours = bool(is_buy) and (by_fees or (
+            shape is not None and shape.tape(mint, slot, pos, ts, sig, _spent(quote, fee)) is not None))  # fmt: skip
         trades.setdefault(sig, {"buy": bool(is_buy), "at": (int(ts), int(slot), int(pos)), "tokens": float(base or 0),
                                 "ours": ours})  # fmt: skip
-    cols = ("sig", "side", "ts", "slot", "tokens", "priority_lamports", "tip_lamports", "sniper_id", "wallet_copied",
-            "landing_src", "blocks_after", "landing_verdict")  # fmt: skip
+    cols = ("sig", "side", "ts", "slot", "sol", "tokens", "priority_lamports", "tip_lamports", "sniper_id",
+            "wallet_copied", "landing_src", "blocks_after", "landing_verdict")  # fmt: skip
     for row in store._q(
         f"SELECT {', '.join(cols)} FROM fills WHERE wallet=? AND mint=? AND side IN ('buy', 'sell')", (wallet, mint)
     ):
@@ -463,11 +520,32 @@ def _holding_buys(store, wallet: str, mint: str, marks: dict[str, frozenset]) ->
     return [t for t in trades.values() if t["buy"] and (sold is None or t["at"] > sold)]
 
 
+def _chain_spent(tx: dict, wallet: str, mint: str, services: dict[str, str] | None = None) -> int | None:
+    """What a transaction of the wallet's that brought `mint` in spent on it, in lamports, off the wallet's own
+    balances (chain_landing.read_fill: the quote and the venue's fee, as the tape's `quote + fee` and the fills' `sol`
+    have it; real curve buys read so to the lamport, tests/test_chain_landing.py). 0 for a coin that came in with no
+    pool paid (a claim, a move): no buy at all. None when the transaction cannot be read as one buy of this coin: the
+    size is then not known."""
+    from .chain_landing import read_fill
+
+    try:
+        fill = read_fill(tx, wallet, services, ours=True)
+    except Exception:  # noqa: BLE001 - a transaction the reader cannot take apart: not known
+        return None
+    if not fill or fill.get("mint") != mint:
+        return None  # another coin moved more in it: what this one cost cannot be told from the balances
+    if fill.get("side") == "transfer":
+        return 0
+    return _lamports(fill.get("sol")) if fill.get("side") == "buy" else None
+
+
 class RunCoins:
     """Whose each coin the wallet holds is, for one run of the runner: "ours" when the buy that brought it in paid one
     of `marks` (the run's snipers' fees, `sniper_marks`) or fees nobody recorded, or stood right behind a buy of a
-    wallet the run's snipers follow (the copy's shape, `CopyShape`), "owner" when it paid other fees behind no such
-    buy or another wallet sent the coin in, None while nothing tells yet. The tape's newest buy of the coin since
+    wallet the run's snipers follow at the size the sniper that follows it buys at (the copy's shape, `CopyShape`),
+    "owner" when it paid other fees and had no such shape (at a size none of the run's copy snipers buys at it is the
+    owner's at once, wherever it stands) or another wallet sent the coin in, None while nothing tells yet (a place or
+    a size that cannot be read yet is never "the owner's"). The tape's newest buy of the coin since
     `since_ts` says it (WHOSE_MARGIN_SECS); with none there, the chain's: the newest of the coin's token account's
     transactions that raised the wallet's balance of it (CHAIN_RETRY_SECS apart while it says nothing). An answer
     holds until the holding ends (`forget`). With no marks every coin is ours, as before. `odd`: each buy the chain
@@ -550,22 +628,29 @@ class RunCoins:
             if self._verdict(m.priority_lamports, m.tip_lamports) == "ours":
                 return "ours"
             at = {"slot": tx.get("slot", s.get("slot")), "blockTime": tx.get("blockTime", s.get("blockTime"))}
-            leader = await self._off_tape_copy(str(s["signature"]), at, mint, now)
+            # what it spent, off its own balances: asked only where a wallet is followed (the shape needs it)
+            spent = _chain_spent(tx, self.wallet, mint, learned) if _shape(self.marks) is not None else None
+            leader = await self._off_tape_copy(str(s["signature"]), at, mint, now, spent)
             if leader:
                 paid = {"priority": int(m.priority_lamports or 0), "tip": int(m.tip_lamports or 0)}
                 self.odd.append({"sig": str(s["signature"]), "mint": mint, "leader": leader} | paid)
             return None if leader is None else ("ours" if leader else "owner")
         return None
 
-    async def _off_tape_copy(self, sig: str, at: dict, mint: str, now: float | None) -> str | None:
+    async def _off_tape_copy(self, sig: str, at: dict, mint: str, now: float | None,
+                             spent: int | None = None) -> str | None:  # fmt: skip
         """Whether a buy the chain read found, at fees that are none of the marks, has a copy's shape: the followed
-        wallet it stands right behind, "" when it stands behind none (the owner's own buy), None while nothing can
-        tell (asked again CHAIN_RETRY_SECS later: until then the coin is nobody's, never the owner's). `at`: the buy's
-        slot and block time. Asked in turn: the measure stage's fill of the buy (it places every buy of the wallet,
-        from the tape or the blocks); the tape, for a followed wallet's buy of the coin in the slots just before the
-        buy's own; and, unless the buy is known to be older than CHAIN_SHAPE_SECS, the blocks themselves as the measure
-        stage reads them (chain_landing): the followed wallets' own buys of the coin around ours, and for one in our
-        own block which of the two ran first. A walk that finds none says "" only of a buy CHAIN_SETTLE_SECS old."""
+        wallet it stands right behind at its sniper's size, "" when it has none (the owner's own buy), None while
+        nothing can tell (asked again CHAIN_RETRY_SECS later: until then the coin is nobody's, never the owner's).
+        `at`: the buy's slot and block time. `spent`: what it spent, off its own transaction (`_chain_spent`; None:
+        not readable, and nothing is told). Asked in turn: the measure stage's fill of the buy (it places every buy
+        of the wallet, from the tape or the blocks; a reading it could not do whole wrote no landing, and tells
+        nothing here); the buy's size, which says "" at once when no followed wallet's sniper buys at it (no walk, no
+        wait: a hand buy is the owner's from the first look); the tape, for a buy of the coin by such a wallet in the
+        slots just before the buy's own; and, unless the buy is known to be older than CHAIN_SHAPE_SECS, the blocks
+        themselves as the measure stage reads them (chain_landing): those wallets' own buys of the coin around ours,
+        and for one in our own block which of the two ran first. A walk that finds none says "" only of a buy
+        CHAIN_SETTLE_SECS old."""
         shape = _shape(self.marks)
         if shape is None:
             return ""
@@ -577,16 +662,22 @@ class RunCoins:
             if who or row.get("landing_src"):  # placed by the measure stage: behind a followed wallet, or behind none
                 return who or ""
         slot, ts = at.get("slot"), at.get("blockTime")
+        if spent is None:
+            return None  # what it spent cannot be read: not known yet, as for a place that cannot
+        leaders = shape.leaders(ts, spent)
+        if not leaders:
+            return ""  # no sniper of ours that follows a wallet buys at this size: the owner's own, wherever it stands
         if slot is None:
             return None
-        who = shape.tape(mint, int(slot), -1, ts)  # an earlier block only: its place in its own block is not known here
+        # an earlier block only: its place in its own block is not known here
+        who = shape.tape(mint, int(slot), -1, ts, spent=spent)
         if who:
             return who
         if ts is not None and now is not None and float(now) - float(ts) > CHAIN_SHAPE_SECS:
             return ""  # too old to walk the followed wallets back to: its fees decide, as before
         from .chain_landing import _block_txs, _index, _leader_buys
 
-        found, short = await _leader_buys(self.rpc, sorted(shape.leaders(ts)), mint, sig, int(slot))
+        found, short = await _leader_buys(self.rpc, sorted(leaders), mint, sig, int(slot))
         before = [b for b in found if 0 < int(slot) - int(b["slot"]) <= COPY_SHAPE_SLOTS]
         if before:
             return str(max(before, key=lambda b: int(b["slot"]))["leader"])
