@@ -197,10 +197,12 @@ class CopyShape:
     def fill(self, row: dict) -> str | None:
         """The same of a buy in `fills`: by the tape while it holds the trade, else by the measure stage's own reading
         off the blocks (landing_src "chain": the copied wallet it names, 0 to COPY_SHAPE_SLOTS blocks before ours and
-        not behind us in its block; a list of blocks that could not be read leaves the slots between there,
-        chain_landing.read_landing) and the row's own size (`sol`, six decimals). A row handed over in part is read
-        whole by its signature. A row the tape placed that the tape no longer holds tells nothing (it names a copied
-        wallet up to 150 slots before)."""
+        not behind us in its block) and the row's own size (`sol`, six decimals). A landing whose blocks could not be
+        listed keeps the slot distance as its `blocks_after` (chain_landing.read_landing: never fewer than there
+        were), so it is a shape only when the two buys are that few slots apart, the tape's own rule; `fills` has no
+        column that says a landing was incomplete. A row handed over in part is read whole by its signature. A row
+        the tape placed that the tape no longer holds tells nothing (it names a copied wallet up to 150 slots
+        before)."""
         sig = str(row["sig"]) if row.get("sig") else None
         if sig:
             if sig in self._behind:

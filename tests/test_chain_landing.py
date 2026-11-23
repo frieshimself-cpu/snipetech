@@ -108,6 +108,75 @@ def test_a_gap_of_more_than_five_blocks_is_said_and_the_count_is_a_floor():
     assert r["place"] == 5 and "at least" in CL.render([r])
 
 
+def _no_list(chain: Chain, answer=None) -> Chain:
+    """The chain with a list of blocks that cannot be read: the call fails, or answers `answer(lo, hi)`."""
+
+    async def get_blocks(start_slot, end_slot):
+        chain.calls.append(("getBlocks", start_slot, end_slot))
+        if answer is None:
+            raise RuntimeError("node refused")
+        return answer(start_slot, end_slot)
+
+    chain.get_blocks = get_blocks
+    return chain
+
+
+@pytest.mark.parametrize("answer", [None, lambda lo, hi: [], lambda lo, hi: [hi]],
+                         ids=["the call fails", "an empty answer", "an answer without the copied block"])  # fmt: skip
+def test_a_list_of_blocks_that_cannot_be_read_is_not_the_next_block(answer):
+    """S2 (audit round 3). When getBlocks failed or answered nothing, the two ends alone were "the blocks that exist":
+    `blocks_after` 1 for any distance up to 150 slots, the place counted from two blocks, and the landing called
+    complete. The fills keep that for good, and a buy a minute behind a copied wallet read as one block behind it (a
+    copy, to whoever asks the fills whose a buy is). With no list there is at the most a block a slot: the slot
+    distance, and the slots between are unread."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    for k in (20, 60):  # buyers in blocks between that nobody reads
+        chain.put(S + k, swap(f"mid{k}", key(f"buyer {k}"), COIN, tokens=100_000_000, sol=0.2, priority=0.004))
+    chain.put(S + 100, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    r = _run(CL.read_landing(_no_list(chain, answer), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["leader"] == LEAD and r["leader_buy"]["sig"] == sig("lead") and r["slots_after"] == 100
+    assert r["blocks_after"] == 100
+    assert not r["complete"] and r["blocks_unread"] == 99 and r["blocks_read"] == 2
+    assert r["place"] == 0 and "at least 0" in CL.render([r])  # a floor, and said so
+    assert CL.fill_fields(r)["blocks_after"] == 100  # what the fills keep
+
+
+def test_a_list_that_names_some_blocks_between_is_read_for_them_and_still_says_what_it_lacks():
+    """S2: an answer that lacks one of the two blocks we know exist (each holds one of the two buys) was not read
+    whole. The blocks it does name are read for their buyers; the count of blocks stays the slot distance."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(S + 2, swap("mid", key("a buyer between"), COIN, tokens=100_000_000, sol=0.2, priority=0.004))
+    chain.put(S + 9, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    r = _run(CL.read_landing(_no_list(chain, lambda lo, hi: [S + 2, hi]), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["blocks_after"] == 9 and not r["complete"] and r["blocks_unread"] == 7 and r["blocks_read"] == 3
+    assert [b["wallet"] for b in r["buyers_ahead"]] == [key("a buyer between")] and r["place"] == 1
+
+
+@pytest.mark.parametrize("our_slot", [S, S + 1], ids=["one block", "adjacent blocks"])
+def test_two_buys_in_one_block_or_in_adjacent_ones_need_no_list_of_blocks(our_slot):
+    """S2: where every copy on record landed (the copied wallet's block or the next slot) nothing lies between, so a
+    list that cannot be read changes nothing, and none is asked for."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    chain.put(our_slot, swap("ours", ME, COIN, tokens=38_000_000, sol=0.05, priority=0.005, tip=0.03))
+    r = _run(CL.read_landing(_no_list(chain), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["blocks_after"] == our_slot - S and r["complete"] and r["blocks_unread"] == 0
+    assert r["place"] == 0 and r["verdict"] == "first"
+    assert not [c for c in chain.calls if c[0] == "getBlocks"]
+
+
+def test_a_copy_ahead_of_its_leader_with_no_list_of_blocks_is_not_one_block_ahead_either():
+    """S2, the other side: a buy of ours that landed before the copied wallet's own, three slots before it."""
+    chain = Chain()
+    chain.put(S, swap("ours", ME, COIN, tokens=60_000_000, sol=0.05, priority=0.005, tip=0.03))
+    chain.put(S + 3, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))
+    r = _run(CL.read_landing(_no_list(chain), sig("ours"), LEAD, mates=set(), own={ME}))
+    assert r["ahead_of_leader"] and r["verdict"] == "ahead" and r["blocks_after"] == -3
+    assert not r["complete"] and r["blocks_unread"] == 2
+
+
 def test_first_behind_the_wallet_and_every_buyer_ahead_bidding_more():
     chain = Chain()
     chain.put(S, swap("lead", LEAD, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002))

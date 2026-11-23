@@ -360,3 +360,70 @@ def test_a_coin_that_came_in_for_no_sol_is_no_copy():
     now = chain.ts(S + 1) + 6
     held = COIN_HELD | {"account": key(f"ata {vest} {COIN}")}  # the account the coins went into, as token_move names it
     assert asyncio.run(coins.whose(held, now - 300, now)) == "owner" and not _walked(chain)
+
+
+# -- S2: a list of blocks that could not be read is not "the next block" ----------------------------------------------
+
+
+def _measured_row(chain, name, leaders=(CW,)):
+    """The fills row the measure stage writes for the buy `name` of ours that the tape does not hold, from the chain
+    reading (measure/run._chain_row: our side as read_fill gives it, the landing's columns from fill_fields)."""
+    from .chain import sig
+
+    landing = asyncio.run(CL.read_landing(chain, sig(name), list(leaders), wallet=ME, own={ME}))
+    return landing, {"sig": sig(name), "ts": int(landing["ts"]), "slot": int(landing["slot"]), "wallet": ME,
+                     "mint": landing["mint"], "side": "buy", "sol": round(float(landing["sol"]), 6),
+                     "tokens": float(landing["tokens"]), "priority_lamports": landing["priority_lamports"],
+                     "tip_lamports": landing["tip_lamports"]} | CL.fill_fields(landing)  # fmt: skip
+
+
+def _refuse_blocks(chain):
+    async def get_blocks(start_slot, end_slot):
+        raise RuntimeError("node refused")
+
+    chain.get_blocks = get_blocks
+    return chain
+
+
+def _sniper_store(payload=COPY):
+    """A store with a copy sniper of the fake chain's copied wallet on record, made a day before its blocks."""
+    store = Store(":memory:")
+    store.add_oktech_sniper({"id": "cs1", "external_id": "cs1", "kind": "copy", "source": CW, "name": "copy",
+                             "config_hash": "h", "created_at": Chain().ts(S) - 86_400, "payload": payload})  # fmt: skip
+    return store
+
+
+def test_a_hand_buy_a_minute_behind_a_copied_wallet_is_no_copy_because_the_blocks_could_not_be_listed():
+    """S2: the owner's hand buy 100 slots (40 s) behind a copied wallet's buy of a coin the tape does not hold, at
+    exactly the sniper's 1 SOL (so its size does not tell it apart). The measure stage read its landing while
+    getBlocks failed, wrote `blocks_after` 1 on the fill, and every reader of the fills took it for a copy from then
+    on (CopyShape.fill trusts 0 to 3 blocks): counted by the day guard, a reason for /stop to keep snipers running.
+    The landing now says how far apart the two buys are (the slot distance) and that it is incomplete."""
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S + 100, swap("hand", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.000006121, tip=0.026993879))
+    landing, row = _measured_row(_refuse_blocks(chain), "hand")
+    assert not landing["complete"] and row["wallet_copied"] == CW and row["landing_src"] == "chain"
+    assert row["blocks_after"] == 100
+    store = _sniper_store()
+    marks = fee_marks(store)
+    assert not bot_buy(row, marks) and odd_fill(row, marks) is None
+    store.put_fill(row)
+    assert owner_coins(store, ME, [{"mint": COIN, "raw": 38_000_000}], marks) == {COIN}
+    assert not bot_bought(store, ME, COIN, marks)
+    store.close()
+
+
+def test_a_copy_two_slots_behind_is_still_a_copy_when_the_blocks_could_not_be_listed():
+    """S2 turns no copy into the owner's coin: with no list of blocks the fills keep the slot distance, and two slots
+    behind the copied wallet is inside the shape's three slots by the tape's own rule (COPY_SHAPE_SLOTS counts
+    slots). A sniper is never stopped beside such a coin because one RPC call failed."""
+    chain = Chain()
+    chain.put(S, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S + 2, swap("ours", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.0015, tip=0.12))
+    landing, row = _measured_row(_refuse_blocks(chain), "ours")
+    assert not landing["complete"] and landing["blocks_unread"] == 1 and row["blocks_after"] == 2
+    store = _sniper_store()
+    marks = fee_marks(store)
+    assert bot_buy(row, marks) and odd_fill(row, marks) == CW
+    store.close()

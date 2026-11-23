@@ -365,14 +365,16 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
 
     The row: our own side as `read_fill` gives it and `our_bid_sol`; `leader`, `leader_buy` (None with `leader_note`
     when no copied wallet bought the coin before us); `blocks_after` (0: the leader's own block; the blocks that
-    exist in between, `slots_after` the slots), `place` (the outsiders' buys between the leader's and ours; 0: first
-    behind it), `buyers_ahead` in the order they ran, `failed_ahead`, `companions_ahead`, `own_ahead`, `pack_ahead`
-    (the buys of the leader's own pack: the transactions right behind its own, back to back, each with buys of
-    PACK_TX_WALLETS wallets or more, and a later buy in that block by a wallet that bought in the pack or in the
-    leader's own transaction; listed and not counted, like its companions'),
+    exist in between, `slots_after` the slots; with `blocks_listed` False the list of those blocks could not be read,
+    and it is the slot distance: at the most that many), `place` (the outsiders' buys between the leader's and ours;
+    0: first behind it), `buyers_ahead` in the order they ran, `failed_ahead`, `companions_ahead`, `own_ahead`,
+    `pack_ahead` (the buys of the leader's own pack: the transactions right behind its own, back to back, each with
+    buys of PACK_TX_WALLETS wallets or more, and a later buy in that block by a wallet that bought in the pack or in
+    the leader's own transaction; listed and not counted, like its companions'),
     `highest_bid_ahead_sol` / `median_bid_ahead_sol`, `bid_more` / `bid_less` / `bid_unclear` and the `verdict`
     (VERDICT_WORDS), `price_gap_pct` (our price over the leader's, percent) with `price_from`, and `complete`: False
-    when more blocks lay between than MAX_BLOCKS (`blocks_unread`: the place is a floor then)."""
+    when more blocks lay between than MAX_BLOCKS, when one of them could not be read, or when they could not be
+    listed (`blocks_unread`: the place is a floor then)."""
     leaders = [leaders] if isinstance(leaders, str) else list(dict.fromkeys(leaders))
     labels = labels or {}
     tx = tx or await rpc.get_transaction(sig)
@@ -391,6 +393,7 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
     out: dict[str, Any] = {
         **fill, "sig": sig, "our_bid_sol": our_bid / LAMPORTS, "leader": None, "leader_buy": None, "leader_note": None,
         "blocks_after": None, "slots_after": None, "blocks_read": 0, "blocks_unread": 0, "complete": True,
+        "blocks_listed": True,
         "ahead_of_leader": False, "place": None, "buyers_ahead": [], "failed_ahead": [], "companions_ahead": [],
         "pack_ahead": [], "own_ahead": [], "companions": "unknown", "highest_bid_ahead_sol": None,
         "median_bid_ahead_sol": None,
@@ -425,15 +428,26 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
     leader = lead["leader"]
     lead_fill = read_fill(lead["tx"], leader, services)
     lo, hi = sorted((lead["slot"], slot))
-    try:
-        slots = sorted(int(s) for s in (await rpc.get_blocks(lo, hi)) or [])
-    except Exception:  # noqa: BLE001 - the list of blocks is a convenience: without it, the two ends
-        slots = []
-    slots = sorted(set(slots) | {lo, hi})
-    blocks_after = len(slots) - 1
+    # The blocks that exist from the copied buy's to ours. Two buys in one block or in adjacent slots have none
+    # between, and need no list. Further apart, a list that could not be read (the call failed, or its answer lacks
+    # one of the two blocks we know exist: each holds one of the two buys) is not "the next block": there is at the
+    # most a block a slot, so the count is the slot distance, and the slots between that it does not name are unread
+    # (23 Nov audit: `blocks_after` was 1 for any distance up to 150 slots, the fills kept that for good, and a hand
+    # buy a minute behind a copied wallet read as a copy one block behind it).
+    listed: set[int] = set()
+    if hi - lo > 1:
+        try:
+            listed = {int(s) for s in (await rpc.get_blocks(lo, hi)) or []}
+        except Exception:  # noqa: BLE001 - no list: the two ends are read, and the landing says what it lacks
+            listed = set()
+    whole_list = hi - lo <= 1 or {lo, hi} <= listed
+    slots = sorted({s for s in listed if lo <= s <= hi} | {lo, hi})
+    blocks_after = len(slots) - 1 if whole_list else hi - lo
+    unlisted = 0 if whole_list else (hi - lo + 1) - len(slots)
     known = _mates_of(mates, leader)
     out |= {"leader": leader, "ahead_of_leader": not before, "blocks_after": blocks_after if before else -blocks_after,
-            "slots_after": slot - lead["slot"], "companions": "unknown" if known is None else "known"}  # fmt: skip
+            "slots_after": slot - lead["slot"], "companions": "unknown" if known is None else "known",
+            "blocks_listed": whole_list, "blocks_unread": unlisted, "complete": unlisted == 0}  # fmt: skip
     if lead_fill and lead_fill["price"] and fill["price"]:
         ours_p, lead_p, src = fill["price"], lead_fill["price"], fill["price_from"]
         if lead_fill["price_from"] != src:  # one of the two has no pool side: both from the wallets' own SOL
@@ -453,7 +467,7 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
         return out
     read = slots if len(slots) <= MAX_BLOCKS else slots[: MAX_BLOCKS - 1] + slots[-1:]
     mates_set, own_set = set(known or ()), set(own) | {wallet}
-    unread = len(slots) - len(read)
+    unread = len(slots) - len(read) + unlisted
     for n, s in enumerate(slots):
         if s not in read:
             continue
@@ -707,7 +721,10 @@ def render(rows: list[dict[str, Any]]) -> str:
                          f"{len(r['own_ahead'])} of our own wallets")  # fmt: skip
         if r.get("leader") and r["companions"] == "unknown":
             extra.append("the wallet's companions are unknown (the tape holds too few of its buys)")
-        if not r["complete"]:
+        if not r["complete"] and not r.get("blocks_listed", True):
+            extra.append(f"the blocks in between could not be listed: up to {r['blocks_unread']} were not read, and "
+                         "blocks after is the slots between the two buys")  # fmt: skip
+        elif not r["complete"]:
             extra.append(f"{r['blocks_unread']} blocks in between were not read (at most {MAX_BLOCKS} are)")
         if r.get("failed_sends"):
             extra.append(
