@@ -584,3 +584,82 @@ def test_no_rearm_while_the_run_holds_tokens_of_a_coin_the_owner_holds_too(monke
                        tape=[_hand(T0 - 3600, mint=OWN, sol=3.0), _copy(T0 + 100, mint=OWN, sol=3.0)], floor=None,
                        max_loss=2.0, rearm_after=1800, minutes=4)  # fmt: skip
     assert not [t for kind, _i, t in client.timed if kind in ("start", "stop") and T0 + 100 < t < T0 + 230]
+
+
+# -- round 2 of the audit (23 Nov), A1: a copy at fees no payload names is still the run's ----------------------------
+
+ODD = (1_500_000, 120_000_000)  # a (priority, tip) pair no payload names: OKTech changing what it pays
+COPIES = FEES | {"ctbotWallets": [{"address": LEADER}]}  # the run's snipers copy LEADER
+
+
+def _lead(ts, mint=OURS, slots=1):
+    """The copied wallet's buy of the coin, `slots` slots before a buy of ours at `ts`."""
+    from dataclasses import replace
+
+    return replace(_buy(ts, mint, 2.0, 5_000, 0), sig=f"lead{next(_sigs)}", user=LEADER,
+                   slot=100_000 + int(ts - T0) - slots, pos=3)  # fmt: skip
+
+
+def _held_from_102(now):
+    return [_coin(OURS, 1.0)] if now >= T0 + 102 else []
+
+
+def _sol_from_100(now):
+    return 10.0 if now < T0 + 100 else 9.0
+
+
+def test_a_copy_at_fees_no_payload_names_is_counted_and_sold_by_the_run_and_said_once(monkeypatch):
+    """A1: a copy that paid a fee pair no payload names read as the owner's coin: no fill of the run's, never sold past
+    --sweep-after. One slot behind the copied wallet's buy it has a copy's shape: the run's in full, and the run says
+    once that OKTech paid fees no sniper of ours is set to pay."""
+    sweeps = []
+
+    def coins(now):
+        return [_coin(OURS, 1.0)] if T0 + 102 <= now < T0 + 150 else []
+
+    rep, client = _run(monkeypatch, _sol_from_100, coins=coins, payload=COPIES,
+                       tape=[_lead(T0 + 100), _buy(T0 + 100, OURS, 1.0, *ODD)], sweeps=sweeps, sweep_after=20,
+                       minutes=4)  # fmt: skip
+    assert [m for m, _t in sweeps] == [OURS]
+    assert rep["fills"] == 1 and rep["owner_coins"] == []
+    assert not [t for _kind, _i, t in client.timed if T0 + 100 < t < T0 + 150]  # nothing touched while it was held
+    said = [e for e in rep["events"] if "paid fees no sniper of ours is set to pay" in e]
+    assert len(said) == 1 and "CyaE1V" in said[0] and "priority 0.0015, tip 0.12 SOL" in said[0], rep["events"]
+
+
+def test_a_copy_at_fees_no_payload_names_keeps_its_snipers_armed_to_the_end(monkeypatch):
+    """A1, CLAUDE.md rule 1: read as the owner's coin, it kept no sniper running: the end stopped both while one of
+    them held it. It is held as the run's: nothing is re-armed or stopped while it is, at the end either."""
+    rep, client = _run(monkeypatch, _sol_from_100, coins=_held_from_102, payload=COPIES,
+                       tape=[_lead(T0 + 100), _buy(T0 + 100, OURS, 1.0, *ODD)], rearm_after=60, minutes=4)  # fmt: skip
+    assert not [t for _kind, _i, t in client.timed if t > T0 + 100], client.timed
+    assert rep["left_running"] == sorted(SNIPER_IDS) and rep["owner_coins"] == []
+    assert [h["mint"] for h in rep["held"]] == [OURS]
+
+
+def test_a_copy_at_fees_no_payload_names_is_placed_behind_the_copied_wallet(monkeypatch):
+    """A1: --place-stop places the run's copies; one read as the owner's was never placed."""
+
+    def coins(now):
+        return [_coin(OURS, 1.0)] if T0 + 102 <= now < T0 + 130 else []
+
+    rep, _client = _run(monkeypatch, _sol_from_100, coins=coins, payload=COPIES,
+                        tape=[_lead(T0 + 100), _buy(T0 + 100, OURS, 1.0, *ODD)], place_stop=(1, 1), place_max=1,
+                        minutes=5)  # fmt: skip
+    assert [(p["leader"], p["trades_behind"], p["bad"]) for p in rep["places"]] == [(LEADER, 0, False)]
+
+
+def test_the_owners_hand_buy_twenty_slots_behind_a_copied_wallet_is_still_left_alone(monkeypatch):
+    """A1 turns no hand buy into a copy: eight seconds behind a wallet the run copies, at the owner's own fees, the
+    coin is theirs: never sold, counted or waited on."""
+    sweeps = []
+
+    def coins(now):
+        return [_coin(OWN, 2.0)] if now >= T0 + 102 else []
+
+    rep, client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 8.0, coins=coins, payload=COPIES,
+                       tape=[_lead(T0 + 100, OWN, slots=20), _hand(T0 + 100)], sweeps=sweeps, sweep_after=20,
+                       rearm_after=60, minutes=6)  # fmt: skip
+    assert sweeps == [] and rep["fills"] == 0 and rep["owner_coins"] == [OWN]
+    assert _starts(client, T0 + 160) and rep["left_running"] == []
+    assert not [e for e in rep["events"] if "paid fees no sniper" in e]

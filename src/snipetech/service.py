@@ -1416,7 +1416,9 @@ class Service:
 
         The wallet is the owner's too: they buy, sell and send coins in it by hand while a run is on. A coin is the
         run's only when the buy that brought it in paid the fees its snipers pay, or fees nobody recorded
-        (measure/ours.RunCoins: the tape's buy since the coin showed, else the chain's); the owner's own coins are left
+        (measure/ours.RunCoins: the tape's buy since the coin showed, else the chain's), or stood right behind a buy
+        of a wallet they copy whatever it paid (the copy's shape, measure/ours.CopyShape: OKTech varies what it pays,
+        and a copy at fees no payload names is said once, `say_odd`); the owner's own coins are left
         alone, never sold by the run, counted as its fills, placed as its copies, or a reason to hold a re-arm back or
         keep a sniper running, and the floor counts each at its worth when first known as theirs and moves with it
         when it leaves (`owner_coins` in the report). A coin of the run's the owner bought into by hand is sold by the
@@ -1497,10 +1499,18 @@ class Service:
         hold_secs = RUN_HOLD_MAX_SECS
         if sweep_after is not None:  # and long enough for the run's own sale of them, tried twice
             hold_secs = max(hold_secs, float(sweep_after) + 2 * SWEEP_RETRY_SECS)
-        from .measure.ours import WHOSE_MARGIN_SECS, RunCoins, bot_tape_buy, sniper_marks
+        from .measure.ours import (
+            WHOSE_MARGIN_SECS,
+            RunCoins,
+            bot_tape_buy,
+            odd_fees_line,
+            odd_tape_buys,
+            sniper_marks,
+        )
 
-        # whose each coin in the wallet is: the run's (its snipers' fees on the buy) or the owner's own (measure/ours.py)
-        run_marks = sniper_marks(((mine.get(i) or {}).get("payload") or {}) for i in ids)
+        # whose each coin in the wallet is: the run's (its snipers' fees on the buy, or a buy right behind one of the
+        # wallets they copy, whatever it paid: the copy's shape) or the owner's own (measure/ours.py)
+        run_marks = sniper_marks((((mine.get(i) or {}).get("payload") or {}) for i in ids), store=self.store)
         coins = RunCoins(self.store, self.rpc, address, run_marks)
         client = self._oktech()
         events: list[str] = []
@@ -1797,6 +1807,20 @@ class Service:
         # the owner's own coins missing from the readings in a row: one is gone only when two agree (a node can leave a
         # coin out of one reply: 22 Nov review, a 3 SOL coin left out once moved the floor down by 3 for the whole run)
         owner_miss: dict[str, int] = {}
+        odd_said: set[str] = set()  # the buys said to have paid fees no sniper of the run's is set to pay, once each
+
+        def say_odd() -> None:
+            """Say once each buy of the run's that is its own by its shape alone: right behind a buy of a wallet its
+            snipers copy, at fees none of them is set to pay (23 Nov audit: OKTech varies what it pays; read as the
+            owner's, such a copy was not counted or sold, and its sniper could be stopped while it held the coin)."""
+            try:
+                rows = odd_tape_buys(self.store, address, t0, run_marks) + coins.odd
+            except Exception:  # noqa: BLE001 - the tape cannot say now: said at a later reading
+                rows = list(coins.odd)
+            for r in rows:
+                if r["sig"] not in odd_said:
+                    odd_said.add(r["sig"])
+                    log(f"copy in {r['mint']}: {odd_fees_line(r['leader'], r['priority'], r['tip'])}")
 
         async def sort_coins(held_all: list[dict], now: float, since: float | None = None):
             """(the run's coins among `held_all`: bought by its snipers, or not known yet; the owner's own coins first
@@ -1865,6 +1889,7 @@ class Service:
                 log(f"{m} is the owner's own coin (the buy that brought it in paid none of this run's snipers' fees): "
                     f"left alone, never sold, counted or waited on by the run; the floor counts it at {v:.4f} SOL "
                     "while it is held")  # fmt: skip
+            say_odd()
             return run_coins, new_owner, gone
 
         async def sale_landed(sig: str) -> bool | None:
