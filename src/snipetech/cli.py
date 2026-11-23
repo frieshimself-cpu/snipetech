@@ -547,7 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--latency", type=int, help="your landing latency in slots (buy and sell)")
     sp.add_argument("--no-refresh", action="store_true")
 
-    sp = cmd("copy-rank", "rank several copy targets")
+    sp = cmd("copy-rank", "rank the wallets given (arguments or --file) as copy targets; refused with none")
     sp.add_argument("wallets", nargs="*")
     sp.add_argument("--file", help="file with one wallet per line")
     sp.add_argument("--days", type=float)
@@ -1920,6 +1920,10 @@ async def _run(args, cfg: Config) -> int:
                 wallets += [
                     w.strip() for w in Path(args.file).read_text().splitlines() if w.strip() and not w.startswith("#")
                 ]
+            if not wallets:  # agents' I643: an empty ranking read as a broken command
+                raise SystemExit("copy-rank: give the wallets to rank (as arguments or --file); it ranks those as "
+                                 "copy targets. Who is copied most, by the outsiders in their block: place-bids "
+                                 "--each")  # fmt: skip
             if args.source == "birdeye":
                 _provider_or_exit(cfg, "birdeye")
                 from .birdeye import Birdeye

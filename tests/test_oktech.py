@@ -2488,3 +2488,16 @@ def test_book_mcap_help_and_printout_say_the_cap_is_on_our_own_fill(tmp_path, ca
     rc = cli.main(["--db", str(tmp_path / "snipetech.db"), "book", "mcap", "W1111111111111111111111111111111", "60"])
     out = capsys.readouterr().out
     assert rc == 0 and "our own fill below 60 SOL" in out
+
+
+def test_copy_rank_without_wallets_says_what_to_give_instead_of_ranking_nothing(tmp_path, capsys):
+    """Agents' I643: copy-rank --json answered [] twice (21 and 22 Nov) and the scout could not tell an empty ranking
+    from a broken command. It ranks the wallets it is given; with none it now says so and names the command that
+    answers who is copied most (place-bids --each)."""
+    from snipetech import cli
+
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--db", str(tmp_path / "snipetech.db"), "copy-rank", "--json"])
+    assert e.value.code not in (0, None)
+    said = str(e.value.code) + capsys.readouterr().err
+    assert "give the wallets" in said and "place-bids --each" in said
