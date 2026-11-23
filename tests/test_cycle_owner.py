@@ -649,6 +649,14 @@ def test_a_copy_at_fees_no_payload_names_keeps_its_snipers_armed_to_the_end(monk
     assert [h["mint"] for h in rep["held"]] == [OURS]
 
 
+def test_a_copy_at_fees_no_payload_names_held_at_the_start_refuses_the_run(monkeypatch):
+    """A1: a run stops and starts its snipers when it begins, so it never begins while one of them holds a coin. An
+    earlier run's copy at fees no payload names read as the owner's coin, and the next run began beside it."""
+    with pytest.raises(SystemExit, match="not cycling"):
+        _run(monkeypatch, lambda now: 9.0, coins=lambda now: [_coin(OURS, 1.0)], payload=COPIES,
+             tape=[_lead(T0 - 600), _buy(T0 - 600, OURS, 1.0, *ODD)])  # fmt: skip
+
+
 def test_a_copy_at_fees_no_payload_names_is_placed_behind_the_copied_wallet(monkeypatch):
     """A1: --place-stop places the run's copies; one read as the owner's was never placed."""
 
