@@ -996,7 +996,10 @@ What changed (code on the branch, each piece with its tests; README "How the boo
   is **paused after 5 losing live copies**; **one sniper per leader**; each wallet is copied only on **buys of its own
   floor or more** (the lab's `copy_plan.min_leader_sol`); the paid arm is retired.
 - **The unsold-coin watch**: a Telegram line within about a minute when a held coin's exit was due and nothing sold
-  it, repeated every 15 minutes while held. It never sells.
+  it, repeated every 15 minutes while held. It never sells. (Since the audit of 22 Nov it tells whose the coin is: a
+  coin the owner bought by hand gets one line a day as theirs, with no /sell line; a copy of ours that only the
+  measure stage's fills hold, an older PumpSwap coin, gets the 15-minute alert, not the airdrop line.
+  docs/architecture.md, "Whose trade, whose coin".)
 - **The lab simulates the live sniper**: measured slot time, OKTech's watch delay (1.3 s), the copy exit, the exit the
   book sends, the real round-trip cost. It reproduces 11 of 12 of today's OKTech-sold copies within 2 slots and their
   proceeds within 0.2 %. Every verdict written before this fix is re-qualified first; until then the book copies none.
@@ -1328,7 +1331,8 @@ Consequences for the plan:
   `3fe27cc4b7`: +0.181 over 204 trades (bound +0.162). The lab over the whole 19.6 h tape agrees (+0.121 / +0.192 on
   the newer 40%).
 - OKTech trigger NOT solved: live probes (19:46–20:12) show `hunt` and `crowdBuys` do not gate; with monitorProgram the sniper buys every launch (see live-recipe.md).
-- Sells are safe: snipers cap their own buys and keep selling; the guard only stops in an emergency.
+- Sells are safe: snipers cap their own buys and keep selling; the guard only stops in an emergency. (Since the
+  audit of 22 Nov not even then while a coin is held: it stops its snipers once the wallet holds nothing they bought.)
 - The owner's tracked-wallet list (2,626 Solana addresses: KOLs, devs, snipers, bundles, cabals) is loaded as labels
   (`label --file inputs/tracked_labels.tsv --kind wallet`) and studied below.
 
