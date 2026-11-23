@@ -588,7 +588,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                     notes.write(f"{sig}{size}{exit_} — {a.reason}", "info")
         if act_on_stops and plan.kill_reason:  # stops of non-holders are safety, not new money: on or off
             for a in stops:
-                await _do(svc, notifier, notes, "stop", a, store, now)
+                await _stop(svc, wallet, notifier, notes, a, store, now, strays, unrecorded)
         record_run(store, plan, True, now, **seen)
         _watch(cfg, store, notifier, notes, wallet, holdings, snipers, now)
         return {
@@ -601,7 +601,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     # live: stop → retire (stop, delete) → create → start
     for a in plan.actions:
         if a.kind == "stop" and a.sniper_id:
-            await _do(svc, notifier, notes, "stop", a, store, now)
+            await _stop(svc, wallet, notifier, notes, a, store, now, strays, unrecorded)
     not_replaced: set[str] = set()  # wallets whose old sniper is still there: no second one this run
     for a in plan.actions:
         if (
@@ -738,6 +738,33 @@ async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | 
     record), by its own balances and by the tape (a buy seconds old); holdings that cannot be read count as held."""
     coins = await _coins_held(svc, wallet, strays, store, blind)
     return coins is None or bool(coins) or _tape_holds(store, wallet, now)
+
+
+STOP_READ_SECS = 20.0  # the wallet's reading before a stop, at most: past it the wallet is not known, and nothing stops
+
+
+async def _stop(svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store, now: float,
+                strays: set[str] | frozenset = frozenset(),
+                unrecorded: set[str] | frozenset = frozenset()) -> bool:  # fmt: skip
+    """Stop a sniper the plan found to hold nothing, once the wallet, read again now, says the same; whether it was
+    asked to stop. The plan's reading is seconds old by then (OKTech, the tape and the records are read after it), and
+    a copy that landed in between is held by the very sniper about to be stopped: a stopped sniper sells nothing (rule
+    1). Since the owner's own coin keeps no book sniper running, that gap is open beside it too (review of the second
+    round of the 22 Nov audit). A wallet that holds a coin one of ours may hold now (`_holds_a_coin`: by its balances
+    and by the tape), or that does not answer in STOP_READ_SECS, stops nothing: the next run plans again."""
+    try:
+        held = await asyncio.wait_for(
+            _holds_a_coin(svc, wallet, store, float(now or 0), strays, a.sniper_id in unrecorded), STOP_READ_SECS
+        )
+    except Exception:  # noqa: BLE001 - no answer in time: not known, and unknown holdings never stop a sniper
+        held = True
+    if held:
+        sig = f"[book] stop {(a.wallet or '')[:6]} ({a.sniper_id}) waits"
+        if not notes.has_today(sig, now):
+            notes.write(f"{sig}: the wallet holds a coin now (or could not be read); the next run looks again", "info")
+        return False
+    await _do(svc, notifier, notes, "stop", a, store, now)
+    return True
 
 
 # A retire undone by a coin bought while its stop went out starts the sniper again (a stopped sniper sells nothing):

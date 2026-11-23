@@ -630,3 +630,85 @@ def test_b8_the_failed_restart_line_promises_only_what_the_next_run_does(tmp_pat
     assert plan(ranked) == ["start"]  # still copied, a coin held: started so it can sell it
     assert plan([]) == []  # its wallet left the ranking: not started (the owner's call)
     assert plan(ranked, stopped=True) == []  # under the owner's /stop nothing starts
+
+
+# -- the review of this round's fixes ---------------------------------------------------------------------------------
+
+OURS = "Ours" + "o" * 40  # a copy of ours that lands while a run of the book goes on
+
+
+def _copy_shows(raw=RAW):
+    """The wallet's row of a copy bought seconds ago: there, and the tape has not priced it yet."""
+    return {"mint": OURS, "amount": raw / 1e6, "raw": raw, "value_sol": None, "priced": False}
+
+
+def test_review_a_kill_reads_the_wallet_again_before_it_stops_a_sniper(tmp_path):
+    """The plan's reading of the wallet is seconds old when its stops go out (OKTech, the tape and the records are read
+    after it). Beside the owner's coin a kill now stops the book's snipers (B2), so a copy that landed in between was
+    held by the very sniper being stopped, and a stopped sniper sells nothing (rule 1). Each stop reads the wallet once
+    more: with a coin of ours in it now, nothing is stopped and the next run plans again."""
+    st, cfg = BT._env(tmp_path)  # the book is off: its kill path stops its snipers that hold nothing
+    AB._book_sniper(st)
+    held = _owners_coin_the_bot_once_traded(st)
+    AB._seen(tmp_path, BOUGHT_BEFORE, BT.NOW - 1800)
+    k1 = [{"id": "k1", "name": BT.K1, "status": "running"}]
+    svc = BT.FakeSvc(st, snipers=k1, held=held, held_later=[*held, _copy_shows()], cfg=cfg)
+    try:
+        out = _book(tmp_path, svc, cfg)
+        assert out["kill_reason"] == "book off" and svc.calls == [], svc.calls
+        notes = OperatorPaths(tmp_path / "data").notes.read_text()
+        assert "[book] stop L1xxxx (k1) waits: the wallet holds a coin now" in notes, notes
+        svc = BT.FakeSvc(st, snipers=k1, held=held, cfg=cfg)  # the next run: the copy is sold, the owner's coin stays
+        assert _book(tmp_path, svc, cfg)["kill_reason"] == "book off" and svc.calls == [("stop", "k1")], svc.calls
+    finally:
+        st.close()
+
+
+class _BuysMeanwhile(BT.FakeSvc):
+    """While the run goes on, the wallet buys a coin: the recorder writes the buy, and the wallet's own balances do not
+    show the coin yet (a node shows it a second or two late)."""
+
+    async def open_positions(self, address, ignore=()):
+        if self._reads >= 1:
+            AB._tape_trade(self.store, "MEANWHILE", BT.NOW + 2, 400_700_000, True, AB.BOT_FEES, mint=OURS)
+        return await super().open_positions(address, ignore)
+
+
+def test_review_a_buy_the_tape_shows_since_the_plan_holds_the_stop_too(tmp_path):
+    """The same gap, seen on the tape first: the wallet read again still shows nothing, and the recorder has written a
+    buy of the wallet since the plan was made. No sniper is stopped on it."""
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    svc = _BuysMeanwhile(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], held=[], cfg=cfg)
+    try:
+        assert _book(tmp_path, svc, cfg)["kill_reason"] == "book off" and svc.calls == [], svc.calls
+    finally:
+        st.close()
+
+
+class _ReadsOnce(BT.FakeSvc):
+    """The wallet answers the run's first reading and no later one."""
+
+    async def open_positions(self, address, ignore=()):
+        if self._reads >= 1:
+            raise TimeoutError()
+        return await super().open_positions(address, ignore)
+
+
+def test_review_a_stop_of_a_sniper_whose_wallet_left_the_ranking_reads_the_wallet_again(tmp_path):
+    """The book on, no kill: a sniper whose wallet left the ranking is stopped once the wallet holds nothing. That stop
+    reads the wallet again as well; a wallet that cannot be read then stops nothing either."""
+    gone = "snipetech copy book GONE22 arm:control"
+    for k, later in enumerate(([_copy_shows()], None)):
+        st, cfg = BT._env(tmp_path / str(k), enabled=True)
+        AB._book_sniper(st)
+        AB._book_sniper(st, sid="g1", name=gone, created_at=BT.NOW - 9000)
+        BT._fresh_tape(st)
+        snipers = [{"id": "k1", "name": BT.K1, "status": "running"}, {"id": "g1", "name": gone, "status": "running"}]
+        svc = (BT.FakeSvc(st, snipers=snipers, held=[], held_later=later, cfg=cfg) if later is not None
+               else _ReadsOnce(st, snipers=snipers, held=[], cfg=cfg))  # fmt: skip
+        try:
+            _book(tmp_path / str(k), svc, cfg)
+            assert ("stop", "g1") not in svc.calls, (k, svc.calls)
+        finally:
+            st.close()
