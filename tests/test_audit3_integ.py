@@ -455,6 +455,37 @@ def test_i3_a_retire_is_undone_when_the_chain_shows_a_buy_made_while_it_stopped(
         st.close()
 
 
+class _LandsAfterTheStop(BT.FakeSvc):
+    """A buy the sniper sent just before its stop, in the wallet a moment after the stop went out."""
+
+    async def oktech_task(self, action, task_id):
+        if action == "stop":
+            self.stopped_at = time.monotonic()
+        return await super().oktech_task(action, task_id)
+
+    async def open_positions(self, address, ignore=()):
+        at = getattr(self, "stopped_at", None)
+        return [] if at is None or time.monotonic() - at < 0.2 else [{"mint": "Late" + "n" * 40, "amount": 1.0,
+                                                                       "value_sol": 0.2, "priced": True}]  # fmt: skip
+
+
+def test_i3_a_retire_reads_the_wallet_after_its_stop_only_once_a_buy_on_its_way_can_show(tmp_path, monkeypatch):
+    """A retire stops its sniper, reads the wallet again and deletes the sniper when nothing showed. That reading came
+    the moment the stop was answered: a buy the sniper sent just before its stop, landed a moment later, was in no
+    reading and on no chain list yet, and the sniper was deleted with its coin on the way (a deleted sniper sells
+    nothing, rule 1). The reading after the stop comes SECOND_READ_SECS after it, as the one before the stop comes
+    that long after the run's own."""
+    monkeypatch.setattr(R, "SECOND_READ_SECS", 0.3)
+    st, cfg, _ = BT._made_its_buy(tmp_path)
+    svc, sent = _LandsAfterTheStop(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], cfg=cfg), []
+    try:
+        _book(svc, cfg, sent)
+        assert ("stop", "k1") in svc.calls and ("start", "k1") in svc.calls and ("delete", "k1") not in svc.calls
+        assert any("k1" in t and "started again" in t for t in sent), sent
+    finally:
+        st.close()
+
+
 # -- I3, the same cause: the round's clean-up of a dead run looks there too --------------------------------------------
 
 

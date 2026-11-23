@@ -1044,7 +1044,7 @@ async def _retire(
     on its own amounts (`_owners_coins`), unless the bot holds no fee record of it (`unrecorded`). Both readings are
     followed by the look at the chain a plan's stop makes (`_buy_coming`: a buy into a coin the tape does not follow
     is in neither): before the stop it makes the retire wait, after it the sniper is started again; the first reading
-    comes SECOND_READ_SECS after the run's own (`read_at`)."""
+    comes SECOND_READ_SECS after the run's own (`read_at`), the second as long after the stop."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
     now = float(now if now is not None else 0)
     blind = sid in unrecorded  # no fee record of it: a coin read as the owner's may be its own
@@ -1061,6 +1061,9 @@ async def _retire(
         return False
     with contextlib.suppress(Exception):  # an idle task may refuse a stop; the delete is what counts
         await svc.oktech_task("stop", sid)
+    # a buy the sniper sent just before its stop lands a moment after it: read at once, the wallet and the chain showed
+    # nothing yet and the sniper was deleted with its coin on the way (third round of the 22 Nov audit)
+    await asyncio.sleep(SECOND_READ_SECS)
     got = await _wallet_now(svc, wallet, strays, store)
     coins = _may_hold(got, blind)
     held = coins is None or bool(coins) or _tape_holds(store, wallet, now)
