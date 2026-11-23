@@ -457,12 +457,21 @@ is `unclear`, never `fees` or `speed`.
 The measure stage walks the wallet's own signatures once a run: a landed transaction the tape does not hold becomes a
 fill (buy or sell), and a buy that a copy sniper could have made, on or off the tape, that the tape cannot place gets
 `trades_behind`, `price_gap_pct`, `blocks_after`, `ahead_bids`, `ahead_bid_max`, `ahead_bid_p50`, `landing_verdict`
-and `venue` from the chain; `landing_src` says `tape`, `chain` or `chain-none`. A failed send on a program we do not
-decode gets its coin from its balances and is charged to the sell it follows, as a pump.fun twin is. `snipetech
-landing --sig <buy> --leader <wallet>` and `landing --wallet <ours> --since-minutes N` print the same reading as a
-table; the agents may start it. Built against fixtures and a fake RPC (`tests/chain.py`, `tests/test_chain_landing.py`,
-`tests/test_measure_chain.py`); the real answers of `getBlock` and of `getSignaturesForAddress` with another wallet's
-transaction as its cursor are first met on the server.
+and `venue` from the chain; `landing_src` says `tape`, `chain` or `chain-none`. Since the audit's third round (23 Nov,
+4756898 and 233b1e4) a reading that was not whole says so. When the list of blocks between cannot be read,
+`blocks_after` is the slot distance and the slots between count as unread (the landing is incomplete, `blocks_listed`
+false), where it used to read as "the next block" for a buy a minute behind. A search for the copied buy that did not
+reach back (a transaction of a copied wallet the node listed and could not serve, a copied wallet that could not be
+asked, our own block not served) writes no landing and no venue (`landing_src` empty, where it wrote `chain-none`),
+and the stage reads the buy again at its next run while the buy is inside its window (one or two runs; after that it
+stays unplaced). An empty `landing_src` also means nothing was looked for (a sale; a buy while no copy sniper was
+alive). The runner, meanwhile, holds such a copy as nobody's coin until it can be read.
+
+A failed send on a program we do not decode gets its coin from its balances and is charged to the sell it follows, as
+a pump.fun twin is. `snipetech landing --sig <buy> --leader <wallet>` and `landing --wallet <ours> --since-minutes N`
+print the same reading as a table; the agents may start it. Built against fixtures and a fake RPC (`tests/chain.py`,
+`tests/test_chain_landing.py`, `tests/test_measure_chain.py`); the real answers of `getBlock` and of
+`getSignaturesForAddress` with another wallet's transaction as its cursor are first met on the server.
 
 ## What the agents remember: lessons, ideas and, since 8 Nov, the research record
 
@@ -622,30 +631,65 @@ how often a role skips are the design's estimates until a day of numbers exists.
 The sniper wallet is the owner's too. The owner buys and sells in it by hand and sends coins out of it (22 Nov 02:40
 UTC: three hand buys of one coin, which the wallet-wide guard read as the bot's loss and stopped the day's live
 trading for). None of that is the bot's result. Since 22 Nov every stage that judges, stops or alerts asks first whose
-a trade or a coin is, by one rule (`measure/ours.py`, `tests/test_whose_coin.py`). This section and the four after
-it describe the code merged as 3b412e0, the first round of the audit of 22 Nov. The rule:
+a trade or a coin is, by one rule (`measure/ours.py`, `tests/test_whose_coin.py`, `tests/test_audit3_shape.py`).
+This section and the ones after it describe the code at 0fa17e9: the audit's three rounds, 22 and 23 Nov (until this
+pass they described its first round, merged as 3b412e0). The rule:
 
-- **A buy is the bot's** when the measure stage tied it to a sniper, or when it paid exactly the fees one of our
-  snipers pays: the priority and the tip of a payload we sent OKTech, or that priority with no tip. Since the audit of
-  22 Nov (44bd292) a copied wallet on the buy beside our 0.001 SOL priority is no longer enough: the owner's own tool
-  pays that priority too. **A sale is the bot's** when it closes such a buy, or when it paid a sniper's sale fees or
-  the fees of our own fallback sale. With no sniper on record, or with fees not known, nothing tells a hand trade
-  apart and the trade counts as the bot's, as before.
-- **A coin is the owner's own** when every buy of it since its last sale paid fees no sniper of ours pays, and those
-  buys explain the whole amount held, summed over all the wallet's token accounts of the coin. More held than the
-  owner's buys explain, unknown fees, or a buy of ours among them: the coin may be ours and is treated as ours.
-- **A stray** is a coin no buy of ours explains that the unsold-coin watch has seen for 10 minutes (an airdrop).
-  Before the 10 minutes it may be a buy of ours the tape has not written yet, and it counts as held.
+- **A buy is the bot's** when the measure stage tied it to a sniper, when it paid exactly the fees one of our snipers
+  pays (the priority and the tip of a payload we sent OKTech, or that priority with no tip), when its fees are not
+  known, or, at other fees, when it has a copy's shape: a wallet one of our snipers follows bought the same coin at a
+  place before it and at most 3 slots earlier (`classify.COPY_SHAPE_SLOTS`), AND the buy spent the buyAmount of a
+  sniper that follows that wallet, to 0.1 % (`classify.COPY_SIZE_TOL`; the quote and the venue's fee, as the tape's
+  `quote + fee`, the fills' `sol` or the buy's own transaction have it). The shape came with the audit's second round
+  (aef634a: OKTech varies what it pays, and a copy sent at a pair no payload names read as the owner's coin, its
+  sniper free to be stopped while it held it); the size with the third (9953d4e: by its place alone a hand buy that
+  landed within a second of a followed wallet's buy was a copy, sold by a run). OKTech sends an exact-in buy, and
+  every copy on record with a copied wallet spent its sniper's buyAmount (counted with the rule's own code on 23 Nov:
+  `tests/test_audit3_shape.py`), where the owner's hand buys stand 1 % under a round size (Axiom keeps 1 % of what is
+  typed). In a run the snipers asked are the run's own payloads; everywhere else every copy sniper on record alive at
+  the buy (60 s of grace either side; one never removed is alive still). A reader that hands no size has it read off
+  the tape by the buy's signature. Since the audit of 22 Nov (44bd292) a
+  copied wallet named on a fill says nothing alone: the owner's own tool pays our 0.001 SOL priority too. **A sale is
+  the bot's** when it closes such a buy, or when it paid a sniper's sale fees or the fees of our own fallback sale.
+  With no sniper on record, or with fees not known, nothing tells a hand trade apart and the trade counts as the
+  bot's, as before.
+- **Not covered by the buy rule**, said plainly: a hand buy that spends exactly a sniper's size and lands within 3
+  slots behind its wallet's buy is a copy (a size nobody types, 1.003 SOL say, would close it: the owner's decision);
+  a hand buy at exactly a sniper's buy priority with no tip the bot can see is the bot's by its fees, whatever its
+  size; a copy whose size and fees were both changed in OKTech's app after it was made reads as the owner's (the
+  readers use the payloads on record, never OKTech's); the buy that completes a curve spends less than its buyAmount
+  and, at fees no payload names, reads as the owner's; OKTech's PumpSwap multi-hop sends pay more priority than the
+  payload names (0.0018 SOL on a 0.001 payload on 23 Nov), so by their fee pair they read as hand sends (all four that
+  day failed at once; one that landed would read as the owner's coin).
+- **A coin is the owner's own** when every buy of it since its last sale paid fees no sniper of ours pays and had no
+  copy's shape, and those buys explain the whole amount held, summed over all the wallet's token accounts of the coin.
+  More held than the owner's buys explain, unknown fees, a buy of ours among them, or a buy the chain placed right
+  behind another followed wallet at a followed sniper's size (it may be ours: asked before a sniper is stopped): the
+  coin may be ours and is treated as ours.
+- **A stray** is a coin no buy of ours explains, by its fees or by its shape, that the unsold-coin watch has seen for
+  10 minutes (an airdrop), once the measure stage has run past it since it showed (9501fee: our copy into a coin the
+  tape does not hold is on record only in that stage's fills). Before that it may be a buy of ours not written yet,
+  and it counts as held.
+- **In a run, a coin nobody can tell yet** (its buy's transaction cannot be read yet, or a buy at a run sniper's size
+  whose place is not known yet) is never the owner's: the runner holds it as its own but never sells it, and counts
+  it as no fill until it is told (docs/live-recipe.md, "Whose a buy is in a run").
 
 Who uses the rule, and what the audit of 22 Nov changed in each:
 
 - **The wallet-wide guard and its day stop** count only the bot's trades (since 22 Nov 03:57), by the buy rule above.
 - **The measure stage** still writes every fill. It feeds only the bot's into the bid model, the live result per
-  copied wallet, the measured landing, the exit shadow and the fee policy's evidence.
+  copied wallet, the measured landing, the exit shadow and the fee policy's evidence. A buy that is the bot's by its
+  shape alone (fees no payload names) gets one line in the operator's notes, "[measure] a copy behind X… paid fees no
+  sniper of ours is set to pay (...): counted as the bot's"; since the third round (d9c4635) the round sends each such
+  line to the owner's Telegram once (the first three as they stand, any more as a count), up to 15 minutes after it
+  is written (`operator/notes_forwarded.json` keeps how far it has read).
 - **The round's snapshot** (`operator/snapshot.py`) marks each held coin `whose` (`ours`, `owner`, or not known yet)
-  with `whose_since`. An answer holds while the coin stays held, and a coin no buy brought in is not the bot's. A
-  wallet read that fails keeps the coins as last read, marked `stale`. The snapshot keeps when the coins were read
-  (`held_ts`) and which trades it has counted (`counted`, `counted_from`): each round reads the wallet's trades an hour
+  with `whose_since`. Since the third round (1a1bc5c) its readers (the count of the bot's trades, the held-coin marks,
+  the loss alert) hand each buy over whole (signature, coin, place, time, size), so a copy at fees no payload names
+  is the bot's there too, as it is to the runner, the book and `/stop`; before, they told a buy by its fees alone. An
+  answer holds while the coin stays held, and a coin no buy brought in is not the bot's. A wallet read that fails
+  keeps the coins as last read, marked `stale`. The snapshot keeps when the coins were read (`held_ts`) and which
+  trades it has counted (`counted`, `counted_from`): each round reads the wallet's trades an hour
   back and counts each once, so a trade the tape writes late is counted by a later round. When the wallet has a
   transaction newer than anything the tape had written (`tape_behind`, the wallet's signatures read at "confirmed"),
   the round values nothing, tells no loss or gain and carries its baselines to the next round. The bot's PumpSwap
@@ -653,25 +697,41 @@ Who uses the rule, and what the audit of 22 Nov changed in each:
   (whose the coin was, then the newest buy of it), and by its own fees only when neither tells.
 - **The loss alert** ("equity moved") needs only the bot's own coins valued. An airdrop or an owner's coin the tape
   cannot price no longer switches it off. A coin of the bot's with no price, or one that left its curve and has had
-  no trade on the tape for 10 minutes (`stale_price`), makes the alert wait for the sale. Once the agents' budget for
-  the day is spent the round still reads everything, tells nothing and holds its baselines, so the first round that
-  may call the agents is told the loss.
+  no trade on the tape for 10 minutes (`stale_price`), makes the alert wait for the sale. Since the third round
+  (978d406) the few tokens a sold copy of ours leaves, which the tape cannot price, no longer switch it off: on the
+  unsold-coin watch's word (its last pass, 30 minutes old at most) such a coin is marked `sold_copy` and counts at its
+  price or at nothing, unless the wallet holds more of it than the round before (bought again). Before, they kept the
+  alert silent for as long as they sat in the wallet. Once the agents' budget for the day is spent the round still
+  reads everything, tells nothing and holds its baselines, so the first round that may call the agents is told the
+  loss.
 - **The round's gate** (`operator/gate.py`) raises "held", "held over 30 minutes" and "unmanaged" only for the bot's
-  coins: the owner's coins and airdrops no longer wake the operator every hour. Snipers named by a running `oktech
-  cycle` job (its `--id` values) are excused, and count within a live test's expectation, not on top of it. A runner
-  started outside the server's jobs is still flagged.
+  coins: the owner's coins and airdrops no longer wake the operator every hour, and since the second round (3ec5379)
+  neither does what a sold copy of ours left (the watch's `sold_copy`). The agents are told such a rest is no decision
+  (d2f7e4d). Snipers named by a running `oktech cycle` job (its `--id` values) are excused, and count within a live
+  test's expectation, not on top of it. A runner started outside the server's jobs is still flagged.
 - **The daily digest** shows the wallet's balance and how many coins it holds, and no longer the change since the
   last digest, which was mostly the owner's own transfers. **The restart notice** names the snipers still armed on
   OKTech, or says that OKTech could not be read; it used to say that nothing was traded.
 - **The unsold-coin watch** (`book/watch.py`). A coin the owner bought by hand gets one line a day, worded as their
-  own trade, with no /sell line. Seen 10 minutes, it keeps no book sniper running under a halt and holds back no
-  retire and no clean-up, unless the bot also bought that coin at some time: the book then still counts it as held. An
-  owner's buy is no sniper's buy in the book's count. In the watch's own lines a coin both bought is told by whose
-  part is left (a sale goes to its own side's buys first). A copy of ours the tape does not hold (a copy into an older
-  PumpSwap coin, which only the measure stage's fills hold) gets the 15-minute alert with its /sell line, not the
-  airdrop line; once the fills show it sold, a few unpriced tokens left over are said once a day as our sold copy.
+  own trade, with no /sell line. An owner's buy is no sniper's buy in the book's count. In the watch's own lines a
+  coin both bought is told by whose part is left (a sale goes to its own side's buys first). A copy of ours the tape
+  does not hold (a copy into an older PumpSwap coin, which only the measure stage's fills hold) gets the 15-minute
+  alert with its /sell line, not the airdrop line; once the fills show it sold, a few unpriced tokens left over are
+  said once a day as our sold copy (`sold_copy`).
+- **The book** (`book/run.py`). Since the second round (ecf86fa) its kill, retire and clean-up read the owner's own
+  coin coin by coin, as `/stop` does (each reading of the wallet weighed on its own amounts): such a coin keeps no book
+  sniper running, whatever the bot bought of that coin before its last sale, except a book sniper the bot holds no
+  fee record of (it may be the one that bought it). Until then a coin the bot had ever bought kept every book sniper
+  armed. Strays hold nothing back either. Each stop of a plan reads the wallet again first (3ec3c0e), and since the
+  third round (339653b, e553cde, cb4b2b4) that reading comes 5 s after the run's own and waits 20 s at most, and the
+  stop or retire also looks at the chain for a buy on its way, as `/stop` does (`operator/commands._on_its_way`): a
+  coin of ours, a buy on its way, a landed transaction the node cannot serve yet or a wallet that does not answer
+  holds the stop (said to the owner once a day; the first wallet with no answer ends that run's stops). A retire reads
+  the wallet and the chain again 5 s after its stop: a coin there, or no answer, starts the sniper again, and nothing
+  is deleted.
 - **`/stop`, the close of a live test, the automatic test's judging and the runner (`oktech cycle`)** use the same
-  rule. docs/live-recipe.md has what each does.
+  rule; since the third round (9e716ee) a live test whose sniper follows a wallet tells its copy by its shape too.
+  docs/live-recipe.md has what each does.
 
 **The book makes a sniper only when one copy can really be paid** (`positions.curve_buy_beside_topup`, the audit of
 22 Nov). A curve buy is paid in plain SOL, and OKTech keeps 1.1 times the buy wrapped, taken from plain SOL, the whole
@@ -679,12 +739,20 @@ time a sniper runs. So a book sniper is made only while plain SOL pays one curve
 wrapped, a 0.2 SOL sniper needs 0.425 SOL of plain SOL: 0.2 for the buy, 0.005 for its costs, 0.22 for the wrap.
 Wrapped SOL alone, which pays only a PumpSwap buy, makes no sniper any more. `/book status` and the book's note name
 the plain SOL one copy needs. Before, plain SOL for one buy but not for the wrap as well (0.30 SOL, say) was enough
-to make a 0.2 SOL sniper: OKTech wrapped 0.22, and every curve copy failed and used up one of the sniper's buys. The
-agents' snapshot (`buys_payable`) does not count the wrap yet.
+to make a 0.2 SOL sniper: OKTech wrapped 0.22, and every curve copy failed and used up one of the sniper's buys.
+Since the second round (72cca41) the agents' snapshot counts the same way (`buys_payable`, once OKTech has wrapped
+its top-up; `oktech_wraps_sol` says how much that is). Since the third (5b16b01) the round's conversion of wrapped SOL
+into plain SOL (`operator/plain_sol.py`) uses the same sum (`positions.curve_buy_room`), turns back only the wrapped
+SOL above the 1.1 times a buy that OKTech keeps wrapped (`spare_wsol`: under it OKTech wraps it again within
+seconds), and runs while the owner's automatic test is on at the book's size or below, keeping the plain SOL that
+test's block waits for (0.252 SOL beside a 0.2 SOL buy: its sniper's fees, failed sends and the account's rent).
 
 Limits kept on purpose: an answer about a coin holds while the coin is held, so a mixed holding (the owner's coin,
 then a copy of ours into it) keeps its first answer in the round's snapshot; the runner handles that case itself
-(docs/roadmap.md, 22 Nov 04:45). A sale that closes lots of both makers is credited to one of them.
+(docs/roadmap.md, 22 Nov 04:45). A sale that closes lots of both makers is credited to one of them. The round's
+clean-up of a live run that died (`operator/leftovers.py`) counts every coin the wallet holds, the owner's own
+included, so a dead run's armed snipers keep running beside a coin the owner bought by hand (the review of the third
+round left it so before the live run of 23 Nov: changing it is the session's or the owner's decision).
 
 ## The tape: what the audit of 22 Nov changed
 
@@ -693,10 +761,17 @@ then a copy of ours into it) keeps its first answer in the round's snapshot; the
   (`infra/retention.py`). A new recorder process knew only the 6 until its first hourly prune. In those seconds it
   wrote the tape's record with its current stretch cut to 6 days, and a stop just then left that cut as the next
   process's position, which the disk rule then read as a 6-day tape. Read so, today's file (90.6 GB on a 643.8 GB
-  disk, `remote status`) fits about 8.5 days, and the next prune would have deleted the rest. It did not happen: the
-  server holds its 14 days. Now the stretch's start moves only with a prune this process ran, nothing is pruned
-  until the days have been worked out once, and the learned tip accounts wait for the same (`live.py`:
-  `retain_known`, `pruned_before`).
+  disk, `remote status`) fits about 8.5 days by the disk rule of then (the next bullet), and the next prune would
+  have deleted the rest. It did not happen: the server holds its 14 days. Now the stretch's start moves only with a
+  prune this process ran, nothing is pruned until the days have been worked out once, and the learned tip accounts
+  wait for the same (`live.py`: `retain_known`, `pruned_before`).
+- **The disk rule sizes the days from the pages in use** (the second round, fb9ba90). It took the bytes a day from
+  the database file, which never shrinks after a prune: once the file passed a third of the tape's share of the disk,
+  fewer days fit than the tape held, the prune cut to them, the file stayed as large, and every hourly prune cut
+  again, down to the configured 6 days for good. It now sizes the days from what the pages in use take (three
+  pragmas), holds the file at its own size beside the two compact copies, and `db retain` shows both sizes (`db_gb`,
+  `used_gb`). The recorder also keeps when its last hourly prune ran in the database (df98213): a new process waits out
+  the hour instead of pruning ten seconds after each deploy, while its replay catches up.
 - **`tx_meta` is pruned once a day** (the fee record of every transaction; nothing pruned it before). A row past the
   cutoff goes unless a stored trade, a fill of ours, or a listed wallet as its payer keeps it. Expect one long walk the
   first day after the deploy.
@@ -747,6 +822,27 @@ Numbers that can read differently from before, and why:
 - **Same numbers, less work.** A moment's cost no longer grows with the coin's whole later tape (the path is cut 120 s
   past the latest second any exit can sell, the dead exit's pause counted), and the paper run skips a wallet rule on
   a coin none of its wallets traded.
+- **How long an exit can hold is one number** (the third round, 444a2dd): the simulator's own reach
+  (`sim.exits.exits_reach`: the timer, its extensions, a dead exit's pause, the parts sold after it), where the lab
+  kept a second sum beside it. The lab's default exit set now needs 305 s of tape after an entry, not 300 (its dead
+  exits pause up to 5 s); a default backfill keeps 330 s after a buy and still covers it, and a lab with a dead exit
+  skips a few more moments at the very end of a PumpSwap run. Each exit is checked for gaps for as long as it can hold
+  (`lab.exit_gap`), not for its timer alone. A stored paper rule with a dead exit on a 300 s timer settles 1 to 5 s
+  later (421 to 425 s after its trigger): the paper run names each such rule once in `settles_later` (again only if
+  its seconds change) and the paper report keeps it on the rule's row (`settles_after_secs`).
+- **A ceiling on our own fill** (`max_fill_mcap`, SOL, a wallet rule's field; the third round, 14f9ed5). A copy
+  sniper's `maxMcapUsd` is a limit on the market cap at OUR fill, fee included (docs/oktech-features.md, "What a copy
+  sniper does on chain"); `max_mcap` asks the coin right after the copied buy, which no OKTech setting does. A moment
+  is traded only when the market cap at our own fill at the scored landing (our SOL, fee included, over the coins we
+  get, times a billion coins) is at or under `max_fill_mcap`; over it the send is refused: no position, and 0.001005
+  SOL charged (OKTech's minimum priority and the base fee, what a refusal paid at a 0.001 priority; at the 0.0011 the
+  runs of 23 Nov send, it pays 0.001105).
+  Refused moments stay in `n`, the mean and the total as losses of that size. A ranked row carries `fill_ceiling`
+  (admitted, refused, what the refusals cost, the newer part's admitted and refused, a note), the bands split by
+  `fill_mcap_sol`, `--by-wallet` rows count the refusals, and the label reads "our fill at most N SOL of market cap"
+  (under 28 SOL, where every coin starts, the rule is refused). `paper freeze` keeps the field (a rule frozen before it
+  keeps its id); the forward run writes a refused send as a trade of -0.001005 SOL with the reason `refused` and counts
+  `refused_sends`, and `rescore` leaves those rows alone. Code from before this cannot read a rule frozen with it.
 
 The forward paper test:
 
@@ -764,7 +860,8 @@ The forward paper test:
   owner's decision.
 - **The report's kept numbers have a version** (`REPORT_VERSION`, 2 since 22 Nov): when it changes, every rule's
   numbers are made again once at the next report. A row of a refuted rule says so (`refuted`: when, on how many
-  trades, at what mean).
+  trades, at what mean), and since the second round (3c49e52) so does the text of `paper report`: a table that holds
+  a refuted rule has a last column with the word in that rule's row, and one line under the tables says what it means.
 - **What the agents see of the round's snapshot ranks by landing.** `paper_top` holds the six biggest totals among
   the rules scored where our trades land live. `paper_own_landing` holds the six biggest of the others (a place
   asked for, a bid, no live place), each naming its landing and bid: never evidence at our landing.
@@ -775,7 +872,10 @@ The forward paper test:
   all refuted since.
 
 Not done, each a design step: the crowd's slippage as a middle estimate (it would be an opt-in flag of `lab`; none
-exists yet), a refuted mark in the text report, and `outside_model` in the automatic test's gate (the owner's).
+exists yet), and `outside_model` in the automatic test's gate (the owner's). Not shown in `report.py`'s text yet: a
+ranked row's `fill_ceiling`, the bands by `fill_mcap_sol`, `refused_sends` and `settles_after_secs` (they are in the
+JSON answers). The qualify lab's 5 SOL size verdict still scores `max_mcap` (the copied buy) as its ceiling, not
+`max_fill_mcap`: switching it changes verdicts, the owner's or the session's call.
 
 ## What the agents may start and keep: limits added by the audit of 22 Nov
 
@@ -790,7 +890,16 @@ exists yet), a refuted mark in the text report, and `outside_model` in the autom
   `sends` at most 200,000 Helius credits and 336 hours a run, and no more than what is left of the month's 30 million
   shared with the backfills; `launch-tools` at most 100,000 launches or 50 coins; `label` only as a pick (`--kind
   cand`), which queues the wallet for qualify and keeps the label it has; `paper --replace` and `paper rescore` never.
-  A `sends` started by hand from the cloud session is not held to the month's limit.
+  Since the second round (cc33942) `sends` itself refuses, before its first request, a run whose `--max-credits` is
+  more than the month has left, however it is started (`remote run sends`, by hand); `--over-month` runs it all the
+  same, on the owner's word. Since the third (6d8bd10) the backfills, `sends` and the agents' job tool count the
+  month by one sum (`amm_backfill.month_used`: the backfills' and the sends' credits together; a backfill used to count
+  its own alone), and the job tool refuses `sends --over-month` from every agent, whether the month can be read or not.
+- **A job a restart ended is over to its role too** (the third round, f0f80c6). A research role judged its jobs by
+  their process id alone: a job the machine's restart had ended stayed running to it while another process held the
+  same id (no "a job of yours ended", its log never taken as whole, a slot held). It now asks `ops.job_alive` with the
+  job's record, as the round's snapshot does: a record written before the last boot is over unless the process
+  under its id is the job's own.
 - **Labels are kept.** `fomo-wallets --label` and `early-leaders --label` leave a wallet that already has a label of
   another kind as it is, list it under `kept`, and still queue it for qualify. `study --auto-smart` never renames a
   wallet that has a name either.
@@ -824,3 +933,41 @@ it. What the audit of 22 Nov changed in its answer:
 
 The first run (job 20261122-074139-296636, "62 of 406 tried") was made by the code before these fixes and may be off
 by about one moment; a rerun is a question for the server's agents.
+
+## Each buy's price limit, and the measure stage's cursor (the audit's third round, 23 Nov)
+
+Built by the third round (f2948e2 to fc4aa80, bb1d8d3, 5462ae5; `tests/test_buy_limit.py`,
+`tests/test_audit3_ceiling.py`).
+
+- **Each buy keeps its own price limit.** `solana/buy_limit.py` reads it from the buy's own transaction: pump.fun's
+  buy instructions (`buy_exact_quote_in`, `buy_exact_sol_in`, the older `buy` forms), PumpSwap's, and OKTech's
+  `multi_hop_swap` when the wallet's wrapped SOL goes in and a pump.fun coin comes out. A buy paid in another coin, an
+  instruction it does not know, or two buys with different limits give nothing: the fields stay empty, never a guess.
+  Two columns on `fills`: `limit_mcap_sol`, the market cap in SOL above which the program refuses the buy, and
+  `fill_mcap_sol`, where a landed buy filled or a refused one would have (our SOL, fee included, over our coins, times
+  a billion coins). A refused buy's `exit_reason` begins "over its price limit: the buy would have filled at X SOL of
+  market cap, its limit was Y" (`measure.run.is_refused`). One line shows them: `SELECT sig, side, limit_mcap_sol,
+  fill_mcap_sol FROM fills WHERE wallet=? AND limit_mcap_sol IS NOT NULL`. A limit that cannot be read costs the fill
+  nothing: the row is written as before and counted under `limits.unread`.
+- **A ceiling gone wrong is said.** A limit more than 15 % from the `maxMcapUsd` its sniper was sent, at the server's
+  own SOL price (the one `oktech copylist --max-mcap` converts with, used only while it is under 36 hours old), gives
+  one line in the run's answer (`limits.far`) and in the operator's notes, once a sniper a day ("OKTech turned the
+  $4,600 market-cap ceiling of sniper ... into 23.0 SOL of market cap ...: a SOL price of $200.00"). Only the bot's
+  own buys are held to it (bb1d8d3: the owner's hand buy, whose limit is its own slippage, was laid at a sniper as its
+  ceiling gone wrong). A send older than a day (a backfill's) is in the answer only, and the line never goes to
+  Telegram. The run's answer counts it all: `limits` {read, refused, far, unchecked, unread}.
+- **A failed scan keeps the cursor.** The measure stage's cursor (`measure:last_ts`: the fills hold the wallet's
+  trades up to here) moved even when the scan of the wallet's own signatures, or the fetch of the transactions the
+  tape does not hold, raised. It now moves only after a run that read them; the answer says `scan_failed` with the
+  cause, and the next run that can read takes the whole stretch since (its window starts 600 s before the cursor). The
+  book's stray rule and the unsold-coin watch read the cursor as before, which is now true. The wallet-wide guard,
+  which calls a cursor over 40 minutes old with a trade of ours not in the fills a day it cannot tell (it then holds a
+  start, never stops a sniper), still says the stage "has not read the fills since HH:MM": that can now also mean its
+  scans keep failing (`scan_failed` says why). One single transaction that cannot be read does not hold the cursor; it
+  is tried again while the 600 s window holds it.
+- **What the round's resource check says of refused buys** (9197324). A refused buy is a failed send that pays its
+  priority fee and nothing else. The check of the wallet's failed transactions in the last hour counts them apart ("N
+  buys refused on their price limit"), beside a sale's failed twins, the buys the wallet could not pay and the sends
+  the measure stage has not read yet, and pages the owner ("check OKTech sells and the send count") only for the
+  failures none of these explains. Before, a ceiling sniper's refusals (20 of the smoke test's failed sends on 23
+  Nov) would have paged once a day for nothing.
