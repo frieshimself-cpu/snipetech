@@ -12,6 +12,13 @@ prune (no auto_vacuum: the pages the deletes free stay inside it). Sized from th
 itself once the file passed a third of the share (0.2 of the disk: 128.8 GB of the server's 643.8; the file was 90.5
 GB that day, its compact copy 76.2): fewer days fit than the tape held, the prune cut the tape to them, the file stayed
 as large, so its bytes a day rose and fewer days fit again, every hour, down to the configured floor, for good.
+
+What the pages do not say: a cut's own deletes leave pages part-filled (the indexes on signatures, wallets and coins
+are in no time order: every page of them loses rows, and none is freed until it is two thirds empty). Those pages count
+as in use, so after a cut the bytes a day read higher for as long as the tape stays shorter, and the days settle under
+what fits, then stay: on a tape with keys in no order of which 7.7 of 14 days fit, the prunes kept 7.7, 6.0 and 5.8
+days and stayed there (tests/test_retention.py; sized from the file the same tape went to its floor). A compact copy's
+own size would say what the copies take: `snapshot-db` records the copy's bytes, not yet the days of tape it holds.
 """
 
 from __future__ import annotations

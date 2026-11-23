@@ -424,3 +424,74 @@ def test_a_store_that_cannot_say_its_pages_is_sized_from_its_file(tmp_path, monk
     out = R.current(st, 6.0, now)
     assert out["db_gb"] == out["used_gb"] and out["fits"] < 14.0  # the file's bytes a day, as before
     st.close()
+
+
+# -- when the rule does cut: real deletes on a full file (review of 23 Nov) ------------------------------------------
+#
+# The tests above never let the rule cut (their files are mostly free pages), or count the pages in use as so many a
+# day. A cut's own deletes leave pages part-filled: the indexes on signatures, wallets and coins are in no time order,
+# so every page of them loses rows and none is freed until it is two thirds empty. Those pages stay in use, the bytes
+# a day read higher for as long as the tape stays shorter, and the days settle under what fits, then stay. Sized from
+# the file, the tape below went 9.8, 6.9, 4.9, 3.4, 2.4, 1.7, 1.2 days and stayed at its floor.
+
+
+def _full_tape(tmp_path, now: float, per_day: int = 1000):
+    """Fourteen days of trades whose signatures, coins and wallets are in no time order (as base58 keys are), in a
+    file without a free page; and what adds the trades of one more hour."""
+    import random
+    import string
+    from dataclasses import replace
+
+    from tests.test_store_lock import _trade
+
+    rnd = random.Random(7)
+    letters = string.ascii_letters + string.digits
+    serial = iter(range(10**9))
+
+    def key(n: int) -> str:
+        return "".join(rnd.choice(letters) for _ in range(n))
+
+    wallets = [key(44) for _ in range(400)]
+
+    def trades(start: float, secs: float, count: int) -> list:
+        coins = [key(44) for _ in range(max(1, count // 100))]
+        return [replace(_trade(next(serial)), sig=key(88), ts=int(start + k * secs / count), mint=rnd.choice(coins),
+                        user=rnd.choice(wallets)) for k in range(count)]  # fmt: skip
+
+    st = Store(tmp_path / "t.db")
+    for day in range(14, 0, -1):
+        st.add_trades(trades(now - day * DAY, DAY, per_day))
+    st.set_coverage("tape", {"spans": [[int(now - 14 * DAY), int(now - 10)]]})
+    with st.lock:
+        st.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return st, lambda t: st.add_trades(trades(t - 3600, 3600, per_day // 24))
+
+
+def test_after_the_rule_cuts_a_full_file_the_days_settle_and_never_walk_to_the_floor(tmp_path, monkeypatch):
+    import os
+
+    now = float(T0)
+    st, an_hour_more = _full_tape(tmp_path, now)
+    R.ask(st, 14, now, "db retain")
+    size = os.path.getsize(st.path)
+    assert R.in_use_bytes(st) == size  # every page is in use by the 14 days
+    # a disk whose share is 2.1 files: the file and two compact copies of 7.7 days, (2.1 - 1) x 14 / 2
+    monkeypatch.setattr(R, "disk_total_bytes", lambda _path: int(3.5 * size))
+    monkeypatch.setattr("snipetech.live.PRUNE_REST", 0.0)
+    w = watcher(store=st)
+    w.cfg.storage.retain_days = 1.0  # a floor far below: how far the rule itself goes
+    w.retain_days = 1.0
+    kept = []
+    for hour in range(8):
+        if hour:
+            an_hour_more(now + hour * 3600)
+        asyncio.run(w._prune(now + hour * 3600))
+        kept.append(round(w.retain_days, 2))
+    # 23 Nov: 7.7, 6.03, 5.77, 5.74, 5.76, 5.79, 5.81, 5.86
+    assert kept[0] == pytest.approx(7.7, abs=0.01)  # the first cut: what fits beside the file
+    assert os.path.getsize(st.path) >= size  # which did not shrink
+    # the next two prunes cut again, by the pages the first left part-filled, and there it stays: under what fits
+    # (a quarter under, on this tape) and far above the floor
+    assert 5.0 < min(kept) and max(kept[3:]) < 7.5
+    assert max(kept[3:]) - min(kept[3:]) < 0.25
+    st.close()
