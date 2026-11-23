@@ -875,3 +875,32 @@ def test_a_coin_that_left_between_the_last_reading_and_the_end_still_counts(monk
 
     rep, _client = _run(monkeypatch, lambda now: 10.0, payload=FEES, minutes=6, unpriced=unpriced, stop_at=T0 + 106)
     assert "/stop" in rep["reason"] and rep["fills"] == 1, (rep["reason"], rep["fills"])
+
+
+# what the 23 Nov live run's snipers pay on a buy and set for a sale
+LIVE = {"priorityFee": 0.0011, "tipAmount": 0.002, "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}
+
+
+def test_a_run_at_a_0_0011_priority_tells_its_own_buy_and_sale_and_leaves_a_buy_at_the_books_fees(monkeypatch):
+    """The live run of 23 Nov pays a 0.0011 SOL priority and a 0.002 tip, so that a buy at the book's 0.001 + 0.002
+    never reads as the run's (the owner trades by hand in the wallet too). Its copy at 100 s is its own: a fill, and
+    OKTech's sale of it at the same fees at 112 s leaves the run nothing to sell. A hand buy of another coin at the
+    book's fees at 130 s is the owner's: no fill, never sold, and the re-arms go on beside it."""
+    sweeps = []
+    sale = Trade(sig="oktech exit", ev=0, slot=100_000 + 112, pos=0, ts=int(T0 + 112), mint=OURS, venue="curve",
+                 user=W6, is_buy=False, quote=950_000_000, base=1_000_000, fee=0, fee_bps=100, q_after=1, b_after=1,
+                 priority=1_100_000, tip=2_000_000)  # fmt: skip
+
+    def coins(now):
+        ours = [_coin(OURS, 1.0)] if T0 + 102 <= now < T0 + 112 else []
+        return ours + ([_coin(OWN, 2.0)] if now >= T0 + 132 else [])
+
+    def sol(now):
+        return 10.0 if now < T0 + 100 else 9.0 if now < T0 + 112 else 9.95 if now < T0 + 130 else 7.95
+
+    tape = [_buy(T0 + 100, OURS, 1.0, 1_100_000, 2_000_000), sale, _buy(T0 + 130, OWN, 2.0, 1_000_000, 2_000_000)]
+    rep, client = _run(monkeypatch, sol, coins=coins, payload=LIVE, tape=tape, sweeps=sweeps, sweep_after=20,
+                       rearm_after=60, minutes=5)  # fmt: skip
+    assert sweeps == [] and rep["fills"] == 1 and rep["owner_coins"] == [OWN], (sweeps, rep["fills"])
+    assert _starts(client, T0 + 112, T0 + 132) and _starts(client, T0 + 160)
+    assert rep["reason"].startswith("time limit") and rep["left_running"] == []
