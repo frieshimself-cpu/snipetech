@@ -60,7 +60,9 @@ def test_the_wallets_fees_are_said_once_a_day_not_in_every_update():
 def test_the_snapshot_says_how_many_buys_the_wallet_can_pay_on_each_venue():
     """The agents read the wallet's SOL and wrapped SOL side by side and did not draw the conclusion; the snapshot
     draws it, a venue at a time: a curve buy is paid whole in plain SOL, a PumpSwap buy in wrapped SOL, and each needs
-    its fees, tip and token account in plain SOL on top."""
+    its fees, tip and token account in plain SOL on top. Audit round 2 (B4): both counts are of what is left once OKTech
+    has wrapped 1.1 times the buy from plain SOL, as it does while a sniper runs (`oktech_wraps_sol`), which is the
+    book's rule; the count took the plain SOL as it stood and read 0.5 SOL and none wrapped as two curve copies."""
     from snipetech.operator.prompts import BUY_NATIVE_SOL, _compact_snapshot
     from snipetech.operator.snapshot import Snapshot
 
@@ -71,20 +73,25 @@ def test_the_snapshot_says_how_many_buys_the_wallet_can_pay_on_each_venue():
         snap = Snapshot(ts=now, wallet="W", native_sol=native, wsol=wsol, snipers=[], book_fill_sol=fill)
         return _compact_snapshot(snap)["buys_payable"]
 
+    def counts(wraps, curve, pumpswap):
+        return {"size_sol": 0.2, "oktech_wraps_sol": wraps, "curve": curve, "pumpswap": pumpswap}
+
     # 11 Nov morning: nothing at all can be sent
-    assert payable(0.000808, 0.4718) == {"size_sol": 0.2, "curve": 0, "pumpswap": 0}
+    assert payable(0.000808, 0.4718) == counts(0.0, curve=0, pumpswap=0)
     # 11 Nov 18:52: fees for one buy and 0.47 wrapped SOL: one PumpSwap buy, no curve buy (the one that failed)
-    assert payable(0.00524, 0.4718) == {"size_sol": 0.2, "curve": 0, "pumpswap": 1}
+    assert payable(0.00524, 0.4718) == counts(0.0, curve=0, pumpswap=1)
     assert payable(0.012, 0.4718)["pumpswap"] == 2  # wrapped SOL for two, fees for two
-    assert payable(0.5, 0.4718) == {"size_sol": 0.2, "curve": 2, "pumpswap": 2}  # 0.205 a curve buy
-    assert payable(0.5, 0.0) == {"size_sol": 0.2, "curve": 2, "pumpswap": 0}
-    assert payable(0.41, 0.0, fill=0.2)["curve"] == 2 and payable(0.409, 0.0)["curve"] == 1
+    assert payable(0.5, 0.4718) == counts(0.0, curve=2, pumpswap=2)  # 0.205 a curve buy
+    # none wrapped: OKTech wraps 0.22 of the 0.5 first, which pays one PumpSwap copy; 0.28 is left: one on the curve
+    assert payable(0.5, 0.0) == counts(0.22, curve=1, pumpswap=1)
+    assert payable(0.63, 0.0, fill=0.2)["curve"] == 2 and payable(0.629, 0.0)["curve"] == 1
+    assert payable(0.41, 0.22)["curve"] == 2 and payable(0.409, 0.22)["curve"] == 1  # the top-up is there already
     compact = _compact_snapshot(Snapshot(ts=now, wallet="W", snipers=None, book_fill_sol=0.2))
     assert compact["buys_payable"] is None  # balance not read
     assert "buy_fees_payable" not in compact  # the flag that read "payable" while no curve buy could be paid
     # a snapshot from before the field (or a book without a size): the book's smallest copy, 0.2 SOL
     old = _compact_snapshot(Snapshot(ts=now, wallet="W", native_sol=0.5, wsol=0.0, snipers=[]))
-    assert old["buys_payable"] == {"size_sol": 0.2, "curve": 2, "pumpswap": 0}
+    assert old["buys_payable"] == counts(0.22, curve=1, pumpswap=1)
 
 
 def test_the_snapshot_carries_the_books_copy_size(tmp_path):

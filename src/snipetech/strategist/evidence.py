@@ -1,4 +1,6 @@
-"""The week's numbers as one compact JSON document, from the tables only (never from logs or the chain)."""
+"""The week's numbers as one compact JSON document, from the tables only (never from logs or the chain). The fills in
+it are the bot's own (measure/ours.bot_rows): the owner trades by hand in the same wallet, and a hand trade is no
+evidence of what a sniper's bid buys or of how our exits close."""
 
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ from typing import Any
 
 from ..config import Config
 from ..measure.attribution import trip_result_sol
-from ..measure.exits import crossed_sells, exit_reason_counts
+from ..measure.ours import bot_rows
 from ..positions import NON_COIN_MINTS
 from ..store import Store
 
@@ -67,6 +69,24 @@ def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _exit_reasons(sells: list[dict]) -> dict[str, dict[str, int]]:
+    """How these sells were closed, per exit preset (as measure/exits.exit_reason_counts counts every sell on file)."""
+    out: dict[str, dict[str, int]] = {}
+    for f in sells:
+        reason = f.get("exit_reason")
+        if reason:
+            d = out.setdefault(f.get("exit_name") or "none", {})
+            d[reason] = d.get(reason, 0) + 1
+    return out
+
+
+def _crossed(sells: list[dict]) -> dict[str, int]:
+    """Of these sells, those that paid another sniper's priority fee, out of those that could be checked (as
+    measure/exits.crossed_sells counts every sell on file)."""
+    rows = [f for f in sells if f.get("crossed") is not None]
+    return {"crossed": sum(1 for f in rows if f["crossed"]), "checked": len(rows)}
+
+
 def _compact_live(r: dict) -> dict:
     return {k: r.get(k) for k in ("wallet", "n", "mean_sol", "lower_sol", "status")}
 
@@ -95,7 +115,10 @@ def _live_vs_paper(live: list[dict], verdicts: list[dict], kill_n: int) -> list[
 def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[str, Any]:
     since = int(now - days * 86400)
     wallet = cfg.operator.wallet
-    fills = store.fills(wallet=wallet, since_ts=since, limit=100_000) if wallet else []
+    # the bot's own buys, sells and failed sends: 21-22 Nov the owner's four hand buys of one coin (1.5 to 4.95 SOL) and
+    # their sales were in the arms, the cost of a round trip and the exit reasons (audit of 22 Nov, second round)
+    fills = bot_rows(store, store.fills(wallet=wallet, since_ts=since, limit=100_000)) if wallet else []
+    sells = [f for f in fills if f.get("side") == "sell"]
     live = sorted(store.wallet_live(), key=lambda r: -(r.get("mean_sol") or 0))
     banned = {r["wallet"] for r in store.candidates(status="banned", limit=1_000_000)}  # their last verdict stays
     qualified = sorted((v for v in store.latest_verdicts("qualified") if v.get("wallet") not in banned),
@@ -106,8 +129,8 @@ def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[
         "window_days": days,
         "arms": arms,
         "round_trip_cost_by_arm": {a: _round_trip_cost(r) for a, r in arms.items()},
-        "exit_reasons": exit_reason_counts(store, since),
-        "crossed_sells": crossed_sells(store, since),
+        "exit_reasons": _exit_reasons(sells),
+        "crossed_sells": _crossed(sells),
         "unmanaged": [
             {
                 "mint": e.get("mint"),

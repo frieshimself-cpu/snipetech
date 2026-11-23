@@ -38,14 +38,18 @@ async def run_strategist_turn(*args, **kwargs):
 
 
 def new_round_trips(store: Store, cfg: Config, now: float) -> dict[str, Any]:
-    """The book wallet's live round trips (sells in fills) since the strategist's last turn or its last applied
+    """The book wallet's live round trips (the bot's own sells in fills, measure/ours.bot_sells: the owner trades by
+    hand in the same wallet, and a hand sale is no trip of ours) since the strategist's last turn or its last applied
     change, whichever is later; over the evidence window when neither is on record."""
+    from ..measure.ours import bot_sells
+
     last = store.coverage(LAST_KEY).get("ts")
     changes = [float(e["ts"]) for e in store.events(kind="param_change", limit=20) if e.get("source") == "strategist"]
     marks = ([("the last turn", float(last))] if last else []) + [("the last change it applied", t) for t in changes]
     what, since = max(marks, key=lambda m: m[1]) if marks else (f"the last {WINDOW_DAYS} days", now - WINDOW_DAYS * DAY)
     wallet = cfg.operator.wallet
-    n = len(store.fills(wallet=wallet, since_ts=int(since) + 1, side="sell", limit=100_000)) if wallet else 0
+    sells = store.fills(wallet=wallet, since_ts=int(since) + 1, side="sell", limit=100_000) if wallet else []
+    n = len(bot_sells(store, sells)) if sells else 0
     return {"n": n, "since_ts": int(since), "since": what, "on_record": bool(marks)}
 
 
