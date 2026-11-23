@@ -599,7 +599,10 @@ For the owner to paste to their support. Each is one sentence, and each changes 
 24. (23 Nov, with 9) Does a copy bought within seconds of its sniper's start lose its exit? In smoke test 2 OKTech
     fired neither the 12 s timer nor the copy exit on the 2 copies bought 2 s and 7 s after a start, and sold the 4
     bought 15 s or more after one; on 21-22 Nov copies were also left unsold 2.5 and 10 minutes after a start (about
-    4 of 15 one-shot buys). Our runner sells such a copy itself at `--sweep-after` meanwhile.
+    4 of 15 one-shot buys). The 0.2 SOL test's fill 8 (23 Nov 19:44:29 UTC, behind Cented, 4.7 minutes after its
+    sniper's start) was left unsold too, after seven fills it had sold: no sale was sent at all, not at its 12 s timer
+    nor on Cented's sale at 17 s. Our runner sells such a copy itself at `--sweep-after` meanwhile, timed from our buy
+    on the tape since 23 Nov evening (14 s in the test: 14 to 19 s after the buy).
 25. (23 Nov) When does a sniper whose send failed read finished, and can that start still send again? It read
     finished about 12 s after a refused send (about its exit timer), and three times one start sent two transactions,
     5 to 14 s apart, once a refused send and then a buy that filled. Our runner waits past both before it starts the
