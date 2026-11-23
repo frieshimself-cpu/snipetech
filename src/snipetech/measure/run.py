@@ -43,7 +43,7 @@ from .exits import (
     preset_name,
     shadow_exits,
 )
-from .ours import bot_buy, bot_fill, bot_sale_fees, bot_send, fee_marks
+from .ours import bot_buy, bot_fill, bot_sale_fees, bot_send, fee_marks, odd_fees_line, odd_fill
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
@@ -482,6 +482,17 @@ def _non_coin_line(buy: dict) -> str:
             "it.")  # fmt: skip
 
 
+ODD_FEES_SAID_KEY = "measure:odd_fees_said"  # the copies at fees no sniper pays the notes were told of (signatures)
+
+
+def _odd_fees_line(buy: dict, leader: str) -> str:
+    """The owner's line for a copy that paid fees no sniper of ours is set to pay: counted as the bot's by its shape
+    (measure/ours.CopyShape: right behind the copied wallet's buy), with the coin and when."""
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(int(buy.get("ts") or 0)))
+    return (f"[measure] {odd_fees_line(leader, buy.get('priority_lamports'), buy.get('tip_lamports'))} (coin "
+            f"{str(buy.get('mint'))[:6]}…, {when}).")  # fmt: skip
+
+
 def _crossed_line(sell: dict, buy: dict | None) -> str:
     """The owner's line for a crossed sell: which coin, what it paid against its own sniper's fee, and why."""
     paid = (sell.get("priority_lamports") or 0) / 1e9
@@ -899,6 +910,15 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         told.append(b["sig"])
     if untold:
         store.set_coverage(NON_COIN_SAID_KEY, {"sigs": told[-500:], "ts": int(now)})
+    # a copy at fees no sniper of ours is set to pay, the bot's by its shape alone (measure/ours.odd_fill): said once
+    odd_told = list(store.coverage(ODD_FEES_SAID_KEY).get("sigs") or [])
+    odd_seen = set(odd_told)
+    odd_new = [(b, who) for b in bot_buys if b["sig"] not in odd_seen and (who := odd_fill(b, marks))]
+    for b, who in sorted(odd_new, key=lambda x: (x[0].get("ts") or 0, str(x[0].get("sig")))):
+        _note(cfg, now, notes, _odd_fees_line(b, who))
+        odd_told.append(b["sig"])
+    if odd_new:
+        store.set_coverage(ODD_FEES_SAID_KEY, {"sigs": odd_told[-500:], "ts": int(now)})
     # did the 8 Nov sell-fee split work: the twins' cost per landed sell by the sell priority they paid, and sells
     # landed per buy before and after it (the first 20 sells after are said one by one; a fall is an alert line)
     prio_by_buy = {b["sig"]: sell_priority_of((buying_sniper(copy_rows, b) or {}).get("payload")) for b in all_buys}

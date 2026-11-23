@@ -323,3 +323,91 @@ def test_an_old_buy_off_the_tape_is_told_by_the_measure_stages_fill_not_by_a_lon
     whose, _coins = _chain_whose(chain, COPY, store=store, now=late, since=0)
     assert whose == "ours"
     store.close()
+
+
+# -- A1: the measure stage counts such a copy and says it once ---------------------------------------------------------
+
+
+class _Notes:
+    def __init__(self):
+        self.lines = []
+
+    def write(self, text, level="info"):
+        self.lines.append(text)
+
+
+def _measured(tmp_path):
+    """A copy sniper of LEAD on record; the tape holds a copy of ours one slot behind LEAD's buy at fees no payload
+    names, and the owner's hand buy of another coin twenty slots behind LEAD's buy of that one."""
+    from snipetech.config import Config
+    from snipetech.service import Service
+    from snipetech.solana.txmeta import TxMeta
+
+    from .synth import Market, addr
+
+    st = Store(tmp_path / "t.db")
+    cfg = Config()
+    cfg.storage.db_path, cfg.operator.wallet = str(tmp_path / "t.db"), W
+    st.add_oktech_sniper({"id": "cs1", "external_id": "cs1", "kind": "copy", "source": LEAD, "name": "copy lead",
+                          "config_hash": "h", "created_at": NOW - 86_400, "payload": PAYLOAD})  # fmt: skip
+    dev = addr("a2-dev")
+    m = Market(st, addr("a2-copied"), dev, NOW - 3_000, SLOT)
+    m.buy(dev, 1.0, 0)
+    m.buy(LEAD, 1.0, 100)
+    m.buy(W, 1.0, 101, sig="odd-copy")
+    m.commit()
+    h = Market(st, addr("a2-hand"), dev, NOW - 3_000, SLOT + 5_000)
+    h.buy(dev, 1.0, 0)
+    h.buy(LEAD, 1.0, 100)
+    h.buy(W, 2.5, 120, sig="hand-buy")
+    h.commit()
+
+    def meta(sig, fees):
+        return TxMeta(sig=sig, slot=0, block_time=0, version=0, fee_payer=W, signers=[W], n_signatures=1,
+                      fee=5000 + fees[0], priority_lamports=fees[0], cu_limit=200_000, cu_price=5000,
+                      cu_consumed=60_000, tips=[{"dest": "T", "lamports": fees[1], "service": "jito"}])  # fmt: skip
+
+    metas = {"odd-copy": meta("odd-copy", ODD), "hand-buy": meta("hand-buy", HAND)}
+    return Service(cfg, store=st), st, cfg, metas
+
+
+def _measure(svc, cfg, metas, notes, now=NOW + 3_600):
+    from snipetech.measure.run import run_measure
+
+    async def ensure(sigs):
+        svc.store.add_tx_meta([metas[s] for s in sigs if s in metas])
+        return len(sigs)
+
+    async def none(wallet, since_ts):
+        return []
+
+    return asyncio.run(run_measure(svc, cfg, now, since_ts=NOW - 7_200, ensure_meta=ensure, failed_sigs=none,
+                                   notes=notes))  # fmt: skip
+
+
+def test_the_measure_stage_counts_a_copy_at_fees_no_payload_names_and_says_it_once(tmp_path):
+    """A1: the measure stage's own outputs hold the bot's buys only (bot_buy); a copy at a pair no payload names was
+    the owner's there too. It is counted, and the operator's notes are told once, a line a transaction: OKTech may
+    have changed what it pays. The owner's hand buy twenty slots behind the copied wallet is neither."""
+    svc, st, cfg, metas = _measured(tmp_path)
+    try:
+        notes = _Notes()
+        out = _measure(svc, cfg, metas, notes)
+        marks = fee_marks(st)
+        copy, hand = st.fill("odd-copy"), st.fill("hand-buy")
+        assert copy["wallet_copied"] == LEAD and hand["wallet_copied"] == LEAD  # both inside the measure's 150 slots
+        assert bot_buy(copy, marks) and not bot_buy(hand, marks)
+        assert (
+            sum(r["n"] for r in st.bid_model()) == 1 and sum(b["n"] for b in out["landing_by_progress"].values()) == 1
+        )
+        said = [x for x in notes.lines if "paid fees no sniper of ours is set to pay" in x]
+        assert len(said) == 1, notes.lines
+        assert said[0].startswith(
+            "[measure] a copy behind CyaE1V… paid fees no sniper of ours is set to pay (priority "
+            "0.0015, tip 0.12 SOL): counted as the bot's; OKTech may have changed what it pays"
+        )
+        again = _Notes()
+        _measure(svc, cfg, metas, again, now=NOW + 3_900)
+        assert not [x for x in again.lines if "paid fees no sniper" in x]  # once a transaction
+    finally:
+        st.close()
