@@ -86,15 +86,18 @@ to the trades behind and the price gap, so live landings can be read by curve pr
 copied 0-1 trades behind).
 
 **Before the lab: who is measured (11 Nov, 20 Nov, the audit of 22 Nov).** A wallet goes to the lab only when it can
-have the copies its verdict needs. The count before the lab reads the wallet's first 5,000 trades on the tape the lab
-reads and counts the coins whose first buy was at the book's floor (`[book] min_copy_sol`, 0.3 SOL) on pump.fun's
-curve or PumpSwap, the only buys a copy sniper copies. Since the audit of 22 Nov:
+have the copies its verdict needs. (One that is qualified, under a forward check or kept armed always goes: its
+review, its forward check and whether its sniper stays are the lab's to say.) For every other wallet the count
+before the lab reads its first 5,000 trades on the tape the lab reads and counts the coins whose first buy was at
+the book's floor (`[book] min_copy_sol`, 0.3 SOL) on pump.fun's curve or PumpSwap, the only buys a copy sniper
+copies. Since the audit of 22 Nov:
 
 - Each wallet is held to its own bar: 20 such coins, or 10 with a strong history (`[qualify] min_n_tape`,
   `min_n_tape_strong`). Until then every wallet was held to the 10, and with no history source switched on most of
   a lab's wallets had 10 to 19 copies and could not pass.
 - A wallet's buys in the coins it created are left out, as the lab leaves them out: a serial launcher no longer
-  goes to the lab every 72 h for nothing, and its verdict says how many coins it created.
+  goes to the lab every 72 h for nothing, and when it has no other coin at the floor its verdict says how many
+  coins it created.
 - A wallet with more than 5,000 trades and too few such coins among them gets a second, bounded read of up to
   200,000 trades. With too few coins there too it is not measured. A wallet with more than 200,000 trades is
   measured, as before. The count is never below the copies the lab would find, so no wallet that could pass is held
@@ -361,7 +364,8 @@ duplicate sells 0.0080, net -0.0119; OKTech sending each exit once would have sa
   sale paid the buy's whole bid again. Stored replays are made again once behind a version mark (coverage
   `measure:shadow_version`), newest first, 200 buys a run.
 - **Pairing.** A sniper's sale closes the bot's own lot of a coin first, never the owner's older lot of the same
-  coin, and never a lot bought after the sale. A copy sold in parts is one copy in the live result per wallet.
+  coin while the bot's own is open, and never a lot bought after the sale. A copy sold in parts is one copy in the
+  live result per wallet.
   A buy of ours counts as a copy of a wallet only when that wallet bought the coin in the 150 slots before it.
 
 What no trip holds, because no fills row has it (the 7 Nov investigation): the seed-account sweeps of 5-6 Nov (0.0592
@@ -642,9 +646,9 @@ Who uses the rule, and what the audit of 22 Nov changed in each:
   (`held_ts`) and which trades it has counted (`counted`, `counted_from`): each round reads the wallet's trades an hour
   back and counts each once, so a trade the tape writes late is counted by a later round. When the wallet has a
   transaction newer than anything the tape had written (`tape_behind`, the wallet's signatures read at "confirmed"),
-  the round values nothing, pages nothing and carries its baselines to the next round. The bot's PumpSwap trades the
-  tape does not hold are read from the measure stage's fills. A sale is the bot's by its coin first (whose the coin
-  was, then the newest buy of it), and by its own fees only when neither tells.
+  the round values nothing, tells no loss or gain and carries its baselines to the next round. The bot's PumpSwap
+  trades the tape does not hold are read from the measure stage's fills. A sale is the bot's by its coin first
+  (whose the coin was, then the newest buy of it), and by its own fees only when neither tells.
 - **The loss alert** ("equity moved") needs only the bot's own coins valued. An airdrop or an owner's coin the tape
   cannot price no longer switches it off. A coin of the bot's with no price, or one that left its curve and has had
   no trade on the tape for 10 minutes (`stale_price`), makes the alert wait for the sale. Once the agents' budget for
@@ -654,9 +658,9 @@ Who uses the rule, and what the audit of 22 Nov changed in each:
   coins: the owner's coins and airdrops no longer wake the operator every hour. Snipers named by a running `oktech
   cycle` job (its `--id` values) are excused, and count within a live test's expectation, not on top of it. A runner
   started outside the server's jobs is still flagged.
-- **The daily digest** shows the wallet's balance and its coins, and no longer the change since the last digest,
-  which was mostly the owner's own transfers. **The restart notice** names the snipers still armed on OKTech, or says
-  that OKTech could not be read; it used to say that nothing was traded.
+- **The daily digest** shows the wallet's balance and how many coins it holds, and no longer the change since the
+  last digest, which was mostly the owner's own transfers. **The restart notice** names the snipers still armed on
+  OKTech, or says that OKTech could not be read; it used to say that nothing was traded.
 - **The unsold-coin watch** (`book/watch.py`). A coin the owner bought by hand gets one line a day, worded as their
   own trade, with no /sell line. Seen 10 minutes, it keeps no book sniper running under a halt, holds back no retire
   and no clean-up, and is no sniper's buy in the book's count. A coin both bought is told by whose part is left (a
@@ -703,7 +707,8 @@ then a copy of ours into it) keeps its first answer in the round's snapshot; the
   record itself still starts a new stretch at every restart, so a paper exit whose window crosses a restart is still
   left out as a hole.
 - **PumpSwap's newer instructions (`buy_v2`, `sell_v2`).** The price a trade leaves behind now counts the creator and
-  buyback fees the pool keeps, on rows written since 22 Nov.
+  buyback fees the pool keeps, on rows written since the fix went out on 23 Nov; older rows keep the price as it was
+  written.
 - **A tip of 0 is not always a free place.** `trades.tip` counts only the trade's own transaction. A bundle can pay
   its tip in a transaction of its own, which never reaches the tape. The bid tables (`place-bids`, `tips`) say so in
   their reading.
@@ -722,7 +727,7 @@ Numbers that can read differently from before, and why:
   coins are 18 draws. Rules with one moment a coin, the qualify lab among them, read as before.
 - **`"repeats": "also"` is scored only with `--each`.** A rule that takes every buy of a wallet is what a copy sniper
   copies. `lab` and `place-bids` refuse it without `--each`, and `paper freeze` refuses it, because a forward record
-  holds one trade a coin. The records frozen with it before 22 Nov are listed as research only and leave the agents'
+  holds one trade a coin. The records already frozen with it are listed as research only and leave the agents'
   best-rules list. Keying forward trades by moment, so such a rule can be frozen, is not built.
 - **`--each` refuses a rule with a consensus gate** (`known` of 2 or more, `gap`, `teams`, `known_any`): a copy sniper
   of one wallet has none. It used to drop the gate without a word. `place-bids --each` with no rule named reads every
@@ -745,13 +750,15 @@ The forward paper test:
 - **A new record starts after the tape its lab read.** A freeze used to start the record at its own start time, so it
   could score again the very moments the lab had used to pick the rule. Each record keeps its lab's window.
 - **Records frozen at the doubled cost can be frozen again.** A record frozen between 12 Nov 17:24 and 14 Nov 18:26
-  UTC at 0.006 SOL or more a transaction is charged about twice the true cost on every trade. Such a record holds
-  no rule place any more: freezing the rule again makes a new record at today's cost, and the old one runs on
-  beside it, named as overcharged in the freeze's list and the report's `exit_note`.
+  UTC at 0.006 SOL or more a transaction is charged too much on every trade: 0.0062 to 0.0093 SOL a transaction,
+  where every record frozen since is charged 0.0045 (28 such records on the server, 24 of them still running; read
+  23 Nov). Such a record holds no rule's place any more: freezing the rule again makes a new record at today's
+  cost, and the old one runs on beside it, named as overcharged in the freeze's list and the report's `exit_note`.
 - **Trades priced outside the model are marked.** A forward trade keeps its share of the pool and says when its sale
   was priced past the curve's end or on a fallback price. A report row counts them (`outside_model`: how many, their
-  SOL, of how many marked trades; `outside_why` explains once). Rows written before 22 Nov carry no mark. The automatic
-  test's gate does not read the mark: using it would change what goes live, which is the owner's decision.
+  SOL, of how many marked trades; `outside_why` explains once). Rows written before the fix went out on 23 Nov carry
+  no mark. The automatic test's gate does not read the mark: using it would change what goes live, which is the
+  owner's decision.
 - **The report's kept numbers have a version** (`REPORT_VERSION`, 2 since 22 Nov): when it changes, every rule's
   numbers are made again once at the next report. A row of a refuted rule says so (`refuted`: when, on how many
   trades, at what mean).
@@ -764,8 +771,8 @@ The forward paper test:
   research records), refuted rules last with their date. Until 22 Nov it showed five rules typed in by id on 11 Nov,
   all refuted since.
 
-Not done, each a design step: the crowd's slippage as a middle estimate (`lab --crowd-slippage`), a refuted mark in
-the text report, and `outside_model` in the automatic test's gate (the owner's).
+Not done, each a design step: the crowd's slippage as a middle estimate (it would be an opt-in flag of `lab`; none
+exists yet), a refuted mark in the text report, and `outside_model` in the automatic test's gate (the owner's).
 
 ## What the agents may start and keep: limits added by the audit of 22 Nov
 
