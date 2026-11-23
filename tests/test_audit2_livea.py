@@ -428,3 +428,42 @@ def test_the_day_guard_counts_such_a_copy_and_never_the_owners_hand_buy(tmp_path
         assert day["total_sol"] == pytest.approx(-cost, abs=1e-6), day
     finally:
         st.close()
+
+
+# -- A1: `oktech guard` at its end, beside such a copy -----------------------------------------------------------------
+
+
+def _guard_beside(monkeypatch, behind_slots):
+    """`oktech guard` over a copy sniper of the leader whose buy the wallet's own buy of the coin follows by
+    `behind_slots` slots at fees no payload names; the coin stays in the wallet to the end, 15 minutes on."""
+    from tests import test_audit_book as B
+
+    bought = B.NOW + 10
+    svc, store, client, _clock = B._guard(monkeypatch, sol=lambda t: 1.3 if t < bought else 0.3,
+                                          coin=lambda t: None if t < bought else 198_000_000, price=5.0)  # fmt: skip
+    store.add_oktech_sniper({"id": "a", "kind": "copy", "source": B.L1, "created_at": B.NOW - 86_400,
+                             "payload": {"singleSnipe": True, "totalSnipes": 3, "priorityFee": 0.001,
+                                         "tipAmount": 0.199, "ctbotWallets": [{"address": B.L1}]}})  # fmt: skip
+    for sig, user, slot, pos, fees in (("lead", B.L1, 400_600_000, 40, (5_000, 0)),
+                                       ("ours", B.W, 400_600_000 + behind_slots, 2, ODD)):  # fmt: skip
+        store.add_trades([Trade(sig=sig, ev=0, slot=slot, pos=pos, ts=int(bought), mint=B.MINT, venue="curve",
+                                user=user, is_buy=True, quote=10**9, base=198_000_000, fee=0, fee_bps=125,
+                                q_after=40 * 10**9, b_after=800 * 10**12, priority=fees[0], tip=fees[1])])  # fmt: skip
+    rep = asyncio.run(svc.oktech_guard(["a"], B.W, 0.1, 15))
+    store.close()
+    return rep, client
+
+
+def test_the_guards_end_stops_no_sniper_beside_a_copy_at_fees_no_payload_names(monkeypatch):
+    """A1: at its end `oktech guard` stops its snipers once the wallet holds nothing they may manage, and a coin "no buy
+    of ours explains" for ten minutes is none (book.run._bought_by_us, which reads a buy by its fees alone). A copy at
+    a pair no payload names, held past its exit, was such a coin: the guard stopped the sniper that held it."""
+    rep, client = _guard_beside(monkeypatch, behind_slots=1)
+    assert ("stop", "a") not in client.calls and "keep running" in rep["reason"], rep["reason"]
+
+
+def test_the_guards_end_still_stops_beside_the_owners_hand_buy(monkeypatch):
+    """A1 turns no hand buy into a copy: twenty slots behind the copied wallet, at fees no sniper pays, the coin is
+    the owner's, and the guard's snipers are stopped beside it as before."""
+    rep, client = _guard_beside(monkeypatch, behind_slots=20)
+    assert ("stop", "a") in client.calls and rep["stopped"], rep["reason"]

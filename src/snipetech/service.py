@@ -1174,12 +1174,25 @@ class Service:
                 if h.get("mint"):
                     seen.setdefault(str(h["mint"]), now)
 
+        def by_shape(mint: str) -> bool:
+            """Whether a buy of ours explains the coin by its shape: a copy right behind a copied wallet's buy at fees
+            no payload names (measure/ours.bot_bought; `_bought_by_us` reads a buy by its fees alone). 23 Nov audit:
+            such a copy, held ten minutes, was a stray to the guard, and its end stopped the sniper that held it.
+            Records that cannot be read: it may be ours."""
+            from .measure.ours import bot_bought, fee_marks
+
+            try:
+                return bot_bought(self.store, address, mint, fee_marks(self.store))
+            except Exception:  # noqa: BLE001 - not known: the coin keeps the snipers running
+                return True
+
         def theirs(held: list[dict]) -> list[dict]:
             """The held coins a sniper may manage: all but a stray, seen STRAY_AFTER_SECS with no buy of ours to explain
-            it (book.run._strays: an airdrop, the owner's own)."""
+            it (book.run._strays: an airdrop, the owner's own), by its fees or by its shape (`by_shape`)."""
             now = time.time()
             return [h for h in held if not (h.get("mint") and now - seen.get(str(h["mint"]), now) >= STRAY_AFTER_SECS
-                                            and not _bought_by_us(self.store, address, str(h["mint"])))]  # fmt: skip
+                                            and not _bought_by_us(self.store, address, str(h["mint"]))
+                                            and not by_shape(str(h["mint"])))]  # fmt: skip
 
         async def holding() -> list[dict] | None:
             """What keeps the snipers running at an end: the coins they may manage, or a buy of ours on the tape that the
