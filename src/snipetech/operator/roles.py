@@ -62,12 +62,13 @@ ROLE_COMMANDS: dict[str, frozenset[str]] = {
             "gmgn",
             "history amm-backfill",
             "sends",
+            "route",
         }
     ),
     # which rule pays where we land
     "tester": frozenset({"lab", "paper", "dip-buys", "launch-tools", "study", "copy-context"}),
     # what a place is worth, and which bid wins it
-    "fees": frozenset({"place-bids", "tips", "landing", "lab", "playbook", "copy-context", "sends"}),
+    "fees": frozenset({"place-bids", "tips", "landing", "lab", "playbook", "copy-context", "sends", "route"}),
     # which of OKTech's features would make a paper-proven rule land or sell better: commands that read, and no other
     "oktech": frozenset({"landing", "copy-context", "playbook", "launch-tools"}),
     # when a copy sells: labs that name their exits, where our copies land and which buys pay; no freeze
@@ -235,6 +236,7 @@ JOB_HELP_CUTS: tuple[tuple[str, str | frozenset[str]], ...] = (
     ('["dip-buys", "--hours", "144", "--json"] buys the dip', frozenset({"dip-buys"})),
     ('["playbook", "<wallet>", "--json"] reads a bot\'s rules off the tape', frozenset({"playbook"})),
     ('["sends", "<wallet>", "--leader", "<wallet>", "--json"] reads a bot\'s sends', frozenset({"sends"})),
+    ('["route", "--leader", "<wallet>", "--json"] says how', frozenset({"route"})),
     ('["place-bids", "--hours", "48", "--json"] says which bid lands first', frozenset({"place-bids"})),
     ('["tips", "--group", "big", "--hours", "30", "--json"] is the tip table', frozenset({"tips"})),
     ('["copy-context", "--hours", "72", "--json"] scores every known', frozenset({"copy-context"})),

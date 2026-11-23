@@ -2015,3 +2015,19 @@ def test_the_scout_is_told_that_its_screens_keep_a_wallets_name_of_another_kind(
     tools, _, _ = rolebox
     text = _help(tools("scout")["start_job"])
     assert 'With either, a wallet that has a name of another kind keeps it ("kept") and goes to qualify too' in text
+
+
+def test_route_is_the_fee_analysts_and_the_scouts_to_start(toolbox):
+    """23 Nov: `route` says whether the buyers right behind a big wallet's first buys came inside its own Jito bundle,
+    in their own, or outside Jito (the route check of 22 Nov 07:50). The fee analyst and the scout start it; the
+    sentence that lists what an agent may start names it, and its paragraph reaches those two roles only."""
+    from snipetech.operator import roles
+
+    tools, _, _ = toolbox
+    full = tools["start_job"].to_dict()["description"]
+    assert "route" in RESEARCH_COMMANDS
+    assert "route" in roles.ROLE_COMMANDS["fees"] and "route" in roles.ROLE_COMMANDS["scout"]
+    phrase = '["route", "--leader", "<wallet>", "--json"]'
+    fees, tester = " ".join(roles.job_help(full, "fees").split()), " ".join(roles.job_help(full, "tester").split())
+    assert phrase in fees and "inside the leader's own Jito bundle" in fees and "no Helius credits" in fees
+    assert phrase not in tester

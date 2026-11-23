@@ -1607,7 +1607,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
         stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed, and
-        so are landing, tips and sends, and of history only ["history", "amm-backfill", ...] (below); one lab at a
+        so are landing, tips, sends and route, and of history only ["history", "amm-backfill", ...] (below); one lab at a
         time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
         GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
         seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
@@ -1669,6 +1669,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         and read before the failed sends, so the credit limit cuts the sends and not this) and splits the moments by
         validator (by_validator): whether some validators sell the place right behind, or a route of the leaders' own
         holds it, before anyone builds a sender for it.
+        ["route", "--leader", "<wallet>", "--json"] says how the buyers right behind a wallet's first buys get there
+        (23 Nov): for every first buy of 1.9 SOL or more ("--min-sol") by the wallets named ("--leader", repeatable),
+        each other wallet's buy of 0.1 SOL or more within 3 block places after it ("--places"; the leader's companions
+        apart), and whether that buy came inside the leader's own Jito bundle (whoever sent that bundle held the
+        leader's signed transaction before it ran; tipped_by says whether the buyer, the leader, a companion or another
+        wallet paid the bundle's tip), in a Jito bundle of its own (its tip is the place's price), or outside Jito ("no
+        bundle"). It reads Jito's public explorer (no key, no Helius credits, about a month kept), newest moments first
+        ("--max-moments", 150 unless told; "--max-requests", 800). A buyer inside the leader's own bundle had the
+        leader's transaction before it ran: no sender of ours reaches that place without the same flow.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
         gives another kol trigger; "--each" takes every wallet's own first buy of 1 to 3 SOL, with no "known";

@@ -45,6 +45,7 @@ RESEARCH_COMMANDS = frozenset(
         "landing",
         "tips",
         "sends",
+        "route",
     }
 )
 # the commands that open a file only through these flags: every other argument of theirs is text (`_check_paths`).
