@@ -317,3 +317,23 @@ def test_a_list_the_look_cannot_make_sense_of_never_ends_the_run(monkeypatch):
     again = _starts(client, A, T0 + 100)
     assert len(again) == 1 and again[0] >= T0 + 147, [t - T0 for t in again]
     assert rep["reason"].startswith("time limit") and rep["left_running"] == []
+
+
+def test_a_signature_listed_without_its_time_yet_is_waited_for(monkeypatch):
+    """The node lists a transaction of moments ago before it has its block time (a signature with no status yet).
+    Until 130 s every row since A's start comes without one: nothing is told, quietly, and the reading that finds
+    the time arms A again, still before the 30 s rule would have (147 s)."""
+    chain = WalletChain()
+    chain.at(T0 + 100, _refused("refused"))
+    listed = chain.get_signatures
+
+    async def untimed(*a, **k):
+        rows = await listed(*a, **k)
+        return [dict(row, blockTime=None) for row in rows] if chain.clock["t"] < T0 + 130 else rows
+
+    chain.get_signatures = untimed
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 100]}), minutes=4)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == 1 and T0 + 130 < again[0] < T0 + 140, [t - T0 for t in again]
+    assert "failed send on chain" in _lines(rep, A)[0]
+    assert not any("could not be read" in e for e in rep["events"])
