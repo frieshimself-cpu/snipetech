@@ -474,6 +474,30 @@ def test_an_idea_is_closed_with_its_result_and_the_test_stays_the_test(rolebox, 
     assert _call(tools()["upsert_idea"], id=mine, result="the analyst's reading").endswith("updated: result")
 
 
+def test_a_settled_idea_pushed_out_of_a_full_file_is_named_and_still_read_by_id(rolebox, jobs, monkeypatch):
+    """Audit of 22 Nov (agents#0): a new idea that pushed a settled one out of the full file was answered "<id>
+    created" and no more, and the settled idea and its result could not be read again. The answer names the idea that
+    left; list_ideas with its id reads it from the archive, with its result and when it left."""
+    monkeypatch.setattr(learning, "MAX_IDEAS", 2)
+    tools, _, _ = rolebox
+    scout = tools("scout")
+    old = _queue(jobs, "scout", "who copies Cupsey")
+    _call(scout["upsert_idea"], id=old, status="rejected", result="lower -0.021 at +3x over 133 copies (job 6c1b82)")
+    _queue(jobs, "scout", "hunt wallets")
+    out = _call(scout["upsert_idea"], **IDEA)
+    assert out.startswith("I3 created: research, open") and f"{old} (rejected)" in out and "archive" in out
+    assert f'id="{old}"' in out and "\n" not in out
+    got = json.loads(_call(scout["list_ideas"], id=f"{old}, I999"))
+    (idea,) = got["ideas"]
+    assert idea["id"] == old and idea["result"] == "lower -0.021 at +3x over 133 copies (job 6c1b82)"
+    assert idea["archived"] and idea["queue"] == "scout" and got["unknown"] == ["I999"]
+    assert json.loads(_call(tools()["list_ideas"], id=old))["ideas"][0]["id"] == old  # the analyst's list too
+    assert "archive" not in _call(scout["upsert_idea"], id="I3", priority=4)  # a write that pushes nobody out
+    told = " ".join(scout["upsert_idea"].to_dict()["description"].split())
+    assert f"nobody's queue, which holds at most {learning.NOBODY_MAX} open ideas" in told and "the archive" in told
+    assert "the archive" in " ".join(tools()["upsert_idea"].to_dict()["description"].split())
+
+
 def test_the_live_page_shows_an_ideas_result(tmp_path):
     from snipetech import ops as O
     from snipetech.dash import dash_state

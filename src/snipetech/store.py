@@ -1520,6 +1520,24 @@ class Store:
             (address, label, kind, source, int(time.time())),
         )
 
+    def set_label_unless_named(self, address: str, label: str, kind: str, source: str) -> bool:
+        """A screen's own label (cand from fomo-wallets and early-leaders, smart from study), written unless the address
+        carries a label of another kind, which it keeps: a KOL, the owner's tracked list, one of ours (until the review
+        of 22 Nov a screen's label replaced it, and a named wallet left its groups kol, wallet and big). A label of the
+        same kind is written again with the new name. Returns whether it wrote."""
+        out: dict[str, int] = {}
+
+        def do() -> None:
+            out["n"] = self.conn.execute(
+                "INSERT INTO labels (address, label, kind, source, added_at) VALUES (?,?,?,?,?) ON CONFLICT(address) "
+                "DO UPDATE SET label=excluded.label, source=excluded.source, added_at=excluded.added_at "
+                "WHERE labels.kind = excluded.kind",
+                (address, label, kind, source, int(time.time())),
+            ).rowcount
+
+        self._write(do)
+        return bool(out.get("n"))
+
     def forget_labels(self, kind: str, source: str) -> int:
         """Delete the labels of one kind that one source wrote, WRITE_BATCH a transaction; returns how many."""
         gone = 0

@@ -77,6 +77,18 @@ AGENT_BACKFILL_STRETCH_TXS = 50_000
 # full spellings), so a shortened one is refused here whatever the command line makes of it.
 BACKFILL_LIMIT_FLAGS = ("--max-credits", "--month-credits", "--max-stretch-txs")
 BACKFILL_LOG_TAIL = 64_000  # bytes read from the end of an earlier backfill's log to see whether a limit ended it
+# `sends` reads a wallet's history off the chain on the same Helius plan (a credit a thousand signatures and one a
+# failed send). An agent's run asks for at most AGENT_SENDS_CREDITS (the one real run, 8r6N8w over 72 h, counted
+# 4,907; fourteen days of a very busy bot are some hundreds of thousands), over at most AGENT_SENDS_HOURS (the tape's
+# fourteen days: a send before the tape is near no moment it holds), and never more than what the backfills and the
+# earlier runs left of the month's limit (`amm_backfill.MONTH_CREDITS`). Audit of 22 Nov: until then any number ran.
+AGENT_SENDS_CREDITS = 200_000
+AGENT_SENDS_HOURS = 336.0
+# `launch-tools` fetches one create transaction a launch it never read (the tape's fourteen days hold about 600,000),
+# and a coin by --mint that is not on the tape costs up to 500 pages of signatures: an agent's run reads at most this
+# many launches, or this many coins.
+AGENT_LAUNCH_TOOLS_MAX = 100_000
+AGENT_LAUNCH_TOOLS_COINS = 50
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 TWIN_MAX_SECS = 6 * 3600 + 600  # a job's own limit (ops.op_run) and some slack: past it a "running" record is no job
 # a look-up of somebody else's live data answers differently minutes later: the same one may run again after this long
@@ -103,6 +115,15 @@ def _parsed(words: tuple[str, ...]) -> str | None:
     except (SystemExit, Exception):  # noqa: BLE001 - whatever the parser raises, these words have no parsed form
         return None
     return json.dumps(vars(parsed), sort_keys=True, default=str)
+
+
+def as_run(argv: list[str]) -> dict | None:
+    """What the job will make of `argv`: the command line's parser on the words exactly as `Ops.op_run` hands them
+    on (`job_key` strips them, which is right for comparing two jobs and wrong for a limit: " --x" is a value to the
+    job, a flag once stripped, and the stripped words then parse as nothing while the job runs). None when the parser
+    refuses them: the job ends before it does anything."""
+    parsed = _parsed(tuple(str(a) for a in argv))
+    return json.loads(parsed) if parsed is not None else None
 
 
 def job_key(argv: list[str]) -> str:
@@ -310,6 +331,44 @@ class OperatorJobs:
                 raise PermissionError(f"--trades refused, no job started: {exc}") from None
 
     @staticmethod
+    def _check_paper(argv: list[str]) -> None:
+        """What of the paper test is never an agent's, read the way the command line reads the words: a flag may come
+        before the action word (["paper", "--replace", "freeze", ...] is a freeze that replaces). `paper rescore`
+        rewrites the kept trades of frozen rules, run by hand after a model changed. `--replace` makes a freeze write
+        the rules it freezes alone: every rule under forward test was dropped, with its record and the 7-day hold of a
+        refuted one, and not kept as superseded (audit of 22 Nov: 132 rules on the server; no code path gives it)."""
+        if argv[:1] != ["paper"]:
+            return
+        words = [str(a).strip() for a in argv]
+        said = as_run(argv) or {}
+        if said.get("action") == "rescore" or words[:2] == ["paper", "rescore"]:
+            raise PermissionError("paper rescore is not an agent's job: it rewrites kept paper records. Say in an idea "
+                                  "which rule needs pricing again and why")  # fmt: skip
+        if said.get("replace") or any(w == "--replace" or w.startswith("--replace=") for w in words):
+            raise PermissionError("paper --replace is not an agent's: a freeze with it keeps only the rules it freezes "
+                                  "and drops every rule under forward test, its record and the 7-day hold of a refuted "
+                                  "rule, without keeping them as superseded. Freeze beside them: the same command "
+                                  "without --replace")  # fmt: skip
+
+    @staticmethod
+    def _check_label(argv: list[str]) -> None:
+        """An agent's label is a pick (`--kind cand`), a file of them too: it queues the wallet for qualify and keeps
+        the label the wallet has (`Service._pick`). Any other kind replaces the label, whatever it was (audit of 22
+        Nov): a big wallet named "copied by ..." under the default kind left the groups big and kol for every lab and
+        forward rule, and kind own made a wallet one of ours, which the landing measure never counts ahead of us."""
+        if argv[:1] != ["label"]:
+            return
+        from ..service import PICKED_KIND
+
+        said = as_run(argv)
+        if said is not None and said.get("kind") != PICKED_KIND:
+            raise PermissionError(f"label refused, no job started: an agent's label is a pick (--kind {PICKED_KIND}), "
+                                  "which queues the wallet for qualify and keeps the label it has; kind "
+                                  f"{said.get('kind')} would replace its label (a big wallet would leave its groups, "
+                                  "kind own would make it one of ours). Any other label is the owner's: say so in an "
+                                  "idea with owner_needed")  # fmt: skip
+
+    @staticmethod
     def _check_backfill(argv: list[str]) -> None:
         """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS, leaves out stretches above
         AGENT_BACKFILL_STRETCH_TXS at the most, and never lifts the month's limit (the owner's: `--month-credits`).
@@ -350,6 +409,44 @@ class OperatorJobs:
                                       f"{AGENT_BACKFILL_STRETCH_TXS:,} from an agent (a stretch of that size costs "
                                       "as many credits; a busier one is the owner's call: name it in an "
                                       "idea)")  # fmt: skip
+
+    def _check_helius(self, argv: list[str], now: float) -> None:
+        """What an agent's `sends` and `launch-tools` may ask of the Helius plan (AGENT_SENDS_CREDITS and the rest),
+        read as the command line reads the words: the last value of a flag given twice, `--flag=value` as well. Words
+        the command line refuses start a job that ends before its first request."""
+        if argv[:1] not in (["sends"], ["launch-tools"]):
+            return
+        said = as_run(argv)
+        if said is None:
+            return
+        if argv[0] == "launch-tools":
+            n, coins = said.get("max"), len(said.get("mint") or [])
+            if not (isinstance(n, int) and 1 <= n <= AGENT_LAUNCH_TOOLS_MAX and coins <= AGENT_LAUNCH_TOOLS_COINS):
+                raise PermissionError(f"launch-tools refused, no job started: a run an agent starts reads at most "
+                                      f"{AGENT_LAUNCH_TOOLS_MAX:,} launches (--max {n}) or {AGENT_LAUNCH_TOOLS_COINS} "
+                                      f"coins (--mint given {coins} times), one Helius request or more each; a "
+                                      "launch once read is kept, so run it again for the rest")  # fmt: skip
+            return
+        credits, hours = said.get("max_credits"), said.get("hours")
+        if not (isinstance(credits, int) and 0 < credits <= AGENT_SENDS_CREDITS):
+            raise PermissionError(f"--max-credits {credits} refused, no job started: a run of sends an agent starts "
+                                  f"asks for at most {AGENT_SENDS_CREDITS:,} Helius credits (a credit a thousand "
+                                  "signatures and one a failed send; 4,907 for 8r6N8w over 72 hours)")  # fmt: skip
+        if not (isinstance(hours, (int, float)) and math.isfinite(hours) and 0 < hours <= AGENT_SENDS_HOURS):
+            raise PermissionError(f"--hours {hours} refused, no job started: a run of sends reads at most the tape's "
+                                  f"{AGENT_SENDS_HOURS:g} hours (a send before the tape is near no moment it "
+                                  "holds)")  # fmt: skip
+        from .. import amm_backfill as ab
+        from ..analysis.sends import USAGE as SENDS_USAGE
+
+        counted = [ab.month_count(str(self.ops.db), now, usage) for usage in (ab.USAGE, SENDS_USAGE)]
+        if all(c is not None for c in counted):
+            left = max(0, ab.MONTH_CREDITS - sum(c or 0 for c in counted))
+            if credits > left:
+                raise PermissionError(f"--max-credits {credits:,} refused, no job started: {left:,} of the month's "
+                                      f"{ab.MONTH_CREDITS:,} Helius credits are left (the backfills and the runs of "
+                                      "sends count together), so ask for that much at the most; the limit is the "
+                                      "owner's to lift: say so in an idea with owner_needed")  # fmt: skip
 
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
         """The newest run of this same job (`job_key`) that ended well inside its repeat window."""
@@ -514,14 +611,14 @@ class OperatorJobs:
             self._check_role(argv, role, idea)
         if action:
             self._check_backfill(argv)
-        if argv[:2] == ["paper", "rescore"]:  # it rewrites the kept trades of frozen rules: run by hand after a model
-            raise PermissionError("paper rescore is not an agent's job: it rewrites kept paper records. Say in an idea "
-                                  "which rule needs pricing again and why")  # fmt: skip
+        self._check_paper(argv)
         self._check_paths(argv)
+        self._check_label(argv)  # after the paths: a file outside the data directory is refused as that
         self._check_triggers(argv)
         self._check_hunt_landing(argv)
         self._check_lab_window(argv)
         now = time.time() if now is None else now
+        self._check_helius(argv, now)
         self._check_repeat(argv, now, backfill=action)
         self._check_twin(argv, now, role, idea)  # after it: a backfill that goes on has its own words for its twin
         running = self.running()

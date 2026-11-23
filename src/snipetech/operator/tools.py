@@ -1170,6 +1170,8 @@ def ideas_answer(paths: OperatorPaths, status: str, limit: int, id: str | None, 
     if id and str(id).strip():
         want = [x for x in re.split(r"[\s,;]+", str(id).strip()) if x]
         every = {str(i.get("id")): i for i in learning.list_ideas(paths, "all")}
+        # a settled idea a full file pushed out is read from the archive, with when it left (`archived`)
+        every |= {k: v for k, v in learning.archived_ideas(paths, [x for x in want if x not in every]).items()}
         out: dict[str, Any] = {"ideas": [every[x] | {"queue": learning.role_of(every[x])} for x in want if x in every]}
         unknown = [x for x in want if x not in every]
         if unknown:
@@ -1199,7 +1201,8 @@ def ideas_answer(paths: OperatorPaths, status: str, limit: int, id: str | None, 
 
 def idea_answer(done: dict[str, Any]) -> str:
     """What upsert_idea returns for learning.upsert_idea_detail's result: `<id> created: ...` or `<id> updated: the
-    fields that changed`, and for each text that was cut at its cap how many of its last characters are gone."""
+    fields that changed`, for each text that was cut at its cap how many of its last characters are gone, and which
+    settled ideas the new one pushed out of the full file into the archive (until 22 Nov that went unsaid)."""
     idea = done["idea"]
     if done["created"]:
         queue = learning.role_of(idea)
@@ -1213,6 +1216,12 @@ def idea_answer(done: dict[str, Any]) -> str:
     for f, was in done["cut"].items():  # the cut takes the END, where "what is missing" is written: say how much
         out += (f"; {f} {CUT_NOTE} {learning.IDEA_CAPS[f]} characters: its last {was - len(str(idea.get(f, ''))) + 1} "
                 "characters are gone")  # fmt: skip
+    gone = done.get("dropped") or []
+    if gone:
+        names = ", ".join(f"{i.get('id')} ({i.get('status')})" for i in gone[:5])
+        names += f" and {len(gone) - 5} more" if len(gone) > 5 else ""
+        out += (f"; the file was full: {names}, settled and changed longest ago, moved to the archive "
+                f'(list_ideas id="{gone[0].get("id")}" still reads it)')  # fmt: skip
     return out
 
 
@@ -1308,7 +1317,7 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
         Args:
             status: "open" (open and being tested, best first), "all", or one of testing, adopted, rejected.
             limit: At most this many ideas.
-            id: One idea whole, or several ("I20" or "I20, I31"), as JSON.
+            id: One idea whole, or several ("I20" or "I20, I31"), as JSON; a settled one from the archive too.
             full: True gives every listed idea whole, as JSON (long: about 1,250 characters an idea).
         """
         return ideas_answer(paths, status, limit, id, full)
@@ -1323,7 +1332,8 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
         need the owner's yes, and so does any config change outside the strategist's [autotune] bounds (set
         owner_needed). An idea never changes anything by itself: research you may start with start_job; the rest
         waits for the strategist or the owner. The answer is one line: the id and what changed. A text over its
-        length is cut there and kept, and the answer says so.
+        length is cut there and kept, and the answer says so. A new idea that finds the file full pushes the settled
+        idea changed longest ago into the archive: the answer names it, and list_ideas with its id still reads it.
 
         Args:
             title: What to try, in a few words (120 characters).
@@ -1407,7 +1417,7 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
             limit: At most this many ideas.
             queue: "mine" (your own queue), "all" (every queue and the ideas in none), or scout, tester, fees, oktech,
                 exits.
-            id: One idea whole, or several ("I20" or "I20, I31"), from any queue, as JSON.
+            id: One idea whole, or several ("I20" or "I20, I31"), from any queue or the archive, as JSON.
             full: True gives every listed idea whole, as JSON (long: about 1,250 characters an idea).
         """
         if queue not in ("mine", "all", *roles.ROLES):
@@ -1426,8 +1436,10 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
         add is your own queue's unless you give role: that is how you hand work to another role (it alone moves or
         closes it; a queue holds at most 15 open ideas, so close or merge before you add). An idea of another role's
         queue you cannot change. What the owner must decide is an idea of kind live-test, code or config: it is in
-        nobody's queue, always needs the owner's yes, and never changes anything by itself. The answer is one line:
-        the id and what changed. A text over its length is cut there and kept, and the answer says so.
+        nobody's queue, which holds at most 100 open ideas, always needs the owner's yes, and never changes anything
+        by itself. The answer is one line: the id and what changed. A text over its length is cut there and kept,
+        and the answer says so. A new idea that finds the file full pushes the settled idea changed longest ago into
+        the archive: the answer names it, and list_ideas with its id still reads it.
 
         Args:
             title: What to try, in a few words (120 characters).
@@ -1585,8 +1597,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
         stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed, and
-        so are landing and tips, and of history only ["history", "amm-backfill", ...] (below); one lab at a time on a
-        machine under 24 GB, two on a bigger one (the refusal names the limit).
+        so are landing, tips and sends, and of history only ["history", "amm-backfill", ...] (below); one lab at a
+        time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
         GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
         seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
         wallets trading on GMGN's KOL list and its smart-money list right now: wallet, name, X handle, tags, profit
@@ -1634,14 +1646,16 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         leaders' first buys of 1.9 SOL or more ("--min-sol"), how many it tried, landed right behind ("adjacent"),
         behind other buyers in the block, later, tried with failed sends only, or did not try, and what the failed ones
         paid (a failed send pays its priority; its tip is undone). It costs Helius credits: one a thousand signatures
-        and one a failed send ("--max-credits", 5000 unless told). A send that never landed (dropped, or a bundle that
-        lost its auction) leaves nothing on chain, so the tries it counts are the least the bot made. Every moment is
-        listed (moments_list: its outcome, the bot's failed sends at it, the first other buyer of 0.1 SOL or more
-        within 3 block places after the leader) and "near" counts such buyers after the leader and before it.
-        "--validators" adds each moment's block leader (getSlotLeaders: one request for up to 5,000 slots, about 130
-        for 72 hours, counted at an assumed credit each and read before the failed sends, so the credit limit cuts the
-        sends and not this) and splits the moments by validator (by_validator): whether some validators sell the place
-        right behind, or a route of the leaders' own holds it, before anyone builds a sender for it.
+        and one a failed send ("--max-credits", 5000 unless told; 200,000 at most and "--hours" 336 at most from an
+        agent, and never more than the backfills and the earlier runs left of the month). A send that never landed
+        (dropped, or a bundle that lost its auction) leaves nothing on chain, so the tries it counts are the least the
+        bot made. Every moment is listed (moments_list: its outcome, the bot's failed sends at it, the first other
+        buyer of 0.1 SOL or more within 3 block places after the leader) and "near" counts such buyers after the leader
+        and before it. "--validators" adds each moment's block leader (getSlotLeaders: one request for up to 5,000
+        slots, about 130 for 72 hours, counted at an assumed credit each and read before the failed sends, so the
+        credit limit cuts the sends and not this) and splits the moments by validator (by_validator): whether some
+        validators sell the place right behind, or a route of the leaders' own holds it, before anyone builds a sender
+        for it.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
         gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
@@ -1698,7 +1712,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         ["leaders-of", "<wallet>", "--json"], which lists the
         wallets a copy bot buys right after (6Z91). ["early-leaders", "--hours", "72", "--json"] ranks wallets like 7aPo (their buys in a coin's first 20
         slots, copied 3 trades behind, 30 s); "--label", "10" labels the best as cand for qualify.
-        ["fomo-wallets", "--days", "3", "--label", "150", "--json"] labels the busiest FOMO app traders cand. A
+        ["fomo-wallets", "--days", "3", "--label", "150", "--json"] labels the busiest FOMO app traders cand. With
+        either, a wallet that has a name of another kind keeps it ("kept") and goes to qualify too. A
         strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,
         whale, kol, momentum, hunt or mig, with its numbers), refused at once with its reason, before any job starts,
         when a number is out of range or OKTech could not run it (a hunt's sol and dev_max are whole numbers). Hunt

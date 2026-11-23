@@ -3401,14 +3401,18 @@ def _main(args) -> int:
         svc = Service(cfg)
         try:
             rows = fomo_wallets(svc.tape_store, time.time(), days=args.days, min_buys=args.min_buys)
-            labelled = []
+            labelled, kept = [], []
             for r in rows[: max(0, args.label)]:
-                svc.store.set_label(r["wallet"], f"fomo {r['buys']} buys {r['buy_sol']:g} SOL", "cand", "fomo")
+                # a wallet named otherwise (a KOL, the owner's tracked list) keeps its name and goes to qualify too
+                if svc.store.set_label_unless_named(r["wallet"], f"fomo {r['buys']} buys {r['buy_sol']:g} SOL", "cand",
+                                                    "fomo"):  # fmt: skip
+                    labelled.append(r["wallet"])
+                else:
+                    kept.append({"wallet": r["wallet"], "kind": svc.store.label_kind(r["wallet"])})
                 svc.store.upsert_candidate(r["wallet"], "fomo", r, int(time.time()))  # qualify's queue
-                labelled.append(r["wallet"])
         finally:
             svc.store.close()
-        out = {"days": args.days, "wallets": len(rows), "top": rows[:50], "labelled": labelled}
+        out = {"days": args.days, "wallets": len(rows), "top": rows[:50], "labelled": labelled, "kept": kept}
         print(json.dumps(out, indent=1) if args.json else "\n".join(
             f"{r['wallet']}  {r['buys']} buys  {r['buy_sol']:g} SOL  {r['coins']} coins" for r in rows[:50])
             or "no FOMO wallet with enough buys")  # fmt: skip
@@ -3670,17 +3674,20 @@ def _main(args) -> int:
             cost = buy * hurdle / 100.0
             rows = early_leaders(svc.tape_store, time.time(), hours=args.hours, min_n=args.min_n,
                                  max_slots=args.max_slots, min_sol=args.min_sol, buy_sol=buy, cost=cost)  # fmt: skip
-            labelled = []
+            labelled, kept = [], []
             for r in [r for r in rows if r["lower_sol"] > 0][: max(0, args.label)]:
-                svc.store.set_label(
+                # a wallet named otherwise (the owner's tracked list, a KOL) keeps its name and goes to qualify too
+                if svc.store.set_label_unless_named(
                     r["wallet"], f"early-leader n{r['n']} {r['mean_sol']:+.4f}", "cand", "early-leaders"
-                )
+                ):
+                    labelled.append(r["wallet"])
+                else:
+                    kept.append({"wallet": r["wallet"], "kind": svc.store.label_kind(r["wallet"])})
                 svc.store.upsert_candidate(r["wallet"], "early-leaders", r, int(time.time()))  # qualify's queue
-                labelled.append(r["wallet"])
         finally:
             svc.store.close()
         out = {"hours": args.hours, "min_n": args.min_n, "buy_sol": buy, "cost_sol": cost,
-               "per_tx_source": tx["per_tx_source"], "wallets": rows, "labelled": labelled}  # fmt: skip
+               "per_tx_source": tx["per_tx_source"], "wallets": rows, "labelled": labelled, "kept": kept}  # fmt: skip
         print(json.dumps(out, indent=1) if args.json else "\n".join(
             f"{r['wallet']}  n {r['n']}  mean {r['mean_sol']:+.4f}  lower {r['lower_sol']:+.4f}  win {r['win_rate']:.0%}"
             for r in rows) or "no wallet has enough early buys")  # fmt: skip
@@ -3783,8 +3790,10 @@ def _main(args) -> int:
             except ValueError as exc:
                 raise SystemExit(f"operate idea: not added: {exc}") from None
             idea = done["idea"]  # "cut": each text that was over its cap, with how long it was (it is cut and kept)
+            gone = [i.get("id") for i in done["dropped"]]  # the settled ideas the full file pushed into the archive
             print(json.dumps({"id": idea.get("id"), "title": idea.get("title"), "status": idea.get("status")}
-                             | ({"cut": done["cut"]} if done["cut"] else {})))  # fmt: skip
+                             | ({"cut": done["cut"]} if done["cut"] else {})
+                             | ({"archived": gone} if gone else {})))  # fmt: skip
             return 0
         if args.action == "agent":  # one turn of a research agent (operator/roles.py), run further down
             from .operator import roles

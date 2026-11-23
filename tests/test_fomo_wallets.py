@@ -74,6 +74,41 @@ def test_cli_labels_the_busiest_fomo_wallets_as_candidates_and_the_agents_may_ru
         st.close()
 
 
+def test_a_named_wallet_among_the_busiest_fomo_traders_keeps_its_name(tmp_path, capsys):
+    """Review of 22 Nov (agents#4, the same hole through another command): `fomo-wallets --label N` wrote kind cand
+    over whatever label a wallet had, so a KOL or a wallet of the owner's tracked list among the busiest FOMO traders
+    left the groups kol, wallet and big for every lab, freeze and forward rule (the scout is told to run it with
+    "--label", "150"). A wallet named otherwise keeps its name, as a pick does (`label --kind cand`), and still goes
+    to qualify's queue; a wallet with no name is labelled cand as before."""
+    import json
+
+    from snipetech import cli
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    try:
+        m = Market(st, addr("fw-coin3"), addr("fw-dev3"), NOW - 3600, 42_000_000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        sigs = [m.buy(addr("fomo-kol"), 0.3, 2 + k).sig for k in range(12)]
+        sigs += [m.buy(addr("fomo-new"), 0.3, 20 + k).sig for k in range(10)]
+        m.commit()
+        for s in sigs:
+            st._exec("INSERT INTO tx_meta (sig, slot, fee_payer, priority, tip, data) VALUES (?,?,?,0,0,'{}')",
+                     (s, 42_000_010, FOMO_FEE_PAYER))  # fmt: skip
+        st.set_label(addr("fomo-kol"), "Cupseyy", "kol", "file")
+    finally:
+        st.close()
+    assert cli.main(["--db", str(db), "fomo-wallets", "--days", "1", "--min-buys", "10", "--label", "5", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["labelled"] == [addr("fomo-new")] and out["kept"] == [{"wallet": addr("fomo-kol"), "kind": "kol"}]
+    st = Store(db)
+    try:
+        assert st.label_kinds()[addr("fomo-kol")] == ("kol", "Cupseyy") and addr("fomo-new") in st.labels("cand")
+        assert {c["wallet"] for c in st.candidates() if "fomo" in c["sources"]} == {addr("fomo-kol"), addr("fomo-new")}
+    finally:
+        st.close()
+
+
 def test_screened_wallets_jump_qualifys_queue_ahead_of_older_discovery_candidates():
     """9 Nov: a 900-wallet qualify run never reached the 84 FOMO wallets: never-evaluated candidates go oldest first,
     and thousands of older discovery candidates sat ahead. The owner's and the screens' wallets go first."""

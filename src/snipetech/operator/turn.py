@@ -106,7 +106,8 @@ WRITE_TOOLS = frozenset({"update_table", "upsert_idea", "add_lesson", "start_job
 
 # When the hour's cache loses (14 Nov): it is written at twice the input price, the five-minute one at 1.25 times, and
 # an entry nobody reads within the hour was paid for nothing. A role whose last two waits between turns were both over
-# HOUR_WAIT_SECS gets no hour marker on its list of ended jobs (prompts.role_message); the instructions keep theirs.
+# HOUR_WAIT_SECS gets no hour marker on its list of ended jobs (prompts.role_message), nor since 22 Nov on its
+# instructions (the five-minute one instead); the operator's and the analyst's instructions keep theirs.
 HOUR_WAIT_SECS = 3600
 WAITS_KEPT = 2
 _NOTE_HEAD = re.compile(r"^- \S+ \[[a-z]+\] ")  # how a line of operator/notes.md starts: "- <time> [<level>] "
@@ -263,6 +264,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     analyst = decision.mode in ("analyst", "postmortem")  # a post-mortem is an analyst turn between the daily ones
     mode = "analyst" if analyst else "operator"  # the ledger prices and caps a post-mortem like the daily analysis
     list_marked = False  # a role's request that carries the hour marker on its list of ended jobs (below)
+    system_mark = dict(HOUR_CACHE)  # the instructions' cache marker
     if role is not None:
         if decision.mode != role or role not in roles.ROLES:
             raise ValueError(f"a research agent's turn runs in its own mode: {role!r}, not {decision.mode!r}")
@@ -275,10 +277,15 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         # deploy and the rest with every turn (prompts.role_message: what stays the same comes first)
         learned = learning_context(paths, role=role)
         waits = role_waits(paths, role, started)
+        hour = hour_cache_pays(waits)
+        # an hour that no turn of the role reads is paid for nothing on the instructions too (audit of 22 Nov: the
+        # OKTech analyst's three-hour looks); the list's marker follows the same rule, so no hour comes after five
+        # minutes in the request
+        system_mark = dict(HOUR_CACHE) if hour else {"type": "ephemeral"}
         record_text = research_record(research_dir(jobs.repo))
         content = role_message(role, snap, decision, learned=learned, table=_report_text(paths, roles.TABLES[role]),
                                started_by=roles.job_roles(paths), ceiling=ceiling, record=record_text,
-                               hour=hour_cache_pays(waits) and not list_hour_refused(paths, role, started))  # fmt: skip
+                               hour=hour and not list_hour_refused(paths, role, started))  # fmt: skip
         # whether this request carries the list's hour marker: only then can leaving it out cure a refusal
         list_marked = isinstance(content, list) and any(isinstance(b, dict) and b.get("cache_control") for b in content)
     else:
@@ -305,7 +312,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         # the tools and the instructions are the same from turn to turn and turns come 15-30 minutes apart: in the
         # five-minute cache every turn wrote them again at the write price; in the hour's the next turn reads them
         # (11 Nov, the pricing page: a read is a fortieth of the input price on the analyst's model)
-        system=[{"type": "text", "text": system_text, "cache_control": dict(HOUR_CACHE)}],
+        system=[{"type": "text", "text": system_text, "cache_control": system_mark}],
         tools=tools,
         messages=[{"role": "user", "content": content}],
         # the current models return empty thinking text unless asked for its summary; the owner's live page shows it

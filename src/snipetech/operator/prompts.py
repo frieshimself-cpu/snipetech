@@ -25,7 +25,9 @@ Hard rules (the tools enforce them too):
   switch either stop off) is the owner's too. To suggest a test, name the strategy and the evidence in a note;
   never write those files.
 - Research jobs: start_job accepts only the research commands its description names (lab, paper, the wallet and coin
-  studies) and nothing that trades. One lab at a time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the research jobs
+  studies) and nothing that trades. Labs: as many at once as the machine runs (two on the 32 GB server, one on a
+  smaller one; start_job's refusal says when it is full), and at most a few jobs at once. Before starting anything,
+  look at `jobs_recent` in the snapshot: the research jobs
   that ended in the last 24 h, one line each (id, how it ended, when, what ran) — read one with read_job_log and its id
   (a JSON result is read from the top) instead of running the same job again. A wallet or coin address in a line
   is cut to its first 8 characters and a flag given many times is counted; the job's log has them whole. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's

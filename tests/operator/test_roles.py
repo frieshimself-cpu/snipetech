@@ -702,6 +702,34 @@ def test_another_roles_table_never_wakes_the_oktech_analyst(box):
     assert _due(box, "oktech") == (True, f"handed an idea: {handed} (by the tester)")
 
 
+def test_an_idle_role_with_an_empty_queue_is_called_by_a_table_once_an_hour(box):
+    """Audit of 22 Nov (agents#6): the scout rewrites its table every turn, and it called the fee analyst, whose queue
+    was empty, every quarter hour until the idle wait set in: 0.27-0.46 $ a turn that read the table and wrote "nothing
+    new" (50 such wakes in 39 hours, 26 $; 33 started no job). A role whose queue holds no open idea and whose last
+    turn did no work is called by another role's table once an hour has passed since its last turn. An hour from a
+    turn's start is less than one from its last request: the hour's cache is still there. A handed idea, its own news
+    and the three-hour look call it at once, and so does a table when its queue holds an idea or its last turn
+    worked: the table wake pays there (20 Nov, with it off, the agents did half the work)."""
+    table = box.paths.root / "scout-facts.md"
+    table.write_text("| wallet | note |\n")
+    os.utime(table, (NOW - 60, NOW - 60))
+    _state(box.paths, "fees", last=NOW - 15 * 60, idle=1, seen={})
+    assert _due(box, "fees") == (False, R.TABLE_QUIET_WHY)
+    assert _due(box, "fees", NOW - 15 * 60 + H) == (True, "the scout table changed (operator/scout-facts.md)")
+    _state(box.paths, "fees", idle=0)  # its last turn worked: the table calls it at once, as before
+    assert _due(box, "fees") == (True, "the scout table changed (operator/scout-facts.md)")
+    _state(box.paths, "fees", idle=1)
+    box.store.put_fill({"sig": "B1", "ts": NOW - 100, "wallet": "W", "mint": "M", "side": "buy", "sol": 0.2})
+    assert _due(box, "fees") == (True, "a new fill of ours (read_fills)")  # its own news
+    _state(box.paths, "fees", last=NOW - 50)  # (that turn saw the fill)
+    os.utime(table, (NOW - 10, NOW - 10))
+    handed = _idea(box.paths, "fees", "price the second place", by="scout", status="testing", now=NOW - 5)
+    assert _due(box, "fees") == (True, f"handed an idea: {handed} (by the scout)")
+    _state(box.paths, "fees", last=NOW - 1, stalled_told=NOW - 1)  # its last turn saw the idea, in testing still
+    os.utime(table, (NOW, NOW))
+    assert _due(box, "fees") == (True, "the scout table changed (operator/scout-facts.md)")  # its queue holds one
+
+
 def test_the_least_gap_between_a_roles_turns_is_the_owners_every(box):
     """Until 14 Nov the owner's `/budget every` only switched the roles on and a role turned every round. It is the
     least gap between a role's turns now. The server's file says 0.25 h, a round: nothing changes until the owner
