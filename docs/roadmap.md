@@ -37,10 +37,33 @@ first on the server's recording and only then run live in capped batches.
 - **What it means.** The place right behind exists and has a price: the highest Jito tip among the bundles that
   carry the leader's transaction, usually 0.002 to 0.02 SOL, up to about 1 SOL when 8r6N8w bids. On paper the place
   is worth about +1.1 to +1.3 SOL a copy at 6 SOL (22 Nov, below). The entry ticket is the leader's signed
-  transaction before it runs; nothing faster or higher-bidding reaches the place without it. Where these buyers get
-  it is the next question: the leaders' trading platforms (FLASH…, GMGN) or a relay that passes their orders on.
+  transaction before it runs; nothing faster or higher-bidding reaches the place without it. No public feed sells a
+  transaction before it lands since Jito closed its mempool in March 2024 (reports/Solana copy trading tools 2026.md),
+  so these buyers draw on a private source. Which one is the next question: the leaders' trading platforms (FLASH…,
+  GMGN), a relay or node that passes their orders on, or a validator that sees them arrive.
   OKTech question 30 asks whether a copy can go out as such a bundle (docs/oktech-playbook.md). Any sender of our own
   stays the owner's decision; this is the fact it waits on, not a plan.
+- **Who sells it (read at 16:55 UTC).** Cented, Decu and Yugi buy through Axiom's trade program (FLASHX8D… is "FL
+  Axiom Trade Program" in Orb Markets' program list, orbmarkets.io/programs), theo side through GMGN's. Two order-flow
+  networks sell exactly this place: Harmonic's searcher network (harmonic.gg/searcher-network, public beta since 5
+  Nov 2026: "when your validator leads, Harmonic forwards eligible transactions to vetted searchers as they arrive,
+  before they execute"; a batch auction; "the winning bundle lands with the user's transaction first and the
+  searcher's trade directly behind it"; backrun only; KYC/KYB and AML checks and a 7 to 14 day pilot; costs not
+  published) and Inertia (inertia.sh: "Validators and apps send transactions and bundles to Inertia", a 50 ms
+  auction, the winner "lands behind the original flow as one bundle"; its searcher API in early alpha, by
+  application). The 103 bundles ran on 68 different validators, so their flow is no few validators' own: it comes
+  from the apps' side or a relay. Which network carries Axiom's and GMGN's orders is not known. What the place would
+  take: a buyer of ours admitted to such a network (the owner's KYC or company's KYB), a client that bids on its
+  stream for the paper's moments (first buys of 1.9 SOL or more by Cented, Decu and theo side), and a test of what
+  the place earns at the tips seen (median 0.003 SOL, 0.4 to 1.08 when 8r6N8w bids). That is the owner's decision.
+- **The wallet finder has not found a wallet that pays after its checks** (read off the verdicts and the copy record
+  at 16:55 UTC; the new `forward-tally` keeps this count). Only 9 wallets ever passed qualify's forward check (17
+  verdicts, 11 to 19 Nov; none since 19 Nov 14:46 UTC; three passed in the same moment and two others together, so
+  likely two packs among them). All 9 lost after it: 965 later paper copies at 0.2 SOL, about
+  -10.3 SOL in all, -0.011 a copy, the best of them -0.34 SOL. The latest verdicts: 2 qualified, 119,439
+  candidates, 14,422 retired. The one rule that holds (the small-coin copy behind Cented, Decu and Yugi) came from
+  labs, not from qualify. So arming qualify's picks stays off; its runs (36 to 70 minutes of the machine each) have
+  found no wallet that pays yet.
 - **The paper against the live test** (lab 20261123-160934-bd53ff, the tape copy of 13:30): Yugi's fill 2 made
   +0.099 on paper and +0.101 live; the ten refused sends fall at the same moments on paper and live; fill 1 made
   +0.125 on paper (held 12 s) and +0.023 live (OKTech sold at 3 s when Yugi moved the coin into his own wallets,
