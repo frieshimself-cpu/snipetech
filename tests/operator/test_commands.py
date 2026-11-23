@@ -559,6 +559,175 @@ def test_all_of_stop_stays_inside_the_passes_two_minutes(tmp_path, monkeypatch):
     assert sent == [reply] and "stopped 0 sniper(s)" in reply and all(f"s{k}" in reply for k in range(6)), reply
 
 
+# -- review of round 2 (23 Nov), A2: the look for a buy on its way had holes of its own --------------------------------
+
+
+def _copy_on_chain(mint=OURS, held=0, tokens=38_000_000, name="copy"):
+    from tests.chain import swap
+
+    return swap(name, W, mint, tokens=tokens, sol=1.0, priority=0.001, tip=0.199, held=held)
+
+
+def test_a_buy_the_node_lists_with_no_block_time_yet_holds_the_stop(tmp_path):
+    """Review of A2: a node lists a transaction of a second ago with no block time yet. Read as a time of zero it was
+    older than the look's 30 s, so the freshest buy, the one the look is for, was passed over and its sniper stopped.
+    No block time is a transaction too fresh to have one: it is read."""
+    svc = Readings(tmp_path, [[], []])
+    chain = _on_chain(svc, _copy_on_chain())
+    real_sigs, real_tx = chain.get_signatures, chain.get_transaction
+
+    async def sigs_no_time(address, **kw):
+        return [{**row, "blockTime": None} for row in await real_sigs(address, **kw)]
+
+    async def tx_no_time(signature):
+        tx = await real_tx(signature)
+        return tx and {**tx, "blockTime": None}
+
+    chain.get_signatures, chain.get_transaction = sigs_no_time, tx_no_time
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "Ours1" in reply and "not shown" in reply, reply
+
+
+def test_an_old_transaction_ends_the_look_and_what_is_listed_behind_it_is_not_read(tmp_path):
+    """Review of A2: the wallet's signatures come newest first, so the first one older than the look ends it: nothing
+    behind it is read (a buy of an hour ago is no buy on its way, with or without a block time on its row)."""
+    svc = Readings(tmp_path, [[], []])
+    chain = _on_chain(svc, _copy_on_chain(name="an hour ago"),
+                      _copy_on_chain("Later" + "1" * 39, name="ten minutes ago"), age=600)  # fmt: skip
+    real_sigs = chain.get_signatures
+
+    async def oldest_untimed(address, **kw):
+        rows = await real_sigs(address, **kw)
+        return [*rows[:-1], {**rows[-1], "blockTime": None}]
+
+    chain.get_signatures = oldest_untimed
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "s1")], reply
+    assert not [c for c in chain.calls if c[0] == "getTransaction"]
+
+
+def test_stop_holds_for_a_copy_into_the_owners_coin_whose_tokens_have_not_shown(tmp_path):
+    """Review of A2: the owner holds a coin they bought by hand; a wallet we copy buys it and our copy lands two
+    seconds before /stop. Both readings still show the owner's amount, the tape and the fills do not have the buy yet,
+    and the chain does. The coin had been "shown", so the buy counted for nothing and the sniper that had just bought
+    was stopped. A landed buy no record holds yet is on its way, whatever the readings showed of its coin."""
+    svc = Readings(tmp_path, [[_coin(HAND)], [_coin(HAND)]])
+    svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)
+    _on_chain(svc, _copy_on_chain(HAND, held=1_000_000, tokens=1_000_000))
+    reply, ctx = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "H8WTvo" in reply, reply
+    assert "send /stop again" in reply.lower() and "not shown" in ctx["paths"].notes.read_text()
+
+
+def test_the_owners_own_fresh_buy_of_their_coin_holds_no_stop_once_it_is_on_record(tmp_path):
+    """Review of A2, the other way: the owner tops their own coin up by hand and sends /stop. The tape has that buy
+    (at their fees) and the readings show what their buys explain: nothing of ours, and the snipers are stopped."""
+    from snipetech.models import Trade
+
+    top_up = _copy_on_chain(HAND, held=1_000_000, tokens=1_000_000, name="the owner's top-up")
+    svc = Readings(tmp_path, [[_coin(HAND, raw=2_000_000)], [_coin(HAND, raw=2_000_000)]])
+    svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)
+    svc.store.add_trades([Trade(sig=top_up["transaction"]["signatures"][0], ev=0, slot=900, pos=0, ts=NOW - 6,
+                                mint=HAND, venue="curve", user=W, is_buy=True, quote=1_000_000_000, base=1_000_000,
+                                fee=0, fee_bps=0, q_after=1, b_after=1, priority=AXIOM_PRIO,
+                                tip=AXIOM_TIP)])  # fmt: skip
+    _on_chain(svc, top_up)
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [("stop", "s1")] and "your own" in reply, reply
+
+
+def test_slow_readings_do_not_move_the_look_past_the_buy(tmp_path, monkeypatch):
+    """Review of A2: the look reached 30 s back from the moment it was made, after the readings. With readings that
+    took their time, a buy of just before /stop fell out of it. It reaches back from the moment /stop began."""
+    from snipetech.operator import commands
+
+    class Slow(Readings):
+        async def open_positions(self, address, ignore=None, unknown=None):
+            if self.reads:  # the second reading takes its time
+                await asyncio.sleep(0.8)
+            return await super().open_positions(address, ignore=ignore)
+
+    monkeypatch.setattr(commands, "CHAIN_LOOK_SECS", 2.5)
+    svc = Slow(tmp_path, [[], []])
+    _on_chain(svc, _copy_on_chain(), age=1)  # two seconds before the command (the fake chain's whole seconds)
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "Ours1" in reply and "not shown" in reply, reply
+
+
+def test_what_the_chain_showed_before_it_stopped_answering_still_counts(tmp_path, monkeypatch):
+    """Review of A2: the look reads the wallet's transactions newest first and has 10 s. One that ran out of time
+    counted for nothing at all, the buy it had already found with it."""
+    from snipetech.operator import commands
+
+    monkeypatch.setattr(commands, "SECOND_WAIT_SECS", 0.3)
+    svc = Readings(tmp_path, [[], []])
+    older = _copy_on_chain("Older" + "1" * 39, name="a buy before it")
+    chain = _on_chain(svc, older, _copy_on_chain())
+    real_tx = chain.get_transaction
+
+    async def hangs_on_the_older(signature):
+        if signature == older["transaction"]["signatures"][0]:
+            await asyncio.sleep(3600)
+        return await real_tx(signature)
+
+    chain.get_transaction = hangs_on_the_older
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "Ours1" in reply and "not shown" in reply, reply
+
+
+def test_a_buy_the_tape_gets_while_the_chain_is_read_holds_the_stop(tmp_path):
+    """Review of A2: the tape was looked at before the chain, and the chain can take 10 s. A buy the recorder wrote in
+    that time was seen by neither (here the node asked lists nothing of the wallet yet). The tape is looked at last."""
+    svc = Readings(tmp_path, [[], []])
+
+    class WritesMeanwhile:
+        async def get_signatures(self, *a, **k):
+            svc.tape(OURS, True, OUR_PRIO, OUR_TIP, ts=NOW - 2)
+            return []
+
+    svc.rpc = WritesMeanwhile()
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "Ours1" in reply and "not shown" in reply, reply
+
+
+def test_a_copy_into_the_owners_coin_the_tape_gets_while_the_chain_is_read_keeps_the_snipers(tmp_path):
+    """Review of A2: and one into a coin the readings showed as the owner's is weighed again after the look: with a
+    buy of ours of it on the tape, that coin is no longer theirs beyond doubt."""
+    svc = Readings(tmp_path, [[_coin(HAND)], [_coin(HAND)]])
+    svc.tape(HAND, True, AXIOM_PRIO, AXIOM_TIP)
+
+    class WritesMeanwhile:
+        async def get_signatures(self, *a, **k):
+            svc.tape(HAND, True, OUR_PRIO, OUR_TIP, ts=NOW - 2)
+            return []
+
+    svc.rpc = WritesMeanwhile()
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "left running" in reply and "H8WT" in reply, reply
+
+
+def test_a_buy_behind_a_dozen_failed_sends_is_still_found(tmp_path):
+    """Review of A2: OKTech sends a buy and a sale several times over, and the ones that fail are on the wallet's list
+    too (14 Nov: 50 failed sends in one burst). Ten signatures were looked at: a dozen failed sends hid the buy."""
+    from tests.chain import swap
+
+    failed = [swap(f"failed {k}", W, "Else1" + "1" * 39, tokens=1_000, sol=0.01, priority=0.001,
+                   err={"InstructionError": [3, {"Custom": 6002}]}) for k in range(12)]  # fmt: skip
+    svc = Readings(tmp_path, [[], []])
+    _on_chain(svc, _copy_on_chain(), *failed)  # the buy 18 s before the command, the failed sends after it
+    reply, _ = _stop(tmp_path, svc)
+    assert svc.calls == [] and "Ours1" in reply and "not shown" in reply, reply
+
+
+def test_a_fresh_buy_of_a_coin_the_owner_ignores_holds_no_stop(tmp_path):
+    """Review of A2: the owner's ignored coins are no sniper's anywhere (the readings and the tape's look leave them
+    out); the chain's look left them in, and the owner's own buy of one held /stop back."""
+    svc = Readings(tmp_path, [[], []])
+    _on_chain(svc, _copy_on_chain(AIRDROP))
+    reply, _ = _stop(tmp_path, svc, ignore_mints=[AIRDROP])
+    assert svc.calls == [("stop", "s1")], reply
+
+
 def test_resume_removes_flag_and_status_reports(tmp_path):
     svc = FakeSvc(held=[{"mint": "M1", "amount": 1}], snipers=[{"id": "s1", "name": "a", "status": "running"}])
     snap = Snapshot(ts=NOW - 600, wallet=W, native_sol=1.25, wsol=0.0, held=[{"mint": "M1"}], snipers=svc._snipers, spent_today=0.42,

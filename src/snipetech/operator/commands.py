@@ -21,6 +21,7 @@ plan ran out unseen on 19 Nov)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import time
@@ -81,10 +82,12 @@ STOPS_SECS = 40  # all of /stop's stop calls together: six book snipers at READ_
 # /stop together STOP_BUDGET_SECS (its stops take what is left of it): still inside the pass's 2 minutes.
 SECOND_WAIT_SECS = 10
 STOP_BUDGET_SECS = 95
-# a landed transaction of the wallet this recent that bought a coin no reading showed is a coin on its way (as long as
-# the runner waits for one: service.FRESH_HOLD_SECS), looked for among this many of its newest signatures
+# a transaction of the wallet that landed since this long before /stop began and bought a coin whose tokens no reading
+# showed is a coin on its way (as long as the runner waits for one: service.FRESH_HOLD_SECS), looked for among this
+# many of its newest signatures: the failed sends are on that list too and are passed over unread (OKTech sends a buy
+# and a sale several times over; 14 Nov: 50 failed sends in one burst), and the first one older than the look ends it
 CHAIN_LOOK_SECS = 30
-CHAIN_LOOK_SIGS = 10
+CHAIN_LOOK_SIGS = 50
 
 
 def _waited(cmd: Command, now: float) -> int | None:
@@ -268,46 +271,73 @@ def _unrecorded(svc, running: list[dict]) -> set[str]:
     return {i for i in ids if not sniper_marks([payloads.get(i)])["buy"]}
 
 
-async def _landed_buys(svc, wallet: str, since: float) -> list[str]:
-    """The coins the wallet bought in transactions that landed since `since` and has not sold since, read off its own
-    newest signatures on the chain: a coin the tape does not follow (a PumpSwap coin past the tape's 30 minutes: three
-    of the six copies of 20 Nov) is on no tape. None of the non-coins (wrapped SOL, a stablecoin). Empty with no RPC
-    to ask; a transaction the node cannot serve yet is skipped."""
+async def _landed_buys(svc, wallet: str, since: float, found: list[tuple[str, str]]) -> None:
+    """Into `found`, as (coin, signature): the coins the wallet bought in transactions that landed since `since` and
+    has not sold since, read off its own newest signatures on the chain, newest first: a coin the tape does not follow
+    (a PumpSwap coin past the tape's 30 minutes: three of the six copies of 20 Nov) is on no tape, and a buy of a
+    second ago is not on it yet. None of the non-coins (wrapped SOL, a stablecoin). Nothing with no RPC to ask; a
+    transaction the node cannot serve yet is skipped. A signature listed with no block time is one too fresh to have
+    it, never an old one (review of 23 Nov: read as a time of zero, the freshest buy was passed over): its
+    transaction says when. The first one older than `since` ends the look. A sale is read before the buy it followed,
+    so what is found holds when the look is cut short."""
     rpc = getattr(svc, "rpc", None)
     if rpc is None:
-        return []
+        return
     from ..measure.chain_landing import read_fill
     from ..positions import NON_COIN_MINTS
 
-    out: list[str] = []
     sold: set[str] = set()
     for s in await rpc.get_signatures(wallet, limit=CHAIN_LOOK_SIGS):  # newest first
-        if s.get("err") is not None or not s.get("signature") or int(s.get("blockTime") or 0) < since:
+        when = s.get("blockTime")
+        if when is not None and int(when) < since:
+            break  # older than the look, and so is every one after it
+        if s.get("err") is not None or not s.get("signature"):
             continue
         tx = await rpc.get_transaction(s["signature"])
-        fill = read_fill(tx, wallet, ours=True) if tx else None
+        if not tx:
+            continue
+        when = when if when is not None else tx.get("blockTime")
+        if when is not None and int(when) < since:
+            break
+        fill = read_fill(tx, wallet, ours=True)
         if not fill or not fill.get("mint") or fill["mint"] in NON_COIN_MINTS:
             continue
         if fill["side"] == "sell":
             sold.add(fill["mint"])
-        elif fill["side"] == "buy" and fill["mint"] not in sold and fill["mint"] not in out:
-            out.append(fill["mint"])
-    return out
+        elif fill["side"] == "buy" and fill["mint"] not in sold and fill["mint"] not in {m for m, _sig in found}:
+            found.append((fill["mint"], str(s["signature"])))
+
+
+def _on_record(svc, sig: str) -> bool:
+    """Whether the tape or the measure stage's fills hold a transaction of the wallet: then the reading of whose each
+    coin is (`_not_ours`) has weighed it. False when the store cannot say."""
+    store = getattr(svc, "store", None)
+    if store is None:
+        return False
+    try:
+        return bool(store._q("SELECT 1 FROM trades WHERE sig=? LIMIT 1", (sig,))
+                    or store._q("SELECT 1 FROM fills WHERE sig=? LIMIT 1", (sig,)))  # fmt: skip
+    except Exception:  # noqa: BLE001 - not known: the buy may be one nothing has weighed
+        return False
 
 
 async def _on_its_way(svc, cfg: Config, wallet: str, seen: set[str], now: float) -> list[str]:
-    """The coins the wallet bought moments ago that no reading of it showed (`seen`: the coins they did show): on the
-    tape, a buy in the last minute that no sale followed (operator/leftovers._unseen, the rule the round's clean-up of
-    a dead run stops by), and on the chain, for a coin the tape does not follow (`_landed_buys`, CHAIN_LOOK_SECS). A
-    chain that does not answer in SECOND_WAIT_SECS tells nothing more: the readings and the tape decide, as there."""
+    """The coins the wallet bought since moments before /stop began (`now`) whose tokens no reading of it showed
+    (`seen`: the coins they did show, none of them a sniper's by our records). On the chain (`_landed_buys`, from
+    CHAIN_LOOK_SECS before `now`): a coin the readings did not show, or one they showed whose buy neither the tape
+    nor the fills hold yet, so nothing has weighed it (review of 23 Nov: a copy into a coin the owner holds, its tokens
+    not shown yet, counted for nothing because "the coin was shown"). On the tape, looked at last (the chain can take
+    SECOND_WAIT_SECS, and the recorder writes meanwhile): a buy since a minute before `now` that no sale followed
+    (operator/leftovers._unseen, the rule the round's clean-up of a dead run stops by). The owner's ignored coins are
+    left out of both. A chain that stops answering tells no more than it had: the readings and the tape decide."""
     from .leftovers import _unseen
 
-    coming = [m for m in _unseen(svc, cfg, wallet, {}, now) if m not in seen]
-    try:
-        landed = await asyncio.wait_for(_landed_buys(svc, wallet, now - CHAIN_LOOK_SECS), SECOND_WAIT_SECS)
-    except Exception:  # noqa: BLE001 - the chain cannot say now
-        landed = []
-    return coming + [m for m in landed if m not in seen and m not in coming]
+    landed: list[tuple[str, str]] = []
+    with contextlib.suppress(Exception):  # the chain cannot say more now: what it showed before still counts
+        await asyncio.wait_for(_landed_buys(svc, wallet, now - CHAIN_LOOK_SECS, landed), SECOND_WAIT_SECS)
+    skip = set(cfg.operator.ignore_mints or ())
+    coming = [m for m, sig in landed if m not in skip and (m not in seen or not _on_record(svc, sig))]
+    return coming + [m for m in _unseen(svc, cfg, wallet, {}, now) if m not in seen and m not in coming]
 
 
 async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths, now: float) -> str:
@@ -317,8 +347,8 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
     one whose fees the bot has no record of (_unrecorded), which may have bought the owner's coin. One reading with
     nothing of ours in it is no proof (23 Nov audit: a copy bought a second before the read had not shown yet): before
     any stop the wallet is read again live_test.SECOND_READ_SECS later, that reading weighed by its own amounts, and
-    no sniper is stopped while the tape or the chain has a buy of the wallet whose coin neither reading showed
-    (`_on_its_way`)."""
+    no sniper is stopped while the tape or the chain has a buy of the wallet whose tokens neither reading showed
+    (`_on_its_way`: since moments before /stop began; the readings are weighed once more after it)."""
     loop = asyncio.get_running_loop()
     began = loop.time()
     ignore = list(cfg.operator.ignore_mints or ())
@@ -366,14 +396,19 @@ async def _stop_snipers(svc, cfg: Config, notes: NoteSink, paths: OperatorPaths,
         mine = [h for h in again if str(h.get("mint")) not in theirs]
         seen = {str(h.get("mint")) for h in (*held, *again)}
         held = again
-        coming = [] if mine else await _on_its_way(svc, cfg, cfg.operator.wallet, seen, now + loop.time() - began)
+        # from before /stop began (`now`), however long the readings took: a look back from this moment lost a buy
+        # of just before the command behind slow readings (review of 23 Nov)
+        coming = [] if mine else await _on_its_way(svc, cfg, cfg.operator.wallet, seen, now)
         if coming:
             coins = ", ".join(f"{m[:6]}…" for m in coming[:5])
             notes.write(f"stopped by owner: flag set; {len(running)} sniper(s) left running: the wallet bought {coins} "
-                        "moments ago and the coin has not shown in it yet", "decision")  # fmt: skip
+                        "moments ago and what it bought has not shown in it yet", "decision")  # fmt: skip
             return (f"stop flag set, but {len(running)} sniper(s) left running ({ids}): the wallet bought {coins} "
-                    "moments ago and the coin has not shown in the wallet yet. A stopped sniper strands its coin; send "
-                    "/stop again in a minute.")  # fmt: skip
+                    "moments ago and what it bought has not shown in the wallet yet. A stopped sniper strands its "
+                    "coin; send /stop again in a minute.")  # fmt: skip
+        if not mine:  # weighed once more: the tape may have got a buy of ours while the chain was read
+            theirs = _not_ours(svc, cfg.operator.wallet, again, paths, now)
+            mine = [h for h in again if str(h.get("mint")) not in theirs]
     if mine:
         coins = ", ".join(f"{h.get('mint', '?')[:4]}… ({h.get('amount')})" for h in mine[:5])
         notes.write(
