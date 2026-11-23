@@ -105,11 +105,12 @@ class Snapshot:
         has a price. A coin that is not the bot's (an airdrop the tape never priced, the owner's coin on a venue it does
         not record) leaves the whole wallet unvalued, never the bot's own result (audit 22 Nov, round#0). Nor can it
         while the tape is behind the wallet (`tape_behind`): a trade the balances show may not be on the tape yet
-        (round#3)."""
+        (round#3). What our sold copy left (`sold_copy`, `sold_copies`) needs no price: it counts at the one it has, or
+        at nothing."""
         if self.native_sol is None or self.wsol is None or self.tape_behind:
             return False
         return all(h.get("priced") is not False and h.get("value_sol") is not None and not h.get("stale_price")
-                   for h in self.held or [] if h.get("ours", True))  # fmt: skip
+                   for h in self.held or [] if h.get("ours", True) and not h.get("sold_copy"))  # fmt: skip
 
     def to_json(self) -> str:
         return json.dumps(asdict(self) | {"equity": self.equity}, default=str)
@@ -528,6 +529,27 @@ def mark_off_tape(store, fills: list[dict], prev: Snapshot | None, wallet: str) 
 PRICE_STALE_SECS = 600  # a coin off its curve with no trade on the tape this long: the tape no longer follows its price
 
 
+def sold_copies(paths: OperatorPaths, now: float) -> set[str]:
+    """The coins the unsold-coin watch's last pass calls what our sold copy left (book/watch.py `sold_copy`: a copy of
+    ours the fills show sold, under 1 % of what it bought still in the wallet), when that pass ran within
+    book/watch.HIT_MAX_AGE_SECS: the gate's own reading of the watch (gate.decide). Nothing when it cannot be read."""
+    from ..book.watch import current_hits
+
+    try:
+        return {str(h.get("mint")) for h in current_hits(paths, now) if h.get("stray") and h.get("sold_copy")}
+    except Exception:  # noqa: BLE001 - not known: such a coin keeps the bot's coins unvalued, as before
+        return set()
+
+
+def _raws(held: list[dict] | None) -> dict[str, int]:
+    """What a reading of the wallet holds of each coin, in its smallest units, every token account of it together."""
+    out: dict[str, int] = {}
+    for h in held or []:
+        if h.get("mint"):
+            out[str(h["mint"])] = out.get(str(h["mint"]), 0) + int(h.get("raw") or 0)
+    return out
+
+
 def stale_price(store, mint: str, now: float) -> bool:
     """Whether the tape's last price of a coin is one it stopped keeping up: the coin left its pump.fun curve (the tape
     keeps its PumpSwap trades only for [live] amm_recent_secs after that) and the tape's newest trade of it is
@@ -648,6 +670,17 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             for h in snap.held:
                 if h.get("ours") and h.get("mint") and stale_price(store, str(h["mint"]), now):
                     h["stale_price"] = True
+            # what our sold copy left, a few tokens the tape cannot price, on the unsold-coin watch's word: held as the
+            # bot's with no price it left the bot's coins unvalued and the loss alert silent for as long as it sat in
+            # the wallet (a later 2.2 SOL loss raised no line: third round of the 22 Nov audit). It counts at the price
+            # it has, or at nothing (`bot_valued`, the baseline below, gate.bot_result). Not a coin held in a larger
+            # amount than the round before held it: bought again since the watch's last pass, not its rest
+            sold = sold_copies(paths, now)
+            was, held_now = _raws(prev.held if prev is not None else None), _raws(snap.held)
+            for h in snap.held:
+                m = str(h.get("mint") or "")
+                if h.get("ours") and m in sold and held_now.get(m, 0) <= was.get(m, held_now.get(m, 0)):
+                    h["sold_copy"] = True
         if rows is not None:
             new = [r for r in rows if f"{r[0]}:{r[1]}" not in counted and f"{r[0]}:chain" not in counted]
             trades = [{"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4),
@@ -681,7 +714,7 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         # worth, whose baseline moves whenever the bot's own coins are valued, whatever else the wallet holds (round#0),
         # and its trades were read (unread ones are counted by a later round, from the same window)
         if snap.bot_valued and not snap.fills_unread:  # this round values the bot's coins: the baseline is this round
-            snap.ref_ours_sol = round(sum(float(h["value_sol"]) for h in snap.held if h.get("ours", True)), 9)
+            snap.ref_ours_sol = round(sum(float(h.get("value_sol") or 0) for h in snap.held if h.get("ours", True)), 9)
             snap.bot_cash_since_ref = 0.0
         else:
             snap.ref_ours_sol = getattr(prev, "ref_ours_sol", None)

@@ -8,6 +8,7 @@ from before the last boot is not running to a research agent either (I6), and th
 book's own can-pay rule (I7)."""
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -166,6 +167,84 @@ def test_i1_a_hand_buy_half_sold_between_two_rounds_stays_the_owners(world):
     AR.tick(st, 1995)
     b = AR.take(st, cfg, paths, a, 2000.0, 8.1, [AR.coin(COIN, 1.2)])
     assert AR.whose(b) == {COIN: "owner"}
+
+
+# -- from liveb's list: the loss alert beside the few tokens a sold copy left ------------------------------------------
+
+COIN2 = "Coin222222222222222222222222222222222222pump"
+
+
+def _watch_says(paths, now, hits):
+    """operator/watch.json as the one-minute watch wrote it half a minute before the round."""
+    (paths.root / "watch.json").write_text(json.dumps({"ts": now - 30, "hits": hits}))
+
+
+def test_liveb_the_loss_alert_is_not_silent_while_the_few_tokens_a_sold_copy_left_sit_in_the_wallet(world):
+    """A copy the bot sold can leave a few tokens behind that the tape cannot price. The snapshot holds them as the
+    bot's (its buy is on record) with no value, so the round could not value the bot's coins and its loss alert said
+    nothing for as long as they sat in the wallet: a later 2.2 SOL loss raised no line. Once the unsold-coin watch
+    calls the coin what our sold copy left (at most 1 % of what the copy bought, book/watch.py `sold_copy`: the gate
+    already takes its word) it counts for nothing in the bot's result, and the alert speaks."""
+    st, cfg, paths = world
+    AR.tick(st, 1095)
+    a = AR.take(st, cfg, paths, None, 1100.0, 10.0, [])
+    tape(st, "copy", 1500, COIN, W, True, ONE_SOL, PAID)
+    AR.tick(st, 1995)
+    b = AR.take(st, cfg, paths, a, 2000.0, 8.8, [AR.coin(COIN, 1.0)])
+    assert b.bot_valued and AR.whose(b) == {COIN: "ours"}
+    tape(st, "exit", 2400, COIN, W, False, (900_000_000, 11_250_000), EXIT)  # sold; a few tokens stay, with no price
+    AR.tick(st, 2895)
+    c = AR.take(st, cfg, paths, b, 2900.0, 9.69, [AR.unpriced(COIN)])
+    assert not c.bot_valued and not AR.bot_lines(paths, c, b, 2900.0)  # nothing says yet what they are: it waits
+    tape(st, "copy2", 3300, COIN2, W, True, (3_456_790_123, 43_209_877), PAID)  # another copy loses 2.2 SOL
+    tape(st, "exit2", 3312, COIN2, W, False, (1_300_000_000, 16_250_000), EXIT)
+    AR.tick(st, 3795)
+    _watch_says(paths, 3800.0, [{"mint": COIN, "stray": True, "sold_copy": True}])
+    d = AR.take(st, cfg, paths, c, 3800.0, 7.4, [AR.unpriced(COIN)])
+    assert d.bot_valued and d.held[0]["sold_copy"] is True and d.total_equity is None
+    lines = AR.bot_lines(paths, d, c, 3800.0)  # the first copy's 0.114 and the second's 2.419, fees in
+    assert len(lines) == 1 and "-2.534 SOL of it by the bot's own" in lines[0], lines
+    AR.tick(st, 4695)
+    _watch_says(paths, 4700.0, [{"mint": COIN, "stray": True, "sold_copy": True}])
+    e = AR.take(st, cfg, paths, d, 4700.0, 7.4, [AR.unpriced(COIN)])
+    assert e.bot_valued and not AR.bot_lines(paths, e, d, 4700.0)  # told once
+
+
+def test_liveb_a_coin_of_the_bots_with_no_price_that_the_watch_does_not_call_a_sold_copys_rest_still_waits(world):
+    """Only the watch's own word counts: a held copy with no price (a hit that is no sold copy's rest, or a watch that
+    has not run lately) leaves the bot's result unknown, as before."""
+    st, cfg, paths = world
+    AR.tick(st, 1095)
+    a = AR.take(st, cfg, paths, None, 1100.0, 10.0, [])
+    tape(st, "copy", 1500, COIN, W, True, ONE_SOL, PAID)
+    AR.tick(st, 1995)
+    _watch_says(paths, 2000.0, [{"mint": COIN, "stray": False, "sold_copy": False, "reason": "dead_exit"}])
+    b = AR.take(st, cfg, paths, a, 2000.0, 8.8, [AR.unpriced(COIN)])
+    assert AR.whose(b) == {COIN: "ours"} and not b.bot_valued and "sold_copy" not in b.held[0]
+    AR.tick(st, 2895)
+    _watch_says(paths, 2900.0 - 3600, [{"mint": COIN, "stray": True, "sold_copy": True}])  # an hour old: no word
+    c = AR.take(st, cfg, paths, b, 2900.0, 8.8, [AR.unpriced(COIN)])
+    assert not c.bot_valued and "sold_copy" not in c.held[0]
+
+
+def test_liveb_more_of_the_coin_than_the_round_before_held_is_no_sold_copys_rest_whatever_the_watch_said(world):
+    """The watch's word can be a minute old: a copy of ours bought again into the same coin since its last pass, off
+    the tape and not in the fills yet, would count for nothing in the bot's result, and the loss alert would page the
+    copy's whole cost as a loss. A coin the wallet holds more of than the round before held is bought again: the
+    watch's word on it waits for the watch's next pass."""
+    st, cfg, paths = world
+    AR.tick(st, 1095)
+    a = AR.take(st, cfg, paths, None, 1100.0, 10.0, [])
+    tape(st, "copy", 1500, COIN, W, True, ONE_SOL, PAID)
+    tape(st, "exit", 1600, COIN, W, False, (900_000_000, 11_250_000), EXIT)  # sold: a few tokens stay, with no price
+    AR.tick(st, 1995)
+    _watch_says(paths, 2000.0, [{"mint": COIN, "stray": True, "sold_copy": True}])
+    b = AR.take(st, cfg, paths, a, 2000.0, 9.88, [AR.unpriced(COIN)])
+    assert b.bot_valued and b.held[0]["sold_copy"] is True
+    AR.tick(st, 2895)
+    again = AR.unpriced(COIN) | {"raw": 40 * AR.unpriced(COIN)["raw"]}  # bought again, on no record yet
+    c = AR.take(st, cfg, paths, b, 2900.0, 8.86, [again])  # the watch's pass of 2000 s still stands
+    assert not c.bot_valued and "sold_copy" not in c.held[0] and not AR.bot_lines(paths, c, b, 2900.0)
 
 
 # -- I2: a copy test's own marks carry the copy's shape ----------------------------------------------------------------
