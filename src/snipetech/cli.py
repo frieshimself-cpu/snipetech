@@ -1393,7 +1393,10 @@ def build_parser() -> argparse.ArgumentParser:
                     "wallets its first buys followed most, read off the tape as `playbook` reads them)")  # fmt: skip
     sp.add_argument("--hours", type=float, default=72.0)
     sp.add_argument("--min-sol", type=float, default=1.9, help="a leader's smallest first buy that is a moment")
-    sp.add_argument("--max-credits", type=int, default=5000, help="Helius credits the run may count at most")
+    sp.add_argument("--max-credits", type=int, default=5000, help="Helius credits the run may count at most; more "
+                    "than the month has left (the backfills and the runs of sends count together) is refused")  # fmt: skip
+    sp.add_argument("--over-month", action="store_true", help="run though --max-credits passes what the month has "
+                    "left (the owner's word; an agent's run stays inside the month)")  # fmt: skip
     sp.add_argument("--validators", action="store_true", help="also read each moment's block leader (getSlotLeaders, "
                     "a credit a request of up to 5,000 slots) and split the moments by validator")  # fmt: skip
     sp = cmd(
@@ -3509,12 +3512,16 @@ def _main(args) -> int:
                     leaders = [str(t["wallet"]) for t in pb.get("triggers") or [] if int(t.get("coins") or 0) >= 3][:5]
                 return await sends_mod.sends(svc.store, svc.tape_store, svc.rpc, args.wallet, leaders, time.time(),
                                              hours=args.hours, min_sol=args.min_sol, max_credits=args.max_credits,
-                                             validators=args.validators)  # fmt: skip
+                                             validators=args.validators, over_month=args.over_month)  # fmt: skip
             finally:
                 await svc.close()
                 svc.store.close()
 
-        out = asyncio.run(go_sends())
+        try:
+            out = asyncio.run(go_sends())
+        except sends_mod.OverMonth as exc:  # more than the month has left: said, nothing read
+            print(f"sends: {exc}", file=sys.stderr)
+            return 2
         if args.json:
             print(json.dumps(out, indent=1))
             return 0
