@@ -222,6 +222,24 @@ def test_b2_more_of_the_coin_than_the_owners_buys_explain_keeps_every_book_snipe
         st.close()
 
 
+def test_b2_a_coin_of_ours_beside_the_owners_own_keeps_every_book_sniper(tmp_path):
+    """Only a wallet that holds nothing a sniper of ours may hold lets a kill stop them: with a copy of ours (a
+    sniper's fees) beside the owner's coin every book sniper stays, and the owner's line counts them."""
+    st, cfg = BT._env(tmp_path)
+    AB._book_sniper(st)
+    held = _owners_coin_the_bot_once_traded(st)
+    ours = "Ours" + "o" * 40
+    AB._tape_trade(st, "COPY", BT.NOW - 900, 400_600_000, True, AB.BOT_FEES, mint=ours)
+    held.append({"mint": ours, "amount": RAW / 1e6, "raw": RAW, "value_sol": 0.2, "priced": True})
+    svc, sent = BT.FakeSvc(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], held=held, cfg=cfg), []
+    try:
+        out = _book(tmp_path, svc, cfg, sent)
+        assert out["kill_reason"] == "book off" and svc.calls == [], svc.calls
+        assert any("1 book sniper(s) kept running while the wallet holds a coin" in t for t in sent), sent
+    finally:
+        st.close()
+
+
 K2 = f"snipetech copy book {BT.L2[:6]} arm:control"
 
 
