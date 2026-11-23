@@ -508,6 +508,43 @@ def test_i3_a_retire_reads_the_wallet_after_its_stop_only_once_a_buy_on_its_way_
         st.close()
 
 
+class _SilentAfterTheStop(BT.FakeSvc):
+    """A wallet that answers until the retire's stop has gone out, then gives no answer (the RPC client retries a
+    refused call for minutes: 22 Nov audit, finding 10)."""
+
+    async def oktech_task(self, action, task_id):
+        if action == "stop":
+            self.stopped = True
+        return await super().oktech_task(action, task_id)
+
+    async def open_positions(self, address, ignore=()):
+        if getattr(self, "stopped", False):
+            await asyncio.sleep(60)
+        return []
+
+
+def test_i3_a_retire_whose_wallet_does_not_answer_after_its_stop_starts_its_sniper_again(tmp_path, monkeypatch):
+    """The retire's readings waited for the wallet as long as the RPC client took. The machine ends the book's unit
+    after four minutes: one cut between the stop and the reading after it left the sniper stopped, with no record for
+    the next run to start it again, beside whatever it bought as the stop went out (rule 1). Each reading waits
+    STOP_READ_SECS at most, as the plan's stops do; a wallet that did not answer after the stop holds what may be the
+    sniper's coin, so the sniper is started again and nothing is deleted."""
+    monkeypatch.setattr(R, "STOP_READ_SECS", 0.2)
+    st, cfg, _ = BT._made_its_buy(tmp_path)
+    svc, sent = _SilentAfterTheStop(st, snipers=[{"id": "k1", "name": BT.K1, "status": "running"}], cfg=cfg), []
+
+    async def book():
+        return await asyncio.wait_for(R.run_book(svc, cfg, BT.NOW, notifier=AB._notifier(sent),
+                                                 balances=lambda w: (10.0, 0.0, [])), 5)  # fmt: skip
+
+    try:
+        asyncio.run(book())
+        assert ("stop", "k1") in svc.calls and ("start", "k1") in svc.calls and ("delete", "k1") not in svc.calls
+        assert any("k1" in t and "started again" in t for t in sent), sent
+    finally:
+        st.close()
+
+
 # -- I3, the same cause: the round's clean-up of a dead run looks there too --------------------------------------------
 
 

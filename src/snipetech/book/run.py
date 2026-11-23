@@ -754,6 +754,19 @@ STOP_READ_SECS = 20.0  # the wallet's reading before a stop, at most: past it th
 SECOND_READ_SECS = 5.0
 
 
+async def _wallet_read(svc, wallet: str, strays: set[str] | frozenset,
+                       store=None) -> tuple[list[dict], list[dict], list[dict]] | None:  # fmt: skip
+    """`_wallet_now` in STOP_READ_SECS at most: None past it, or when the wallet cannot be read. A stop's or a retire's
+    reading that waited as long as the RPC client took (minutes on a refusal) let the machine end the book's unit in
+    the middle: once between a retire's stop and its next reading, the sniper stayed stopped with no record for a run
+    to start it again (third round of the 22 Nov audit). Unknown holdings never stop a sniper, and after a stop they
+    start it again."""
+    try:
+        return await asyncio.wait_for(_wallet_now(svc, wallet, strays, store), STOP_READ_SECS)
+    except Exception:  # noqa: BLE001 - no answer in time: not known
+        return None
+
+
 async def _settle(read_at: float | None) -> None:
     """Wait out what is left of SECOND_READ_SECS since the run read the wallet (`read_at`, on the loop's clock; None:
     no reading to count from, no wait)."""
@@ -812,10 +825,7 @@ async def _stop(svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store,
     The caller ends its stops at the first None: each further one would wait as long, and the machine ends the book's
     unit after four minutes."""
     await _settle(read_at)
-    try:
-        got = await asyncio.wait_for(_wallet_now(svc, wallet, strays, store), STOP_READ_SECS)
-    except Exception:  # noqa: BLE001 - no answer in time: not known, and unknown holdings never stop a sniper
-        got = None
+    got = await _wallet_read(svc, wallet, strays, store)
     coins = _may_hold(got, a.sniper_id in unrecorded)
     waits, coming = None, None
     if coins is None or coins or _tape_holds(store, wallet, float(now or 0)):
@@ -1050,7 +1060,7 @@ async def _retire(
     blind = sid in unrecorded  # no fee record of it: a coin read as the owner's may be its own
 
     await _settle(read_at)
-    got = await _wallet_now(svc, wallet, strays, store)
+    got = await _wallet_read(svc, wallet, strays, store)
     coins = _may_hold(got, blind)
     if coins is None or coins or _tape_holds(store, wallet, now):
         notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again (or could not be read)", "info")
@@ -1064,7 +1074,7 @@ async def _retire(
     # a buy the sniper sent just before its stop lands a moment after it: read at once, the wallet and the chain showed
     # nothing yet and the sniper was deleted with its coin on the way (third round of the 22 Nov audit)
     await asyncio.sleep(SECOND_READ_SECS)
-    got = await _wallet_now(svc, wallet, strays, store)
+    got = await _wallet_read(svc, wallet, strays, store)
     coins = _may_hold(got, blind)
     held = coins is None or bool(coins) or _tape_holds(store, wallet, now)
     coming = None if held else await _buy_coming(svc, cfg, wallet, got[2], now)
