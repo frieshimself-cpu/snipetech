@@ -25,9 +25,16 @@ LEADER_GRACE_SECS = 60  # a buy in flight when the sniper was made or removed st
 def copy_sniper_rows(store: Store) -> list[dict]:
     """Every copy sniper we ever made (removed ones too), with the wallets it copies, when it lived and the config it
     was created with (its exits and fees)."""
+    return copying_rows(store.oktech_snipers(active=False))
+
+
+def copying_rows(records: list[dict], kinds: tuple[str, ...] | None = COPY_KINDS) -> list[dict]:
+    """`copy_sniper_rows` of sniper records already read (`Store.oktech_snipers`). `kinds` None: every sniper that
+    follows a wallet, whatever its kind (a probe, a replica): whose buy a buy is asks that (measure/ours.CopyShape),
+    where a landing is credited only to a copy sniper's wallet."""
     out = []
-    for rec in store.oktech_snipers(active=False):
-        if rec.get("kind") not in COPY_KINDS:
+    for rec in records:
+        if kinds is not None and rec.get("kind") not in kinds:
             continue
         wallets = {
             str(w["address"])
@@ -145,9 +152,19 @@ def arm_for(store: Store, sniper_id: str | None) -> str:
 # minutes or hours before ours is not what ours copied (22 Nov audit: with no limit the owner's hand buy 2.8 hours
 # after one became a live copy of that wallet, 40 trades behind it).
 LEADER_WINDOW_SLOTS = 150
+# A copy's shape, the signal beside its fees that a buy of the wallet is one of our copy snipers' (measure/ours.py): a
+# wallet a sniper of ours follows bought the coin at a place before ours and at most this many slots earlier (a slot is
+# 0.22 to 0.4 s). Every copy on record whose copied buy the tape still holds landed in that buy's block or the next (25
+# of 25, 9-22 Nov); no hand buy lands within a second of another wallet's.
+COPY_SHAPE_SLOTS = 3
 
 
-def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
+def leader_buy_at(store: Store, mint: str, slot: int, pos: int, leaders: Collection[str],
+                  window: int = LEADER_WINDOW_SLOTS) -> tuple | None:  # fmt: skip
+    """The newest buy of `mint` by one of `leaders` on the tape at a place before (`slot`, `pos`) and at most `window`
+    slots earlier: (wallet, slot, pos, quote, q_after, b_after, venue), or None. The one read of the tape that says
+    which copied buy a buy of ours stands behind: the measure stage's placing (`window` LEADER_WINDOW_SLOTS) and the
+    copy's shape (COPY_SHAPE_SLOTS)."""
     if not leaders:
         return None
     ws = sorted(leaders)
@@ -158,11 +175,15 @@ def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
             "SELECT user, slot, pos, quote, q_after, b_after, venue FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
             "AND slot>=? AND (slot<? OR (slot=? AND pos<?)) "
             "ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(chunk)),
-            (trade.mint, *chunk, int(trade.slot) - LEADER_WINDOW_SLOTS, trade.slot, trade.slot, trade.pos),
+            (mint, *chunk, int(slot) - int(window), slot, slot, pos),
         )
         if rows and (best is None or (rows[0][1], rows[0][2]) > (best[1], best[2])):
             best = rows[0]
     return best
+
+
+def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
+    return leader_buy_at(store, trade.mint, trade.slot, trade.pos, leaders)
 
 
 def curve_progress(venue: str | None, b_after) -> float | None:
