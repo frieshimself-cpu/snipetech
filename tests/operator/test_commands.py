@@ -75,6 +75,25 @@ def test_poll_persists_offset_and_survives_failure(tmp_path):
     assert poll_commands("T", OperatorPaths(tmp_path / "nochat").ensure(), get=get) == []  # no chat id yet → nothing
 
 
+def test_a_stop_is_in_force_from_the_moment_it_is_read(tmp_path):
+    """R-livetest-5 (audit round 2): a pass acts on its commands in turn and is killed at two minutes, its Telegram
+    offset already past them all. A /stop behind two /sell commands whose calls hung was never acted on: no flag, and
+    the runner went on re-arming. The flag is written when the /stop is read, before any command is acted on."""
+    paths = OperatorPaths(tmp_path).ensure()
+    paths.telegram.write_text(json.dumps({"chat_id": 7}))
+    cmds = poll_commands("T", paths, get=lambda u, p: {"result": [_msg(41, 7, "/sell M1"), _msg(42, 7, "/stop")]})
+    assert [c.name for c in cmds] == ["sell", "stop"] and paths.stop_flag.exists()
+    assert json.loads(paths.telegram.read_text())["offset"] == 43
+    # nobody else's /stop writes it, nor any other command of the owner's
+    other = OperatorPaths(tmp_path / "other").ensure()
+    other.telegram.write_text(json.dumps({"chat_id": 7}))
+    poll_commands("T", other, get=lambda u, p: {"result": [_msg(43, 9, "/stop"), _msg(44, 7, "/status")]})
+    assert not other.stop_flag.exists()
+    # behind a /resume read with it the flag waits for its turn: the /resume is acted on first, on the flag as it stood
+    poll_commands("T", other, get=lambda u, p: {"result": [_msg(45, 7, "/resume"), _msg(46, 7, "/stop")]})
+    assert not other.stop_flag.exists()
+
+
 class FakeSvc:
     def __init__(self, held, snipers):
         self._held, self._snipers, self.calls = held, snipers, []

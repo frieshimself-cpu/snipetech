@@ -139,7 +139,12 @@ def parse_updates(updates: list[dict], owner_chat_id: int) -> tuple[list[Command
 
 
 def poll_commands(token: str, paths: OperatorPaths, get: Callable[[str, dict], dict] | None = None) -> list[Command]:
-    """One getUpdates call from the saved offset; the offset moves only after a successful read. Never raises."""
+    """One getUpdates call from the saved offset; the offset moves only after a successful read. Never raises.
+    The owner's /stop is in force from here: its flag is written before the offset moves and before any command is
+    acted on. The pass acts on them in turn and is killed at two minutes (snipetech-commands.service) with the offset
+    already past them all, so a /stop behind commands whose calls hung was never acted on, and no flag held the
+    runner (23 Nov audit, R-livetest-5). Acting on the /stop (`_stop`) writes it again and stops what holds nothing.
+    Not behind a /resume read with it: that one is acted on first, on the flag as it stood."""
     try:
         state = json.loads(paths.telegram.read_text())
         owner = int(state["chat_id"])
@@ -153,6 +158,11 @@ def poll_commands(token: str, paths: OperatorPaths, get: Callable[[str, dict], d
         cmds, last = parse_updates(list((data or {}).get("result") or []), owner)
     except Exception:  # noqa: BLE001 - Telegram being down must never fail a round
         return []
+    names = [c.name for c in cmds]
+    if "stop" in names and "resume" not in names[: names.index("stop")]:
+        with contextlib.suppress(OSError):  # the handler writes it again
+            paths.ensure()
+            paths.stop_flag.write_text(str(int(time.time())))
     if last is not None:
         state["offset"] = last + 1
         try:
