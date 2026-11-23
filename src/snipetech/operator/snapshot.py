@@ -14,6 +14,7 @@ from typing import Any
 
 from ..config import Config
 from ..jobfiles import jobs_since
+from ..ops import job_alive
 from .budget import Ledger
 from .paths import OperatorPaths
 from .refusals import OKTECH_REFUSED_KEY, RPC_REFUSED_KEY, clear_refusal, note_refusal, refusal_status, scrub
@@ -120,18 +121,6 @@ class Snapshot:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
-def _pid_alive(pid: int | None) -> bool:
-    if not pid:
-        return False
-    try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def _read_metas(jobs_dir: Path, since: float | None = None) -> list[dict]:
     """The job records, the oldest job first. With `since`, only those that can matter to a reader of what happened
     since then: the others are not opened (`jobfiles.jobs_since`; 11 Nov: every reader opened all 1,656)."""
@@ -145,7 +134,8 @@ def _read_metas(jobs_dir: Path, since: float | None = None) -> list[dict]:
 
 
 def ended_since(jobs_dir: Path, since_ts: float, already: set[str], now: float | None = None) -> list[dict]:
-    """Jobs that ended at or after `since_ts`. A 'running' meta whose process is gone is reconciled and written back
+    """Jobs that ended at or after `since_ts`. A 'running' meta whose process is gone (`ops.job_alive`: no such pid, or
+    a record from before the machine's last boot, whose pid is another process's now) is reconciled and written back
     (ended = now, exit_code None) so it is reported once and then retires like any other ended job. An ended job with
     no exit file (killed with its wrapper, or from before jobs wrote one) gets one, so that no reader opens its record
     again to learn that it does not run."""
@@ -163,7 +153,7 @@ def ended_since(jobs_dir: Path, since_ts: float, already: set[str], now: float |
                 except ValueError:
                     code = None
                 m = m | {"running": False, "ended": int(exit_file.stat().st_mtime), "exit_code": code}
-            elif not _pid_alive(m.get("pid")):
+            elif not job_alive(m, jobs_dir / f"{jid}.json"):
                 m = m | {"running": False, "ended": int(now), "exit_code": None, "note": "process gone"}
             else:
                 continue
@@ -224,10 +214,14 @@ def role_jobs_since(now: float) -> float:
 
 
 def running_jobs(jobs_dir: Path) -> list[dict]:
+    """The jobs that run now: the record says so, there is no exit file, and its process is still its own
+    (`ops.job_alive`: a record from before the machine's last boot is no running job, whoever holds its pid now)."""
     out = []
     for m in _read_metas(jobs_dir, math.inf):  # a job that runs has no exit file: only those records are opened
         jid = m.get("id")
-        if m.get("running") and jid and not (jobs_dir / f"{jid}.exit").exists() and _pid_alive(m.get("pid")):
+        if not (m.get("running") and jid) or (jobs_dir / f"{jid}.exit").exists():
+            continue
+        if job_alive(m, jobs_dir / f"{jid}.json"):
             out.append({"id": jid, "argv": m.get("argv", []), "started": m.get("started")})
     return out
 

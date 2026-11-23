@@ -334,6 +334,30 @@ def _pid_alive(pid: Any) -> bool:
     return True
 
 
+def job_alive(meta: dict, record: Path) -> bool:
+    """Whether the job whose record (`record`, read as `meta`) says it runs still does: the process under its pid is
+    there, and it is the job's own. A restart of the machine ends every job without a word: no exit file, the record
+    says it runs for good, and the new boot gives its pid to another process. Read by the pid alone, a dead `oktech
+    cycle` stayed a live runner: the round's check excused its still-armed snipers, and nothing took them up (review of
+    22 Nov). A record written before this boot (`boot_ts`; a running job's record is written once, at its start) is
+    running only if that process names this job's exit file in its own environment (`_is_job`): a clock set forward
+    moves the kernel's boot time past a job of this boot, and such a job must never read as gone (the round would stop
+    a live run's snipers as leftovers). Where the boot time or the record's own time cannot be read: by the pid alone,
+    as before."""
+    pid = meta.get("pid")
+    if not _pid_alive(pid):
+        return False
+    boot = boot_ts()
+    if boot is None:
+        return True
+    try:
+        if record.stat().st_mtime >= boot:
+            return True
+    except OSError:
+        return True
+    return _is_job(int(pid), record.parent.resolve() / f"{record.stem}.exit")
+
+
 def _job_env() -> dict[str, str]:
     """The service's environment with whatever is in /etc/snipetech/env *now* on top: a key added to the file (e.g.
     SNIPER_SECRET) or changed in it reaches the next job without restarting the service (7 Nov 18:06: the owner put a
@@ -800,7 +824,7 @@ class Ops:
                 except ValueError:
                     code = None
                 meta |= {"running": False, "exit_code": code, "ended": int(exit_file.stat().st_mtime)}
-            elif not _pid_alive(meta.get("pid")):
+            elif not job_alive(meta, p):  # its process is gone, or the machine restarted and the pid is another's
                 meta |= {"running": False, "exit_code": meta.get("exit_code"), "note": "process gone"}
         return meta
 

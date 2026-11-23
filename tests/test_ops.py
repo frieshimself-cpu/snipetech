@@ -385,6 +385,79 @@ def test_kill_never_signals_a_pid_that_is_not_the_job(tmp_path):
     assert e.value.code == 404
 
 
+# -- a job record from before the last boot (audit round 2, 23 Nov) -------------------------------------------------
+#
+# A restart of the machine ends every job without a word: no exit file, and its record says it runs for good. The next
+# boot gives its pid to another process, and wherever only the pid was asked the record read as running: the job list,
+# and the round's snapshot, where a dead `oktech cycle` kept its still-armed snipers excused as a live runner's.
+
+
+def _running_record(jobs: Path, jid: str, argv: list[str], pid: int) -> Path:
+    rec = jobs / f"{jid}.json"
+    rec.write_text(json.dumps({"id": jid, "argv": argv, "started": int(time.time()), "ended": None, "exit_code": None,
+                               "running": True, "pid": pid}))  # fmt: skip
+    return rec
+
+
+def test_a_record_written_before_this_boot_is_not_running_whoever_holds_its_pid(tmp_path, monkeypatch):
+    data = tmp_path / "d"
+    jobs = data / "jobs"
+    jobs.mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                command=[sys.executable, "-c", "pass"])  # fmt: skip
+    jid = "20261122-222552-9f7455"
+    rec = _running_record(jobs, jid, ["oktech", "cycle", "--id", "S1"], os.getpid())  # a live pid: this test's own
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: int(time.time()) - 3600)  # written in this boot: by its pid
+    assert O.job_alive(json.loads(rec.read_text()), rec) and ops._meta(jid)["running"] is True
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: int(time.time()) + 3600)  # the machine restarted since
+    assert not O.job_alive(json.loads(rec.read_text()), rec)
+    meta = ops._meta(jid)
+    assert meta["running"] is False and meta["note"] == "process gone"
+    assert [(j["id"], j["running"]) for j in ops.op_jobs()["jobs"]] == [(jid, False)]
+    with pytest.raises(O.OpsError) as e:  # and never signalled
+        ops.op_kill(jid)
+    assert e.value.code == 404
+
+
+def test_a_record_runs_by_its_pid_alone_where_the_boot_time_cannot_be_read(tmp_path, monkeypatch):
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    rec = _running_record(jobs, "old", ["lab"], os.getpid())
+    os.utime(rec, (1, 1))
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: None)
+    assert O.job_alive(json.loads(rec.read_text()), rec)  # as before
+    assert not O.job_alive({"pid": None}, rec) and not O.job_alive({"pid": 2**22 + 12345}, rec)  # no such process
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: 2)
+    assert not O.job_alive(json.loads(rec.read_text()), rec)
+    assert O.job_alive({"pid": os.getpid()}, jobs / "none.json")  # no record to date it by: by the pid, as before
+
+
+def test_a_job_of_this_boot_still_runs_when_the_clock_was_set_forward(tmp_path, monkeypatch):
+    """The kernel's boot time moves forward with a clock that is set forward, past the records of jobs of this boot.
+    A job whose process names its own exit file in its environment is running all the same: read as gone, the round
+    would take a live run's snipers for leftovers and stop them."""
+    from snipetech.operator.snapshot import ended_since, running_jobs
+
+    data = tmp_path / "d"
+    (data / "jobs").mkdir(parents=True)
+    make = lambda: O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                         command=[sys.executable, "-c", "import time; time.sleep(30)"])  # fmt: skip
+    st = make().op_run(["oktech", "cycle", "--id", "S1"])
+    after_restart = make()  # another process: it reads the record, not its own memory
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: int(time.time()) + 3600)
+    try:
+        assert after_restart._meta(st["id"])["running"] is True
+        assert [j["id"] for j in running_jobs(data / "jobs")] == [st["id"]]
+        assert ended_since(data / "jobs", 0.0, set()) == []
+    finally:
+        after_restart.op_kill(st["id"])
+    for _ in range(200):
+        if not after_restart._meta(st["id"])["running"]:
+            break
+        time.sleep(0.05)
+    assert not after_restart._meta(st["id"])["running"] and running_jobs(data / "jobs") == []
+
+
 def test_redact_hides_every_secret_env_value(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJK")
     monkeypatch.setenv("HELIUS_API_KEY", "helius-secret-key")
@@ -392,7 +465,7 @@ def test_redact_hides_every_secret_env_value(monkeypatch):
     assert O.redact(text) == "key=<redacted> token <redacted> ok"
 
 
-def test_an_unreadable_job_file_is_skipped_and_running_jobs_always_list_first(tmp_path):
+def test_an_unreadable_job_file_is_skipped_and_running_jobs_always_list_first(tmp_path, monkeypatch):
     """Sessions check `remote jobs` before a deploy kills everything: a running guard must stay on the list however
     many stand-in jobs end after it, and one truncated job file must not break the listing."""
     import json
@@ -412,6 +485,7 @@ def test_an_unreadable_job_file_is_skipped_and_running_jobs_always_list_first(tm
     (jobs / "guard.json").write_text(json.dumps({"id": "guard", "argv": ["oktech", "guard"], "started": 1, "ended": None,
                                                 "exit_code": None, "running": True, "pid": os.getpid()}))  # fmt: skip
     os.utime(jobs / "guard.json", (1, 1))  # oldest file in the directory
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: 0)  # I2: a machine up since before that record was written
     for i in range(40):
         (jobs / f"m{i:02d}.json").write_text(json.dumps({"id": f"m{i:02d}", "argv": ["measure", "run"], "started": 10 + i,
                                                          "ended": 11 + i, "exit_code": 0, "running": False, "pid": None}))  # fmt: skip
