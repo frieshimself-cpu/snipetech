@@ -619,11 +619,11 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     15:23:50 UTC failed while making our token account (`IncorrectProgramId` from the Token-2022 program), before any
     buy: the coin is older than our tape's 14 days, very likely made with the original token program. Each such copy
     costs its priority fee and buys nothing.
-30. (23 Nov) Can a copy go out as a Jito bundle that carries the copied wallet's own transaction, ahead of ours, with
-    our tip? The route check (roadmap, 23 Nov 16:30) found the place right behind Cented, Decu and theo side bought
-    that way on 103 of 200 first buys: the buyer's bundle held the leader's signed transaction and won Jito's
-    auction for it at a median tip of 0.004 SOL (one operator's 3.457 SOL buys 0.003; 8r6N8w 0.40-1.08).
-    That needs the leader's transaction before it runs. Today OKTech reacts to the landed buy (our five copies behind
+30. (23 Nov) Can a copy ride in the bundle that carries the copied wallet's own buy, right behind it, with our tip?
+    The route check (roadmap, 23 Nov 16:30) found the place right behind Cented, Decu and theo side taken that way on
+    103 of 200 first buys, in bundles Axiom's and GMGN's own senders build around their users' buys, the buyer
+    paying the tip (median 0.004 SOL; one operator's 3.457 SOL buys 0.003; 8r6N8w 0.40-1.08 in bundles of its own).
+    That needs a seat in such a bundle, or the leader's transaction before it runs. Today OKTech reacts to the landed buy (our five copies behind
     Yugi on 23 Nov landed 36 to 277 block places after his buy, outside any bundle, each tip to a different landing
     service). Can it get a followed wallet's transaction before it lands, and through which route?
 31. (23 Nov) Can a copy sniper skip a pool quoted in another token, or swap into its quote? Cented's sniper copied his

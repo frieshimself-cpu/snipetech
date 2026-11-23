@@ -16,16 +16,24 @@ first on the server's recording and only then run live in capped batches.
 - **The answer** (job 20261123-160910-658404: the newest 200 of the 261 first buys of 1.9 SOL or more by Cented,
   Decu, theo side and Yugi between 21 Nov 03:40 and 23 Nov 08:31 UTC that had another wallet's buy of 0.1 SOL or more
   within 3 places after; the leaders' own companions apart).
-  - On **103** the closest buyer rode **inside the leader's own Jito bundle**: that bundle carried the leader's signed
-    transaction, and the buyer paid its tip (101 of 103). A bundle can carry a transaction only if its sender holds
-    it signed, so the buyer held the leader's transaction before it ran, wrapped it in its own bundle, and won Jito's
-    auction for it.
+  - On **103** the closest buyer rode **inside the bundle that carried the leader's buy**, and paid its tip (101 of
+    103). (Corrected at 17:00 by an independent check of every row, scratchpad route/verify: this said the buyer held
+    the leader's signed transaction and wrapped it in its own bundle. The chain shows otherwise. In the 91 bundles of
+    three, the transaction between the leader's and the buyer's belongs to the leader's own landing service: its fee
+    less 5,000 lamports is exactly 1 % of the leader's tip to Axiom's sender on 73 of 73, exactly half the leader's
+    tip to GMGN on 18 of 18, and the same 26 keys tip the leaders' own bundles. So Axiom's and GMGN's senders build
+    these bundles, and the buyer pays the tip to ride in them; whether a buyer ever held the leader's transaction
+    cannot be read from the chain. Every leader transaction carries Jito's don't-front marker: others may ride behind
+    it, nobody in front.)
   - **88 of those 103** are one operator's buys of exactly 3.457 SOL, from 47 wallets, always 2nd behind in a bundle
     of three (in the ones read whole: the leader's buy, an empty transaction of a third key, its buy through the
     program L2TExMFK…), at a median tip of **0.003 SOL**. 8r6N8w (the +100 SOL a week bot of 22 Nov) won 9 at 1st
     behind with tips of **0.40 to 1.08 SOL**.
   - **0** took the place with a bundle of their own. **97** stood there outside Jito (8r6N8w 30 times, FfW5e8 8,
-    6Z91 7, 9AGtz3 5): another route, which Jito's explorer cannot see.
+    6Z91 7, 9AGtz3 5): none of them paid a Jito tip, and the explorer finds 95 to 98 % of the Jito bundles in those
+    slots, so this holds. 12 of the 97 stood behind the leader's landing service's own transaction, the same
+    three-part package landed outside Jito. Outside Jito the place right behind is bought with large fees: median
+    0.355 SOL, 8r6N8w's 0.72.
   - The leaders do not send through Jito themselves: their buy was in a Jito bundle on 109 of the 200, 103 of them
     a follower's. Cented, Decu and Yugi buy through one trading platform's program (FLASHX8D…, each buy paying about
     0.004 SOL to one of a rotating set of accounts), theo side through GMGN's (GMgnVFR8…). Yet Yugi has almost nobody
@@ -34,13 +42,14 @@ first on the server's recording and only then run live in capped batches.
     after his buy in the same block, none in a Jito bundle, with their 0.002 SOL tips paid to a different landing
     service each time (AsTRAD…, FLaShB…, 4ACfpU…, noz…; fill 1 paid none). OKTech reacts to the landed buy, as the
     place says; it does not carry the leader's transaction.
-- **What it means.** The place right behind exists and has a price: the highest Jito tip among the bundles that
-  carry the leader's transaction, usually 0.002 to 0.02 SOL, up to about 1 SOL when 8r6N8w bids. On paper the place
-  is worth about +1.1 to +1.3 SOL a copy at 6 SOL (22 Nov, below). The entry ticket is the leader's signed
-  transaction before it runs; nothing faster or higher-bidding reaches the place without it. No public feed sells a
-  transaction before it lands since Jito closed its mempool in March 2024 (reports/Solana copy trading tools 2026.md),
-  so these buyers draw on a private source. Which one is the next question: the leaders' trading platforms (FLASH…,
-  GMGN), a relay or node that passes their orders on, or a validator that sees them arrive.
+- **What it means.** The place right behind exists, has a price, and the leaders' own platforms fill it: inside Jito a
+  buyer rides in the bundle Axiom's or GMGN's sender builds around the leader's buy (tips median about 0.003 SOL;
+  8r6N8w pays 0.40 to 1.08 in two-transaction bundles of its own with the leader's buy), and outside Jito it costs
+  about 0.36 SOL of fees. On paper the place is worth about +1.1 to +1.3 SOL a copy at 6 SOL (22 Nov, below). The
+  way in is a seat in the leader's platform's bundle, or the leader's transaction before it runs; nothing faster or
+  higher-bidding alone reaches the place. No public feed sells a transaction before it lands since Jito closed its
+  mempool in March 2024 (reports/Solana copy trading tools 2026.md). How a buyer gets a seat in Axiom's or GMGN's
+  bundles is the next question.
   OKTech question 30 asks whether a copy can go out as such a bundle (docs/oktech-playbook.md). Any sender of our own
   stays the owner's decision; this is the fact it waits on, not a plan.
 - **Who sells it (read at 16:55 UTC).** Cented, Decu and Yugi buy through Axiom's trade program (FLASHX8D… is "FL
@@ -51,11 +60,12 @@ first on the server's recording and only then run live in capped batches.
   searcher's trade directly behind it"; backrun only; KYC/KYB and AML checks and a 7 to 14 day pilot; costs not
   published) and Inertia (inertia.sh: "Validators and apps send transactions and bundles to Inertia", a 50 ms
   auction, the winner "lands behind the original flow as one bundle"; its searcher API in early alpha, by
-  application). The 103 bundles ran on 68 different validators, so their flow is no few validators' own: it comes
-  from the apps' side or a relay. Which network carries Axiom's and GMGN's orders is not known. What the place would
-  take: a buyer of ours admitted to such a network (the owner's KYC or company's KYB), a client that bids on its
-  stream for the paper's moments (first buys of 1.9 SOL or more by Cented, Decu and theo side), and a test of what
-  the place earns at the tips seen (median 0.003 SOL, 0.4 to 1.08 when 8r6N8w bids). That is the owner's decision.
+  application). The 103 bundles ran on 68 different validators, and their middle transaction is the leaders' own
+  senders' (above): the seat is filled on the apps' side. Whether Axiom's and GMGN's senders sell it through such a
+  network, or another way, is not known (a signer "Harmonic8SoAf…" sat next to the leader in 4 of 20 sampled slots
+  outside Jito: unverified). What the place would take: a buyer of ours admitted to the seller (an identity check of
+  the owner or a company), a client that bids for the paper's moments (first buys of 1.9 SOL or more by Cented, Decu
+  and theo side), and a test of what the place earns at the prices seen. That is the owner's decision.
 - **The wallet finder has not found a wallet that pays after its checks** (read off the verdicts and the copy record
   at 16:55 UTC; the new `forward-tally` keeps this count). Only 9 wallets ever passed qualify's forward check (17
   verdicts, 11 to 19 Nov; none since 19 Nov 14:46 UTC; three passed in the same moment and two others together, so
