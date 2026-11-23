@@ -55,7 +55,8 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     says it came). `seller`: the selling key's wallet (the run's, by default). `sold_amounts`: each sale's coin and
     the token amount it was asked to sell (None: the whole holding). `chain`: the wallet's transactions as the RPC
     lists and serves them (a tests/chain.py Chain with `slot_at(now)`; it is handed the clock), and the node's slot on
-    each reading of the SOL; without one the RPC lists none, as before."""
+    each reading of the SOL and of the coins (`chain.tip()` when it has one: a node that is behind names an older
+    slot; no slot on the coins' reading with `chain.names_slot` False); without one the RPC lists none, as before."""
     from snipetech.models import Trade
 
     clock, flag = {"t": T0}, {"stop": False}
@@ -93,13 +94,22 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     if seller is not None:
         monkeypatch.setattr(svc, "selling_wallet", lambda: seller)
     if chain is not None:
-        chain.clock, plain_call = clock, svc._rpc.call
+        chain.clock, plain_call, plain_coins = clock, svc._rpc.call, svc.open_positions
+
+        def tip():  # the node's slot now
+            return chain.tip() if hasattr(chain, "tip") else chain.slot_at(clock["t"])
 
         async def call(method, params):
             out = await plain_call(method, params)
-            return out | {"context": {"slot": chain.slot_at(clock["t"])}} if method == "getBalance" else out
+            return out | {"context": {"slot": tip()}} if method == "getBalance" else out
+
+        async def read_coins(address, ignore=None, unknown=None):
+            out = await plain_coins(address, ignore=ignore, unknown=unknown)
+            svc.holdings_slot = tip() if getattr(chain, "names_slot", True) else None  # as Service.holdings keeps it
+            return out
 
         svc._rpc.call = call
+        monkeypatch.setattr(svc, "open_positions", read_coins)
         svc._rpc.get_signatures, svc._rpc.get_transaction = chain.get_signatures, chain.get_transaction
     box["store"] = store
     if db_dir is not None:  # a database on disk: the operator's folder beside it holds the runner's lock

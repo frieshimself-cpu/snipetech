@@ -25,11 +25,17 @@ REFUSED = {"InstructionError": [4, {"Custom": 6042}]}  # pump.fun's BuySlippageB
 
 class WalletChain(Chain):
     """The sniper wallet's transactions as the RPC lists and serves them on the runner's fake clock: one put with
-    `at(t, tx)` is there once the clock has passed `t`, and `lag` seconds more for a node that is behind."""
+    `at(t, tx)` is there once the clock has passed `t`, and `lag` seconds more for a node that is behind (`tip()`:
+    the slot such a node has come to, which its readings of the SOL and of the coins name). The wallet has a history:
+    one transaction a quarter of an hour before the run, unless `history` is False. `names_slot` False: the reading
+    of the wallet's coins names no slot."""
 
-    def __init__(self, lag: float = 0.0, behind: int = 0):
+    def __init__(self, lag: float = 0.0, behind: int = 0, history: bool = True):
         super().__init__(t0=int(T0), slot0=480_000_000)
         self.clock, self.lag, self.behind = {"t": T0}, lag, behind  # `behind`: the chain's clock against ours, s
+        self.names_slot = True
+        if history:
+            self.at(T0 - 900, noise("an old transaction", W6))
 
     def ts(self, slot: int) -> int:
         return super().ts(slot) - self.behind
@@ -37,11 +43,14 @@ class WalletChain(Chain):
     def slot_at(self, t: float) -> int:
         return self.slot0 + int((t - self.t0) / 0.4)
 
+    def tip(self) -> int:
+        return self.slot_at(self.clock["t"] - self.lag)
+
     def at(self, t: float, tx: dict) -> None:
         self.put(self.slot_at(t), tx)
 
     def _all(self):
-        tip = self.slot_at(self.clock["t"] - self.lag)
+        tip = self.tip()
         return (row for row in super()._all() if row[0] <= tip)
 
 
@@ -337,3 +346,97 @@ def test_a_signature_listed_without_its_time_yet_is_waited_for(monkeypatch):
     assert len(again) == 1 and T0 + 130 < again[0] < T0 + 140, [t - T0 for t in again]
     assert "failed send on chain" in _lines(rep, A)[0]
     assert not any("could not be read" in e for e in rep["events"])
+
+
+# -- the review of round 3 (23 Nov): how old the failed send must be, by the chain's own blocks -----------------------
+
+
+class FastChain(WalletChain):
+    """A chain whose slots take 0.2 s (23 Nov 2026: 0.215 s; 0.4 s in earlier years)."""
+
+    SLOT_SECS = 0.2
+
+    def ts(self, slot: int) -> int:
+        return self.t0 + int((slot - self.slot0) * self.SLOT_SECS) - self.behind
+
+    def slot_at(self, t: float) -> int:
+        return self.slot0 + int((t - self.t0) / self.SLOT_SECS)
+
+
+def test_a_node_that_is_behind_frees_no_sniper_whose_buy_it_has_not_seen(monkeypatch):
+    """One RPC name is several machines, and one of them can be many seconds behind: its list of the wallet's
+    signatures and its reading of the coins tell of the past alike. A's copy is refused at 100 s and A's second send
+    buys at 105 s (23 Nov 03:31: a refused send and a buy 5 s apart from one start); OKTech never sells that copy and
+    reads A finished from 117 s. The node is 20 s behind: at 122 s it lists the failed send and not the buy, and shows
+    no coin until 125 s. The slot its reading of the coins names says how far it has come: 2 s past the failed send,
+    not the 20 s a second send needs to land and show. A is never touched."""
+    chain = WalletChain(lag=20)
+    chain.at(T0 + 100, _refused("refused", key("another coin")))
+    chain.at(T0 + 105, _copy("copy"))
+    _rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 105]}), minutes=4,
+                        coins=lambda now: [_coin()] if now >= T0 + 125 else [])  # fmt: skip
+    assert not _touched(client, A, T0 + 100, T0 + 240), _touched(client, A, T0 + 100, T0 + 240)
+
+
+def test_a_second_send_fourteen_seconds_after_a_refused_one_is_never_met_by_a_rearm(monkeypatch):
+    """23 Nov 03:29:34 and 03:29:48: one start, two sends 14 s apart. Should OKTech read the sniper finished at once
+    after the first, a look one reading later finds the failed send and nothing else, and the start that follows meets
+    the second send as it lands. A failed send frees its sniper only once the wallet's coins were read, with nothing
+    held, at a block 20 s after it. A's send fails at 96 s and its second buys at 110 s (the coin shows from 112 s and
+    is sold at 130 s): nothing is touched until the coin is sold."""
+    chain = WalletChain()
+    chain.at(T0 + 96, _refused("refused", key("another coin")))
+    chain.at(T0 + 110, _copy("copy"))
+    chain.at(T0 + 130, _exit("exit"))
+    _rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 96]}, after=0.5),
+                        minutes=4, coins=lambda now: [_coin()] if T0 + 112 <= now < T0 + 130 else [])  # fmt: skip
+    assert not _touched(client, A, T0 + 96, T0 + 130), _touched(client, A, T0 + 96, T0 + 130)
+    assert _starts(client, A, T0 + 130)
+
+
+def test_a_failed_send_frees_its_sniper_once_it_is_twenty_seconds_old(monkeypatch):
+    """The same with no second send: OKTech reads A finished a second after its refused send at 100 s, and the runner
+    sees that at 102 s. The readings at 107, 112 and 117 s arm nothing (the failed send is under 20 s old by the slot
+    the coins' reading names); the one at 122 s arms A again, still ahead of the 30 s rule (132 s)."""
+    chain = WalletChain()
+    chain.at(T0 + 100, _refused("refused"))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 100]}, after=1.0),
+                       minutes=4)  # fmt: skip
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == 1 and T0 + 120 < again[0] < T0 + 130, [t - T0 for t in again]
+    assert "failed send on chain" in _lines(rep, A)[0]
+
+
+def test_the_twenty_seconds_are_counted_in_the_chains_own_slots_whatever_a_slot_takes(monkeypatch):
+    """How long a slot takes is read off the list itself (its newest and oldest rows, a minute or more apart), never
+    taken as 0.4 s: on a chain whose slots take 0.2 s the failed send of 100 s is 20 s old at 122 s, as on any other
+    (at 0.4 s a slot the 50 slots of 110 s would have passed for it)."""
+    chain = FastChain()
+    chain.at(T0 + 100, _refused("refused"))
+    _rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 100]}, after=1.0),
+                        minutes=4)  # fmt: skip
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == 1 and T0 + 120 < again[0] < T0 + 130, [t - T0 for t in again]
+
+
+def test_a_reading_of_the_coins_that_names_no_slot_keeps_the_30_s_wait(monkeypatch):
+    """How far the node has come is told by the slot its reading of the wallet's coins names. An answer without one
+    says nothing of that: the failed send arms nothing, and the 30 s rule holds."""
+    chain = WalletChain()
+    chain.names_slot = False
+    chain.at(T0 + 100, _refused("refused"))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 100]}), minutes=4)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == 1 and again[0] >= T0 + 147, [t - T0 for t in again]
+    assert "spent 30 s with nothing held" in _lines(rep, A)[0]
+
+
+def test_a_list_too_short_to_tell_how_long_a_slot_takes_keeps_the_30_s_wait(monkeypatch):
+    """A wallet whose whole list is the one failed send tells nothing of how long a slot takes, so nothing of how
+    old that send is by the chain's own blocks: the 30 s rule holds."""
+    chain = WalletChain(history=False)
+    chain.at(T0 + 100, _refused("refused"))
+    rep, client = _run(monkeypatch, lambda now: 10.0, chain=chain, spent=_finished({A: [T0 + 100]}), minutes=4)
+    again = _starts(client, A, T0 + 100)
+    assert len(again) == 1 and again[0] >= T0 + 147, [t - T0 for t in again]
+    assert "spent 30 s with nothing held" in _lines(rep, A)[0]
