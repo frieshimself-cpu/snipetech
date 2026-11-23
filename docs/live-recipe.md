@@ -4,7 +4,7 @@ The log of every live test, newest first: each entry's fills are live, with the 
 paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every
 number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
-## The small-coin copy behind Cented and Decu at 1 SOL: PREPARED 23 Nov, nothing made yet (written 23 Nov 03:25 UTC, before anything is made)
+## The small-coin copy behind Cented and Decu at 1 SOL: PREPARED 23 Nov, nothing made yet (written 23 Nov 03:00 UTC, before anything is made)
 
 **Under which yes.** The owner, 23 Nov ~00:44 UTC: "Aight, I put 8 sol in the wallet, when everything is down to perfection run it". Read as on 22 Nov: the ladder's own step (CLAUDE.md rule 1: the sniper wallet, 1 SOL a copy, a day, stopped at 2 SOL lost) and nothing bigger; 2 SOL copies only on the owner's word, after a day that makes money. "Down to perfection": it starts on the code of the audit's two rounds, after the smoke test below.
 
@@ -25,11 +25,15 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
 **What follows.** A day that makes money: the owner is asked about 2 SOL copies and their daily loss cap (the ladder). A day that ends on its 2 SOL: each fill is set beside its paper copy before anything runs again. Either way the rule is frozen in the paper test at the freeze's landing so its forward record runs beside the live one.
 
-## Smoke test of the audited runner behind Cented and Decu at 0.02 SOL: PREPARED 23 Nov (written 23 Nov 03:25 UTC, before anything is made)
+## Smoke test of the audited runner at 0.02 SOL: run 1 behind Cented and Decu 03:04-03:1x, run 2 with 6Z91 added (written 23 Nov 03:00 UTC, before anything was made; run 2 written 03:12, before it started)
 
 **Why.** The audit of 22-23 Nov changed the runner, the rule that tells the bot's coins from the owner's, the sale and the end of a run (171 commits, deployed 01:05 UTC); only tests have run it. The 1 SOL copies above do not meet that code first. **Under which yes:** the standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet): 0.02 SOL buys, at most about 0.1 SOL in all.
 
 **What runs.** The same two snipers as above at 0.02 SOL a copy (`--buy 0.02 --tag arm:smoke66`, every other setting the same: 2 SOL floor, bid 0.003, ceiling 66 SOL, hold12 / hold8, pump.fun only), and the runner `oktech cycle --id <both> --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --max-loss 0.2 --keep-plain 0.05 --max-fills 6 --max-minutes 75 --rearm-after 1800 --sweep-after 20 --place-stop 2/3 --place-max 8`. Cented is trading now (133 buys in the three hours to 03:00 UTC, 6 of them of 0.95 SOL or more in coins under 60 SOL).
+
+**Run 1 (03:04:27, runner 20261123-030427-f4f265; snipers Cented 6b03ad1dca420f45d76872ca, Decu 6b03ad1eca420f45d76872d6, made 03:03:56 at a $4,600 ceiling).** Both snipers started at 03:04:29 (OKTech: running 2/40). Neither wallet bought anything from 03:04 on (Cented's last buy was about 02:45), so the run showed the start and nothing else. Ended by hand at 03:1x (`remote kill`, the audited stop path: both snipers stopped, nothing held) to make room for run 2.
+
+**Run 2 (written 03:12, before it started).** The same two snipers and a third behind a wallet that is trading now, so the test sees fills: 6Z91Dgiz9E44bMW11rQuMBjt1NwwPoQGXFNZieGfVtAb (the copy bot the owner had us study: 45 buys in the hour to 03:10 UTC, 31 of them of 1.9 SOL or more, 9 of those in coins under 60 SOL), copied at 0.02 SOL with the same settings (`--copy 6Z91…:6Z91:2:hold12 --buy 0.02 --bid 0.003 --max-mcap 66 --platforms pumpfun --tag arm:smoke66`). It is a test of the machinery, not of 6Z91 as a wallet to copy: no number of it says anything about a rule. Runner: `oktech cycle --id <the three> --address 6VFrZ15V… --max-loss 0.2 --keep-plain 0.05 --max-fills 6 --max-minutes 45 --rearm-after 1800 --sweep-after 20 --place-stop 2/3 --place-max 8`.
 
 **Read.** That each step does what the audit says: both snipers start; a copy above the ceiling fails for about 0.001 SOL and its sniper is armed again; a fill is read as the run's own by its fees (priority 0.001, tip 0.002), placed against the copied buy, sold at its timer or by the run; the end stops both snipers once the wallet holds nothing of theirs. And the first facts on the two unknowns: the place a 0.003 bid gives, and the market cap of our fills against the ceiling. **Stop rules:** 6 fills, 75 minutes, 0.2 SOL lost, /stop; never a sniper stopped while it holds a coin.
 
