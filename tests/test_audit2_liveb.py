@@ -7,7 +7,9 @@ The sniper wallet is the owner's too: the owner buys and sells in it by hand (21
 
 import asyncio
 
+from snipetech.book import watch as book_watch
 from snipetech.config import Config
+from snipetech.measure.run import LAST_KEY as MEASURED  # the measure stage's own cursor: when its last run began
 from snipetech.operator.notify import Notifier
 from snipetech.operator.paths import OperatorPaths
 from snipetech.store import Store
@@ -445,7 +447,7 @@ def _watch_env(tmp_path, measured):
     st, cfg = BT._env(tmp_path)
     AB._book_sniper(st)
     BT._fresh_tape(st)
-    st.set_coverage("measure:last_ts", {"ts": int(measured)})
+    st.set_coverage(MEASURED, {"ts": int(measured)})
     return st, cfg
 
 
@@ -459,6 +461,12 @@ def _copy_fill(st, ts, tokens=1e9, sold=None):
         st.put_fill({"sig": "PSELL" + "s" * 83, "ts": int(ts) + 12, "wallet": W, "mint": PSWAP, "side": "sell",
                      "sol": 0.2, "tokens": sold, "priority_lamports": AB.BOT_SALE_FEES[0],
                      "tip_lamports": AB.BOT_SALE_FEES[1], "buy_sig": buy})  # fmt: skip
+
+
+def test_b5_the_watch_asks_for_the_measure_stages_last_run_under_the_name_that_stage_writes():
+    """The watch keeps its own copy of the name (the one-minute watch does not load the measure stage). The tests below
+    write the stage's own; a rename on one side alone would leave every coin "not read yet" for good, unseen."""
+    assert book_watch.MEASURE_KEY == MEASURED
 
 
 def test_b5_a_coin_is_not_called_a_stray_for_sure_before_the_measure_stage_read_past_it(tmp_path):
@@ -480,7 +488,7 @@ def test_b5_a_coin_is_not_called_a_stray_for_sure_before_the_measure_stage_read_
         assert "no sniper of ours will sell it" not in sent[0]
         assert st.events(kind="unmanaged") == []  # a stray is no position of ours for the weekly evidence
         _copy_fill(st, BT.NOW - 430)  # the measure stage runs: the coin is our copy, still open
-        st.set_coverage("measure:last_ts", {"ts": int(BT.NOW) + 30})
+        st.set_coverage(MEASURED, {"ts": int(BT.NOW) + 30})
         (hit,) = watch_pass(cfg, st, AB._notifier(sent), W, held, [], BT.NOW + 60)
         assert not hit["stray"] and len(sent) == 2, sent
         assert "Nobody is selling coin " + PSWAP in sent[1] and sent[1].endswith(f"/sell {PSWAP}")
@@ -543,11 +551,11 @@ def test_b5_the_book_calls_no_coin_a_stray_before_the_measure_stage_read_past_it
     held = [{"mint": PSWAP, "amount": 1000.0, "raw": 10**9, "value_sol": None, "priced": False}]
     k1 = [{"id": "k1", "name": BT.K1, "status": "running"}]
     try:
-        st.set_coverage("measure:last_ts", {"ts": int(BT.NOW) - 3600})  # the measure stage last ran before it showed
+        st.set_coverage(MEASURED, {"ts": int(BT.NOW) - 3600})  # the measure stage last ran before it showed
         svc = BT.FakeSvc(st, snipers=k1, held=held, cfg=cfg)
         _book(tmp_path, svc, cfg)
         assert svc.calls == [], svc.calls  # it may be our copy: every book sniper stays
-        st.set_coverage("measure:last_ts", {"ts": int(BT.NOW) - 60})  # it ran since, and found no buy of ours
+        st.set_coverage(MEASURED, {"ts": int(BT.NOW) - 60})  # it ran since, and found no buy of ours
         svc = BT.FakeSvc(st, snipers=k1, held=held, cfg=cfg)
         _book(tmp_path, svc, cfg)
         assert svc.calls == [("stop", "k1")], svc.calls
