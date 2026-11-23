@@ -6,6 +6,31 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 23 Nov, 22:05 UTC: the place right behind Axiom's users is filled by the service that lands their trades (Lunar)
+
+- **The owner's contact (Discord, shown 23 Nov ~21:50 UTC):** "axiom leaks orderflow through lunar", "pump through
+  helius"; then "their edge comes from seeing events faster than people… they have private feeds that you cannot
+  buy… they're backroom deals".
+- **Checked on the chain** (the 26 blocks the 16:30 route check read, cached in the session's scratchpad
+  route/verify/cache): every Axiom buy of Cented, Decu and Yugi in them, **24 of 24**, pays its tip (0.00001 to 0.015
+  SOL) to one of the 100 accounts that Circular published as Axiom's bribe accounts landed by Hello Moon's Lunar
+  Lander (github.com/Circular-fi/axiom-lunar-addresses; DefiLlama counts their tips as Lunar's fees,
+  dimension-adapters fees/lunar-lander.ts, "confirmed on-chain to be landed by Lunar"). 78 of all 104 Axiom
+  transactions in those blocks do; theo side's GMGN buys 0 of 4; none pays Lunar's ten public tip accounts.
+- **So the bundles of three of 16:30 are Lunar's.** The leader's Axiom buy, then Lunar's own transaction (its fee 1 %
+  of the leader's tip), then the buyer behind. The service that lands Axiom's users' trades is the one that places a
+  buyer behind them, before any validator sees them. One operator holds 88 of the 103 in-bundle places (3.457 SOL
+  buys from 47 wallets); 8r6N8w holds 9 with bundles of its own. DefiLlama: "what Lunar pays validators and order-flow
+  partners happens off-chain". This is the private seat the contact describes; it has no public price and no form.
+  A Lunar API key (a ticket on Hello Moon's Discord) lands our own transactions; it does not show anyone else's.
+- **What it means for 100 SOL a day by 29 Nov: no route we can verify reaches it.** The 200-a-day paper number (21:15,
+  below) needs that seat. A private deal for another app's users' trades is not something this repo builds on.
+  Harmonic's open searcher network is the one legitimate door left, and at best it places us behind Lunar's buyer
+  (one trade back: +0.69 SOL a copy behind Cented on paper, +244 SOL in the week), only in the slots its validators
+  lead, after KYC and a 7 to 14 day pilot: not inside six days.
+- **What runs:** the OKTech copy behind Cented and Yugi (about 1 to 2 SOL a day on paper; live about half so far):
+  the 0.2 SOL test to 09:11 (no fill since the 19:59 restart), then the two-buys check, then the 1 SOL day.
+
 ## 23 Nov, 21:15 UTC: the owner's goal, 100 SOL a day in six days: the one route that reaches it, and what each step needs
 
 - **The owner, 23 Nov ~21:05 UTC:** "6 days left until we want 100 SOL a day. Do everything possible in ur power to get
@@ -46,7 +71,10 @@ first on the server's recording and only then run live in capped batches.
   flow auction, searchers register and bid through a documented API in 200 ms rounds, onboarding validators. None
   says which apps' flow (Axiom's, GMGN's) it carries; only a searcher seat would show how many of the leaders' buys
   reach us, and at what price.
-- **So 100 a day needs the owner's application to those networks** (an identity or a company, their terms, their
+- (CORRECTED 23 Nov 22:05 UTC: the leaders' Axiom buys are landed by Hello Moon's Lunar Lander, which places its own
+  buyer right behind them inside its bundle; no network's application reaches that place, and Harmonic's at best
+  places us one trade back, in its validators' slots, after a 7 to 14 day pilot. See 22:05 above.)
+  **So 100 a day needs the owner's application to those networks** (an identity or a company, their terms, their
   price for the place, which the 0.6 SOL bid of the paper may not match). Only the owner can apply. With a seat, our
   side is a new buy path the repo does not have (it signs only sales today): a pump.fun buy builder pinned by a test
   on a landed buy, a bundle client for the network, and rule 1's caps and guard; a few days of work, built once the
