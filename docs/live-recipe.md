@@ -509,24 +509,32 @@ its profit was all in big buys within 1 s of the create (+0.31/trade) and on nor
 
 ## The ends of a live run and the owner's commands, as they work since the audit of 22 Nov (written 23 Nov)
 
-What the audit of 22 Nov changed in the rules every live test runs under, as the code merged as 3b412e0 holds them
-(the audit's first round). Each was a hole found in the code and fixed test-first. None changes a size, a wallet or
-what may start. Whose a coin is (the bot's, the owner's own, a stray) is told by one rule, in docs/architecture.md
-("Whose trade, whose coin").
+What the audit of 22 Nov changed in the rules every live test runs under, as the code at 0fa17e9 holds them (the
+audit's three rounds, 22 and 23 Nov; until this pass the section described its first round, merged as 3b412e0). Each
+was a hole found in the code and fixed test-first. None changes a size or a wallet; some hold a start or a stop back
+while a coin may be on its way. Whose a coin is (the bot's, the owner's own, a stray) is told by one rule, in
+docs/architecture.md ("Whose trade, whose coin").
 
 **`/stop`.** It sets the stop flag, then stops every sniper OKTech runs, unless the wallet holds a coin one of ours may
 hold (a stopped sniper strands its coin). Three kinds of coin are no sniper's and no longer keep any running: a coin on
-the owner's ignore list, the owner's own coin (bought by hand: every buy of it paid fees none of our snipers pays, and
-those buys explain all that is held, across all of its token accounts), and a stray (no buy of ours explains it and the
-unsold-coin watch has seen it for 10 minutes). Beside only such coins every sniper on record is stopped, and the reply
-names the coins. Before, the owner's hand-bought coin kept every sniper running. One exception: a running sniper the
-bot has no record of (one made in OKTech's app) is left running beside a coin read as the owner's, because it may have
-bought it; the reply names it, to be stopped in OKTech once that coin is sold. Each read waits 20 s at most, the stop
-calls together 40 s and a `/sell` sale 60 s, so one service that hangs no longer outlasts the pass (a `/stop` and a
-`/sell` in the same minute, both hanging, still can: the pass is killed at 2 minutes); a sniper not answered in time
-is named, with the word to send `/stop` again. Known gap: `/stop` reads the wallet once. A buy of ours made a second
-before, whose coin has not shown yet, can be stopped beside an empty wallet; the unsold-coin watch then sends its
-/sell line.
+the owner's ignore list, the owner's own coin (bought by hand: every buy of it paid fees none of our snipers pays and
+had no copy's shape, and those buys explain all that is held, across all of its token accounts), and a stray (no buy
+of ours explains it, by its fees or by its shape, the unsold-coin watch has seen it for 10 minutes and the measure
+stage has run past it since). Beside only such coins every sniper on record is stopped, and the reply names the coins.
+Before, the owner's hand-bought coin kept every sniper running. One exception: a running sniper the bot has no record
+of (one made in OKTech's app) is left running beside a coin read as the owner's, because it may have bought it; the
+reply names it, to be stopped in OKTech once that coin is sold. One reading with nothing of ours in it is no proof
+(the second round: a copy bought a second before the read had not shown yet). Before any stop `/stop` reads the wallet
+again 5 s later, that reading weighed on its own amounts, and stops nothing while the wallet's newest transactions on
+the chain or the tape show a buy since moments before the `/stop` whose coin neither reading showed, or a landed
+transaction the node cannot serve yet: the reply says what is on its way and asks for `/stop` again in a minute. The
+flag holds from the moment the one-minute pass reads the `/stop`, before any command is acted on (unless a `/resume`
+came before it in that pass). Since the third round a `/stop` whose pass was cut off before it answered is owed: the
+next pass acts on it first, and its answer begins "Your /stop is acted on now", unless the owner has sent a `/stop` or
+a `/resume` since. Each read waits 20 s at most, the second reading and the look at the chain 10 s each, the stop calls
+together 40 s and all of `/stop` 95 s; a `/sell` sale waits 60 s. The pass is killed at 2 minutes, so a `/sell` and a
+`/stop` in one pass cannot both be sure to finish: the owed `/stop` covers that. A sniper not answered in time is
+named, with the word to send `/stop` again.
 
 **A command that waited is refused.** A `/resume`, a `/book on` or a `/book bar <SOL>` that sat more than 5 minutes
 in Telegram's queue (an outage, a restart) changes nothing and asks to be sent again, as `/sell`, `/test` and a `/risk`
@@ -541,7 +549,9 @@ it looks once and goes, and the round takes the run up (next paragraph). Before,
 held the coin, and the time limit or a kill stopped nothing. A low SOL balance (under 0.005 SOL, about what a sale
 costs) is said once and is no emergency: the old 0.05 SOL reserve called one curve buy from a small wallet an
 emergency. A coin the tape has not priced holds the floor back for 2 minutes, then counts as worth nothing; the owner's
-ignored coins are left out; an airdrop seen 10 minutes keeps no sniper running. `oktech guard` and `oktech start`
+ignored coins are left out; a coin no buy of ours explains, by its fees or by a copy's shape, seen 10 minutes (an
+airdrop, the owner's own) keeps no sniper running (the second round: a copy at fees no payload names, held past its
+exit, was such a coin, and the guard's end stopped the sniper that held it). `oktech guard` and `oktech start`
 refuse to start a sniper while the `/stop` flag is set, and now also while the owner's wallet-wide guard (`/risk`)
 holds or cannot tell. `oktech start --force` still starts, as under `/stop`; a guard with `--watch-only` starts nothing
 and is not refused. `remote run oktech guard` asks for a job limit of its `--max-minutes` plus 25 minutes (the
@@ -552,24 +562,92 @@ that watch.
 starts with `remote run oktech cycle` or `remote run oktech guard` is a job, not a service. When the machine restarts
 it dies at once, with no end of its own, and its one-shot snipers stayed armed with nobody watching. Now the round
 takes up every such run once it is over, however it ended. Its snipers still active on OKTech are stopped once the
-wallet holds nothing on two readings 5 seconds apart and the tape has no buy of the wallet in the last minute whose
-coin they did not show. While the wallet holds a coin they keep running to sell it: the owner hears which coin, with
-/sell, and the round looks again every 15 minutes. Until nothing of the run is armed, the book adds no sniper and no
-live test starts beside it. The owner hears of a run that died, and of what was stopped. A sniper that another
-running job drives, the owner's test's and the book's are never touched.
+wallet holds nothing on two readings 5 seconds apart and neither the wallet's newest transactions on the chain nor the
+tape show a buy whose coin they did not show (the look `/stop` makes, since the third round: the tape alone missed a
+copy into a coin it does not follow); a landed transaction the node cannot serve yet holds the stops for a round.
+While the wallet holds a coin, any coin, they keep running to sell it (this clean-up counts the owner's own coins too,
+unlike `/stop` and the book): the owner hears which coin, with /sell, and the round looks again every 15 minutes.
+Until nothing of the run is armed, the book adds no sniper and no live test starts beside it. The owner hears of a run
+that died, and of what was stopped. A run told to stop (its time limit, a kill or a restart) is worded so, no longer
+as one that ended on an error: since the second round its command ends on one line, "ended: told to stop ...", with
+exit code 143 (-15 before). A sniper that another running job drives, the owner's test's and the book's are never
+touched.
 
 **The run's tokens and the owner's in one coin** (`oktech cycle`). The run counts, places and sells only what its own
 snipers bought. Its own sale never sells the owner's tokens: not once its own are sold, not before the tape has its
 last sale, and never more than the wallet holds beyond the owner's. A coin the owner kept after the run's copy was sold
 becomes theirs. The run's tokens inside a coin of the owner's keep its snipers armed at an end, in the watch after it
-and on the way out, for 300 s or for as long as `--sweep-after` needs, and are sold past `--sweep-after`. A wallet read
-that fails at an end is read again for up to 15 minutes (15 s on the way out). SOL the owner takes out while a copy is
-held moves the floor and is no loss of the run. Of the kinds of copy, only own-launch and bait copies are sold at
-once; a repeat is only tagged; a copy of another copied wallet's buy in a launcher's coin is a first or a repeat
-copy, not an own launch. docs/roadmap.md (22 Nov 04:45, "Fixed tonight") lists each fix with its commit.
+and on the way out, for the longest of 300 s, the snipers' longest exit timer plus 120 s (the second round: a sniper
+whose timer sells at 400 s was re-armed, so stopped, at 300 s) and `--sweep-after` plus two tries of the run's sale,
+and are sold past `--sweep-after`. A wallet read that fails at an end is read again for up to 15 minutes (15 s on the
+way out). SOL the owner takes out while a copy is held moves the floor and is no loss of the run. Of the kinds of
+copy, only own-launch and bait copies are sold at once; a repeat is only tagged; a copy of another copied wallet's
+buy in a launcher's coin is a first or a repeat copy, not an own launch. docs/roadmap.md (22 Nov 04:45, "Fixed
+tonight") lists each fix of the first round with its commit.
+
+**Whose a buy is in a run** (`oktech cycle`, the second and third rounds). The run tells its own buys by the fees its
+snipers' payloads name (their buy priority, with their tip or with none; fees nobody recorded count as the run's too),
+or by a copy's shape: at most 3 slots behind a buy of a wallet one of its snipers follows AND at that sniper's
+buyAmount, to 0.1 % (OKTech spends exactly the buyAmount, the quote and the venue's fee together). The payloads are the
+ones recorded when the snipers were made with `oktech copylist ... --create`; the run never reads them back from
+OKTech. So, while a run is on:
+
+- a hand buy from the sniper wallet is the owner's at once, never counted, sold or waited on, unless it spends exactly
+  a run sniper's size within 3 slots behind a buy of a wallet the run copies, or pays exactly the run's buy priority
+  with no tip the bot can see. Axiom keeps 1 % of what is typed: a typed 1 SOL spends 0.99 and stays the owner's, a
+  typed 1.01 spends 0.9999 and is taken for a 1 SOL copy and sold at `--sweep-after`. Sizing the run's snipers at an
+  amount nobody types (1.003 SOL, say) would close that: the owner's decision, not built;
+- never change a run's sniper (size, fees, wallets) in OKTech's app: a copy whose size and fees both differ from the
+  record reads as the owner's, is never sold by the run, and its sniper is re-armed (so stopped) while it holds the
+  coin;
+- a coin nobody can tell yet (the transaction of its buy cannot be read yet, or a buy at a run sniper's size whose
+  place is not known yet) is held as the run's but never sold by it, holds every re-arm back, and is no fill for the
+  cap until it is told as the run's; told as the owner's, its arrival re-arms nothing. A coin that left the wallet
+  before anything could tell whose it was counts as a fill, as before.
+
+Outside a run (`/stop`, the guard, the book, the round's count) the snipers asked are every copy sniper on record
+alive at the buy, and one never removed counts as alive: since the third round it makes a hand buy the bot's by its
+shape only at that sniper's own size, so removing old snipers is tidy, no longer needed for that.
+
+**A refused send, and a start beside snipers left armed** (`oktech cycle`, the third round).
+
+- A one-shot sniper whose send bought nothing (a copy refused by its ceiling, any failed send) is armed again about
+  20 to 35 s after the failed send (smoke test 3: 12 re-arms), where it took 47 to 62 s in smoke test 2. The run arms
+  it from the reading after the one that saw OKTech read it finished, once the wallet's own newest transactions show
+  a failed one since that sniper's last start and no buy since that start that no sale followed, and the reading of
+  the wallet's coins that showed nothing held came from a block at least 20 s past that failed transaction and past
+  the moment OKTech was first seen to read the sniper spent. About 12 s of the wait is OKTech's own (it reads such a
+  sniper finished at about its exit timer), up to 15 s the run's reading of OKTech's list, 5 s the wait for a second
+  send of the same start. The log line: "re-armed X after Ns (fills so far K): OKTech has it spent with nothing held,
+  and a failed send on chain M s ago with no buy since its start". Anything else keeps the 30 s wait and the old line:
+  no failed transaction since the start; a buy since the start that no sale followed (the owner's own hand buy too: each
+  sniper is asked by its own last start, so with two snipers a failed send never arms the one whose buy may have
+  landed); a transaction the node does not serve yet, or lists without its time; more than 50 transactions of the
+  wallet since the start; a node that has not come that far, or does not say how far it has come; a chain that cannot
+  be read (said once: "the wallet's transactions could not be read for a failed send").
+- A run started on snipers OKTech reads armed already (a run that died left them so; a freshly made sniper reads idle
+  and starts at once) reads the wallet a second time 5 s later and asks the tape and the chain for a buy on its way,
+  as `/stop` does, before its start stops them. Beside a coin of the run's or nobody's, a coin that came in between
+  the two readings, a buy whose coin has not shown, a copy into a coin the owner holds that the tape wrote in between,
+  a landed transaction the node cannot serve yet, or a look that fails, it refuses with nothing touched: "OKTech reads
+  X armed already, and ...: not cycling (...). Start the run again in a minute." Start it again; `--ignore-mint` is no
+  answer to it.
+
+**Refused sends and the lines they bring** (23 Nov). A copy sniper's ceiling (`copylist --max-mcap`, OKTech's
+`maxMcapUsd`) is a limit on our own fill's price, fee included, at OKTech's SOL price (docs/oktech-features.md, "What
+a copy sniper does on chain"): a copy over it fails on chain, pays its priority fee and spends the sniper's shot. The
+measure stage writes such a send in `fills` with its limit and where it would have filled ("over its price limit:
+..."), and the round's resource check counts those refusals apart, names them ("N buys refused on their price limit")
+and never pages the owner for them, as for the buys the wallet could not pay (9197324). A line "[measure] a copy
+behind X… paid fees no sniper of ours is set to pay (...): counted as the bot's" reaches Telegram from the round, each
+once (the first three as they stand, any more as a count), up to 15 minutes after it is written; with the size rule it
+comes only from a buy at a sniper's exact size right behind a wallet it follows.
 
 Not built, the owner's to decide: the runner selling a live test's coin by itself (`--sweep-after` for `/test` and the
-automatic test), and a test starting beside the owner's own coin.
+automatic test), and a test starting beside the owner's own coin. Since the third round also: a run sniper's size
+nobody types; reading OKTech's list more often while a refused send waits; after a fill, re-arming only the snipers
+OKTech reads spent (today every sniper armed before the fill is stopped and started, and a send on its way can meet
+that stop); selling a coin first seen within about 10 s of its sniper's start sooner than `--sweep-after`.
 
 ## How a live test starts (7 Nov)
 
