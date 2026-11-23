@@ -27,8 +27,8 @@ LEAD = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"  # a wallet our copy snipe
 STRANGER = "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"  # a wallet no sniper on record follows
 MINT = "Coin1" + "1" * 39
 NOW, SLOT = 1_795_300_603, 472_308_766  # our copy of 21 Nov 22:36:43 UTC
-# S1 (audit round 3): the shape asks the buy's size too, so the sniper has one: what `_buy` and the synthetic market's
-# 1 SOL buy spend, the quote and a 1 % fee
+# S1 (audit round 3): the shape asks the buy's size too, so the sniper has one: what `_buy` spends below, a 1 SOL
+# quote and its 1 % fee
 PAYLOAD = {"singleSnipe": True, "ctbotWallets": [{"address": LEAD}], "buyAmount": 1.01, "priorityFee": 0.001,
            "tipAmount": 0.199, "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}  # fmt: skip
 PAID = (1_000_000, 199_000_000)  # what the payload's sniper pays on a buy
