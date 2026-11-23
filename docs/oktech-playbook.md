@@ -95,14 +95,14 @@ under mode `shapes`.
 
 | feature (key) | what it does | sent today | sim | live | matters |
 |---|---|---|---|---|---|
-| Platforms (`platforms`: pumpfun, pumpswap, raydium, dbc, raydiumv4, dammv1, dlmm) | which venues a sniper buys on (F:35, S) | yes on launch, hunt and MIG snipers (`["pumpfun"]`). **Not on copy snipers** | yes (a rule's venue) | on launch snipers it works. On a copy sniper: unknown | 7: the first candidate for keeping a copy out of a USDC swap and off LaunchLab |
+| Platforms (`platforms`: pumpfun, pumpswap, raydium, dbc, raydiumv4, dammv1, dlmm) | which venues a sniper buys on (F:35, S) | yes on launch, hunt and MIG snipers (`["pumpfun"]`). **Not on copy snipers** | yes (a rule's venue) | on launch snipers it works. On a copy sniper it does not hold (23 Nov: sent `["pumpfun"]`, one copied six PumpSwap trades) | 7: the first candidate for keeping a copy out of a USDC swap and off LaunchLab |
 | Named creators (`devWallets`, up to 30; `acceptAsCreator`) | buy only launches signed by these wallets (S) | yes: `dev_sniper`; never created | yes (deployer scores, the lab's `creators`) | never run | 3: five serial launchers lost at the launch landing (1,306 trades, round 7) |
 | Blocked creators (`blockedCreators`, up to 100) | never buy these creators' coins (S) | no | partly (our block list) | never run | 3: cheap insurance on any launch or hunt sniper |
 | Developer Migration Check (`devMigrationCheck {minMigrations, minMigrationRatePct}`) | only creators whose earlier coins left the curve often enough (F:39, F:229) | no | partly (the deployer record) | never run | 3 |
 | Dev Funding Gate (`fundingAge`) | see [A] mode | no | partly | never run | 3 |
 | Price-action gate per creator (`walletTriggers`: "+X % within N ms", up to 5 stages) | wait for a move before buying a named creator's launch (F:40, S) | yes: `dev_sniper`'s "confirm" rule; never created | yes | never run | 3 |
 | Metadata filter (`metadataFilter`: name, symbol, regex, website, twitter, telegram, image) | buy only coins whose name or links match (F:42, S) | `replica_from_study` only; never created | partly (`x_kind`, `x_handle`, the X account's badge and followers) | never run | 4: "links a tweet" is one condition here |
-| Max market cap (`maxMcapUsd`) | the buy carries a minimum-out, so a buy above the cap fails on chain and costs a failed send (F:256, A) | once: AG89fn's copy sniper, 8 Nov, $6,700 | yes (`max_mcap`) | sent 8 Nov; that it fails above the cap rather than filling: read from the app, not seen on chain | 7: it is the only price limit a buy has (every buy goes out with "at least 1 token", L 11 Nov) |
+| Max market cap (`maxMcapUsd`) | the buy carries a minimum-out, so a buy above the cap fails on chain and costs a failed send (F:256, A) | once: AG89fn's copy sniper, 8 Nov, $6,700 | yes (`max_mcap`; since 23 Nov `max_fill_mcap`, the one that matches) | sent 8 Nov; seen on chain 23 Nov: the cap is on the price of OUR fill at OKTech's SOL price, every buy above it failed (6042 on the curve, 6040 on PumpSwap) and none below; OKTech's price was sometimes $200 (docs/oktech-features.md, "What a copy sniper does on chain") | 7: it is the only price limit a buy has (every buy goes out with "at least 1 token", L 11 Nov) |
 | Quote lists and pump filters (`pumpFilters {nonSolQuoteOnly, cashbackOnly, sharingCheck}`, quote whitelist and blacklist, `pumpAutoSwap`) | choose or skip coins quoted in something other than SOL; swap SOL into the quote in the same transaction (F:44, F:242-250) | `replica_from_study` only; never created | partly (quote of the coin) | 5 Nov: PUMP-quoted launches tripped Hunt and the SOL buy failed (error 6010); no filter was on | 3: saves failed sends on hunts |
 | Account filter (`accountFilter {whitelist, whitelistMode, blacklist}`) | the launch transaction must, or must not, name these accounts (F:354) | no | no | "not granted" on 5 Nov (L); unknown now | 4: could require a crew's accounts or shut out non-SOL curves |
 | Launch shape, wrapped launches, platform payer | see Shapes | no | no | unknown | 1 |
@@ -122,7 +122,7 @@ under mode `shapes`.
 | Smallest buy to copy (`minSol` per wallet) | skip the wallet's buys under this size (S) | yes (the book: 0.3 SOL or the wallet's own floor) | yes | sent on all 59; arm A, with a 1 SOL floor, copied a swap of Cupsey's into USDC: the floor looks at the SOL spent, not at what is bought (L 12 Nov) | 7 |
 | Largest buy to copy (`maxSol` per wallet) | skip the wallet's buys over this size (S) | no | partly | unknown | 4: two thirds of the buys 6Z91 follows are 1 to 3 SOL (W) |
 | Market-cap floor (`minMcapUsd` per wallet) | skip buys in coins under this market cap (S) | no | yes (`min_mcap`, since 12 Nov) | ignored in fresh coins (21 Nov floor test: three buys at 29-30 SOL under a 35 SOL floor) | 6: the owner asked for it; also the cheapest test of a guard |
-| Market-cap ceiling (`maxMcapUsd` per wallet) | see 1b; on a copy it fails the buy on chain, it does not skip it (A) | once | yes | sent once | 7: at a stablecoin's market cap the copy would fail for a failed send's fee instead of buying |
+| Market-cap ceiling (`maxMcapUsd` per wallet) | see 1b; on a copy it fails the buy on chain, it does not skip it (A) | once (8 Nov); since 12 Nov every copy sniper carries the 50 million dollar one, and `copylist --max-mcap` (20 Nov) sends a real one | yes (`max_fill_mcap`) | seen on chain 23 Nov: a ceiling on our own fill, see 1b | 7: at a stablecoin's market cap the copy would fail for a failed send's fee instead of buying |
 | Buy multiplier (key unknown; F:58) | size our copy as a multiple of the leader's buy | no | no (a rule has one size) | unknown | 5: the winners size per wallet and per buy (W) |
 | Consensus (`ctbotMinWallets` within `ctbotTimeWindowMs`) | buy only when N of the listed wallets bought the coin inside the window (S) | sent as 1 wallet, 10,000 ms | partly (the "2nd known wallet in" rule) | never above 1 | 6: the analyst's best paper lead today is a second-wallet-in rule (docs/autopilot.md, 12 Nov) |
 | Re-buy cooldown (`ctbotRetriggerCooldownMs`) | wait before copying the same trigger again | the speed probe only (15,000 ms) | no | unknown | 4: a leader's second buy of a coin is copied again and lost twice on 8 Nov (Gwje9b, AJNiDe) |
@@ -142,7 +142,7 @@ under mode `shapes`.
 | Buy tip (`tipAmount`, 0.002 at least) | paid to a relay (Nozomi, Astralane, Helius Sender, FLaSH) that hands the transaction to the block's leader; returned when the send fails (A) | yes; 0.002 on 68, 0.02 on 3, 0.03 on 1 | partly (`--buy-bid`) | 12 Nov: 0.005 + 0.03 landed first behind Cupsey 2 times of 2 (L). 6 Nov: 0.02 + 0.02 landed no earlier behind quiet wallets (L) | 9 |
 | Sell tip (`autoSell.sellTipAmount`) | the tip on the relay-sent copy of a sell | yes, 0.002 on copies | partly | 81 of 85 landed sells were tipped (DB) | 5 |
 | Sell priority (`autoSell.sellPriorityFeeSol`) | meant as the priority of the plain copy of a sell | yes, 0.0001 | no | since 8 Nov one send of 47 carried it; the others paid the buy's priority, or an older sniper's 0.002 (below) | 3 as it stands; 8 if OKTech can make it work |
-| Buy cap (`singleSnipe` + `totalSnipes`) | stop buying after N buys; failed buys count (F:67) | yes, always | yes | works, with two faults: the buy that uses up the cap can be left with no exit (4siK, DTAU, 5m5h: L 6 Nov), and arm A bought 4 times on a cap of 3 (DB, 12 Nov) | 6 |
+| Buy cap (`singleSnipe` + `totalSnipes`) | stop buying after N buys; failed buys count (F:67) | yes, always | yes | works, with two faults: the buy that uses up the cap can be left with no exit (4siK, DTAU, 5m5h: L 6 Nov; 23 Nov: 2 of 6 one-shot copies, both bought within seconds of a start), and arm A bought 4 times on a cap of 3 (DB, 12 Nov; 23 Nov: one start sent two transactions three times, 5 to 14 s apart) | 6 |
 | Send count (`extraParams.globalSendCount`) | how many times each transaction is sent (F:70) | yes, 1 | no | it does not govern the duplicate sells (A) | 2 |
 | Smart fees (`extraParams.globalSmartFees`) | "adjusts fees automatically"; nothing more is written (S) | no | no | unknown | 5: it may be the switch that prices sells apart from buys; ask |
 | Compute units (`extraParams.computeUnits`) | the limit a buy asks for; the same fee over a smaller limit ranks higher | plumbed (`execution_params`), never set | no | buys use 51,000 to 79,000 of the 150,000 default (A; arm A's PumpSwap buys 56,000 to 72,000, DB). Whether a copy honours the field: unknown | 5: up to 1.5 times the rank for nothing |
@@ -213,7 +213,8 @@ Three faults that belong to every exit, all seen live:
 - **OKTech starts watching a coin about 1.3 s after the buy lands** (L 7 Nov). Nothing sells before that. The winners'
   best group sells its first part within 0.6 s (788 of 6Z91's trades, +0.27 SOL a trade, W): out of reach.
 - **The buy that uses up a sniper's cap can be left with no exit at all** (three coins, 5 and 6 Nov). The book works
-  around it by relying on a sniper's first buy only.
+  around it by relying on a sniper's first buy only. (23 Nov: 2 of 6 one-shot copies got no exit, both bought within
+  seconds of their sniper's start; the runner's `--sweep-after` sells such a copy itself; question 24.)
 - **Exits fire for coins never bought** (three coins on 8 Nov, two failed sells each, L).
 
 ### 1f. Outside the sniper: Twitter tasks, Signals, Social, the rest
@@ -271,8 +272,8 @@ makes; at 2 SOL the step from second to first is worth 0.1 SOL.
 | `ctbotWallets[].minSol` | 1 | two thirds of the buys the winners follow are 1 to 3 SOL (W); below 1 SOL the wallet is testing |
 | `ctbotWallets[].maxSol` | leave open until a lab says otherwise | never sent; unknown |
 | `ctbotWallets[].minMcapUsd` | the low end of the band where that wallet's copies paid on paper | sent since 21 Nov (`copylist --min-mcap`); does not stop a copy in a fresh coin: the 21 Nov floor test bought three at 29-30 SOL under a 35 SOL floor (docs/live-recipe.md) |
-| `ctbotWallets[].maxMcapUsd` | about twice the market cap the wallet usually buys at; never above a few million dollars | the only price limit the buy has; also makes a stablecoin swap fail for a failed send's fee instead of buying |
-| `platforms` | `["pumpfun", "pumpswap"]` | never sent on a copy; unknown whether a copy honours it (test T4) |
+| `ctbotWallets[].maxMcapUsd` | about twice the market cap the wallet usually buys at; never above a few million dollars | the only price limit the buy has; also makes a stablecoin swap fail for a failed send's fee instead of buying. 23 Nov: it limits the price of OUR fill at OKTech's SOL price, so set it from the lab's `max_fill_mcap` (docs/oktech-features.md, "What a copy sniper does on chain") |
+| `platforms` | `["pumpfun", "pumpswap"]` | never sent on a copy before 12 Nov; 23 Nov: a copy does not hold to it (sent `["pumpfun"]`, it copied PumpSwap trades) |
 | `buyAmount` | 2, up to 10 behind the few wallets where both winners pay up | the owner's yes for each size |
 | buy multiplier | not used until OKTech names the key | unknown |
 | `speedMode` | `true` | as today |
@@ -544,7 +545,9 @@ For the owner to paste to their support. Each is one sentence, and each changes 
    (21 Nov: an experienced sniper says it depends on the block's leader and the winning bots set their bid per block
    from p99 stats; ask whether `globalSmartFees` does that per leader.)
 5. How do we stop a CTBot sniper from copying a wallet's swap into USDC, USDT or wrapped SOL: does `platforms` apply
-   to CTBot, or is there a mint blacklist?
+   to CTBot, or is there a mint blacklist? (23 Nov: `platforms` does not apply: sent `["pumpfun"]`, a copy sniper
+   copied six PumpSwap trades, docs/oktech-features.md, "What a copy sniper does on chain". The mint blacklist is
+   still the question.)
 6. Does a CTBot wallet entry take `minMcapUsd`, `maxSol` and a buy multiplier, what are the exact keys, and do they
    skip the buy or fail it on chain? (21 Nov floor test: in coins seconds old neither `minMcapUsd` nor `minSol` stopped
    a copy, and a create transaction that only names the copied wallet's address was copied; another wallet's plain
@@ -556,7 +559,7 @@ For the owner to paste to their support. Each is one sentence, and each changes 
 8. Are preconfirmations on for CTBot on our account, and with them does the sniper buy even when the copied wallet's
    transaction then fails?
 9. Why can the buy that uses up `totalSnipes` be left with no exit at all (three coins on 5 and 6 Nov), and why did
-   exits fire for coins the sniper never bought (8 Nov)?
+   exits fire for coins the sniper never bought (8 Nov)? (23 Nov: see 24.)
 10. In Hunt, does `maxDevBuySol: 0` mean "skip every launch whose creator bought anything" or "no limit"?
 11. Are momentum hold and timer extension checked on a clock or only when a trade arrives, on price or on market cap,
     and do they ever hold back a stop-loss?
@@ -593,9 +596,21 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     of an unwrap: a 5 SOL copy needs about 10.8 SOL in the wallet.)
 23. (22 Nov, with 9) Why do copy sales come at 6-9 s when neither the 12 s timer nor the copy exit is due? (3 of 7
     sales on 21-22 Nov.)
+24. (23 Nov, with 9) Does a copy bought within seconds of its sniper's start lose its exit? In smoke test 2 OKTech
+    fired neither the 12 s timer nor the copy exit on the 2 copies bought 2 s and 7 s after a start, and sold the 4
+    bought 15 s or more after one; on 21-22 Nov copies were also left unsold 2.5 and 10 minutes after a start (about
+    4 of 15 one-shot buys). Our runner sells such a copy itself at `--sweep-after` meanwhile.
+25. (23 Nov) When does a sniper whose send failed read finished, and can that start still send again? It read
+    finished about 12 s after a refused send (about its exit timer), and three times one start sent two transactions,
+    5 to 14 s apart, once a refused send and then a buy that filled. Our runner waits past both before it starts the
+    sniper again.
+26. (23 Nov) Which SOL price turns `maxMcapUsd` into a buy's price limit, and why is it sometimes $200? Sends in a
+    new sniper's first minutes, and once 19 minutes after a start, carried a limit worked out at $200.00 a SOL (23 SOL
+    of market cap on a $4,600 ceiling, under the 28 SOL a coin starts at), so each could only fail.
 
 Questions 1, 2, 3, 4 and 5 decide the real-size copy. **The 22 Nov plan's six, in its order: 6 (the signer check),
-20, 10, 21, 22, and 9 with 23.** The rest can wait a day.
+20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26: each costs a live run copies or shots today.
+The rest can wait a day.
 
 ---
 
@@ -632,6 +647,7 @@ In order. Each names the test that has to come first.
 1. **The bid in the tip, the priority at its minimum** (`tipAmount`, `priorityFee`). Three to eight times cheaper for
    the same bid. Test T5.
 2. **A guard on what a copy buys** (`platforms`, `maxMcapUsd` per wallet). It bought USDC twice. Test T4; question 5.
+   (23 Nov: `platforms` does not hold in copy mode; the ceiling limits the price of our own fill.)
 3. **Selling in parts** (`stages` with `sellAfterMs` or `gainPercent`). The winners' exit, and "partially sell but
    hold some". Test T3, then T7.
 4. **A trailing stop on the part we keep** (`trailingStopLoss`). "Hold it until it starts going down." Sendable today;

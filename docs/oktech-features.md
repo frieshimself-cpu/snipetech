@@ -399,8 +399,8 @@ USDC at 17:05:56 and 17:24:31 UTC). The second was the sniper's fourth buy on a 
 
 | field | value | what it does |
 |---|---|---|
-| `platforms` | `["pumpfun", "pumpswap"]` | Only pump.fun's curve and PumpSwap: the venues the lab scores. No Raydium, Meteora or LaunchLab swap. |
-| `ctbotWallets[].maxMcapUsd` | `50000000` unless a tighter cap is set | A buy above a 50 million dollar market cap fails on chain instead of filling. A failed buy pays its priority fee (0.001 SOL) and gets its tip back. |
+| `platforms` | `["pumpfun", "pumpswap"]` | Only pump.fun's curve and PumpSwap: the venues the lab scores. No Raydium, Meteora or LaunchLab swap. 23 Nov: copy mode does not hold to it ("What a copy sniper does on chain", 3). |
+| `ctbotWallets[].maxMcapUsd` | `50000000` unless a tighter cap is set | A buy above a 50 million dollar market cap fails on chain instead of filling. A failed buy pays its priority fee (0.001 SOL) and gets its tip back. 23 Nov: the cap is on the price of our own fill, at OKTech's SOL price ("What a copy sniper does on chain", 1). |
 
 A cap the owner set for a wallet (`snipetech book mcap`) is tighter and stays. A cap above the ceiling is brought
 down to it. 50 million dollars is far above any coin the lab scores a copy on: a coin on pump.fun's curve, or one
@@ -418,7 +418,8 @@ field for it. The measure stage checks our own buys against it.
 | PYUSD, JUP, JLP, mSOL, jitoSOL, bSOL | left out | **unverified**: no address for them anywhere in the repo, so none was guessed |
 
 **The sniper says it is unverified.** Every copy sniper's summary carries one line that starts "kept to coins,
-UNVERIFIED in copy mode": what was sent, and that nobody knows yet whether a copy sniper reads `platforms`.
+UNVERIFIED in copy mode": what was sent, and that nobody knows yet whether a copy sniper reads `platforms` (23 Nov:
+it does not hold to it; the summary's words still say "not known").
 
 **The buy cap is not a hard limit.** The test sniper was sent `totalSnipes` 3 with `singleSnipe` true and bought four
 times. Why is OKTech's to answer, and nothing in what we send was changed for it. The summary of a copy sniper made
@@ -468,6 +469,54 @@ once, and it comes back when a send fails.
   `[oktech] tip_share` (0.7 to the tip), so 0.003 of a 0.01 SOL bribe is priority. Whether OKTech charges that again
   on a launch sniper's sells is not measured. It is the owner's setting; say so if it should follow the same rule.
 
+## What a copy sniper does on chain (the live tests of 23 Nov 2026)
+
+Read off the chain from the sends of the 0.02 SOL copy snipers of 23 Nov (docs/live-recipe.md: "Smoke test of the
+audited runner", findings 1 to 9, and smoke tests 3 and 4; the decoder is `solana/buy_limit.py`).
+
+1. **`maxMcapUsd` is a ceiling on OUR fill, not on the copied wallet's buy.** OKTech turns it into the buy's own
+   price limit: an exact-in buy, `BuyExactQuoteIn(quote_in, min_tokens_out)`, with `min_tokens_out = quote_in x
+   OKTech's SOL price x 1e9 / maxMcapUsd`. So the limit is the average price of our own fill, pump.fun's fee
+   included, at the SOL price OKTech uses. With $4,600 sent and OKTech's price at $71.1 to $71.6 a SOL it stood at
+   64.3 to 64.7 SOL of market cap; all six fills of smoke test 2 were under it and every one of its 16 refusals at
+   that price above it (the nearest at 67.2 SOL). A buy over it fails on chain (pump.fun error 6042 on the curve,
+   6040 on PumpSwap), pays its priority fee (0.001005 SOL at a 0.001 priority with the base fee; about 0.0011 at the
+   0.0011 the runs of 23 Nov sent) and spends a one-shot sniper's shot. The lab scores this ceiling as `max_fill_mcap`;
+   its `max_mcap` asks the coin right after the copied buy, which no OKTech setting does (docs/architecture.md). The
+   measure stage keeps each send's limit and where it filled, or would have (`fills.limit_mcap_sol`,
+   `fill_mcap_sol`).
+2. **OKTech's SOL price is sometimes $200.** Two curve sends in a new sniper's first six minutes and three PumpSwap
+   sends of smoke test 2, a new sniper's first send in smoke test 3 (1 min 50 s after it was made) and one send 19
+   minutes after a start in smoke test 4 carried a limit worked out at $200.00 a SOL: 23 SOL of market cap on a
+   $4,600 ceiling, under the 28 SOL every pump.fun coin starts at, so each could only fail. The sends around them
+   carried the live price. Nothing we send changes it; a new sniper is best made some minutes before it is needed,
+   and the measure stage says such a limit once a sniper a day ("OKTech turned the $4,600 market-cap ceiling ...").
+3. **`platforms: ["pumpfun"]` does not keep a copy sniper on pump.fun's curve.** Smoke test 2's sniper copied six of
+   its wallet's PumpSwap trades: two were refused by the ceiling (129 and 301 SOL), four failed at once
+   (`IncorrectProgramId`, 0.0018 SOL each: OKTech's PumpSwap path pays more priority than the payload names). Each
+   spends the sniper's shot. So copy mode does not hold to `platforms`, and nothing we send keeps a copy off a venue.
+4. **It copies a followed wallet's sends that fail.** It sends before anyone knows the copied send will fail: smoke
+   test 2's first fill and both fills of smoke test 3 copied buys of 6Z91's that failed on chain (in smoke test 3 on
+   his own price limit, error 6042), so each bought what the copied wallet itself was refused (it fires on the
+   attempt, as on 6 Nov). Behind Cented and Decu all 17 attempts of 21-22 Nov stood behind a real buy. It copies a
+   wallet that trades through a router program of its own too (Yugi, smoke test 4: each send in his own block or the
+   next, and the exit on its timer).
+5. **A refused send spends a one-shot sniper's shot, and one start can still send a second transaction.** Three times
+   on 23 Nov one start sent two, 5 to 14 s apart (once a refused send and then a buy that filled). OKTech read such a
+   sniper finished about 12 s after its refused send, about its exit timer. The runner waits 5 s past that reading,
+   and 20 s past the failed send, before it starts the sniper again (docs/live-recipe.md, "The ends of a live run").
+6. **Some copies get no exit.** OKTech fired neither its 12 s timer nor its copy exit on 2 of smoke test 2's 6 fills,
+   both bought within seconds of their sniper's start (2 s and 7 s after it); the four bought 15 s or more after a
+   start were sold by OKTech (in 3 to 13 s). Smoke test 3's two copies of failed sends got none either. A fresh start is
+   not the only cause: on 21 and 22 Nov copies were left unsold 2.5 and 10 minutes after a start (about 4 of 15
+   one-shot buys). The runner's own sale (`oktech cycle --sweep-after 20`) sold every one of them, 24 to 25 s after the
+   buy. A question for OKTech (docs/oktech-playbook.md, section 4, 24).
+7. **A landed sale pays the buy's priority and the sell tip**, as every sale on record since 20 Nov did (smoke test
+   4: 0.0011 + 0.002 on a 0.0011 + 0.002 sniper).
+8. **A 0.003 SOL bid landed in the next block's first places behind a wallet nobody else raced** (smoke test 2: 4 of
+   5 placed fills with nobody between, 1 with one buyer); behind Yugi, second in his own block (smoke test 4). It says
+   nothing yet of the place behind Cented, whose buys are raced.
+
 ## Unknown until a tiny live test
 
 ### Whether the two protections against a non-coin work in copy mode (12 Nov 2026)
@@ -477,14 +526,19 @@ part is proven:
 
 1. **Does copy mode read `platforms`?** No copy sniper of ours carried it before 12 Nov (0 of the 59 copy snipers
    in the server's own record, 4 to 12 Nov). OKTech may honour it, ignore it, or refuse the sniper. A refusal is loud and costs nothing: the
-   create fails with OKTech's words and no sniper exists. The first create after the deploy is the test.
+   create fails with OKTech's words and no sniper exists. The first create after the deploy is the test. (Answered
+   23 Nov: it accepts the field and does not hold to it. Sent `["pumpfun"]`, a copy sniper copied six PumpSwap trades:
+   "What a copy sniper does on chain", 3.)
 2. **`platforms` would not have stopped the 12 Nov buy.** That USDC was bought through a PumpSwap pool, and PumpSwap
    is a venue we want. Only the market-cap ceiling stands in front of a stablecoin traded there.
 3. **Does the ceiling stop it?** OKTech enforces `maxMcapUsd` as a smallest amount the buy must receive. It fails the
    buy when the coin is worth more. That needs OKTech to price USDC or wrapped SOL above 50 million dollars. We
    expect so, since each is worth over a billion. It has never been seen. One copy sniper of the 59 carried a
    per-wallet cap before (8 Nov, 6,700 dollars) and no buy of ours behind its wallet is on record from then, so the
-   field has been accepted once and has never been seen to fill or to fail a buy.
+   field has been accepted once and has never been seen to fill or to fail a buy. (23 Nov: that smallest amount is
+   worked out from our own quote at OKTech's own SOL price, so the ceiling is on the price of our fill; it failed
+   every buy above it on chain and none below, "What a copy sniper does on chain", 1. Whether it stops a stablecoin
+   swap is still not seen.)
 4. **Does the ceiling cost a normal copy anything?** It should not: for a coin under the ceiling the smallest amount
    is thousands of times under what the buy receives. Check on the first live copy that it lands where copies landed
    before (`snipetech landing`).

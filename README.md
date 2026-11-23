@@ -171,7 +171,8 @@ needs an X data source and isn't measured.
 
 snipetech decides; [OKTech](https://oktech.me)'s snipers buy and sell. Wallets with a COPY verdict
 become `ctbot` snipers (copy its buys above the size the analysis says are worth copying, under its
-market-cap ceiling; sell when it sells; plus the optimized own exits where those beat mirroring).
+market-cap ceiling, which OKTech applies to the price of our own fill: docs/oktech-features.md; sell when it sells;
+plus the optimized own exits where those beat mirroring).
 Deployers with a SNIPE verdict become `normal` snipers on their launches, with the recommended size,
 bribe (split into priority fee + tip) and exits.
 
@@ -194,16 +195,19 @@ snipers made with `copylist`, the book's, probes and strategies are never replac
 old sniper only after its replacement exists and never while the sniper wallet holds a coin. Verdict snipers are
 capped (`[oktech] verdict_max_buys`, 5) and never bigger than `[oktech] max_buy_sol` (1 SOL) a buy. `oktech stop`
 and `delete` refuse while a coin is held (`--force` strands it on purpose); `oktech start`, `guard` and `cycle`
-refuse while the owner's `/stop` flag is set.
+refuse while the owner's `/stop` flag is set, and, since the audit of 22 Nov, while the owner's wallet-wide guard
+(`/risk`, below) holds or cannot tell (`cycle` also reads it before each re-arm; `start --force` starts all the same,
+a guard with `--watch-only` starts nothing).
 
 What every sniper we make sends (audited against the chain and OKTech's app on 6 Nov, see
 `docs/oktech-audit-2026-11-06.md`): seed account off (the tokens are in the wallet from the first
 slot; with it on every fill was two transactions and a 6023 race), one send per transaction, sells at
-`[oktech] sell_tip_sol` (0.002 SOL, the bid) + `sell_priority_sol` (0.0001, what each failed twin pays)
-whatever the buy bid, every fee from the policy per kind of task (`fees.py`), preconfs requested, and a compute-unit limit
-only when `[oktech] compute_units` or a bid arm's `cu` says so. `oktech holdings --address W` lists the
-wallet's *positions* by the one rule every stop decision uses (`positions.py`: WSOL and stablecoins
-never count, dust is anything under 0.001 SOL at the tape's price, unpriced tokens are listed apart).
+`[oktech] sell_tip_sol` (0.002 SOL, the bid) + `sell_priority_sol` (0.0001, sent with every sale; OKTech does not
+charge it: a landed sale and each failed twin pay the sniper's buy priority, corrected 12 Nov, docs/oktech-playbook.md
+1d) whatever the buy bid, every fee from the policy per kind of task (`fees.py`), preconfs requested, and a
+compute-unit limit only when `[oktech] compute_units` or a bid arm's `cu` says so. `oktech holdings --address W` lists
+the wallet's *positions* by the one rule every stop decision uses (`positions.py`: WSOL and stablecoins never count,
+dust is anything under 0.001 SOL at the tape's price, unpriced tokens are listed apart).
 
 ### 3d. Run it 24/7 on a server
 
@@ -256,17 +260,25 @@ drop into `operator/inbox.md` is read on the next round. The design is in
 left, Birdeye compute units, SolanaTracker and Vybe monthly requests, the wallet's SOL float against the book's
 needs, disk, failed transactions in the last hour — and sends one Telegram line per critical item per day with the
 exact thing to do (`[resources]` thresholds in the config; `snipetech config set resources.anthropic_credit_usd <n>`
-after a top-up). The first round after `digest_hour_utc` (07:00 UTC) sends a digest: wallet and its change since the
-last digest, snipers, spend today and over 7 days, resources not ok, notes written. The bot obeys these commands
-from your chat only (also `/book`, `/sell`, `/budget`, `/test` and `/risk`, below): `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
-snipers only while the wallet holds nothing — a stopped sniper strands its coin, so holders are named and left
-alone), `/resume`. `/sell <coin address>` sells all of that coin from the sniper wallet within a minute (pump.fun
-curve coins only, signed with `SNIPER_SECRET` from `/etc/snipetech/env`; a coin off the curve is sold by hand in
-Axiom or OKTech), `/sell` alone lists the coins held with the exact line to send for each, `/sell all` sells every
-curve coin, none of them ever buys or touches a sniper, and the watchdog's alert for a coin nobody is selling ends
-with that coin's `/sell` line. A live page at `https://<host>/dash` shows services, resources, the wallet, jobs,
-the last decisions and notes, candidates and fills, refreshing every 15 s; it is served by `snipetech-ops`, asks for a
-password (`DASH_TOKEN` from `/etc/snipetech/env`, any user name) and does not exist until that token is set.
+after a top-up). The failed transactions it can explain are named and page nobody: a sale's failed twins, buys the
+wallet's plain SOL could not pay, sends the measure stage has not read yet and, since 23 Nov, buys refused on their
+own price limit (a copy sniper's ceiling at work); only the rest pages ("check OKTech sells and the send count"). The
+first round after `digest_hour_utc` (07:00 UTC) sends a digest: the wallet's balance and how many coins it holds (no
+longer its change since the last digest, which was mostly your own transfers), snipers, spend today and over 7
+days, resources not ok, the automatic test's day, notes written. The bot obeys these commands from your chat only
+(also `/book`, `/sell`, `/budget`, `/test` and `/risk`, below): `/status`, `/stop` (writes a STOP flag so no running
+sniper is expected, in force from the moment the one-minute pass reads it, and stops every running sniper unless the
+wallet holds a coin one of ours may hold — a stopped sniper strands its coin, so holders are named and left alone;
+your own hand-bought coins, coins you ignore and strays keep none running, and before any stop it reads the wallet
+a second time and looks on the chain for a buy on its way; docs/live-recipe.md, "The ends of a live run"), `/resume`.
+`/sell <coin address>` sells all of that coin from the sniper wallet within a minute, on the pump.fun curve or, for a
+coin that has left it, on PumpSwap (signed with `SNIPER_SECRET` from `/etc/snipetech/env`; a coin it cannot sell is
+said, to be sold by hand in Axiom or OKTech), `/sell` alone lists the coins held with the exact line to send for each,
+`/sell all` sells every coin, none of them ever buys or touches a sniper, and the watchdog's alert for a coin nobody
+is selling ends with that coin's `/sell` line. A live page at `https://<host>/dash` shows services, resources, the
+wallet, jobs, the last decisions and notes, candidates and fills, refreshing every 15 s; it is served by
+`snipetech-ops`, asks for a password (`DASH_TOKEN` from `/etc/snipetech/env`, any user name) and does not exist until
+that token is set.
 
 **What the agents may spend, and how often the analyst runs, without SSH.** The server's config file pins every
 `[operator]` value, so you set the agents' budget from Telegram. `/budget` shows the budget that applies and today's
@@ -414,7 +426,10 @@ simulates the live sniper are booked (older ones are re-qualified first, and `/b
 arm is retired. **Every copy sniper is kept to coins and bids in the tip** (12 Nov, after a copy bought USDC and a
 0.005 SOL priority fee was charged again on every sell): the book's snipers and the hand-made ones
 (`oktech copylist`) are sent `platforms` pump.fun + PumpSwap and a 50 million dollar market-cap ceiling on the copied
-wallet (OKTech has no setting that refuses a coin by its address; neither part is proven yet), and a buy bid goes out
+wallet (OKTech has no setting that refuses a coin by its address). The live tests of 23 Nov settled both parts:
+`platforms` does not keep a copy sniper to a venue (sent pump.fun alone, it copied PumpSwap trades), and the ceiling
+is a limit on the price of our own fill, fee included, at OKTech's own SOL price, so a buy over it fails on chain for
+its priority fee (docs/oktech-features.md, "What a copy sniper does on chain"). A buy bid goes out
 with the priority fee at OKTech's minimum and the rest as the tip: `oktech copylist --bid 0.035` sends 0.001 + 0.034,
 and the book sends its bid arms the same way (docs/oktech-features.md, "What every copy sniper is sent since 12 Nov
 2026"). **The unsold-coin watch** (`book/watch.py`) runs in the one-minute pass and at the end of every book
@@ -468,8 +483,12 @@ trades the fills do not have yet are read from the tape, and a stalled measure s
 is a day the guard cannot tell, which starts nothing. While
 it holds, nothing new starts: the book creates and starts nothing and stops its snipers once the wallet holds nothing,
 `/test go` and the round's start of a test refuse, and a running cycler stops re-arming (it reads the guard before each
-re-arm, like `/stop`). While the wallet holds any coin every book sniper keeps running and can still buy up to its cap
-(3): the book cannot tell which one holds the coin, and a stopped sniper strands it; `/sell <coin>` sells it. One Telegram line when it trips, and `/status` shows it. The values live in `operator/RISK`; the agents
+re-arm, like `/stop`). While the wallet holds a coin one of ours may hold, every book sniper keeps running and can
+still buy up to its cap (3): the book cannot tell which one holds the coin, and a stopped sniper strands it; `/sell
+<coin>` sells it. Since the audit of 22 Nov your own hand-bought coin (read coin by coin, as `/stop` reads it), a coin
+you ignore and a stray seen 10 minutes keep none running, except a book sniper with no fee record beside your coin
+(it may have bought it), and each stop reads the wallet again 5 s later and looks on the chain for a buy on its
+way. One Telegram line when it trips, and `/status` shows it. The values live in `operator/RISK`; the agents
 cannot write it (`operator/risk_guard.py`).
 
 **The automatic test (`/test auto`).** The owner's standing yes of 7 Nov ("Yes, use this plan", widened at about 12:10:
@@ -477,15 +496,20 @@ cannot write it (`operator/risk_guard.py`).
 block, at its own size (0.2 SOL a buy at most), each block at most 10 buys one coin at a time and 120 minutes, with no
 limit on blocks or hours. A strategy may lose 1 SOL by its own trades, read from the measure stage's fills after every
 block (failed sends included, and the worse of two readings while the book's copies from the same wallet cannot be told
-apart for sure): there it is at its floor and dropped for good, whatever its number of trades. Each block's floor is the
+apart for sure; only its own sniper's trades, told by the fees it pays, so your hand trades in the wallet are never its
+result): there it is at its floor and dropped for good, whatever its number of trades. Each block's floor is the
 wallet it starts from less what is left of that 1 SOL, so a deposit or a withdrawal moves the floor and never drops a
 strategy. Once it has 10 live round trips of its own it is judged after every block on the live mean per trade: at least
 half of the paper mean and above zero, it goes on; below that it is dropped for good, and the next strategy that passes
 on paper takes over with a floor of its own (with none, it waits for one); a strategy that comes back keeps its live
 record. A fault (a cycler that died, OKTech not answering or refusing, a coin left unsold, the wallet unreadable, the
-measure stage stalled) holds it until it clears and never drops it; so does a wallet with no room for a block. A coin
-left unsold is never counted at its whole cost while the wallet holds it; a cycler that dies twice in a row holds new
-blocks for 4 hours, then longer, unless a deploy changes the code or you send `/stop` then `/resume`. You hear a
+measure stage stalled) holds it until it clears and never drops it; so does a wallet with no room for a block, the
+first block too since 23 Nov: a curve buy is paid in plain SOL only, so a block waits until the wallet's plain SOL pays
+one buy with its fees and the coin account's rent (0.252 SOL for a 0.2 SOL buy; said once a day), and while the test
+is on at the book's size or below the round's conversion of wrapped SOL keeps that much plain. A coin left unsold is
+never counted at its whole cost while the wallet holds it; a cycler that dies, or a start that leaves its sniper idle,
+twice in a row holds new blocks for 4 hours, then longer (the count is the strategy's own, begun again only by a block
+that runs to its end), unless a deploy changes the code or you send `/stop` then `/resume`. You hear a
 strategy start, a drop, a hold and its clearing; never a line per block (the day's blocks are in the digest), and
 `/status` shows it. `/test auto on` is the yes, for the sniper wallet `/test auto` names (`snipetech remote --wait run
 operate autotest --on --approved "<your words>" --wallet <the wallet you named>` from the cloud session); nothing starts

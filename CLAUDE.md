@@ -6,7 +6,8 @@ The research brain for a pump.fun sniper: it records every trade of every token 
 and wallets at the landing the owner's bot actually gets, and decides what to snipe and who to copy. Execution is
 done by OKTech's sniper (remote service, `src/snipetech/oktech.py`); this repo never signs a trade itself.
 The owner's goal is a bot that makes money without them watching it. The honest state of that goal is always the
-top section of `docs/roadmap.md`; the test log is `docs/live-recipe.md`. Read both before proposing anything.
+top section of `docs/roadmap.md`; the test log is `docs/live-recipe.md` (its entries of 11 Nov and earlier are in
+`docs/live-recipe-2026-11-early.md`). Read both before proposing anything.
 
 ## Where things are
 
