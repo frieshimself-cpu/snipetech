@@ -28,6 +28,7 @@ from snipetech.measure.ours import (
     RunCoins,
     bot_bought,
     bot_buy,
+    bot_sale_fees,
     bot_tape_buy,
     fee_marks,
     odd_fill,
@@ -706,3 +707,32 @@ def test_a_hand_buy_whose_fill_names_a_followed_wallet_is_still_the_owners_to_st
     store.put_fill(row | {"sol": 1.0, "blocks_after": 1, "landing_verdict": "ahead"})
     assert owner_coins(store, ME, HELD_COIN, marks) == {COIN} and not bot_bought(store, ME, COIN, marks)
     store.close()
+
+
+# -- review of round 3: the run's own priority is the one its payloads name, whatever it is ---------------------------
+
+
+@pytest.mark.parametrize("priority", [0.0011, 0.001], ids=["0.0011, a priority of the run's own", "0.001, the book's"])
+def test_the_runs_buys_and_sales_are_its_own_at_whatever_priority_its_payloads_name(priority):
+    """Review of round 3: a run can be sent a buy priority of its own (0.0011 SOL and a 0.002 tip), so that the book's
+    0.001 + 0.002 never reads as the run's by its fees. Nothing that tells a buy or a sale of the run's (the runner's
+    marks, the guard's and the stop's) may take 0.001 for granted: the run's copy at its own pair or untipped is its
+    own wherever it stands, its exit at the buy's priority is its own (OKTech's sale pays it: the 12 Nov sniper
+    bought at 0.005 and sold at 0.005), and a buy or a sale at the other pair, behind no copied wallet, is not."""
+    payload = _payload(size=1.0) | {"priorityFee": priority, "tipAmount": 0.002}
+    own = round(priority * 1e9)
+    other = 2_100_000 - own  # 1,000,000 and 1,100,000 lamports: each one the other's
+    assert own in (1_000_000, 1_100_000)  # the payload's SOL read to the lamport, no float left over
+    for marks_of in (lambda st: sniper_marks([payload], store=st), fee_marks):
+        for name, spent, fees, ours in (("copy", ONE_SOL, (own, 2_000_000), True),
+                                        ("untipped", ONE_SOL, (own, 0), True),
+                                        ("book", HAND_99, (other, 2_000_000), False)):  # fmt: skip
+            store = _store((payload, NOW - 86_400, None))
+            _buy(store, "lead", LEAD, SLOT - 40, 196)  # far before: no copy's shape, its fees alone tell the buy
+            _buy(store, name, W, SLOT, 12, spent=spent, fees=fees)
+            marks = marks_of(store)
+            assert bot_tape_buy(_ours(store), marks) is ours, (priority, name)
+            assert tape_whose(store, W, MINT, NOW - 300, marks) == ("ours" if ours else "owner"), (priority, name)
+            sale = {"priority_lamports": fees[0], "tip_lamports": fees[1]}
+            assert bot_sale_fees(sale, marks) is ours, (priority, name)
+            store.close()

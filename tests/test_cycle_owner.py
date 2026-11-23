@@ -774,6 +774,33 @@ def test_a_hand_buy_right_after_the_runs_copy_of_the_same_coin_is_never_sold_by_
     assert not [t for kind, _i, t in client.timed if kind in ("start", "stop") and T0 + 100 < t < T0 + 360]
 
 
+@pytest.mark.parametrize("priority", [0.0011, 0.001], ids=["0.0011, a priority of the run's own", "0.001"])
+def test_a_run_counts_and_sells_its_copy_at_its_own_priority_and_never_a_buy_at_the_other(monkeypatch, priority):
+    """Review of round 3: the run may be sent a buy priority of its own (0.0011 SOL and a 0.002 tip, so that the
+    book's 0.001 + 0.002 never reads as the run's). Its copy at that pair, far from any copied buy (its fees alone
+    tell it), is counted and sold past --sweep-after; a buy at the other pair is no buy of the run's."""
+    payload = COPIES | {"priorityFee": priority, "tipAmount": 0.002}
+    own = round(priority * 1e9)
+    sweeps = []
+
+    def coins(now):
+        return [_coin(OURS, 1.0)] if T0 + 102 <= now < T0 + 150 else []
+
+    copy = _buy(T0 + 100, OURS, 1.0, own, 2_000_000)  # its own pair
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.0, coins=coins, payload=payload,
+                        tape=[copy], sweeps=sweeps, sweep_after=20, minutes=4)  # fmt: skip
+    assert [m for m, _t in sweeps] == [OURS] and rep["fills"] == 1 and rep["owner_coins"] == []
+    sweeps = []
+
+    def theirs(now):
+        return [_coin(OWN, 0.1)] if now >= T0 + 102 else []
+
+    other = _buy(T0 + 100, OWN, 0.099, 2_100_000 - own, 2_000_000)  # the other pair, 0.1 SOL typed in Axiom
+    rep, _client = _run(monkeypatch, lambda now: 10.0 if now < T0 + 100 else 9.9, coins=theirs, payload=payload,
+                        tape=[other], sweeps=sweeps, sweep_after=20, minutes=4)  # fmt: skip
+    assert sweeps == [] and rep["fills"] == 0 and rep["owner_coins"] == [OWN]
+
+
 # -- round 2 of the audit (23 Nov), A3: the run's tokens in a coin of the owner's are held for the snipers' timer ------
 
 SLOW_SALE = {"sellTipAmount": 0.002, "sellPriorityFeeSol": 0.0001}
