@@ -3,29 +3,32 @@ every other buyer within a few block places after it (the route check, roadmap 2
 
 22 Nov: another wallet's buy of 0.1 SOL or more stood within 3 block places after a big wallet's first buy on 65 % of
 386 moments, and before it on 1. A buy sent once the leader's buy is seen lands dozens of places later (a block holds
-a thousand transactions and more), so whoever stands right behind had the leader's transaction before it ran. How they
-get it decides what is worth building: a place anyone can buy in Jito's auction has a price, and wants a bundle client;
-a buyer that carries the leader's own signed transaction in its bundle had it before it ran (the leader's sending route
-leaks it), and no sender of ours reaches that place without the same flow.
+a thousand transactions and more), so whoever stands right behind got there with the leader's transaction in some
+bundle or route before it ran. How decides what is worth building: a place anyone can buy in Jito's auction has a
+price and wants a bundle client; a seat in a bundle someone else builds around the leader's buy has to be bought from
+that someone.
 
 Jito's public explorer (EXPLORER: no key, no Helius credits) answers for a landed transaction the bundle it came in
-(`/transaction/{sig}`; 404 when none) and for a bundle its transactions in order, who paid its tip, the tip, its first
-place in the block and the validator (`/bundle/{id}`). It keeps about a month. 23 Nov 16:05 UTC, read by hand on six
-moments behind Cented: the "3.457 SOL" operator (one size, 54 wallets, always 2 places behind) rode inside Cented's own
-three-transaction bundle twice and paid its tip (0.02-0.03 SOL); 9AGtz3, Fhbh1D, 6Z91 and D1gszV stood 1 to 3 places
-behind with neither buy in a Jito bundle.
+(`/transaction/{sig}`; 404 "Bundle not found" when none: any other answer is unread) and for a bundle its
+transactions in order, who paid its tip, the tip, its first place in the block and the validator (`/bundle/{id}`). It
+keeps about a month. The first run (23 Nov, job 20261123-160910-658404) and an independent check of every row: on 103
+of the 200 newest moments behind Cented, Decu, theo side and Yugi the closest buyer rode in the bundle that carried
+the leader's buy, paying its tip; in the 91 bundles of three, the transaction between the two is the leader's own
+landing service's (Axiom's or GMGN's: its fee is a fixed share of the leader's tip to that service), so those senders
+build the bundles and the buyers pay to ride in them. The output keeps each bundle's transactions (`txs`) and where
+the buyer stands in it (`in_bundle_after`), so whose the ones between are can be read.
 
-What a buyer near the leader is (`KINDS`): "with the leader" (inside the leader's own bundle: whoever sent that bundle
-held the leader's signed transaction; `tipped_by` says whether the buyer, the leader, one of the leader's companions or
-another wallet paid its tip), "own bundle" (a bundle of its own, placed right after the leader's buy), "no bundle" (not
-through Jito: a validator's own scheduler, or another relay), "unread" (the explorer gave no answer). The leader's own
-buy: "in a bundle", "no bundle", "unread". A buyer under `near_min_sol` is no buyer; one of the leader's own
-companions (chain_landing.known_mates) is kept apart and not looked up (CLAUDE.md rule 2: no copy lands between one
-operator's wallets).
+What a buyer near the leader is (`KINDS`): "with the leader" (in the bundle that carried the leader's buy; `tipped_by`
+says whether the buyer, the leader, one of the leader's companions or another wallet paid its tip), "own bundle" (a
+bundle of its own, placed right after the leader's buy), "no bundle" (not through Jito: a validator's own scheduler,
+or another relay), "unread" (the explorer gave no answer that can be read). The leader's own buy: "in a bundle" (some
+bundle carried it: whose is in its transactions), "no bundle", "unread". A buyer under `near_min_sol` is no buyer; one
+of the leader's own companions (chain_landing.known_mates; how many are known is in `mates`) is kept apart and not
+looked up (CLAUDE.md rule 2: no copy lands between one operator's wallets).
 
 The moments are the first buys `sends` takes (a leader's first buy of a coin of `min_sol` or more); those with a buyer
 near are read newest first, `max_moments` at most (the explorer keeps a month, and its newest moments say what the
-route is now), and the rest are said. A moment newer than EXPLORER_LAG_SECS may not be in the explorer yet."""
+route is now), and when the request limit runs out the oldest are the ones left; the rest are said. A moment newer than EXPLORER_LAG_SECS may not be in the explorer yet."""
 
 from __future__ import annotations
 
@@ -49,6 +52,7 @@ MATES_DAYS = 7  # the leader's companions are read off this many days of the tap
 TOP = 15  # wallets listed in each table
 LAMPORTS = 1e9
 KINDS = ("with the leader", "own bundle", "no bundle", "unread")
+NOT_FOUND = "Bundle not found"  # the explorer's answer for a transaction that came in no bundle (HTTP 404)
 LEADER_KINDS = ("in a bundle", "no bundle", "unread")
 
 
@@ -84,8 +88,14 @@ class Explorer:
             if r.status_code == 429 and attempt == 0:
                 await asyncio.sleep(self.retry)
                 continue
-            if r.status_code == 404:
-                return None
+            if r.status_code == 404:  # "none" only in the explorer's own words for it; any other 404 tells nothing
+                try:
+                    said = r.json()
+                except ValueError:
+                    said = None
+                if isinstance(said, dict) and said.get("error") == NOT_FOUND:
+                    return None
+                raise Unread(f"HTTP 404 {str(said)[:80]}")
             if r.status_code != 200:
                 raise Unread(f"HTTP {r.status_code}")
             try:
@@ -95,12 +105,16 @@ class Explorer:
         raise Unread("HTTP 429")  # pragma: no cover - the loop returns or raises on its second pass
 
     async def bundle_of(self, sig: str) -> str | None:
+        """The bundle `sig` came in, None when the explorer says it came in none ("Bundle not found"); an answer that
+        names no bundle (an empty list, an error) is Unread, never "none" (23 Nov check: it read as "no bundle")."""
         got = await self._get(f"transaction/{sig}")
-        if not got:
+        if got is None:
             return None
-        first = got[0] if isinstance(got, list) else got
-        bid = first.get("bundle_id") or first.get("bundleId") if isinstance(first, dict) else None
-        return str(bid) if bid else None
+        first = got[0] if isinstance(got, list) and got else got
+        bid = (first.get("bundle_id") or first.get("bundleId")) if isinstance(first, dict) else None
+        if not bid:
+            raise Unread(f"an answer that names no bundle: {str(got)[:80]}")
+        return str(bid)
 
     async def bundle(self, bid: str) -> dict[str, Any]:
         got = await self._get(f"bundle/{bid}")
@@ -114,8 +128,9 @@ class Explorer:
 
 
 def tipped_by(tippers: list[str], leader: str, buyer: str, mates: frozenset[str]) -> str:
-    """Who paid the tip of the leader's bundle that carried `buyer`'s buy: "the buyer" (it sent the leader's signed
-    transaction in its own bundle), "the leader", "a companion of the leader", "another wallet" or "nobody named"."""
+    """Who paid the tip of the bundle that carried both the leader's buy and `buyer`'s: "the buyer" (it paid to ride
+    in it; who built the bundle is in its transactions: 23 Nov, the leaders' own landing services), "the leader", "a
+    companion of the leader", "another wallet" or "nobody named"."""
     if buyer in tippers:
         return "the buyer"
     if leader in tippers:
@@ -185,13 +200,18 @@ async def _read(explorer, m: dict[str, Any], near: list[dict], mates: frozenset[
             except Unread as exc:
                 extra = {"why": str(exc)}
         if kind == "with the leader":
-            extra = {"tipped_by": tipped_by(lead_bundle["tippers"], m["leader"], n["wallet"], mates)}
+            txs = lead_bundle["txs"]
+            after = (txs.index(n["sig"]) - txs.index(m["sig"])) if n["sig"] in txs and m["sig"] in txs else None
+            extra = {"tipped_by": tipped_by(lead_bundle["tippers"], m["leader"], n["wallet"], mates),
+                     "in_bundle_after": after}  # fmt: skip
         out.append({**n, "kind": kind, **extra})
     return {"leader_route": lead_route, "leader_bundle": _brief(lead_bundle) if lead_bundle else None, "near": out}
 
 
 def _brief(b: dict[str, Any]) -> dict[str, Any]:
-    return {"id": b["id"], "n": len(b["txs"]), "tippers": b["tippers"], "tip_sol": b["tip_sol"],
+    """A bundle as the output keeps it: its transactions too, so whose the ones between the leader's and a buyer's
+    are can be read (23 Nov: the leaders' own landing services')."""
+    return {"id": b["id"], "n": len(b["txs"]), "txs": list(b["txs"]), "tippers": b["tippers"], "tip_sol": b["tip_sol"],
             "block_index": b["block_index"], "validator": b["validator"]}  # fmt: skip
 
 
@@ -237,7 +257,7 @@ async def route(tape, explorer, leaders: list[str], now: float, *, hours: float 
     chosen = {id(r) for r in with_buyer[-max(0, int(max_moments)) :]} if max_moments > 0 else set()
     bundles: dict[str, dict] = {}
     stopped = None
-    for r in rows:
+    for r in reversed(rows):  # the newest first: the request limit leaves the oldest
         if not r["near"]:
             r.update(leader_route=None, leader_bundle=None, closest="nobody")
             continue
@@ -273,18 +293,21 @@ async def route(tape, explorer, leaders: list[str], now: float, *, hours: float 
     verdict = (f"Of {len(rows)} first buys of {min_sol:g} SOL or more by {len(set(leaders))} wallet(s) in {hours:g} h, "
                f"{len(with_buyer)} had another wallet's buy of {near_min_sol:g} SOL or more within {places} block "
                f"places after it (the leaders' own companions apart). Of the {len(read)} read, the closest such buyer "
-               f"stood inside the leader's own Jito bundle on {c['with the leader']}"
+               f"stood inside the bundle that carried the leader's buy on {c['with the leader']}"
                + (f" (its tip paid {paid})" if paid else "")
                + f", in a Jito bundle of its own on {c['own bundle']}, outside Jito on {c['no bundle']}"
                + (f"; {c['unread']} unread" if c["unread"] else "")
-               + f". The leader's buy itself came in a Jito bundle on {lr['in a bundle']} of the {len(read)}.")  # fmt: skip
+               + f". The leader's buy was inside some Jito bundle on {lr['in a bundle']} of the {len(read)} (who built "
+               "a bundle is not told here: its transactions are in moments_list).")  # fmt: skip
     if left:
         verdict += (
             f" {left} moments with a buyer near were left unread"
             + (f" ({stopped})" if stopped else f" (--max-moments {max_moments}: the newest were read)")
             + "."
         )
-    return {"leaders": list(leaders), "hours": float(hours), "window": [int(since), int(end)], "min_sol": float(min_sol),
+    known = {lead: (len(mates[lead]) if mates.get(lead) is not None else None) for lead in dict.fromkeys(leaders)}
+    return {"leaders": list(leaders), "mates": known, "hours": float(hours), "window": [int(since), int(end)],
+            "min_sol": float(min_sol),
             "places": int(places), "near_min_sol": float(near_min_sol), "moments": len(rows),
             "with_buyer": len(with_buyer), "read": len(read), "left": left, "closest": c,
             "all_near": {k: sum(1 for r in read for n in r["near"] if n["kind"] == k) for k in KINDS},

@@ -1420,7 +1420,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd(
         "route",
         "who stands right behind wallets' first buys, and through which route: whether each other buyer within "
-        "--places block places after the leader's buy came inside the leader's own Jito bundle (and who paid its tip), "
+        "--places block places after the leader's buy came inside the bundle that carried the leader's buy (and who "
+        "paid its tip), "
         "in a bundle of its own, or outside Jito (Jito's public explorer: no key, no Helius credits; reads the tape "
         "copy; a research job)",
     )

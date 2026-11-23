@@ -1,7 +1,7 @@
 """`route`: who stands right behind a wallet's first buys, and through which route (the route check, 22 Nov 07:50).
 
 22 Nov: a buy of 0.1 SOL or more stood within 3 block places after a big wallet's first buy on 65 % of the moments and
-before it on 1 in 386, so whoever stands there had the leader's transaction before it ran. Jito's public explorer says,
+before it on 1 in 386, so whoever stands there got there with the leader's transaction before it ran. Jito's public explorer says,
 for a landed transaction, the bundle it came in, and for a bundle, its transactions, who paid its tip, the tip and its
 place in the block. 23 Nov 16:05, by hand on six moments behind Cented: the 3.457 SOL operator rode inside Cented's own
 bundle and paid its tip; four fast bots stood at +1 to +3 with neither buy in a Jito bundle."""
@@ -64,7 +64,7 @@ def _bundle(bid, txs, tippers, tip_sol, index):
 
 
 def _world():
-    """LEAD's first buys: M1 (BACK at +2 in the leader's own bundle, tipped by BACK), M2 (FAST at +1, no bundle), M3
+    """LEAD's first buys: M1 (BACK at +2 in the bundle that carried the leader's buy, tipped by BACK), M2 (FAST at +1, no bundle), M3
     (OWNB at +1 in a bundle of its own), M4 (nobody within 3 places: the next buyer at +5), M5 (only the leader's
     companion at +1), M6 (a dust buy at +1 and FAST at +3, whose lookup fails). M7 is under 1.9 SOL: no moment."""
     store = Store(":memory:")
@@ -149,7 +149,11 @@ def test_counts_and_verdict():
     assert out["own_bundle"] == [{"wallet": OWNB, "n": 1, "median_tip_sol": pytest.approx(0.01)}]
     assert out["outside"] == [{"wallet": FAST, "n": 1}]
     v = out["verdict"]
-    assert "6 first buys" in v and "4 had another wallet's buy" in v and "inside the leader's own Jito bundle on 1" in v
+    assert (
+        "6 first buys" in v
+        and "4 had another wallet's buy" in v
+        and "inside the bundle that carried the leader's buy on 1" in v
+    )
     assert "its tip paid by the buyer on 1" in v
     assert "1 unread" in v
     json.dumps(out)  # the job's output is JSON
@@ -241,7 +245,7 @@ def test_explorer_waits_out_one_refusal_then_says_unread():
 
 def test_explorer_stops_at_its_request_limit_without_asking():
     def handler(req):
-        return httpx.Response(404)
+        return httpx.Response(404, json={"error": "Bundle not found"})
 
     async def go():
         async with _client(handler) as http:
@@ -268,3 +272,53 @@ def test_route_with_no_leader_says_what_to_give(tmp_path, capsys):
 
     with pytest.raises(SystemExit, match="route: give the wallets"):
         cli.main(["--db", str(tmp_path / "snipetech.db"), "route", "--json"])
+
+
+def test_explorer_says_no_bundle_only_in_its_own_words():
+    """The independent check of 23 Nov 17:00: a 200 with an empty list, or a 404 with another error, read as "no
+    bundle"; only the explorer's "Bundle not found" says that, anything else is unread."""
+
+    def handler(req):
+        path = req.url.path
+        if path.endswith("/transaction/empty"):
+            return httpx.Response(200, json=[])
+        if path.endswith("/transaction/erred"):
+            return httpx.Response(200, json=[{"error": "internal"}])
+        if path.endswith("/transaction/limited"):
+            return httpx.Response(404, json={"error": "rate limited"})
+        if path.endswith("/transaction/bare"):
+            return httpx.Response(404, text="")
+        return httpx.Response(404, json={"error": "Bundle not found"})
+
+    async def go():
+        async with _client(handler) as http:
+            ex = R.Explorer(http, base="https://explorer.test/api/v1/bundles", gap=0)
+            assert await ex.bundle_of("loose") is None
+            for sig in ("empty", "erred", "limited", "bare"):
+                with pytest.raises(R.Unread):
+                    await ex.bundle_of(sig)
+
+    asyncio.run(go())
+
+
+def test_the_bundle_keeps_its_transactions_and_where_the_buyer_stands_in_it():
+    store, ex = _world()
+    out = _run(store, ex)
+    m1 = _row(out, "M1")
+    assert m1["leader_bundle"]["txs"] == [sig(LEAD, "M1", 1100, 64), "tip-tx", sig(BACK, "M1", 1100, 66)]
+    assert m1["near"][0]["in_bundle_after"] == 2  # one transaction of someone else's between the leader's and its
+    assert "inside some Jito bundle on 1" in out["verdict"]
+
+
+def test_the_request_limit_leaves_the_oldest_moments_not_the_newest():
+    store, ex = _world()
+    ex.max_requests = 2  # the newest moment (M6) asks two lookups: its leader and its one buyer
+    out = _run(store, ex)
+    assert _row(out, "M6")["closest"] == "unread" and _row(out, "M3")["closest"] == "left"
+    assert "the explorer's request limit (2)" in out["verdict"]
+
+
+def test_each_leaders_known_companions_are_said():
+    store, ex = _world()
+    out = _run(store, ex)
+    assert out["mates"] == {LEAD: 1}

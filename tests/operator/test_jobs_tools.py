@@ -2029,7 +2029,7 @@ def test_route_is_the_fee_analysts_and_the_scouts_to_start(toolbox):
     assert "route" in roles.ROLE_COMMANDS["fees"] and "route" in roles.ROLE_COMMANDS["scout"]
     phrase = '["route", "--leader", "<wallet>", "--json"]'
     fees, tester = " ".join(roles.job_help(full, "fees").split()), " ".join(roles.job_help(full, "tester").split())
-    assert phrase in fees and "inside the leader's own Jito bundle" in fees and "no Helius credits" in fees
+    assert phrase in fees and "inside the bundle that carried the leader's buy" in fees and "no Helius credits" in fees
     assert phrase not in tester
 
 

@@ -1672,12 +1672,13 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         ["route", "--leader", "<wallet>", "--json"] says how the buyers right behind a wallet's first buys get there
         (23 Nov): for every first buy of 1.9 SOL or more ("--min-sol") by the wallets named ("--leader", repeatable),
         each other wallet's buy of 0.1 SOL or more within 3 block places after it ("--places"; the leader's companions
-        apart), and whether that buy came inside the leader's own Jito bundle (whoever sent that bundle held the
-        leader's signed transaction before it ran; tipped_by says whether the buyer, the leader, a companion or another
-        wallet paid the bundle's tip), in a Jito bundle of its own (its tip is the place's price), or outside Jito ("no
-        bundle"). It reads Jito's public explorer (no key, no Helius credits, about a month kept), newest moments first
-        ("--max-moments", 150 unless told; "--max-requests", 800). A buyer inside the leader's own bundle had the
-        leader's transaction before it ran: no sender of ours reaches that place without the same flow.
+        apart), and whether that buy came inside the bundle that carried the leader's buy (tipped_by says whether the
+        buyer, the leader, a companion or another wallet paid the bundle's tip; leader_bundle.txs lists the bundle's
+        transactions and in_bundle_after where the buyer stands in it), in a Jito bundle of its own (its tip is the
+        place's price), or outside Jito ("no bundle"). It reads Jito's public explorer (no key, no Helius credits, about
+        a month kept), newest moments first ("--max-moments", 150 unless told; "--max-requests", 800). On 23 Nov the
+        middle transaction of such bundles was the leader's own landing service's (Axiom's or GMGN's): those senders
+        build the bundles and the buyers pay to ride in them.
         ["forward-tally", "--json"] says whether the wallets that passed qualify's forward check went on making
         money after it (23 Nov, your idea I337): each actor whose forward status first read "passed" at or after
         "--since" (unix time; 19 Nov 19:02 UTC unless told), counted once by its member that passed first, and the
