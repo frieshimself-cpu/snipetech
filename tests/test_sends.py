@@ -162,6 +162,19 @@ def test_a_moment_whose_tries_the_limit_left_unread_reads_unread_not_untried(mon
     assert "1 unread" in out["verdict"], out["verdict"]
 
 
+def test_a_try_the_rpc_did_not_return_leaves_its_moment_unread_and_the_verdict_says_so():
+    """Review 22 Nov (tools#0): a transaction the RPC does not return (`get_transactions` gives None for it after its
+    retries) leaves its moment unread, not untried, though no limit stopped the run; the verdict names the unread
+    ones then too, or its numbers do not add up to the first buys and nobody is told why."""
+    store, chain = _cut_world()
+    del chain.txs["f1"]  # M1's try: the RPC answers nothing for it
+    out = _run(store, chain)
+    assert out["stopped"] is None and out["failed"]["near"] == 2 and out["failed"]["fetched"] == 1
+    assert out["outcomes"] == {"adjacent": 0, "block": 0, "later": 0, "failed": 1, "none": 0, "unread": 1}
+    assert "1 unread" in out["verdict"] and "RPC" in out["verdict"], out["verdict"]
+    assert "credit limit" not in out["verdict"], out["verdict"]
+
+
 def test_the_verdict_gives_the_moments_with_only_failed_sends_their_own_fees():
     """Audit 22 Nov (tools#4): "N with only failed sends (X SOL in their fees)" summed the failed tries of every tried
     moment, the landed ones too: the first run's 2.0497 SOL was the fee of all 764 failed sends at its 62 tried moments,

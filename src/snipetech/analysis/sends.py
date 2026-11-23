@@ -19,8 +19,9 @@ A moment is a leader's first buy of a coin (no buy of it by that leader in the F
 or more. A send tries a moment when it names the moment's coin among its accounts and lands from the moment's slot to
 TRY_SLOTS after it (the latest moment of that coin when several are near). A landed buy of the wallet in that span is
 placed: "adjacent" (the next buy of the coin after the leader's in its block), "block" (in it, behind other buyers) or
-"later"; a moment with no landed buy and a failed try is "failed", one with neither "none", and one the limit left a
-send near it unread, or the listing short of it, "unread" (it may have been tried: it is not counted as untried)."""
+"later"; a moment with no landed buy and a failed try is "failed", one with neither "none", and one the limit (or the
+RPC, giving no transaction) left a send near it unread, or the listing short of it, "unread" (it may have been tried:
+it is not counted as untried)."""
 
 from __future__ import annotations
 
@@ -194,6 +195,9 @@ async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *
         verdict += (f"; stopped at the {max_credits:g} credit limit: {outcomes['unread']} unread (a first buy whose "
                     f"sends near it, or the listing back to it, were not read: it may have been tried; a higher "
                     f"--max-credits reads it)")  # fmt: skip
+    elif outcomes["unread"]:  # no limit cut the run: the RPC gave no transaction for a send near those moments
+        verdict += (f"; {outcomes['unread']} unread (the RPC returned no transaction for a send near it, which may "
+                    "have been a try: a rerun asks again)")  # fmt: skip
     return {"wallet": wallet, "hours": float(hours), "window": [int(since), int(end)], "leaders": list(leaders),
             "min_sol": float(min_sol), "moments": len(moments), "tried": tried, "outcomes": outcomes,
             "per_leader": per_leader, "signatures": len(listed),
