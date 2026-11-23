@@ -8,9 +8,9 @@ free to be stopped while it held the coin (CLAUDE.md rule 1). The second signal 
 sniper of ours follows bought the same coin at a place before ours and at most COPY_SHAPE_SLOTS slots earlier. It only
 ever turns "the owner's" into "the bot's".
 
-The shapes are the record's: the copy of 22 Nov 01:16:43 (4ab6NvcS: Cupseyy's buy in slot 472308765, ours one slot on)
-and the owner's hand buys of 22 Nov 02:40 (H8WTvo: 6,121 and 8,175 lamports priority, tips of 0.027 to 0.052 SOL, no
-copied wallet anywhere near)."""
+The shapes are the record's: the copy of 21 Nov 22:36:43 UTC (4ab6NvcS: CyaE1V's buy in slot 472308765, ours one slot
+on) and the owner's hand buys of 22 Nov 02:40 (H8WTvo: 6,121 and 8,175 lamports priority, tips of 0.027 to 0.052 SOL,
+no copied wallet anywhere near)."""
 
 import asyncio
 
@@ -26,7 +26,7 @@ W = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"  # the sniper wallet, the own
 LEAD = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"  # a wallet our copy sniper follows
 STRANGER = "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"  # a wallet no sniper on record follows
 MINT = "Coin1" + "1" * 39
-NOW, SLOT = 1_795_300_603, 472_308_766  # our copy of 22 Nov 01:16:43 UTC
+NOW, SLOT = 1_795_300_603, 472_308_766  # our copy of 21 Nov 22:36:43 UTC
 PAYLOAD = {"singleSnipe": True, "ctbotWallets": [{"address": LEAD}], "priorityFee": 0.001, "tipAmount": 0.199,
            "autoSell": {"sellPriorityFeeSol": 0.0001, "sellTipAmount": 0.002}}  # fmt: skip
 PAID = (1_000_000, 199_000_000)  # what the payload's sniper pays on a buy
