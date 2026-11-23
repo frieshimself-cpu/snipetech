@@ -386,6 +386,30 @@ def test_failures_nobody_can_explain_still_raise_the_alert_beside_unpaid_buys(tm
     assert "3 buys" in _failures(tmp_store, ledger, snap(failed_tx_1h=7, native_sol=0.0012, wsol=0.47)).message
 
 
+REFUSED = "over its price limit: the buy would have filled at 81.3 SOL of market cap, its limit was 64.5: {'InstructionError': [2, {'Custom': 6042}]}"  # fmt: skip
+
+
+def test_buys_refused_on_their_price_limit_are_the_ceiling_at_work_and_never_page_the_owner(tmp_store, ledger):
+    """23 Nov smoke test: with a $4,600 ceiling on the copy snipers, 20 of the wallet's failed sends were buys the
+    program refused on their own price limit (the measure stage writes "over its price limit" in fills). That is the
+    ceiling doing its job: each refusal costs its priority fee and nothing else. Counted as failures nobody can
+    explain, they paged the owner once a day: "check OKTech sells and the send count". They are named and counted
+    apart, as the buys the wallet could not pay are; failures nobody can explain still raise the alert beside them."""
+    for i in range(20):
+        _failed_buy(tmp_store, i, 120 + 60 * i, REFUSED)
+    rich = {"native_sol": 5.0, "wsol": 1.0}  # a wallet that can pay: nothing waits as "not read yet"
+    r = _failures(tmp_store, ledger, snap(failed_tx_1h=20, **rich))
+    assert r.status == "warn" and alert_lines([r]) == []
+    assert "20 buys refused on their price limit" in r.message and "OKTech sells" not in r.message
+    one = _failures(tmp_store, ledger, snap(failed_tx_1h=1, **rich))
+    assert "1 buy refused on its price limit" in one.message  # never more than the chain counted in the hour
+    for i in range(4):  # measured, and the chain's error names no cause we know
+        _failed_buy(tmp_store, 50 + i, 300 + i, "{'InstructionError': [3, {'Custom': 6050}]}")
+    r = _failures(tmp_store, ledger, snap(failed_tx_1h=24, **rich))
+    assert r.status == "crit" and "20 buys refused on their price limit" in r.message
+    assert "the rest needs a look: check OKTech sells and the send count" in r.message
+
+
 def test_failed_sends_the_measure_stage_has_not_read_yet_wait_a_round_while_the_wallet_cannot_pay(tmp_store, ledger):
     """The measure stage reads a failed send within five minutes and the round starts on the same minute: a leader's
     burst (74xVT9 bought five times in four minutes on 11 Nov) is on the chain before its causes are in fills. While
