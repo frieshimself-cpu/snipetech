@@ -19,7 +19,9 @@ first on the server's recording and only then run live in capped batches.
   that lands pays the big bid. (Corrected by the audit of 22 Nov: this said 0.0008 SOL each and 3.8 SOL for all 5,425.
   3.8 SOL is what the 4,900 failed sends read before the credit cap paid, most of them at no moment, and 0.0008 their
   average. The job's own summary line put the 2.05 SOL on the 15 moments with only failed sends; `sends` now gives
-  each outcome its own.) A send that never landed leaves nothing, so these are the fewest tries it made.
+  each outcome its own. The run also stopped reading at its credit limit, oldest sends first, so "62 of 406" may be
+  off by about one moment; the fixed code fetches only the sends near a moment, and a rerun is the agents' to
+  start.) A send that never landed leaves nothing, so these are the fewest tries it made.
 - **What the place is worth** (the fee analyst, I609: paper, the place assumed). Every first buy of 1.9 SOL or more,
   copied at 6 SOL right behind with 0.6 SOL charged for the bid: +1.32 SOL a copy behind Cented (311 copies in 7 days,
   lower bound +1.19) and +1.07 behind Decu (339, lower +0.98). Two places further back the same copies lose 0.48 and
@@ -142,9 +144,29 @@ first on the server's recording and only then run live in capped batches.
     refuses a job limit shorter than itself; `remote run oktech cycle` gets the limit its flags need (306c8ef);
   - one runner per wallet: a lock, and no start beside another armed sniper (a04d3ab).
   These wait for a deploy (the daily job holds it). No live run starts on the old code.
+  Added by the audit of 22 Nov (merged as 3b412e0), the runner beside the owner's own trades, one line a fix:
+  - the run's own sale never sells the owner's tokens once its own are sold, or before the tape has its last sale
+    (97d7f15), and it waits while the wallet holds less than the run's and the owner's tokens on the tape
+    together (fa20d7d);
+  - a coin the owner kept after the run's copy was sold becomes theirs (f38ad9b);
+  - the run's tokens in a coin of the owner's keep its snipers armed at an end, in the watch after it and on the
+    way out, and are sold past `--sweep-after` (40f8ea1): never more than the wallet holds beyond the owner's
+    (cddf1d1), and held long enough for that sale (2185c19);
+  - a wallet read that fails at an end is read again for up to 15 minutes, 15 s on the way out (91feda1);
+  - SOL the owner takes out while a copy is held moves the floor (58244bd); a copy whose coin shows one reading
+    before its SOL leaves, such as a PumpSwap copy OKTech wraps again a second later, no longer moves the floor
+    as the owner's (6fa5d25);
+  - own launch and bait go by the copied buy ours followed (2f6bf9f);
+  - whose a buy is: the bot's only when it paid a sniper's whole pair of priority and tip, or the measure stage
+    tied it to a sniper. A copied wallet beside our 0.001 SOL priority is no longer enough: the owner's own tool
+    pays that priority too (44bd292). The guard's day stop and the loss alert count by this rule.
+  docs/live-recipe.md ("The ends of a live run") and docs/architecture.md ("Whose trade, whose coin") say how the
+  pieces work together.
 - **The plan, in order** (no SOL until the runner fixes are out): the owner asks OKTech six questions (below, in
-  the report of 05:00); deploy; a fill classifier in the runner (own-launch, bait and repeat copies sold at once and
-  never counted for the place stop); one runner for several strategies; then the 1 SOL day behind Gake Side and
+  the report of 05:00); deploy; a fill classifier in the runner (own-launch and bait copies sold at once and never
+  counted for the place stop; a repeat copy is only tagged. Corrected by the audit of 22 Nov: this said repeats
+  were sold at once too. A copy of another copied wallet's buy in a launcher's coin is a first or a repeat copy,
+  not an own launch); one runner for several strategies; then the 1 SOL day behind Gake Side and
   Cooker as approved, a 0.1 SOL A/B tip test behind Cupseyy, and size only where counted copies make money live.
 
 ## 22 Nov, 03:00 UTC: the night's mistakes, each with its fix; the goal is now 100 SOL a day
