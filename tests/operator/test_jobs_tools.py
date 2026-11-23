@@ -862,7 +862,8 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     from snipetech.analysis.lab import SELL_SLOT_SECS, exit_set, exits_horizon, in_parts
 
     whole, in_four = exits_horizon(exit_set()), exits_horizon(in_parts(exit_set(), 4, 15.0))
-    assert (whole, in_four) == (300.0, 345.0)
+    # C4 (23 Nov): a dead exit's 5 s pause counts, so 305 and 350; the text's "345 s" is 5 s short until it is moved
+    assert (whole, in_four) == (305.0, 350.0)
     assert whole + SELL_SLOT_SECS <= 300 + amm_backfill.TAIL_SECS < in_four + SELL_SLOT_SECS  # 300 s: one sale only
     assert in_four + SELL_SLOT_SECS <= 360 + amm_backfill.TAIL_SECS  # what the text tells an agent to ask for
     assert "enough for every exit of the lab's set sold in one sale" in text

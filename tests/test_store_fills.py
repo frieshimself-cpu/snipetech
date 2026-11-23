@@ -133,7 +133,9 @@ def test_the_twin_fee_column_is_added_to_an_old_database(tmp_path):
 
 LANDING_COLUMNS = ["landing_src", "blocks_after", "ahead_bids", "ahead_bid_max", "ahead_bid_p50", "landing_verdict",
                    "venue"]  # fmt: skip
-PACK_COLUMN = "pack_ahead"  # added after them (19 Nov): the last column of fills
+PACK_COLUMN = "pack_ahead"  # added after them (19 Nov)
+# a buy's own price limit and where it filled against it (23 Nov, C1): the last columns of fills
+LIMIT_COLUMNS = ["limit_mcap_sol", "fill_mcap_sol"]
 
 
 def test_the_landing_columns_are_added_to_a_database_of_before(tmp_path):
@@ -145,7 +147,7 @@ def test_the_landing_columns_are_added_to_a_database_of_before(tmp_path):
 
     Store(tmp_path / "before.db").close()
     con = sqlite3.connect(tmp_path / "before.db")
-    for col in [*LANDING_COLUMNS, PACK_COLUMN]:  # the file as the code of 11 Nov left it
+    for col in [*LANDING_COLUMNS, PACK_COLUMN, *LIMIT_COLUMNS]:  # the file as the code of 11 Nov left it
         con.execute(f"ALTER TABLE fills DROP COLUMN {col}")
     con.execute("INSERT INTO fills (sig, ts, side, sol, wallet_copied, trades_behind, price_gap_pct, leader_progress) "
                 "VALUES ('B0', ?, 'buy', 0.2, 'LEAD', 2, 25.0, 0.31)", (NOW,))  # fmt: skip
@@ -171,7 +173,8 @@ def test_the_landing_columns_are_added_to_a_database_of_before(tmp_path):
     fresh = Store(tmp_path / "fresh2.db")
     try:
         assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated
-        assert migrated[-len(LANDING_COLUMNS) - 1 :] == [*LANDING_COLUMNS, PACK_COLUMN]
+        # C1 (23 Nov): the limit columns now follow the pack's
+        assert migrated[-len(LANDING_COLUMNS) - 3 :] == [*LANDING_COLUMNS, PACK_COLUMN, *LIMIT_COLUMNS]
     finally:
         fresh.close()
 
@@ -186,7 +189,8 @@ def test_the_pack_column_is_added_to_a_database_of_before_and_an_old_row_does_no
 
     Store(tmp_path / "before.db").close()
     con = sqlite3.connect(tmp_path / "before.db")
-    con.execute(f"ALTER TABLE fills DROP COLUMN {PACK_COLUMN}")  # the file as the code of 18 Nov left it
+    for col in [PACK_COLUMN, *LIMIT_COLUMNS]:  # the file as the code of 18 Nov left it
+        con.execute(f"ALTER TABLE fills DROP COLUMN {col}")
     con.execute("INSERT INTO fills (sig, ts, side, sol, wallet_copied, trades_behind, landing_src) "
                 "VALUES ('B0', ?, 'buy', 0.2, 'LEAD', 12, 'tape')", (NOW,))  # fmt: skip
     con.commit()
@@ -205,6 +209,68 @@ def test_the_pack_column_is_added_to_a_database_of_before_and_an_old_row_does_no
         st.close()
     fresh = Store(tmp_path / "fresh3.db")
     try:
-        assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated and migrated[-1] == PACK_COLUMN
+        # C1 (23 Nov): the pack's column is no longer the last, the limit columns follow it
+        assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated
+        assert migrated[-3:] == [PACK_COLUMN, *LIMIT_COLUMNS]
     finally:
         fresh.close()
+
+
+def test_the_limit_columns_are_added_to_a_database_of_before_and_an_old_row_knows_no_limit(tmp_path):
+    """23 Nov: a copy sniper's market-cap ceiling is a limit on our own fill (solana/buy_limit.py), and the measure
+    stage kept nothing of it. `limit_mcap_sol` is the ceiling a buy or a failed buy carried, in SOL of market cap;
+    `fill_mcap_sol` where the buy filled, or where a refused one would have. A database of before gets both appended
+    on open; a row measured before reads None in them: not known, never 0. One line of SQL then shows every send
+    against its ceiling. A fresh database ends with the same columns in the same order."""
+    import sqlite3
+
+    Store(tmp_path / "before.db").close()
+    con = sqlite3.connect(tmp_path / "before.db")
+    for col in LIMIT_COLUMNS:  # the file as the code of 22 Nov left it
+        con.execute(f"ALTER TABLE fills DROP COLUMN {col}")
+    con.execute("INSERT INTO fills (sig, ts, side, sol, pack_ahead) VALUES ('B0', ?, 'buy', 0.2, 3)", (NOW,))
+    con.commit()
+    assert not set(LIMIT_COLUMNS) & {r[1] for r in con.execute("PRAGMA table_info(fills)")}
+    con.close()
+    st = Store(tmp_path / "before.db")
+    try:
+        old = st.fill("B0")
+        assert old["pack_ahead"] == 3 and old["limit_mcap_sol"] is None and old["fill_mcap_sol"] is None
+        st.put_fill(_fill("B1", NOW + 1, limit_mcap_sol=64.607, fill_mcap_sol=53.879))  # filled under its ceiling
+        st.put_fill(_fill("F1", NOW + 2, side="failed", sol=0.0, limit_mcap_sol=23.0, fill_mcap_sol=40.49))
+        st.put_fill(_fill("F2", NOW + 3, side="failed", sol=0.0, limit_mcap_sol=64.417))  # failed before the swap ran
+        assert st.fill("B1")["limit_mcap_sol"] == 64.607 and st.fill("B1")["fill_mcap_sol"] == 53.879
+        shown = st._q("SELECT sig, side, limit_mcap_sol, fill_mcap_sol FROM fills WHERE limit_mcap_sol IS NOT NULL "
+                      "ORDER BY ts")  # fmt: skip
+        assert shown == [("B1", "buy", 64.607, 53.879), ("F1", "failed", 23.0, 40.49), ("F2", "failed", 64.417, None)]
+        migrated = [r[1] for r in st._q("PRAGMA table_info(fills)")]
+    finally:
+        st.close()
+    fresh = Store(tmp_path / "fresh4.db")
+    try:
+        assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated and migrated[-2:] == LIMIT_COLUMNS
+    finally:
+        fresh.close()
+
+
+def test_a_tape_copy_without_the_limit_columns_still_serves_the_labs(tmp_path):
+    """The labs read the hourly copy, and no reader of the tape reads a fill's limit. A copy taken before the deploy
+    lacks the two columns until the next one: that is no reason to send every lab to the live file meanwhile (a long
+    read there holds the recorder's WAL back, beside a live run)."""
+    import sqlite3
+
+    db = tmp_path / "copy.db"
+    Store(db).close()
+    con = sqlite3.connect(db)
+    for col in LIMIT_COLUMNS:
+        con.execute(f"ALTER TABLE fills DROP COLUMN {col}")
+    con.execute("INSERT INTO fills (sig, ts, side, wallet) VALUES ('B0', ?, 'buy', 'ME')", (NOW,))
+    con.commit()
+    con.close()
+    copy = Store(db, readonly=True)
+    try:
+        assert copy.schema_gaps() == [] and copy.has_columns("fills", LIMIT_COLUMNS) is False
+        # what a lab asks of the fills there: whose wallets are ours (analysis.bid_landing.own_wallets)
+        assert copy._q("SELECT DISTINCT wallet FROM fills WHERE wallet IS NOT NULL") == [("ME",)]
+    finally:
+        copy.close()

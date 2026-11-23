@@ -59,7 +59,7 @@ def test_a_mig_moment_counts_only_inside_a_pumpswap_run_with_nothing_skipped():
     data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[MIG10], exits=[EXIT])
     assert {r["mint"] for r in _mig_rows(data)} == {mints["covered"], mints["restarted"]}
     tape = data["amm_tape"]
-    assert tape["horizon_secs"] == 300.0
+    assert tape["horizon_secs"] == 301.0  # C4 (23 Nov): the 300 s timer and the dead exit's 1 s pause after it
     (one,) = tape["triggers"].values()
     assert one["scored"] == 2
     # earlier tape, a skipped stretch, the 14:03-15:48 stall, the end of the tape: each skipped, and said why

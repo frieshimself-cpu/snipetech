@@ -699,7 +699,12 @@ def build_parser() -> argparse.ArgumentParser:
                          'apply to it. A wallet rule (kind kol) can name the wallets it follows ("only": their full '
                          'addresses, separated by commas; the group then only says whose buys "known" counts), let '
                          '"known" count the tracked wallets of every group ("known_any": true) and ask for the SOL '
-                         'traded in the coin before the followed buy ("vol_secs": 60, "min_vol", "max_vol"). Each '
+                         'traded in the coin before the followed buy ("vol_secs": 60, "min_vol", "max_vol"). '
+                         '"max_fill_mcap": N holds it to a copy sniper\'s market-cap ceiling as OKTech runs it (what '
+                         "`oktech copylist --max-mcap` sends): our own fill at the scored landing, our SOL with its "
+                         "fee over our coins times a billion, is at most N SOL of market cap, else the send is "
+                         "refused: no position, 0.001005 SOL charged (`fill_ceiling` counts admitted and refused "
+                         'moments); "max_mcap" asks the coin right after the followed buy, which no sniper does. Each '
                          "ranked wallet rule shows its result by market-cap band and by volume band "
                          '(`bands`). A launch, hunt, whale or burst rule is scored on every coin a live sniper would '
                          'buy, serial crews\' coins too (one metadata file on many creators\' launches; `crew` in the '
@@ -1048,7 +1053,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="freeze: the lab runs only this trigger (repeatable; a JSON object, as for `lab --trigger`), "
                          "scored where it trades live: --latency / --position do not apply to it. A launch-type rule "
                          'is frozen on every coin a live sniper would buy; with "crew": "skip" or "only" it is a '
-                         "research record that never goes live")  # fmt: skip
+                         'research record that never goes live. A wallet rule keeps its "max_fill_mcap" (the '
+                         "ceiling on our own fill): the forward run refuses by it and writes each refused send as a "
+                         "trade that lost what the send cost (reason refused)")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="freeze: the lab reads only the newest N hours of tape")
     sp.add_argument("--only-live", action="store_true",
                     help="freeze: keep only strategies the lab scored where they trade live")  # fmt: skip
