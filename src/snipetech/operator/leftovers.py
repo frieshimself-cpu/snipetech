@@ -8,8 +8,8 @@ book saw no live run on the wallet. The round's snapshot finds the job's end (`s
 gone) and the round closes what it left (`close`):
 
 * each of its snipers still active on OKTech is stopped once the wallet holds nothing on two readings PAUSE_SECS
-  apart and the tape has no buy of it whose coin they did not show (a stopped sniper strands its coin: never while
-  the wallet holds one, CLAUDE.md rule 1);
+  apart and neither the chain nor the tape has a buy of it whose coin they did not show (`_coming`: the look /stop
+  makes; a stopped sniper strands its coin: never while the wallet holds one, CLAUDE.md rule 1);
 * while the wallet holds a coin they keep running to sell it: the owner hears which coin, with /sell, and the round
   looks again every 15 minutes until nothing of the run is armed;
 * until then the run still drives the wallet (`armed`, read by `live_test._drivers`): the book adds no sniper beside
@@ -183,6 +183,20 @@ def _unseen(svc, cfg, address: str, r: dict, now: float) -> list[str]:
     return out
 
 
+async def _coming(svc, cfg, address: str, r: dict, now: float) -> tuple[list[str], int]:
+    """(The coins the wallet bought moments ago that neither reading showed; how many of its transactions of those
+    moments the node cannot serve yet: one may be a buy.) The look /stop makes before it stops a sniper, reused whole
+    (operator/commands._on_its_way): the wallet's own newest signatures on the chain, then the tape (`_unseen`). The
+    tape alone missed a copy into a coin it does not follow, a PumpSwap coin past its 30 minutes there (three of the
+    six copies of 20 Nov): landed a second before the readings, it was in neither, and the sniper that had just bought
+    it was stopped (23 Nov audit). The run's own ignored coins are left out, as the owner's are."""
+    from .commands import _on_its_way
+
+    coming, unread = await _on_its_way(svc, cfg, address, set(), now)
+    skip = set(_ignored(cfg, r))
+    return [m for m in coming if m not in skip], unread
+
+
 def _tell(r: dict, kind: str, text: str, words: list[str]) -> None:
     """The owner hears a run's state when it changes: a coin still held, a wallet that cannot be read, a stop that
     failed; a round that finds it as it was only logs it."""
@@ -249,8 +263,10 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
             if not held:  # a second reading: a buy on its way shows in it
                 await asyncio.sleep(PAUSE_SECS)
                 held = await _held(svc, cfg, address, r)
-            if not held:  # or on the tape before it shows in a reading: held all the same
-                held = [{"mint": m} for m in _unseen(svc, cfg, address, r, now)]
+            unread = 0
+            if not held:  # or on the chain or the tape before it shows in a reading: held all the same
+                coming, unread = await _coming(svc, cfg, address, r, now)
+                held = [{"mint": m} for m in coming]
         except Exception as exc:  # noqa: BLE001 - unknown coins never stop a sniper
             _tell(r, "wallet", f"{head} Its sniper(s) {', '.join(mine)} may still be armed: the wallet's coins could "
                                f"not be read ({type(exc).__name__}), and a sniper is stopped only while the wallet "
@@ -263,6 +279,13 @@ async def close(svc, cfg, paths: OperatorPaths, snap, now: float, *, log: Log | 
                              "and a stopped sniper would strand it. /sell <coin> sells one now; the round stops them "
                              "once the wallet holds nothing.", words)  # fmt: skip
             say(f"{jid}: the wallet holds {len(coins)} coin(s); {', '.join(mine)} left running to sell")
+            continue
+        if unread:  # landed moments ago, not served by the node yet: one of them may be a buy
+            _tell(r, "unread", f"{head} Its sniper(s) {', '.join(mine)} still run: {unread} transaction(s) of the "
+                               "wallet landed moments ago and cannot be read yet (one may be a buy), and a stopped "
+                               "sniper would strand its coin. The round looks again every 15 minutes.",
+                  words)  # fmt: skip
+            say(f"{jid}: {unread} transaction(s) of the wallet cannot be read yet; {', '.join(mine)} left running")
             continue
         stopped, failed = [], []
         for i in mine:  # the wallet held nothing on two readings: stopping strands nothing

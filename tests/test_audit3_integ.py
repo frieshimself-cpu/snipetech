@@ -9,6 +9,7 @@ book's own can-pay rule (I7)."""
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -209,11 +210,11 @@ PSWAP = "Pswp" + "p" * 40  # a coin on PumpSwap the tape does not follow (past i
 K1_RUNS = [{"id": "k1", "name": BT.K1, "status": "running"}]
 
 
-def _landed(svc, *txs, age=6):
+def _landed(svc, *txs, age=6, now=BT.NOW):
     """The wallet's own transactions as the chain lists them, the newest about `age` seconds before the book's run
-    (one slot apart, in the order given): a coin the tape does not follow is on no tape."""
+    (or the round at `now`), one slot apart, in the order given: a coin the tape does not follow is on no tape."""
     slot0 = 480_000_000
-    chain = Chain(t0=BT.NOW - age - len(txs), slot0=slot0)
+    chain = Chain(t0=now - age - len(txs), slot0=slot0)
     for k, tx in enumerate(txs):
         chain.put(slot0 + round((k + 1) / 0.4), tx)
     svc.rpc = chain
@@ -373,6 +374,78 @@ def test_i3_a_retire_is_undone_when_the_chain_shows_a_buy_made_while_it_stopped(
         assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{BT.L2}:book:0.3:lab",)]
     finally:
         st.close()
+
+
+# -- I3, the same cause: the round's clean-up of a dead run looks there too --------------------------------------------
+
+
+@pytest.fixture
+def dead_run(tmp_path, monkeypatch):
+    """A live run that died with its two copy snipers armed and a wallet that holds nothing, as the round's clean-up
+    finds it (tests/operator/test_leftovers.py: its service, its job record, its `_close`)."""
+    from snipetech.operator import leftovers as L
+    from tests.operator import test_leftovers as TL
+
+    assert TL.W == BT.W
+    monkeypatch.setattr(L, "PAUSE_SECS", 0.0)  # between the two readings of the wallet
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    paths.jobs.mkdir(parents=True, exist_ok=True)
+    cfg = Config()
+    cfg.operator.wallet = TL.W
+    return TL, SimpleNamespace(paths=paths, cfg=cfg, svc=TL.Svc(), log=[])
+
+
+def test_i3_a_dead_runs_snipers_keep_running_while_the_chain_has_a_buy_the_tape_does_not_follow(dead_run):
+    """The round's clean-up of a live run that died (operator/leftovers.py) stops the run's armed snipers once the
+    wallet holds nothing on two readings and the tape has no buy they did not show. A copy into a coin the tape does
+    not follow that landed a second before is in neither, and the sniper that had just bought it was stopped (the
+    run's snipers are one-shot copies at the run's size: a stopped one sells nothing). The look /stop makes before a
+    stop is made here too; a round later the buy is old, and what the wallet shows decides."""
+    TL, env = dead_run
+    _landed(env.svc, _copy_lands(), now=TL.NOW)
+    (said,) = TL._close(env, TL._ended(env))
+    assert env.svc.stops == [] and PSWAP in said and "strand" in said and "/sell" in said, said
+    (later,) = TL._close(env, now=TL.NOW + 900)
+    assert env.svc.stops == [TL.A, TL.B] and "stopped" in later, later
+
+
+def test_i3_a_chain_buy_sold_since_an_old_one_or_the_runs_own_ignored_coin_leaves_the_readings_to_decide(dead_run):
+    TL, env = dead_run
+    exit_ = swap("exit", BT.W, PSWAP, tokens=-38_000_000, sol=0.21, priority=0.001, tip=0.002, held=38_000_000)
+    cases = (
+        ((_copy_lands(), exit_), 6, ()),
+        ((_copy_lands(),), 600, ()),
+        ((_copy_lands(),), 6, ("--ignore-mint", PSWAP)),
+    )
+    for k, (txs, age, extra) in enumerate(cases):
+        env.svc.tasks, env.svc.stops = {TL.A: "running", TL.B: "running"}, []
+        _landed(env.svc, *txs, age=age, now=TL.NOW)
+        TL._close(env, TL._ended(env, jid=f"20261122-10000{k}-cccccc", extra=extra))
+        assert env.svc.stops == [TL.A, TL.B], (k, env.svc.stops)
+
+
+def test_i3_a_transaction_the_node_cannot_serve_yet_or_a_look_that_fails_stops_no_sniper_of_a_dead_run(
+    dead_run, monkeypatch
+):
+    from snipetech.operator import commands
+
+    TL, env = dead_run
+    chain = _landed(env.svc, _copy_lands(), now=TL.NOW)
+
+    async def not_served(signature):
+        return None
+
+    chain.get_transaction = not_served
+    (said,) = TL._close(env, TL._ended(env))
+    assert env.svc.stops == [] and "1 transaction(s) of the wallet landed moments ago and cannot be read yet" in said
+    assert TL._close(env, now=TL.NOW + 10) == [] and env.svc.stops == []  # found as it was: said once
+
+    async def broken(*a, **k):
+        raise RuntimeError("no such helper")
+
+    monkeypatch.setattr(commands, "_on_its_way", broken)
+    (said,) = TL._close(env, now=TL.NOW + 20)
+    assert env.svc.stops == [] and "RuntimeError" in said and "may still be armed" in said, said
 
 
 # -- I4: the owner hears of a copy at fees no sniper of ours is set to pay ---------------------------------------------
