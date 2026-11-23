@@ -68,7 +68,12 @@ such artifacts. Third, the forward check: a wallet must also pass on its own cop
 of them over at least 6 h of later tape, with a lower bound above 0. Copies that lose there retire it. Until then it is
 "forward pending" and not copied; 16 of 24 verdict wallets never bought again within 9-13 h. Picked means its latest
 pick: a wallet that failed a gate and passes them again on a new streak is picked again, so the streak that brought it
-back never counts as its forward copies, and its copies since its first pick must not lose either. The tape keeps 3 to
+back never counts as its forward copies, and its copies since its first pick must not lose either. A pick is dated
+where the tape its look read ended, not at the verdict's clock time (since the audit of 22 Nov, 4295ded): a lab reads
+the hourly copy of the tape, which ended 2.5 h before the verdict on average, and the wallet's copies in between were
+in no look's sample and in no forward check. They are forward copies now. A pick that was already running moved back
+to its own tape's end when the fix went out (verdicts say where their tape ended since 19 Nov), so a pending wallet
+can pass or fail a little sooner than before. The tape keeps 3 to
 30 days, so each run keeps the wallet's copies since its first pick with its working data (scores "qualify", `record`)
 and judges the ones the tape no longer holds from there. Each verdict carries these numbers (`forward`, `create_slot`).
 Nothing in what the book arms changed: it still copies only qualified wallets. A wallet it copied before these rules is
@@ -79,6 +84,44 @@ score it was armed on so the book's bar never drops it (`kept_armed`); whether i
 measure stage now records, for each live copy, where on its curve the leader bought (`fills.leader_progress`), next
 to the trades behind and the price gap, so live landings can be read by curve progress (7aPo3n, buying at 79-93 %, was
 copied 0-1 trades behind).
+
+**Before the lab: who is measured (11 Nov, 20 Nov, the audit of 22 Nov).** A wallet goes to the lab only when it can
+have the copies its verdict needs. (One that is qualified, under a forward check or kept armed always goes: its
+review, its forward check and whether its sniper stays are the lab's to say.) For every other wallet the count
+before the lab reads its first 5,000 trades on the tape the lab reads and counts the coins whose first buy was at
+the book's floor (`[book] min_copy_sol`, 0.3 SOL) on pump.fun's curve or PumpSwap, the only buys a copy sniper
+copies. Since the audit of 22 Nov:
+
+- Each wallet is held to its own bar: 20 such coins, or 10 with a strong history (`[qualify] min_n_tape`,
+  `min_n_tape_strong`). Until then every wallet was held to the 10, and with no history source switched on most of
+  a lab's wallets had 10 to 19 copies and could not pass.
+- A wallet's buys in the coins it created are left out, as the lab leaves them out: a serial launcher no longer
+  goes to the lab every 72 h for nothing, and when it has no other coin at the floor its verdict says how many
+  coins it created.
+- A wallet with more than 5,000 trades and too few such coins among them gets a second, bounded read of up to
+  200,000 trades. With too few coins there too it is not measured. A wallet with more than 200,000 trades is
+  measured, as before. The count is never below the copies the lab would find, so no wallet that could pass is held
+  back.
+- A wallet with no trade on the copy the lab reads, but trades on the live tape, traded after the copy was taken.
+  It is looked at again at the next lab (2 h, `[qualify] lab_interval_h`), not in 72 h, and the run's answer counts
+  it under `newer_than_copy`.
+- Inside one lab the wallets that cannot pass by their own bar are judged first, so one of them gives up its
+  actor's place before the wallets that can pass are judged.
+
+To watch in the runs' answers: `too_few` against `lab_wallets` (the per-wallet bar should send far fewer wallets to
+the lab), and `lab.secs.size`, the size score's share of the lab's time, which may grow now that it scores repeats.
+
+**Beside the verdict: the score at the size that pays (21 Nov, the audit of 22 Nov).** The verdict is scored at the
+book's 0.2 SOL copy with no bid, where nothing pays. So each measured wallet also gets a score at 5 SOL a copy with
+a 0.2 SOL bid, only coins under 100 SOL market cap at the wallet's buy, the 12 s hold, 2nd in line (`[qualify]
+size_*`; `size_position` "+1x"). Since the audit of 22 Nov it takes every buy of the wallet of 0.95 SOL or more,
+its repeats in a coin too, at that fixed floor: what a copy sniper with that minimum copies. Before, it took first
+buys only, above each wallet's own floor, and left out most of a big wallet's copies. The score is said, never a
+gate. The run's answer names a wallet under `size_pass` when the score's lower bound is above 0 on as many copies as
+the wallet's verdict would need (20 without a strong history), and each entry names what it was scored at:
+`buy_sol`, `bid_sol`, `position`, `floor_sol`. The stopped-wallets study makes no size score. One thing is open and
+the owner's: the score stands 2nd in line, a better place than its bid has bought live so far (docs/autopilot.md,
+STILL WITH THE OWNER).
 
 ## The lab and the paper test: a launch rule fires only on its own launchpad (8 Nov)
 
@@ -303,6 +346,28 @@ duplicate sells 0.0080, net -0.0119; OKTech sending each exit once would have sa
 0.0070; hold60 replayed 0.0020 better on one copy of three, so the owner does not hear of it
 (`tests/test_measure_attribution.py`, `tests/operator/test_postmortem.py`).
 
+**Changed by the audit of 22 Nov** (`tests/test_audit_measure.py`):
+
+- **Only the bot's own trips.** The post-mortem, its summary to the owner, `read_round_trips` and the measure
+  stage's own outputs (the bid model, the live result per copied wallet, the measured landing, the exit shadow, the
+  fee policy's evidence) leave out the owner's hand trades in the same wallet. `read_fills` marks each row `ours`
+  and counts the owner's rows apart (`owner`). The section "Whose trade, whose coin" below has the rule.
+- **"Failed duplicate sells" also holds a sale's own failed tries.** `twin_fee_sol` used to be OKTech's extra
+  copies of a sale only. It now also holds the tries of the same sale that failed before it landed (a curve sale
+  sent after the curve completed fails and still pays its fee), so the trip's result and the day stop count them.
+  The change "OKTech sends each exit once" claims only the true duplicates: sending once saves none of the tries.
+  The bot's failed buys are still charged to no trip.
+- **The exit that ran is replayed too.** A sniper whose only exit is one timer that sells everything is named
+  `holdN` (the live `hold12`; it was recorded as `custom` and never compared), and it is replayed beside the menu,
+  so the best exit of a trip can be the one that ran. Each replayed sale is charged a sale's own fee (the buy's
+  priority, the sniper's sell tip, the base fee); the rest of the buy's bid is charged once. Before, every replayed
+  sale paid the buy's whole bid again. Stored replays are made again once behind a version mark (coverage
+  `measure:shadow_version`), newest first, 200 buys a run.
+- **Pairing.** A sniper's sale closes the bot's own lot of a coin first, never the owner's older lot of the same
+  coin while the bot's own is open, and never a lot bought after the sale. A copy sold in parts is one copy in the
+  live result per wallet.
+  A buy of ours counts as a copy of a wallet only when that wallet bought the coin in the 150 slots before it.
+
 What no trip holds, because no fills row has it (the 7 Nov investigation): the seed-account sweeps of 5-6 Nov (0.0592
 SOL, gone since the seed account was turned off), two PumpSwap trips of 6 Nov morning that the tape did not record,
 failed buys outside any trip, and the token-account rent each buy parks (0.00151384 SOL) until the owner closes the
@@ -354,16 +419,21 @@ policy's current choice per kind and per leader with `read_fee_policy`; the stra
 `fee_policy`.
 
 **Measuring whether it worked.** Every fill already records its priority and tip. Measure's run summary now has
-`twins_per_sell`: the failed twins' cost per landed sell, grouped by the sell priority setting that priced the twins
-(0.002 before the split, 0.0001 after: the sniper's own `sellPriorityFeeSol` when known, else the untipped twins'
-priority, since the tipped variant that lost pays the buy's priority and a median of the two lands in no group), and
+`twins_per_sell`: the failed twins' cost per landed sell, grouped by the sell priority the sale's sniper was made
+with (0.002 before the split, 0.0001 after: the sniper's own `sellPriorityFeeSol` when known, else the lowest
+priority among the sale's untipped twins). CORRECTED by the audit of 22 Nov: this said the groups are "the sell
+priority setting that priced the twins". That setting prices nothing: OKTech sends the sale and every twin at the
+sniper's buy priority (the 12 Nov correction above). So the groups only tell the snipers made before the split from
+those made after it, and the cost in each group is what its twins really paid. The same holds for the lever's
+groups below. The summary also has
 `sells_per_buy`: landed sells per buy for buys made by snipers at the old and the new sell
 priority, a buy counted only once its longest hold (600 s) is over. For the first 20 sells after the split measure
 writes one line per new sell to `operator/notes.md`; when the ratio after falls more than 0.15 under the ratio before
 (four buys due on each side at least) it writes an ALERT line naming `/sell` and `[oktech] sell_priority_sol`. The
 post-mortem's levers carry the same split: the `single_send` lever says the twins' cost per trip at each sell
 priority, and the `sell_fee` lever now names `oktech.sell_tip_sol` (`tests/test_fees.py`, `tests/test_measure_run.py`,
-`tests/test_oktech.py`).
+`tests/test_oktech.py`). Since the audit of 22 Nov `twins_per_sell` counts only the bot's sales and their true twins
+(a sale's own failed tries are in the trip's cost, not in this table).
 
 ## Where a live buy landed: from the tape, or from the chain itself (12 Nov)
 
@@ -466,7 +536,7 @@ the analyst and the deploy guard do what they did before (tests pin each: `tests
 |---|---|---|---|---|
 | in code | `scout` | `tester` | `fees` | `oktech` |
 | question | Who is worth following, and who are they? | Which rule pays where we land? | What is a place worth, and which bid wins it? | Which OKTech feature would make a proven rule land or sell better, and what is its cheapest test? |
-| may start | `winners`, `gmgn`, `playbook`, `leaders-of`, `early-leaders`, `fomo-wallets`, `discover-wallets`, `follow`, `copy`, `copy-rank`, `copy-context`, `stopped-wallets`, `label`, `place-bids --each`, `history amm-backfill` | `lab`, `paper`, `dip-buys`, `launch-tools`, `study`, `copy-context` | `place-bids`, `tips`, `landing`, `playbook`, `copy-context`, and `lab` only with `--copy-position`, `--per-tx` or `--buy-bid` | only commands that read: `landing`, `copy-context`, `playbook`, `launch-tools` |
+| may start | `winners`, `gmgn`, `playbook`, `leaders-of`, `early-leaders`, `fomo-wallets`, `discover-wallets`, `follow`, `copy`, `copy-rank`, `copy-context`, `stopped-wallets`, `label` (since the audit of 22 Nov only as a pick, `--kind cand`), `place-bids --each`, `history amm-backfill`, `sends` (22 Nov) | `lab`, `paper`, `dip-buys`, `launch-tools`, `study`, `copy-context` | `place-bids`, `tips`, `landing`, `playbook`, `copy-context`, `sends` (22 Nov), and `lab` only with `--copy-position`, `--per-tx` or `--buy-bid` | only commands that read: `landing`, `copy-context`, `playbook`, `launch-tools` |
 | its table | `operator/scout-facts.md` | `operator/tester-rules.md` | `operator/fees-bids.md` | `operator/oktech-facts.md` |
 | share of the day's dollars | 20 % | 25 % (35 % until 21 Nov) | 20 % | 10 % |
 
@@ -503,7 +573,8 @@ guard, the budget or a test, or changes a setting. This is kept by code, not by 
   that names the wallet, the size, the cap, the duration and the stop rule. It waits for the owner's yes.
 
 **Queues.** An idea has a `role` field (`operator/ideas.json`). A research idea without one is the tester's. An idea
-of kind code, config or live-test is in nobody's queue and waits for the cloud session or the owner. A role may add
+of kind code, config or live-test is in nobody's queue and waits for the cloud session or the owner (since the audit
+of 22 Nov at most 100 open ones wait there: "What the agents may start and keep" below). A role may add
 an idea to any queue: that is how work is handed on. Only a queue's own role changes or closes its ideas. A queue
 takes no new idea from a role's turn while it holds 15 open ones. From the cloud session:
 `snipetech operate idea --role scout ...` puts an idea in a queue, and `--id I22 --role scout` moves one.
@@ -516,7 +587,8 @@ was already running counts as its own; a `label` job that ended well is never ne
 a restart ended when its log was last written); it was handed an idea; its queue holds an idea nobody tested and none
 of its jobs runs; or, once, its queue holds an idea in testing and none of its jobs runs (a turn that then starts no
 job and closes no idea is not called for it again); another role's table changed (the owner can switch this one off:
-`/budget wake table off`, the file `operator/WAKE_TABLE`); its own news came (a wallet qualified or was banned for
+`/budget wake table off`, the file `operator/WAKE_TABLE`; since the audit of 22 Nov at most once an hour for a role
+whose queue is empty and whose last turn did no work); its own news came (a wallet qualified or was banned for
 the scout; the strategy search ended or a paper rule reached its first 30 or 60 trades for the tester; a new fill of
 ours for the fee and the OKTech analysts); or three hours have passed. Otherwise it writes one log line and costs
 nothing. A job counts as read when the role read its log whole or with read_job_log's default call; one line of it
@@ -545,3 +617,211 @@ Off without a deploy: the owner's `/budget every 0`, which also means the analys
 
 **Not measured.** No role has run a turn against the real model or on the server. Tests an hour, dollars a turn and
 how often a role skips are the design's estimates until a day of numbers exists.
+
+## Whose trade, whose coin: the bot's own and the owner's hand trades in one wallet (22 Nov)
+
+The sniper wallet is the owner's too. The owner buys and sells in it by hand and sends coins out of it (22 Nov 02:40
+UTC: three hand buys of one coin, which the wallet-wide guard read as the bot's loss and stopped the day's live
+trading for). None of that is the bot's result. Since 22 Nov every stage that judges, stops or alerts asks first whose
+a trade or a coin is, by one rule (`measure/ours.py`, `tests/test_whose_coin.py`). This section and the four after
+it describe the code merged as 3b412e0, the first round of the audit of 22 Nov. The rule:
+
+- **A buy is the bot's** when the measure stage tied it to a sniper, or when it paid exactly the fees one of our
+  snipers pays: the priority and the tip of a payload we sent OKTech, or that priority with no tip. Since the audit of
+  22 Nov (44bd292) a copied wallet on the buy beside our 0.001 SOL priority is no longer enough: the owner's own tool
+  pays that priority too. **A sale is the bot's** when it closes such a buy, or when it paid a sniper's sale fees or
+  the fees of our own fallback sale. With no sniper on record, or with fees not known, nothing tells a hand trade
+  apart and the trade counts as the bot's, as before.
+- **A coin is the owner's own** when every buy of it since its last sale paid fees no sniper of ours pays, and those
+  buys explain the whole amount held, summed over all the wallet's token accounts of the coin. More held than the
+  owner's buys explain, unknown fees, or a buy of ours among them: the coin may be ours and is treated as ours.
+- **A stray** is a coin no buy of ours explains that the unsold-coin watch has seen for 10 minutes (an airdrop).
+  Before the 10 minutes it may be a buy of ours the tape has not written yet, and it counts as held.
+
+Who uses the rule, and what the audit of 22 Nov changed in each:
+
+- **The wallet-wide guard and its day stop** count only the bot's trades (since 22 Nov 03:57), by the buy rule above.
+- **The measure stage** still writes every fill. It feeds only the bot's into the bid model, the live result per
+  copied wallet, the measured landing, the exit shadow and the fee policy's evidence.
+- **The round's snapshot** (`operator/snapshot.py`) marks each held coin `whose` (`ours`, `owner`, or not known yet)
+  with `whose_since`. An answer holds while the coin stays held, and a coin no buy brought in is not the bot's. A
+  wallet read that fails keeps the coins as last read, marked `stale`. The snapshot keeps when the coins were read
+  (`held_ts`) and which trades it has counted (`counted`, `counted_from`): each round reads the wallet's trades an hour
+  back and counts each once, so a trade the tape writes late is counted by a later round. When the wallet has a
+  transaction newer than anything the tape had written (`tape_behind`, the wallet's signatures read at "confirmed"),
+  the round values nothing, tells no loss or gain and carries its baselines to the next round. The bot's PumpSwap
+  trades the tape does not hold are read from the measure stage's fills. A sale is the bot's by its coin first
+  (whose the coin was, then the newest buy of it), and by its own fees only when neither tells.
+- **The loss alert** ("equity moved") needs only the bot's own coins valued. An airdrop or an owner's coin the tape
+  cannot price no longer switches it off. A coin of the bot's with no price, or one that left its curve and has had
+  no trade on the tape for 10 minutes (`stale_price`), makes the alert wait for the sale. Once the agents' budget for
+  the day is spent the round still reads everything, tells nothing and holds its baselines, so the first round that
+  may call the agents is told the loss.
+- **The round's gate** (`operator/gate.py`) raises "held", "held over 30 minutes" and "unmanaged" only for the bot's
+  coins: the owner's coins and airdrops no longer wake the operator every hour. Snipers named by a running `oktech
+  cycle` job (its `--id` values) are excused, and count within a live test's expectation, not on top of it. A runner
+  started outside the server's jobs is still flagged.
+- **The daily digest** shows the wallet's balance and how many coins it holds, and no longer the change since the
+  last digest, which was mostly the owner's own transfers. **The restart notice** names the snipers still armed on
+  OKTech, or says that OKTech could not be read; it used to say that nothing was traded.
+- **The unsold-coin watch** (`book/watch.py`). A coin the owner bought by hand gets one line a day, worded as their
+  own trade, with no /sell line. Seen 10 minutes, it keeps no book sniper running under a halt and holds back no
+  retire and no clean-up, unless the bot also bought that coin at some time: the book then still counts it as held. An
+  owner's buy is no sniper's buy in the book's count. In the watch's own lines a coin both bought is told by whose
+  part is left (a sale goes to its own side's buys first). A copy of ours the tape does not hold (a copy into an older
+  PumpSwap coin, which only the measure stage's fills hold) gets the 15-minute alert with its /sell line, not the
+  airdrop line; once the fills show it sold, a few unpriced tokens left over are said once a day as our sold copy.
+- **`/stop`, the close of a live test, the automatic test's judging and the runner (`oktech cycle`)** use the same
+  rule. docs/live-recipe.md has what each does.
+
+**The book makes a sniper only when one copy can really be paid** (`positions.curve_buy_beside_topup`, the audit of
+22 Nov). A curve buy is paid in plain SOL, and OKTech keeps 1.1 times the buy wrapped, taken from plain SOL, the whole
+time a sniper runs. So a book sniper is made only while plain SOL pays one curve copy after that wrap. With nothing
+wrapped, a 0.2 SOL sniper needs 0.425 SOL of plain SOL: 0.2 for the buy, 0.005 for its costs, 0.22 for the wrap.
+Wrapped SOL alone, which pays only a PumpSwap buy, makes no sniper any more. `/book status` and the book's note name
+the plain SOL one copy needs. Before, plain SOL for one buy but not for the wrap as well (0.30 SOL, say) was enough
+to make a 0.2 SOL sniper: OKTech wrapped 0.22, and every curve copy failed and used up one of the sniper's buys. The
+agents' snapshot (`buys_payable`) does not count the wrap yet.
+
+Limits kept on purpose: an answer about a coin holds while the coin is held, so a mixed holding (the owner's coin,
+then a copy of ours into it) keeps its first answer in the round's snapshot; the runner handles that case itself
+(docs/roadmap.md, 22 Nov 04:45). A sale that closes lots of both makers is credited to one of them.
+
+## The tape: what the audit of 22 Nov changed
+
+- **A restart no longer shortens the tape.** The server keeps 14 days of tape: the days asked for in the database
+  (`snipetech db retain --days N`), above the 6 days of its settings file and under what the disk fits
+  (`infra/retention.py`). A new recorder process knew only the 6 until its first hourly prune. In those seconds it
+  wrote the tape's record with its current stretch cut to 6 days, and a stop just then left that cut as the next
+  process's position, which the disk rule then read as a 6-day tape. Read so, today's file (90.6 GB on a 643.8 GB
+  disk, `remote status`) fits about 8.5 days, and the next prune would have deleted the rest. It did not happen: the
+  server holds its 14 days. Now the stretch's start moves only with a prune this process ran, nothing is pruned
+  until the days have been worked out once, and the learned tip accounts wait for the same (`live.py`:
+  `retain_known`, `pruned_before`).
+- **`tx_meta` is pruned once a day** (the fee record of every transaction; nothing pruned it before). A row past the
+  cutoff goes unless a stored trade, a fill of ours, or a listed wallet as its payer keeps it. Expect one long walk the
+  first day after the deploy.
+- **A coin backfill keeps the tape's block places.** A fetched transaction is stored at the place the chain gives it
+  (`transactionIndex`); a backfill used to renumber a coin's trades 0, 1, 2 in listing order. It skips only a
+  transaction the tape already holds whole: one with a curve or LaunchLab trade stored inside the tape's own
+  stretches. The rows a backfill renumbered between 19 and 22 Nov are not restored: on those coins `pos` is the
+  listing order, not the block place, and a landing counted in block places (`react:K`, below) reads wrong there.
+- **PumpSwap after a restart.** The recently migrated coins the new process starts with are replayed from 50 slots
+  before the tape's last whole slot, so their trades in the seconds around a restart are no longer lost. The PumpSwap
+  record itself still starts a new stretch at every restart, so a paper exit whose window crosses a restart is still
+  left out as a hole.
+- **PumpSwap's newer instructions (`buy_v2`, `sell_v2`).** The price a trade leaves behind now counts the creator and
+  buyback fees the pool keeps, on rows written since the fix went out on 23 Nov; older rows keep the price as it was
+  written.
+- **A tip of 0 is not always a free place.** `trades.tip` counts only the trade's own transaction. A bundle can pay
+  its tip in a transaction of its own, which never reaches the tape. The bid tables (`place-bids`, `tips`) say so in
+  their reading.
+- **Built, not run yet: how late the tape sees a buy.** `snipetech doctor --feed-latency SECS` opens a second
+  subscription for SECS seconds and times each block from its first piece to "processed" and "confirmed", and counts
+  failed transactions beside landed ones. It has not been run (it calls Helius). A column for when each trade
+  arrived, and a table of failed sends, wait for its numbers.
+
+## The lab and the paper test: what the audit of 22 Nov changed
+
+Numbers that can read differently from before, and why:
+
+- **A lower bound draws whole coins.** Where a rule takes several moments in one coin (`--each` with `"repeats":
+  "also"`), the bound used to treat them as independent and came out too tight. It now draws a coin's moments
+  together and is never tighter than the moment-by-moment bound. Rows carry `coins` beside `n`: 26 moments in 18
+  coins are 18 draws. Rules with one moment a coin, the qualify lab among them, read as before.
+- **`"repeats": "also"` is scored only with `--each`.** A rule that takes every buy of a wallet is what a copy sniper
+  copies. `lab` and `place-bids` refuse it without `--each`, and `paper freeze` refuses it, because a forward record
+  holds one trade a coin. The records already frozen with it are listed as research only and leave the agents'
+  best-rules list. Keying forward trades by moment, so such a rule can be frozen, is not built.
+- **`--each` refuses a rule with a consensus gate** (`known` of 2 or more, `gap`, `teams`, `known_any`): a copy sniper
+  of one wallet has none. It used to drop the gate without a word. `place-bids --each` with no rule named reads every
+  wallet's own first buy of 1 to 3 SOL.
+- **SOL a day (`test_sol_per_day`)** divides by the tape's own hours from the first newer moment to the end of the
+  window, not to the last moment. Quiet or bursty rules read lower. No ranking moves: rows are ranked by the lower
+  bound.
+- **The event edge** (coverage `events:edge`) reads only the events inside the tape, and an event no longer fires a
+  second time at a coin's first trade in a later stretch of tape. Its rows changed where that happened.
+- **A new landing, `react:K`** (`lab --copy-position react:15`, `paper freeze --copy-position`): the copy stands
+  behind every trade of the coin up to K block places after the followed wallet's own transaction, where a sender
+  that reacts to the landed buy would stand. It is a paper place, never evidence at our live landing (CLAUDE.md rule
+  2). Not built: K drawn from our own fills' places, and the free-place columns in `place-bids`.
+- **Same numbers, less work.** A moment's cost no longer grows with the coin's whole later tape (the path is cut 120 s
+  past the latest second any exit can sell, the dead exit's pause counted), and the paper run skips a wallet rule on
+  a coin none of its wallets traded.
+
+The forward paper test:
+
+- **A new record starts after the tape its lab read.** A freeze used to start the record at its own start time, so it
+  could score again the very moments the lab had used to pick the rule. Each record keeps its lab's window.
+- **Records frozen at the doubled cost can be frozen again.** A record frozen between 12 Nov 17:24 and 14 Nov 18:26
+  UTC at 0.006 SOL or more a transaction is charged too much on every trade: 0.0062 to 0.0093 SOL a transaction,
+  where every record frozen since is charged 0.0045 (28 such records on the server, 24 of them still running; read
+  23 Nov). Such a record holds no rule's place any more: freezing the rule again makes a new record at today's
+  cost, and the old one runs on beside it, named as overcharged in the freeze's list and the report's `exit_note`.
+- **Trades priced outside the model are marked.** A forward trade keeps its share of the pool and says when its sale
+  was priced past the curve's end or on a fallback price. A report row counts them (`outside_model`: how many, their
+  SOL, of how many marked trades; `outside_why` explains once). Rows written before the fix went out on 23 Nov carry
+  no mark. The automatic test's gate does not read the mark: using it would change what goes live, which is the
+  owner's decision.
+- **The report's kept numbers have a version** (`REPORT_VERSION`, 2 since 22 Nov): when it changes, every rule's
+  numbers are made again once at the next report. A row of a refuted rule says so (`refuted`: when, on how many
+  trades, at what mean).
+- **What the agents see of the round's snapshot ranks by landing.** `paper_top` holds the six biggest totals among
+  the rules scored where our trades land live. `paper_own_landing` holds the six biggest of the others (a place
+  asked for, a bid, no live place), each naming its landing and bid: never evidence at our landing.
+  `paper_refuted` says how many refuted rules both lists leave out.
+- **The owner's dashboard** (`tools/dashboard_snapshot.py`) builds its paper tables from the stored rules and the
+  report's kept numbers: rules under test first (where our trades land live, then a place asked for or a bid, then
+  research records), refuted rules last with their date. Until 22 Nov it showed five rules typed in by id on 11 Nov,
+  all refuted since.
+
+Not done, each a design step: the crowd's slippage as a middle estimate (it would be an opt-in flag of `lab`; none
+exists yet), a refuted mark in the text report, and `outside_model` in the automatic test's gate (the owner's).
+
+## What the agents may start and keep: limits added by the audit of 22 Nov
+
+- **Ideas.** `operator/ideas.json` holds 100 of the roles' open ideas and the settled ones. A settled idea a full file
+  pushes out goes to `operator/ideas-archive.jsonl`, and `list_ideas` with its id still reads it (before, it was
+  deleted without a word). Ideas open in nobody's queue (kinds code, config and live-test: what waits for the cloud
+  session or the owner) have a cap of their own, 100, for every writer, the cloud session's `operate idea` included.
+  A new one into a full queue is refused with what to do. Read on 23 Nov 03:10 UTC: 70 of the 100 were open there (61
+  code, 5 config, 4 live-test), so the queue fills within days unless waiting ideas are closed or merged
+  (docs/autopilot.md, OPEN WORK).
+- **Jobs an agent starts** (`operator/jobs.py`, read the way the command line reads the words, in any order):
+  `sends` at most 200,000 Helius credits and 336 hours a run, and no more than what is left of the month's 30 million
+  shared with the backfills; `launch-tools` at most 100,000 launches or 50 coins; `label` only as a pick (`--kind
+  cand`), which queues the wallet for qualify and keeps the label it has; `paper --replace` and `paper rescore` never.
+  A `sends` started by hand from the cloud session is not held to the month's limit.
+- **Labels are kept.** `fomo-wallets --label` and `early-leaders --label` leave a wallet that already has a label of
+  another kind as it is, list it under `kept`, and still queue it for qualify. `study --auto-smart` never renames a
+  wallet that has a name either.
+- **Idle wakes.** A role whose queue holds no open idea and whose last turn did no work is called by another role's
+  table at most once an hour. A handed idea, a job of its own ending, its own news and the three-hour look still call
+  it at once.
+- **The instructions' cache.** A research role's instructions take the hour-long cache only while it pays: after two
+  waits in a row of more than an hour they take the five-minute one. The operator's and the analyst's turns still
+  always take the hour-long cache (the audit's review put what that costs at about 1 $ a day, a number nobody has
+  measured on the server; changing it is a separate design).
+
+## A bot's failed sends, placed at its leaders' buys (`sends`, 22 Nov)
+
+`snipetech sends WALLET --leader L [--leader L2] [--hours 72] [--min-sol 1.9] [--max-credits 5000] [--validators]
+[--json]` reads from the chain the sends of
+a wallet that landed and failed, and places them at the first buys of the wallets it follows (a failed send is not on
+the tape). It answers whether a bot tries every buy of its leaders or picks its moments. A send that never landed
+leaves nothing anywhere, so the tries it counts are the fewest the bot made. The scout and the fee analyst may start
+it. What the audit of 22 Nov changed in its answer:
+
+- It fetches only the failed sends that landed within 3 slots of a moment: no other send can be a try. The first run
+  paid most of its credits for sends at no moment, and its credit limit then cut the oldest tries.
+- A moment whose nearby sends were left unread (the credit limit, or the RPC giving no transaction) has the outcome
+  `unread`. It may have been tried: it is counted neither as tried nor as left alone.
+- `failed.near` is how many failed sends stood near a moment. `failed.errors` comes from the listing and covers every
+  failed send. `fee_sol` and `priority_sol` cover only the fetched ones, `failed.by_outcome` gives each outcome its
+  own sends and fees, `failed.failed_only_fee_sol` is the fee at the moments with failed sends only, and
+  `failed.note` says all of this in the output. The verdict adds what the failed sends at the tried buys paid.
+- Every moment is listed (`moments_list`) with its outcome, the bot's failed sends at it and the first other buyer of
+  0.1 SOL or more within 3 block places of the leader; `--validators` splits the moments by the block's leader.
+
+The first run (job 20261122-074139-296636, "62 of 406 tried") was made by the code before these fixes and may be off
+by about one moment; a rerun is a question for the server's agents.

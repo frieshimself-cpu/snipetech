@@ -1091,7 +1091,8 @@ def test_the_analysts_and_the_operators_requests_are_byte_for_byte_what_they_wer
     """The roles' opening message changed on 14 Nov; the operator's and the analyst's did not. The file holds their
     first requests as the code before the change built them (written by this test with SNIPETECH_WRITE_GOLDEN=1 on
     that code, commit edec9a3); the code of today builds the same bytes. A change on purpose to what the operator or
-    the analyst is sent writes the file again the same way."""
+    the analyst is sent writes the file again the same way (audit round 2, B4: the snapshot's buys_payable counts what
+    is left once OKTech has wrapped its top-up, and names it)."""
     import os
 
     built = json.dumps(_first_requests(env), indent=1, sort_keys=True, ensure_ascii=False) + "\n"

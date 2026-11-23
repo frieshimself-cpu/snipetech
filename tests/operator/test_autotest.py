@@ -769,6 +769,29 @@ def test_a_block_whose_plain_sol_cannot_pay_a_curve_buy_holds_and_never_loops(en
     assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
 
 
+def test_a_first_block_whose_plain_sol_cannot_pay_a_curve_buy_does_not_start(env):
+    """Audit of 22 Nov, second round (B7): every later block is held while the wallet's plain SOL cannot pay one curve
+    buy with its fees and rent (the test above); a strategy's first block had no such check. With nearly all of the
+    wallet wrapped it made its sniper and started its cycler, whose every buy fails and pays its fees. It waits, said
+    once a day, and starts once the wallet has the plain SOL."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    env.sol = 0.1  # 11.8 SOL of the wallet is wrapped
+    _round(env, NOW + 60, wsol=11.8)
+    assert len(env.svc.created) == 0 and len(env.started) == 0 and LT.load(env.paths) is None and _seq(env) is None
+    (said,) = _said(env, "plain SOL")
+    assert "0.10" in said and "0.25" in said and "paid in plain SOL only" in said and BEST in said, said
+    # review of B7: the line names what the owner can do and never asks for SOL (owner, 9 Nov; the agents' rule too):
+    # a wallet with room for a first block (its floor, a buy and its fees) always has the SOL, in wrapped form
+    assert "turning some of its wrapped SOL back into SOL does it" in said and "add SOL" not in said, said
+    _round(env, NOW + 960, wsol=11.8)
+    assert len(env.sent) == 1 and len(env.svc.created) == 0  # said once a day, and still nothing is made
+    env.sol = 11.8  # the SOL is unwrapped
+    _round(env, NOW + 1860)
+    t = LT.load(env.paths)
+    assert t["state"] == "running" and t["sequence"]["block"] == 1 and len(env.svc.created) == 1
+
+
 def test_the_books_loss_never_drops_a_strategy_that_never_traded(env):
     """The first block's request is written; the book buys a coin before the round starts it, so it does not start (a
     quiet wait), and that coin then sells 0.9 SOL down. The wallet is 11.0 SOL, under the first request's 10.90 floor
@@ -1358,6 +1381,68 @@ def test_a_dead_cycler_then_a_start_that_left_a_sniper_idle_back_off_like_two_de
     assert len(env.svc.created) == 2
     seq = _seq(env)
     assert seq["hold"]["kind"] == "start" and seq["hold"]["deaths"] == 2 and "tried at" in seq["waiting"]["why"]
+
+
+def test_a_fault_of_another_kind_between_two_deaths_does_not_begin_the_count_again(env):
+    """Audit of 22 Nov, second round (B6): the faults in a row lived in the hold. A fault of another kind between two
+    deaths (the wallet's balance unreadable for a round, OKTech down) replaced the dead cycler's hold, cleared when the
+    next block started, and the count began again: death, wobble, death, wobble never reached the 4-hour back-off, and
+    each dead cycler left its sniper armed with nobody watching. The count is the strategy's own record's; only a block
+    that runs to its end begins it again."""
+    _start(env)
+
+    def dies(at):  # the block running now: its cycler dies ten minutes before the round at `at`
+        t = LT.load(env.paths)
+        assert t["state"] == "running", t
+        LTT._armed(env)
+        _cycler_ended(env, t, None, at - 600, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+        _round(env, at)
+
+    at = NOW + 60 + 900
+    dies(at)  # block 1's cycler died
+    at += 900
+    _round(env, at, readable=False)  # the one try, and the wallet's balance cannot be read: a hold of another kind
+    assert _seq(env)["hold"]["kind"] == "balance" and len(env.started) == 1
+    at += 900
+    _round(env, at)  # it clears: block 2 starts
+    assert len(env.started) == 2
+    at += 900
+    dies(at)  # block 2's cycler dies too: the second death in a row
+    for _k in range(14):  # three and a half hours: no block starts
+        at += 900
+        _round(env, at)
+    assert len(env.started) == 2 and len(env.svc.created) == 2, (len(env.started), _seq(env).get("hold"))
+    seq = _seq(env)
+    assert "2 times in a row" in seq["hold"]["why"] and "tried at" in seq["waiting"]["why"]
+    assert seq["streak"]["n"] == 2
+    LTT._send(env, name="stop", at=at + 60)
+    reply = LTT._send(env, name="resume", at=at + 120)  # the owner's /resume says the count, and tries a block again
+    assert "died 2 times in a row" in reply and "tries one block" in reply, reply
+    _round(env, at + 900)
+    assert len(env.started) == 3
+
+
+def test_a_block_that_runs_to_its_end_begins_the_count_of_faults_again(env):
+    """A death, then a block that runs to its end, then a death: one fault in a row, and one more block at the next
+    round, as before."""
+    _start(env)
+    t = LT.load(env.paths)
+    LTT._armed(env)
+    at = NOW + 60 + 900
+    _cycler_ended(env, t, None, at - 600, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+    _round(env, at)
+    assert _seq(env)["streak"]["n"] == 1
+    _round(env, at + 900)  # the one try: block 2
+    _play(env, [0.02] * 3, reason=TIME)  # it runs to its end
+    _round(env, at + 2 * HOUR + 900)
+    assert "streak" not in _seq(env) and LT.load(env.paths)["sequence"]["block"] == 3
+    t = LT.load(env.paths)
+    LTT._armed(env)
+    _cycler_ended(env, t, None, at + 2 * HOUR + 1200, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+    _round(env, at + 2 * HOUR + 1800)
+    assert _seq(env)["streak"]["n"] == 1
+    _round(env, at + 2 * HOUR + 2700)
+    assert len(env.started) == 4  # one more block at the next round: no back-off after one death
 
 
 def test_a_fault_that_fails_another_way_each_round_is_said_once(env):

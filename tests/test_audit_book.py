@@ -112,15 +112,18 @@ def test_book0_the_owners_coin_neither_holds_back_a_retire_and_the_clean_up_nor_
     from snipetech.book.run import _buys_by_sniper
 
     st, cfg = _env(tmp_path, enabled=True)
+    old = "snipetech copy book OLDWAL arm:control"
     _book_sniper(st)
+    # audit round 2 (B2): the wallet's row carries its raw amount, as the wallet read gives it, so the coin reads as the
+    # owner's own; beside one, an ended sniper is deleted only when its fees are on record (it cannot have bought it)
+    _book_sniper(st, sid="e1", name=old, created_at=NOW - 9000)
     _coin(st, "c1", NOW - 3000, 400_000_000, 0, 3, leader=L1, sell_slot=10)  # k1's relied-on buy, sold
     _hand_buy_on_tape(st, NOW - 1800)
     _fresh_tape(st)
     _seen(tmp_path, OWNER_COIN, NOW - 1800)
     st.set_coverage("book:ended", {"ids": ["e1"], "ts": int(NOW) - 300})  # the run before saw e1 ended too
-    held = [{"mint": OWNER_COIN, "amount": 1e6, "value_sol": 10.2, "priced": True}]
-    snipers = [{"id": "k1", "name": K1, "status": "running"},
-               {"id": "e1", "name": "snipetech copy book OLDWAL arm:control", "status": "finished"}]  # fmt: skip
+    held = [{"mint": OWNER_COIN, "amount": 1e6, "raw": 10**12, "value_sol": 10.2, "priced": True}]
+    snipers = [{"id": "k1", "name": K1, "status": "running"}, {"id": "e1", "name": old, "status": "finished"}]
     svc = FakeSvc(st, snipers=snipers, held=held, cfg=cfg)
     try:
         assert _buys_by_sniper(st, W, snipers) == {"k1": 1}  # its own buy only, not the owner's
@@ -211,11 +214,20 @@ LATE = [{"mint": "Late" + "n" * 40, "amount": 1.0, "value_sol": 0.2, "priced": T
 
 
 class _LateCoin(FakeSvc):
-    """The coin shows on the third holdings read: bought while the retire's stop was on its way."""
+    """The coin shows on the third holdings read: bought while the retire's stop was on its way. OKTech's list follows
+    what was asked of it (audit round 2, B8: a start that seemed to fail is read there once more): a stopped sniper
+    reads idle, one started again running."""
 
     async def open_positions(self, address, ignore=()):
         self._reads += 1
         return list(LATE) if self._reads >= 3 else []
+
+    async def oktech_task(self, action, task_id):
+        out = await super().oktech_task(action, task_id)  # raises when the call is set to fail: nothing changed then
+        status = {"stop": "idle", "start": "running"}.get(action)
+        if status:
+            self._snipers = [s | {"status": status} if s["id"] == task_id else s for s in self._snipers]
+        return out
 
 
 class _FlakyStart(_LateCoin):

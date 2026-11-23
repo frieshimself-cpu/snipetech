@@ -54,10 +54,14 @@ def _iso(ts: float) -> str:
 SQL_TABLES: dict[str, str] = {
     "trades": "one row per trade on a pump.fun or LaunchLab curve or a PumpSwap pool. user = the wallet that traded; "
     "quote = lamports of SOL before fees (quote / 1e9 = SOL); base = raw token units; fee = lamports; ts = unix "
-    "seconds; slot = the block, pos = the transaction's place in it; venue = 'curve' (pump.fun), 'amm' (PumpSwap) or "
+    "seconds; slot = the block, pos = the transaction's place in it (on a coin a backfill fetched before 23 Nov, "
+    "pos can be the coin's own order in the block (0, 1, 2), not a block place); venue = 'curve' (pump.fun), 'amm' "
+    "(PumpSwap) or "
     "'launchlab'; q_after / b_after = the reserves after the trade (their ratio is the price); sig = the transaction; "
     "priority, tip = what the transaction bid for its place, in lamports (the same on each trade of one sig), and "
     "payer = who paid its fee when that was not the trader: all three NULL (not known) on rows before 11 Nov 2026. "
+    "tip is the trade's own transaction's alone: a bundle can pay its tip in a transaction of its own, which touches "
+    "no pump.fun program and never reaches the tape, so tip 0 near the front of a block means not known, not free. "
     "tip counts transfers to a fixed list of landing services, and (14 Nov) to the tip accounts the tape learned "
     "from amounts once those are applied (table pay_dests): tip_learned = that learned part in lamports, so "
     "tip - coalesce(tip_learned, 0) is the part paid to the documented services. tip_learned NULL = the row was "
@@ -88,7 +92,8 @@ SQL_TABLES: dict[str, str] = {
     "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis; since 13 Nov "
     "launches_untraded = launches left out for want of trading, each still counted at a round trip's cost in "
     "verdict.ev_every_launch_sol)",
-    "fills": "every transaction of our own sniper wallet. side = buy, sell or failed (a send that did not land); "
+    "fills": "every transaction of our own sniper wallet, the owner's hand trades in it too (read_fills marks each "
+    "row `ours`: the bot's own). side = buy, sell or failed (a send that did not land); "
     "wallet_copied = the wallet a copy followed; sol = SOL (not lamports); pos_in_slot = its place in the block; "
     "trades_behind = other wallets' buys between the copied buy and ours, the copied wallet's own pack left out (19 "
     "Nov: the buys sent with its own, in its transaction and in the transactions right behind it that each carry "
@@ -106,7 +111,9 @@ SQL_TABLES: dict[str, str] = {
     "bid in lamports, vs = more or less than our bid), ahead_bid_max and ahead_bid_p50 (lamports), landing_verdict "
     "(first, fees, speed, unclear, ahead; and inside, from the tape), venue",
     "verdicts": "one row per wallet and qualify run (the newest computed_at is the wallet's verdict). status = "
-    "qualified, candidate or retired; n_tape, mean_sol, lower_sol = its copies on the tape at landing_pos; "
+    "qualified, candidate or retired (a wallet banned since, candidates.status = 'banned', keeps its last verdict "
+    "and is not qualified: read_verdicts leaves it out); n_tape, mean_sol, lower_sol = its copies on the tape at "
+    "landing_pos; "
     "copy_plan, forward, create_slot, kept_armed = JSON. A candidate whose reasons say 'same actor as <wallet>: one "
     "signal, one sniper' (13 Nov) passed every gate: another wallet of its operator holds the place, its numbers "
     "stand, it is not a failure; the book adds no sniper for it and paper freeze skips a second wallet of an actor "
@@ -1359,13 +1366,14 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
     async def read_round_trips(hours: int = 24, limit: int = 40) -> str:
         """Each live round trip of the last `hours`, newest first, for a post-mortem: the copied wallet, the landing
         (trades behind it, price gap, place in the slot), the exit that fired (exit_reason, exit_name, crossed,
-        failed duplicate sends in twin_fee_sol), the money, what the wallet's latest verdict predicted (mean_sol and
-        lower_sol at the landing, copy_plan), and what every exit on the menu would have made of the same entry
-        (shadow: exit name -> pnl_sol and the exit that would have sold; shadow_best: the best of them; None until
-        the buy is six minutes old).
+        twin_fee_sol: OKTech's failed duplicate sends and the sale's own tries that failed before it landed), the
+        money, what the wallet's latest verdict predicted (mean_sol and lower_sol at the landing, copy_plan), and
+        what every exit on the menu, and the exit that ran, would have made of the same entry (shadow: exit name ->
+        pnl_sol and the exit that would have sold; shadow_best: the best of them; None until the buy is six minutes
+        old).
 
         The money is worked out in code; use its numbers as they are. result_sol is the trip's whole result, each
-        cost once (pnl_sol is the landed trades alone, without the failed duplicate sells). breakdown holds the parts
+        cost once (pnl_sol is the landed trades alone, without twin_fee_sol). breakdown holds the parts
         that add up to result_sol: price_sol (the price move before any cost), venue_fee_sol (pump.fun's 1.25 % a
         side), buy_fee_sol, sell_fee_sol, dup_fee_sol (dups: how many); kind (won, lost_to_costs: it made money on
         the price and the costs took it, lost_on_price: it lost on the price itself); flips (the single costs whose
@@ -1525,8 +1533,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         Args:
             path: e.g. reports/2026-11-06/lab-0-start.txt, operator/candidates.json or
                 docs/research/2026-11-07-round-3.md.
-            tail: Only the last this many lines (0: the whole file). For a file that only grows, such as
-                operator/notes.md, the last 60 lines are what was written lately.
+            tail: Only the last this many lines (0: the whole file; of a file over 200,000 characters its end, from
+                a whole line; of one written newest first its start, with a line that says so). For a file that only
+                grows, such as operator/notes.md, the last 60 lines are what was written lately.
         """
         if role is not None and str(path) in roles.ROLE_DOCS.get(role, ()):  # a role's own reading in the checkout
             p = Path(jobs.repo) / str(path)
@@ -1644,9 +1653,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         bids and exits (6Z91). ["sends", "<wallet>", "--leader", "<wallet>", "--json"] reads a bot's sends that failed on
         chain, which the tape does not hold (it holds the trades that happened; 22 Nov, your idea I605): of its
         leaders' first buys of 1.9 SOL or more ("--min-sol"), how many it tried, landed right behind ("adjacent"),
-        behind other buyers in the block, later, tried with failed sends only, or did not try, and what the failed ones
-        paid (a failed send pays its priority; its tip is undone). It costs Helius credits: one a thousand signatures
-        and one a failed send that landed within 3 slots of such a buy, the only ones that can be tries
+        behind other buyers in the block, later, tried with failed sends only, or did not try, and what its failed
+        sends near those buys paid (failed.note says what each sum covers; a failed send pays its priority; its tip
+        is undone). It costs Helius credits: one a thousand signatures and one a failed send that landed within 3
+        slots of such a buy, the only ones that can be tries
         ("--max-credits", 5000 unless told; 200,000 at most and "--hours" 336 at most from an agent, and never more
         than the backfills and the earlier runs left of the month; a buy whose sends the limit left unread is counted
         "unread", not untried). A send that never landed (dropped, or a bundle that lost its auction) leaves nothing on
@@ -1659,12 +1669,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         holds it, before anyone builds a sender for it.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
-        gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
+        gives another kol trigger; "--each" takes every wallet's own first buy of 1 to 3 SOL, with no "known";
+        "--wallet" one followed wallet) the
         outsiders' first buys in the wallet's own block, companions left out: the bid of place 1, 2 and 3 (priority
         fee plus tip), who holds the first place, each followed wallet's regulars and where our own copies landed.
         In place-bids' answer, auction.in_bid_order near 1 means the place is bought, and win_at says what share of
         moments a bid would have been first in; near 0.5 or under, speed takes the place and no bid buys it. Score
-        the rule next with "--copy-position", "+0" and "--per-tx" at the bid place-bids' table names.
+        the rule next with "--copy-position", "+0" and "--per-tx" at the bid place-bids' table names. "+0" stands
+        ahead of every buyer after the leader, a place no send that reacts to the landed buy reaches on every moment:
+        the lab's "react:K" scores where such a send lands.
         ["tips", "--group", "big", "--hours", "30", "--json"] is the tip table, one line a followed wallet (the
         group's, or "--wallet", "<wallet>" for any one): its blocks with outsiders, the first outsider's bid
         (median, 75th, 90th percentile), the bid that was above every outsider in 50, 75 and 90 % of its blocks,
@@ -1728,10 +1741,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         scored behind the followed wallet's companions (the wallets its operator buys with: in the next transactions
         of the block, or in its block in changing order, ahead of it as often as behind, which a copier never is; no
         copy lands among them; the result's copy_companions says how many wallets had some).
-        "--copy-position", "+0" with "--per-tx" scores a copy right behind them at the bid that buys the place
-        (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
+        "--copy-position", "+0" with "--per-tx" scores a copy right behind them, at the price their buys left, with
+        the bid charged (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
         "--trigger", '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}', "--copy-position",
-        "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"].
+        "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"]. No bid is known to buy that place on
+        every moment: a send that reacts to the landed buy lands some block places later and gets that price only
+        where nobody bought in between. "--copy-position", "react:K" (22 Nov) scores that send: the copy stands
+        behind every trade of the coin up to K block places after the followed wallet's own transaction ("react:15",
+        "react:50", "react:200": how fast the sender is). It is a paper place, never a live landing; a freeze with
+        the same "--copy-position" scores it forward at the same place.
         A PLACE THAT FOLLOWS THE BID (wallet rules): "--copy-position", "bid-", "--buy-bid", "0.05" puts each copy
         where that bid would stand among the wallets that really bought behind the followed one: behind its
         companions, behind every outsider that bid at least as much (in its block and the ten after it) and behind an
@@ -1785,7 +1803,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         A lab row or a frozen wallet rule from before (no "copy50%" in its name) is another exit: do not compare
         it with a new row; run the lab again and freeze the rule again (a new id; the old record keeps its trades,
         shows exit_note in paper report and is listed under not_as_live in a freeze). Hunt, launch, whale, burst
-        and MIG rules keep their exits (an exit_note on one of them has another reason: SERIAL CREWS' COINS below)
+        and MIG rules keep their exits (an exit_note on one of them has another reason: SERIAL CREWS' COINS or THE
+        COST A LAB CHARGES below)
         and a recipe's own exit has none. The sale is priced one slot after the
         wallet's sale, ahead of that slot's trades: behind a crowded wallet a live sale can land lower (not
         measured). Several small sales never add up to the half.
@@ -1846,6 +1865,17 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         lower bound is a reason to ask for one small live copy to measure the place, never proof the rule pays. A
         hunt can ask for one labelled sniper among the buyers ("bots": "sniper", scored at +3@1); no sniper is
         built for either form yet.
+        EACH WALLET'S OWN BUYS (22 Nov): "--each" (on place-bids, and on a lab of wallet rules named with
+        "--trigger") makes every followed wallet's own first buy in a coin a moment, as its own copy sniper copies
+        it; without it a rule fires once a coin. A consensus gate ("known" of 2 or more, "gap", "teams",
+        "known_any") is refused with "--each": a copy sniper of one wallet sees no other, so run such a rule
+        without it. "repeats": "also" takes every buy of the wallet at the rule's size, its repeats in a coin too:
+        what a live copy sniper copies. It is scored only with "--each": lab and place-bids refuse it without, paper
+        freeze refuses it (a forward record holds one trade a coin), and the records frozen with it earlier are
+        research only (exit_note "research only: one trade a coin, where its copy sniper takes every buy").
+        With "--each" a coin can give several moments in a lab (two followed wallets in it; with "repeats": "also" a
+        wallet's repeats too): test.coins is how many coins the newer moments are, and ev_lower draws a coin's
+        moments together, so read n beside coins (26 moments in 18 coins are 18 draws).
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
         trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when
@@ -2018,16 +2048,18 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         and are research only: freeze each again. A default lab scores the crews' coins too and takes about half as long
         again. A hunt on a wallet group (bots) is unchanged.
         THE COST A LAB CHARGES (14 Nov): from 12 Nov 17:24 to 14 Nov 18:26 UTC every lab, freeze and qualify verdict
-        charged 0.0085 to 0.0093 SOL a transaction, twice the low bid's real cost (about 0.0044): four buys of the tip
-        test at 0.035 SOL and 50 failed sends of one USDC swap had been counted in it. That was about 0.009 SOL a round
-        trip too much: a rule or a wallet that failed by less than that in those two days is NOT refuted, test it again;
-        a rule frozen in those two days (per_tx_sol 0.0062 to 0.0093 in its record) is charged too much forward:
-        freeze it again, and the freeze makes a new record of it at today's cost (again 1, an id of its own, from zero
-        trades) while the old one keeps its trades and is named under not_as_live. The labs now charge 0.0045 and say per_tx_source "estimate" until the low bid has its 30 buys of a week
-        again; a bid above the low bid is charged on top with "--buy-bid" as before. The hunt {"kind": "hunt", "sol": 5,
-        "window": 1, "max_buyers": 2, "dev_max": 1} at this cost on every coin, 168 h to 14 Nov 05:01 UTC (labs 7299bb
-        and 346941; each half on its own best exit, so rough): at 0.2 SOL -0.002 SOL a trade over 687 test trades; at 1
-        SOL +0.030 a trade (+20.5 SOL), +0.013 without its five best trades, four trades (+6.7 SOL) outside the model.
+        charged 0.0062 to 0.0093 SOL a transaction, rising through the two days to twice the low bid's real cost
+        (about 0.0044): four buys of the tip test at 0.035 SOL and 50 failed sends of one USDC swap had been counted
+        in it. That was up to about 0.01 SOL a round trip too much: a rule or a wallet that failed by less than that
+        in those two days is NOT refuted, test it again; a rule frozen in those two days (per_tx_sol 0.0062 to 0.0093
+        in its record) is charged too much forward: freeze it again, and the freeze makes a new record of it at
+        today's cost (again 1, an id of its own, from zero trades) while the old one keeps its trades and is named
+        under not_as_live. The labs now charge 0.0045 and say per_tx_source "estimate" until the low bid has its 30
+        buys of a week again; a bid above the low bid is charged on top with "--buy-bid" as before. The hunt
+        {"kind": "hunt", "sol": 5, "window": 1, "max_buyers": 2, "dev_max": 1} at this cost on every coin, 168 h to
+        14 Nov 05:01 UTC (labs 7299bb and 346941; each half on its own best exit, so rough): at 0.2 SOL -0.002 SOL a
+        trade over 687 test trades; at 1 SOL +0.030 a trade (+20.5 SOL), +0.013 without its five best trades, four
+        trades (+6.7 SOL) outside the model.
         A WINNING BOT'S RECIPE BY NAME (the owner, 12 Nov: "we cant copy a wallet that is copying because we are
         filled above, we can learn from it"): ["lab", "--recipe", "6z91", "--hours", "24", "--json"] runs the copy
         bot 6Z91's playbook without typing its triggers: a followed wallet's first buy of 1 to 3 SOL in a coin 13 s
@@ -2075,10 +2107,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
     @beta_async_tool
     async def write_note(text: str, level: str = "info") -> str:
-        """Append a note for the owner. Use level "decision" only for: a wallet clearing all three gates, a sniper
-        running or a coin held when none should be, equity moved by our own trades more than the alert threshold, the
-        tape stalled, a service down, or the budget reached. A move no trade of ours explains is the owner moving SOL
-        in or out: "info" at most, never a question.
+        """Append a note for the owner. Use level "decision" only for: a wallet newly qualified, a coin our snipers
+        bought that no sniper is selling, a sniper running or a coin of ours held when none should be, equity moved by
+        our own trades more than the alert threshold, the tape stalled, a service down, or the budget reached. A move
+        no trade of ours explains is the owner moving SOL in or out: "info" at most, never a question.
 
         Args:
             text: One or two plain sentences.
@@ -2111,7 +2143,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
     @beta_async_tool
     async def read_verdicts(status: str | None = None, limit: int = 50) -> str:
-        """The qualify stage's latest verdict per wallet (qualified = all gates passed at the measured landing).
+        """The qualify stage's latest verdict per wallet (qualified = all gates passed at the measured landing). A
+        banned wallet keeps its last verdict and is never qualified: it is listed under banned alone, and among every
+        wallet its row says "banned": true.
 
         Args:
             status: qualified | candidate | retired | banned, or omit for every wallet (best score first).
@@ -2121,13 +2155,19 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             return "error: status must be qualified, candidate, retired or banned"
         try:
             counts = svc.store.verdict_counts()
+            # a wallet banned after its verdict keeps that verdict, and qualify never looks at it again: it is banned,
+            # as the counts, the book (book.run._qualified) and the dashboard's list say (22 Nov: 7aPo3n and AG89fn
+            # were handed to the agents as qualified)
+            banned = svc.store.candidates(status="banned", limit=1_000_000)
             if status == "banned":
-                rows = [
-                    {"wallet": c["wallet"], "status": "banned", "sources": c["sources"]}
-                    for c in svc.store.candidates(status="banned")
-                ]
+                rows = [{"wallet": c["wallet"], "status": "banned", "sources": c["sources"]} for c in banned]
             else:
+                gone = {c["wallet"] for c in banned}
                 rows = svc.store.latest_verdicts(status)
+                if status is None:
+                    rows = [v | {"banned": True} if v.get("wallet") in gone else v for v in rows]
+                else:
+                    rows = [v for v in rows if v.get("wallet") not in gone]
         except Exception as exc:  # noqa: BLE001
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps({"counts": counts, "verdicts": rows[: max(1, int(limit))]}, default=str))
@@ -2137,9 +2177,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """The measure stage's live fills (buys, sells with PnL, failed sends) of the last `hours`, plus the bid model per
         arm and the live expectancy per copied wallet. These are the truth for the live landing; paper numbers are
         provisional once a wallet's live n reaches 10. A sell's pnl_sol is its landed trip; its failed duplicate
-        sends are beside it in twin_fee_sol; the summary counts the bot's own fills (a row's `ours`; the owner's hand
-        trades in the wallet are counted apart, in `owner`) and its pnl_sol is the bot's sells' whole result, each cost
-        once (a sell measure could not pair, counted in `unpriced`, pays its failed duplicate sends alone).
+        sends, and its own tries that failed before it landed, are beside it in twin_fee_sol; the summary counts the
+        bot's own fills (a row's `ours`; the owner's hand trades in the wallet are counted apart, in `owner`) and its
+        pnl_sol is the bot's sells' whole result, each cost once (a sell measure could not pair, counted in
+        `unpriced`, pays its failed duplicate sends alone).
 
         Args:
             hours: Look back this many hours (default 24).

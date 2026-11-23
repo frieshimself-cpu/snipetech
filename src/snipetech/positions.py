@@ -74,27 +74,40 @@ def filter_positions(accounts: list[dict], price_lamports_per_raw: Callable[[str
 # wrapped SOL the wallet sent nothing on five signals, and the analyst spent nine updates on the missing fills.
 BUY_NATIVE_SOL = 0.005
 BOOK_FILL_SOL = 0.2  # one copy's size where the snapshot does not carry the book's ([book] fill_min_sol)
-
-
-def buys_payable(native_sol: float | None, wsol: float | None, fill_sol: float | None) -> dict | None:
-    """How many copies of the book's size the wallet can pay, a venue at a time; None when a balance was not read.
-    A buy on pump.fun's curve takes the buy itself from plain SOL (a system transfer to the curve), a PumpSwap buy
-    takes it from wrapped SOL, and each pays BUY_NATIVE_SOL in plain SOL on top. 11 Nov 18:52 UTC: the snapshot's old
-    flag read "a buy's fees are payable" at 0.0052 SOL beside 0.47 wrapped SOL, and the first copy of 74xVT9 landed
-    and failed for the 0.2 SOL it could not take from plain SOL."""
-    if native_sol is None or wsol is None:
-        return None
-    size = float(fill_sol or BOOK_FILL_SOL)
-    eps = 1e-9  # a balance of exactly n buys pays n
-    fees = int((float(native_sol) + eps) // BUY_NATIVE_SOL)
-    return {"size_sol": size, "curve": int((float(native_sol) + eps) // (size + BUY_NATIVE_SOL)),
-            "pumpswap": min(int((float(wsol) + eps) // size), fees)}  # fmt: skip
-
-
 # OKTech keeps the wallet's wrapped SOL at this many times the buy the whole time a sniper runs, whatever its platforms,
 # and wraps what is missing from plain SOL (the wrap test, 21 Nov 21:51-22:04, docs/live-recipe.md: turned back into
 # plain SOL, it was wrapped again within two seconds)
 WRAP_TOPUP = 1.1
+
+
+def after_topup(native_sol: float, wsol: float, fill_sol: float | None) -> tuple[float, float]:
+    """The wallet's plain and wrapped SOL once a sniper of this fill runs: OKTech has wrapped what was missing of
+    WRAP_TOPUP times the buy from plain SOL (all of the plain SOL when there is less than that). The one rule for what
+    the wallet can pay: the book's (`curve_buy_beside_topup`) and the agents' snapshot's (`buys_payable`)."""
+    size = float(fill_sol or BOOK_FILL_SOL)
+    wrap = min(max(0.0, WRAP_TOPUP * size - float(wsol)), max(0.0, float(native_sol)))
+    return float(native_sol) - wrap, float(wsol) + wrap
+
+
+def buys_payable(native_sol: float | None, wsol: float | None, fill_sol: float | None) -> dict | None:
+    """How many copies of the book's size the wallet can pay while a sniper runs, a venue at a time; None when a balance
+    was not read. A buy on pump.fun's curve takes the buy itself from plain SOL (a system transfer to the curve), a
+    PumpSwap buy takes it from wrapped SOL, and each pays BUY_NATIVE_SOL in plain SOL on top. 11 Nov 18:52 UTC: the
+    snapshot's old flag read "a buy's fees are payable" at 0.0052 SOL beside 0.47 wrapped SOL, and the first copy of
+    74xVT9 landed and failed for the 0.2 SOL it could not take from plain SOL. Both counts are of what is left once
+    OKTech has wrapped its top-up from plain SOL (`after_topup`; `oktech_wraps_sol`: how much that is, 0 when the
+    wrapped SOL is there already), which is the book's rule too: until the second round of the 22 Nov audit this count
+    took the plain SOL as it stood, and read 0.30 SOL and none wrapped as one curve copy where a running sniper has
+    none."""
+    if native_sol is None or wsol is None:
+        return None
+    size = float(fill_sol or BOOK_FILL_SOL)
+    plain, wrapped = after_topup(native_sol, wsol, size)
+    eps = 1e-9  # a balance of exactly n buys pays n
+    fees = int((plain + eps) // BUY_NATIVE_SOL)
+    return {"size_sol": size, "oktech_wraps_sol": round(float(native_sol) - plain, 6),
+            "curve": int((plain + eps) // (size + BUY_NATIVE_SOL)),
+            "pumpswap": min(int((wrapped + eps) // size), fees)}  # fmt: skip
 
 
 def curve_plain_need(wsol: float, fill_sol: float | None) -> float:
@@ -105,9 +118,8 @@ def curve_plain_need(wsol: float, fill_sol: float | None) -> float:
 
 
 def curve_buy_beside_topup(native_sol: float | None, wsol: float | None, fill_sol: float | None) -> bool | None:
-    """Whether a sniper of this fill, once running, can pay one curve buy (`curve_plain_need`); None when a balance was
-    not read. 22 Nov audit: with 0.30 plain SOL the book made a 0.2 SOL sniper, OKTech wrapped 0.22 and left 0.08, and
-    every curve copy failed and spent a shot."""
-    if native_sol is None or wsol is None:
-        return None
-    return float(native_sol) + 1e-9 >= curve_plain_need(wsol, fill_sol)
+    """Whether a sniper of this fill, once running, can pay one curve buy (`buys_payable`'s curve count, which is
+    `curve_plain_need` in plain SOL); None when a balance was not read. 22 Nov audit: with 0.30 plain SOL the book made
+    a 0.2 SOL sniper, OKTech wrapped 0.22 and left 0.08, and every curve copy failed and spent a shot."""
+    can = buys_payable(native_sol, wsol, fill_sol)
+    return None if can is None else can["curve"] >= 1

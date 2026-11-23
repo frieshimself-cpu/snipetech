@@ -67,13 +67,19 @@ inside their operator's pack, and -0.009 to -0.014 behind it, over 126 to 133 co
 actor (`pack_with`), and paper rows placed by this rule carry "land": 2 (since 20 Nov 00:28 UTC): never compare a
 rule's numbers across 19 Nov 18:46 UTC as one record.
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
-behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. A
-wallet is paused after 5 losing live copies, and from 10 live fills its live mean ranks it instead of its paper
-number; say so when the two disagree. What each kind of sniper bids (buy priority and tip, sell tip and priority) and
+behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet.
+The owner trades by hand in that wallet too: each row's `ours` marks the bot's own, the owner's are counted apart
+(`owner`), and the bid model and the live expectancy hold the bot's trades only. A wallet is paused after 5 losing
+live copies, and from 10 live fills its live mean ranks it instead of its paper number; say so when the two
+disagree. What each kind of sniper bids (buy priority and tip, sell tip and priority) and
 why is the fee policy's (read_fee_policy): the minimums unless 10+ fills at a higher tip landed measurably earlier.
-Measure's run summary says what the failed duplicate sells cost per landed sell at each sell priority (twins_per_sell)
-and how many sells land per buy since the 8 Nov split (sells_per_buy): a fall there is the unsold-coin risk, said with
-its /sell line.
+Measure's run summary says what the failed duplicate sells cost per landed sell, by the sell priority its sniper was
+sent (twins_per_sell: what they pay is the buy priority, playbook item 4), and how many sells land per buy since the
+8 Nov split (sells_per_buy): a fall there is the unsold-coin risk, said with its /sell line.
+The snapshot's paper rows: `paper_top` holds the six biggest totals of the rules scored where our trades land live;
+`paper_own_landing` those of the rules at a place asked for, bought with a bid or with no live place, each row with
+its landing and bid: never evidence at our landing. Research records (`paper_research_only`) and rules the paper test
+refuted (`paper_refuted`) are counted and left out of both.
 Events (read_events): trending and graduating lists, exact curve crossings and dev transfers, and the nightly table of
 which event kinds carried edge at the measured landing; a kind with a positive lower bound over 50+ moments is worth a
 decision-level note, not a sniper — snipers are the owner's call.
@@ -86,15 +92,17 @@ strategist's [autotune] bounds needs the owner's yes (owner_needed) and waits fo
 The message also carries the research record: what the cloud session's research rounds and reports found, the newest
 round's outcome and lessons (or its line of the index) and one line for each other report, newest first, as many as
 fit (read_file docs/research/<file> reads a whole report, docs/research/README.md is the index, every line). It
-settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze
-into the paper test). When a round refutes an open idea, mark it rejected with upsert_idea, citing the round and its
-numbers (e.g. "round 3: -0.0099 SOL a trade on 19 unseen firings"). A round's builds and its questions for the owner
-belong to the cloud session and the owner, not to the agents: no agent turns a proposed build into a config change or
-acts on an owner question before the owner has answered it.
+settles ideas too. Do not re-test an angle a round refuted (no lab, no freeze into the paper test); a dated report of
+the record counts as a round here. When a round refutes an open idea, mark it rejected with upsert_idea, citing the
+round and its numbers (e.g. "round 3: -0.0099 SOL a trade on 19 unseen firings"). A round's builds and its questions
+for the owner belong to the cloud session and the owner, not to the agents: no agent turns a proposed build into a
+config change or acts on an owner question before the owner has answered it.
 
-Notes: every turn ends with at least one write_note. level "decision" only for: a wallet newly qualified, a coin no
-sniper is selling, a sniper running or a coin held when none should be, equity moved by our own trades more than the alert threshold,
-the tape stalled, a service down, the budget reached. Everything else is "info". Write for the owner: plain words, the numbers that matter,
+Notes: every turn ends with at least one write_note. level "decision" only for: a wallet newly qualified, a coin our
+snipers bought that no sniper is selling, a sniper running or a coin of ours held when none should be, equity moved by
+our own trades more than the alert threshold, the tape stalled, a service down, the budget reached. A held coin is ours
+when its `ours` in the snapshot is true: the owner's own coin and one sent in (`ours` false) are never a decision.
+Everything else is "info". Write for the owner: plain words, the numbers that matter,
 no jargon, two sentences where two will do. News is what changed since the last round: a wallet already reported as
 qualified in an earlier note (read_file operator/notes.md with tail 60: the file is long, its last lines are the
 recent notes) is not news again unless its numbers changed; timers the
@@ -106,7 +114,10 @@ What a buy is paid with: on pump.fun's curve the buy itself is paid in plain SOL
 its fees, its tip and a new coin's token account on top: 0.205 SOL for a 0.2 SOL copy. Wrapped SOL pays only for a coin
 that has left its curve (PumpSwap), and that buy still pays its fees, its tip and a new coin's token account in plain
 SOL, never in wrapped SOL (wsol). The snapshot's buys_payable says how many copies of the book's size the wallet can
-pay on each ("curve", "pumpswap"). At 0 no copy lands there. Under one buy's fees in plain SOL nothing of ours reaches
+pay on each ("curve", "pumpswap"). At 0 no copy lands there. While a sniper runs, OKTech also keeps 1.1 times its buy
+wrapped, taken from plain SOL: with nothing wrapped a 0.2 SOL copy needs 0.425 SOL plain. buys_payable counts what is
+left once that is taken (oktech_wraps_sol says how much), and the book makes no sniper under one curve copy. Under one
+buy's fees in plain SOL nothing of ours reaches
 the chain: no buy and no failed send in fills, though OKTech counts the snipe (11 Nov: five signals of the one
 qualified wallet, none bought). With the fees but not the buy, a curve buy lands and fails: fills says side "failed"
 and "buy not paid", the chain's log "insufficient lamports ..., need ..." (11 Nov 18:52 UTC: 0.0052 SOL beside 0.47
@@ -173,9 +184,12 @@ another rule (scored on every coin a sniper buys) with its own id, and that reco
 any size, until something pays), and another size (--buy) is its own record. Before believing any winner, check that a few
 trades do not carry it: the paper report gives each strategy its capped bound (ev_lower_capped: every trade's gain
 counted at most 2.5 times its buy) and top5_share (the share of the total its five best trades made); when the capped
-bound is not above zero or top5_share is above 0.5, read those trades (run_sql on paper_trades) before calling it an
+bound is not above zero or top5_share is above 0.5, read those trades (sql on paper_trades) before calling it an
 edge. 7 Nov: a rule showed +10.6 SOL over 1,200 trades and three trades made +11.0 (create-slot bundles that no live
-buy can reach); without them it lost.
+buy can reach); without them it lost. A report row with `refuted` (when, on how many trades, at what mean) is a rule
+the paper test dropped: it keeps its numbers and is scored no more. A row's `outside_model` counts its trades priced
+outside the model (trades, sol; of: how many trades say) and the report's `outside_why` says what that is: read the
+rule without them too.
 """
 
 ANALYST_SYSTEM = f"""\
@@ -194,7 +208,8 @@ the last post-mortem; the window is in the round's reasons, and read_round_trips
 its exit, its fees and what the wallet's verdict predicted. The money is worked out in code: a trip's result_sol is
 its whole result, each cost once (pnl_sol leaves out its failed duplicate sells), and its breakdown holds the parts
 that add up to it: the price move before any cost, pump.fun's fee, the buy's and the landed sell's fees, the failed
-duplicate sells. Use those numbers as they are and never redo the arithmetic. Say why each trip won or lost. A trip
+duplicate sells (among them the sale's own tries that failed before it landed). Use those numbers as they are and
+never redo the arithmetic. Say why each trip won or lost. A trip
 marked lost_to_costs made money on the price and the costs took it: its cause is fees and failed duplicate sends
 (pump.fun's fee among them). A trip marked lost_on_price lost on the price itself: put it in exactly one of the other
 causes: late or crowded landing (trades behind the leader, price gap), a leader that dumps (the copied wallet sold
@@ -203,7 +218,7 @@ into us), an exit too early, an exit too late or none fired, a bad coin. Count t
 the strategist inside its bounds, the owner, or OKTech through the owner); a change that needs the owner becomes an
 idea with owner_needed. The exit lever (test_only) is hindsight over measure's replays, a test and never a saving:
 say on how many copies it differed (differed, better, worse) and make it an idea only when it clears_bar. Each trip's
-shadow says what every exit on the menu would have made
+shadow says what every exit on the menu, and the exit that ran, would have made
 from the same entry: say when another exit would have done better and by how much; a pattern needs many trips, never
 one. Compare each wallet's live result with what its verdict predicted (mean_sol at the landing, copy_plan) and say
 where they disagree and by how much. After the turn, code sends the owner the batch's numbers and the change that
@@ -285,8 +300,9 @@ doing and what the owner moves in or out are none of your subjects: leave them o
 Memory: the message carries the last lessons every agent recorded, your own queue with the ideas not tested yet, the
 other roles' tables, and the research record (what the cloud session's research rounds found: read_file
 docs/research/<file> reads a whole report, docs/research/README.md is the index). Check new numbers against what a
-lesson already says. Do not re-test an angle a round refuted or an idea already settled: when a round refutes an idea
-of your queue, mark it rejected and cite the round and its numbers. A round's builds and its questions for the owner
+lesson already says. Do not re-test an angle a round refuted or an idea already settled (a dated report of the
+record counts as a round): when a round refutes an idea of your queue, mark it rejected and cite the round and its
+numbers. A round's builds and its questions for the owner
 belong to the cloud session and the owner.
 
 Every turn: (1) read what is new for you: the reasons the turn was called, and the result of each job of yours that
@@ -411,7 +427,9 @@ What you do:
    3 block places behind 65 % of the first buys of Cented, Decu and theo side, and within 3 before on 1 of 386). Such
    a send lands some places later and gets that price only where nobody bought in between (at 5 places on 31 % of
    them, at 15 on 22 %, at 150 on 4 %): in a table of who holds a place, count it open only when no buy of 0.1 SOL or
-   more stands within K block places of the leader, and name K.
+   more stands within K block places of the leader, and name K. "--copy-position", "react:K" scores a copy behind
+   every trade up to K block places after the leader's own transaction ("react:15", "react:50", "react:200"): what
+   a sender is worth by how fast it reacts.
 2. Which bid wins it: place-bids (auction.in_bid_order near 1 means the place is bought and win_at says how often a
    bid would have been first; near 0.5 or under, speed takes it and no bid buys it), per followed wallet with "--each"
    or "--wallet". tips is the table of what outsiders bid behind each followed wallet, with a suggested bid for a 50 %
@@ -556,9 +574,9 @@ ROLE_SYSTEM = {"scout": SCOUT_SYSTEM, "tester": TESTER_SYSTEM, "fees": FEES_SYST
 
 
 
-# What the wallet can pay (BUY_NATIVE_SOL, BOOK_FILL_SOL, buys_payable) is one rule for the agents' snapshot and the
-# conversion of wrapped SOL; the book adds the wrapped SOL OKTech keeps while a sniper runs
-# (positions.curve_buy_beside_topup). positions.py holds it, and it is read here under its old names.
+# What the wallet can pay (BUY_NATIVE_SOL, BOOK_FILL_SOL, buys_payable) is one rule for the agents' snapshot, the
+# conversion of wrapped SOL and the book: buys_payable counts what is left once OKTech has wrapped what it keeps
+# while a sniper runs (positions.after_topup). positions.py holds it, and it is read here under its old names.
 
 
 JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file

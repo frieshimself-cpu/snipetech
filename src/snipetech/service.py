@@ -97,8 +97,11 @@ RUN_GONE_SECS = 60.0
 # and while the tape says the run still holds tokens of a coin the wallet holds (one the owner holds too counts as
 # theirs by its first buy), no sniper is re-armed, for this long after the run's last buy of it at most (an exit
 # whose sale the tape cannot tell as the run's never holds the re-arms back for good), or for --sweep-after and two
-# tries of the run's own sale of them, when that is longer (the sale sees such a coin only while it is held)
+# tries of the run's own sale of them, when that is longer (the sale sees such a coin only while it is held), or for
+# the run's snipers' longest exit timer and RUN_HOLD_MARGIN_SECS, when that is (`run_hold_secs`: a sniper stopped
+# before its timer strands its coin; every live sniper so far sells at 12 s)
 RUN_HOLD_MAX_SECS = 300.0
+RUN_HOLD_MARGIN_SECS = 120.0  # past a timer: the sale's own tries, and the tape that writes it (up to 120 s behind)
 # At a run's end every copied wallet with a buy of a held coin this long before our buy of it may be the one that buy
 # copied: each of their snipers may hold it, and none is stopped (22 Nov review)
 LEAD_WINDOW_SECS = 10.0
@@ -112,6 +115,35 @@ FRESH_HOLD_SECS = 30.0
 MOVE_UNDO_SECS = 120.0
 # `oktech cycle --wait-for-sol`: how often the wallet is read while the run waits for the owner's SOL
 WAIT_POLL_SECS = 15.0
+
+
+def exit_timer_secs(payload: dict | None) -> float:
+    """The longest sell-all timer in a sniper's payload: autoSell.sellAfterSeconds while it sells a share
+    (oktech.autosell: "sellPercent" 0 is no timer), or a stage's sellAfterMs. 0 with none, or with auto-sell off."""
+    sell = (payload or {}).get("autoSell")
+    if not isinstance(sell, dict) or sell.get("enabled", True) is False:
+        return 0.0
+
+    def num(x) -> float:
+        try:
+            return max(0.0, float(x))
+        except (TypeError, ValueError):
+            return 0.0
+
+    timers = [num(sell.get("sellAfterSeconds"))] if num(sell.get("sellPercent")) > 0 else []
+    timers += [num(st.get("sellAfterMs")) / 1000 for st in sell.get("stages") or [] if isinstance(st, dict)]
+    return max(timers, default=0.0)
+
+
+def run_hold_secs(payloads, sweep_after: float | None) -> float:
+    """How long after the run's last buy of a coin the owner holds too its tokens are held as the run's (`oktech_cycle`,
+    `run_parts`): RUN_HOLD_MAX_SECS, or longer when the snipers' longest exit timer and RUN_HOLD_MARGIN_SECS is (23 Nov
+    audit: a sniper whose timer sells at 400 s was re-armed, so stopped, at 300 s), or when --sweep-after and two
+    tries of the run's own sale of them is."""
+    hold = max(RUN_HOLD_MAX_SECS, max((exit_timer_secs(p) for p in payloads), default=0.0) + RUN_HOLD_MARGIN_SECS)
+    if sweep_after is not None:
+        hold = max(hold, float(sweep_after) + 2 * SWEEP_RETRY_SECS)
+    return hold
 
 
 class OverlapError(ValueError):
@@ -1142,12 +1174,25 @@ class Service:
                 if h.get("mint"):
                     seen.setdefault(str(h["mint"]), now)
 
+        def by_shape(mint: str) -> bool:
+            """Whether a buy of ours explains the coin by its shape: a copy right behind a copied wallet's buy at fees
+            no payload names (measure/ours.bot_bought; `_bought_by_us` reads a buy by its fees alone). 23 Nov audit:
+            such a copy, held ten minutes, was a stray to the guard, and its end stopped the sniper that held it.
+            Records that cannot be read: it may be ours."""
+            from .measure.ours import bot_bought, fee_marks
+
+            try:
+                return bot_bought(self.store, address, mint, fee_marks(self.store))
+            except Exception:  # noqa: BLE001 - not known: the coin keeps the snipers running
+                return True
+
         def theirs(held: list[dict]) -> list[dict]:
             """The held coins a sniper may manage: all but a stray, seen STRAY_AFTER_SECS with no buy of ours to explain
-            it (book.run._strays: an airdrop, the owner's own)."""
+            it (book.run._strays: an airdrop, the owner's own), by its fees or by its shape (`by_shape`)."""
             now = time.time()
             return [h for h in held if not (h.get("mint") and now - seen.get(str(h["mint"]), now) >= STRAY_AFTER_SECS
-                                            and not _bought_by_us(self.store, address, str(h["mint"])))]  # fmt: skip
+                                            and not _bought_by_us(self.store, address, str(h["mint"]))
+                                            and not by_shape(str(h["mint"])))]  # fmt: skip
 
         async def holding() -> list[dict] | None:
             """What keeps the snipers running at an end: the coins they may manage, or a buy of ours on the tape that the
@@ -1416,13 +1461,17 @@ class Service:
 
         The wallet is the owner's too: they buy, sell and send coins in it by hand while a run is on. A coin is the
         run's only when the buy that brought it in paid the fees its snipers pay, or fees nobody recorded
-        (measure/ours.RunCoins: the tape's buy since the coin showed, else the chain's); the owner's own coins are left
+        (measure/ours.RunCoins: the tape's buy since the coin showed, else the chain's), or stood right behind a buy
+        of a wallet they copy whatever it paid (the copy's shape, measure/ours.CopyShape: OKTech varies what it pays,
+        and a copy at fees no payload names is said once, `say_odd`); the owner's own coins are left
         alone, never sold by the run, counted as its fills, placed as its copies, or a reason to hold a re-arm back or
         keep a sniper running, and the floor counts each at its worth when first known as theirs and moves with it
         when it leaves (`owner_coins` in the report). A coin of the run's the owner bought into by hand is sold by the
         run only for the run's own tokens of it, and is theirs once the tape shows those all sold and their own buys
-        explain the rest (OWNER_REST_READINGS). A copy into a coin of the owner's leaves it theirs, but while the tape
-        says the run holds tokens of it (RUN_HOLD_MAX_SECS at most, or --sweep-after and two tries of its sale) no
+        explain the rest (OWNER_REST_READINGS); a sale of exactly the tokens one buy of the run's bought is that
+        sniper's exit, whatever fees it paid (`run_tokens`). A copy into a coin of the owner's leaves it theirs, but
+        while the tape says the run holds tokens of it (`run_hold_secs` at most: RUN_HOLD_MAX_SECS, the snipers'
+        longest exit timer and a margin, or --sweep-after and two tries of its sale, whichever is longest) no
         sniper is re-armed or stopped, at the end and on the way out too, and past --sweep-after the run sells its own
         tokens of it, never the owner's (`run_parts`; no more than the wallet holds beyond theirs).
         A coin nobody can tell yet is held as the run's but never sold by it.
@@ -1493,14 +1542,21 @@ class Service:
                              f"{address[:6]}…: it would sell nothing, or that wallet's coin. Run it on the selling key's "
                              "wallet, or without --sweep-after; nothing cycled")  # fmt: skip
         can_sell = seller == address  # without it, a copy of an own launch or of bait is left to its sniper's exit
-        # how long the run's tokens in a coin of the owner's are held as the run's after its last buy (`run_parts`)
-        hold_secs = RUN_HOLD_MAX_SECS
-        if sweep_after is not None:  # and long enough for the run's own sale of them, tried twice
-            hold_secs = max(hold_secs, float(sweep_after) + 2 * SWEEP_RETRY_SECS)
-        from .measure.ours import WHOSE_MARGIN_SECS, RunCoins, bot_tape_buy, sniper_marks
+        # how long the run's tokens in a coin of the owner's are held as the run's after its last buy (`run_parts`):
+        # as long as the snipers' longest exit timer needs, and the run's own sale of them, tried twice
+        hold_secs = run_hold_secs([(mine.get(i) or {}).get("payload") for i in ids], sweep_after)
+        from .measure.ours import (
+            WHOSE_MARGIN_SECS,
+            RunCoins,
+            bot_tape_buy,
+            odd_fees_line,
+            odd_tape_buys,
+            sniper_marks,
+        )
 
-        # whose each coin in the wallet is: the run's (its snipers' fees on the buy) or the owner's own (measure/ours.py)
-        run_marks = sniper_marks(((mine.get(i) or {}).get("payload") or {}) for i in ids)
+        # whose each coin in the wallet is: the run's (its snipers' fees on the buy, or a buy right behind one of the
+        # wallets they copy, whatever it paid: the copy's shape) or the owner's own (measure/ours.py)
+        run_marks = sniper_marks((((mine.get(i) or {}).get("payload") or {}) for i in ids), store=self.store)
         coins = RunCoins(self.store, self.rpc, address, run_marks)
         client = self._oktech()
         events: list[str] = []
@@ -1797,6 +1853,20 @@ class Service:
         # the owner's own coins missing from the readings in a row: one is gone only when two agree (a node can leave a
         # coin out of one reply: 22 Nov review, a 3 SOL coin left out once moved the floor down by 3 for the whole run)
         owner_miss: dict[str, int] = {}
+        odd_said: set[str] = set()  # the buys said to have paid fees no sniper of the run's is set to pay, once each
+
+        def say_odd() -> None:
+            """Say once each buy of the run's that is its own by its shape alone: right behind a buy of a wallet its
+            snipers copy, at fees none of them is set to pay (23 Nov audit: OKTech varies what it pays; read as the
+            owner's, such a copy was not counted or sold, and its sniper could be stopped while it held the coin)."""
+            try:
+                rows = odd_tape_buys(self.store, address, t0, run_marks) + coins.odd
+            except Exception:  # noqa: BLE001 - the tape cannot say now: said at a later reading
+                rows = list(coins.odd)
+            for r in rows:
+                if r["sig"] not in odd_said:
+                    odd_said.add(r["sig"])
+                    log(f"copy in {r['mint']}: {odd_fees_line(r['leader'], r['priority'], r['tip'])}")
 
         async def sort_coins(held_all: list[dict], now: float, since: float | None = None):
             """(the run's coins among `held_all`: bought by its snipers, or not known yet; the owner's own coins first
@@ -1865,6 +1935,7 @@ class Service:
                 log(f"{m} is the owner's own coin (the buy that brought it in paid none of this run's snipers' fees): "
                     f"left alone, never sold, counted or waited on by the run; the floor counts it at {v:.4f} SOL "
                     "while it is held")  # fmt: skip
+            say_odd()
             return run_coins, new_owner, gone
 
         async def sale_landed(sig: str) -> bool | None:
@@ -2084,11 +2155,16 @@ class Service:
             """By the wallet's trades on the tape since the run's start: the run's tokens of each coin (its buys less
             its sales; a sale at the owner's own fees is theirs), each coin's last buy of the run's, what the run's
             trades came to in SOL, and the owner's own tokens of each coin bought since then (their buys, less what of
-            each sale the run's tokens do not explain)."""
+            each sale the run's tokens do not explain). A sale of exactly the tokens one buy of the run's still holds
+            is that sniper's exit, whatever it paid: every exit of 20-22 Nov sold its buy's tokens to the unit, and
+            read as the owner's by fees the payload does not name it left the run's tokens unsold on the tape for
+            good (23 Nov audit: the run's sale then sold the owner's holding of a coin they had bought into, the coin
+            was never handed to them, and the run's own result counted a sold copy at the tape's last price)."""
             from .measure.ours import _paid
 
             trades = self.store.trades_for_user(address, int(t0), fees=True)
             left: dict[str, float] = {}
+            lots: dict[str, list[float]] = {}  # each buy of the run's still unsold, oldest first: its tokens left
             owner: dict[str, float] = {}
             last_buy: dict[str, float] = {}
             total = 0.0
@@ -2100,6 +2176,7 @@ class Service:
                         owner[t.mint] = owner.get(t.mint, 0.0) + float(t.base)
                         continue
                     left[t.mint] = left.get(t.mint, 0.0) + float(t.base)
+                    lots.setdefault(t.mint, []).append(float(t.base))
                     last_buy[t.mint] = float(t.ts)
                     total -= (int(t.quote) + int(t.fee)) / 1e9 + fees
                     continue
@@ -2107,11 +2184,23 @@ class Service:
                 if n <= 0:
                     continue
                 theirs = bool(run_marks["sell"]) and _paid(prio, tip, run_marks["sell"]) is False  # the owner's sale
+                open_lots = lots.get(t.mint, [])
+                exact = next((k for k, lot in enumerate(open_lots) if abs(lot - n) < 1), None) if theirs else None
+                if exact is not None:  # exactly one buy's tokens: that sniper's exit, at fees the payload does not name
+                    theirs = False
                 if left.get(t.mint, 0.0) > 0 and not theirs:
                     take = min(n, left[t.mint])
                     total += (int(t.quote) - int(t.fee)) / 1e9 * take / n - fees
                     left[t.mint] -= take
                     n -= take
+                    if exact is not None:
+                        open_lots.pop(exact)
+                    while exact is None and take > 0 and open_lots:  # the lots it sold, oldest first
+                        sold_of = min(take, open_lots[0])
+                        take -= sold_of
+                        open_lots[0] -= sold_of
+                        if open_lots[0] < 1:
+                            open_lots.pop(0)
                 if n > 0 and t.mint in owner:  # what the run's tokens do not explain came out of the owner's
                     owner[t.mint] = max(0.0, owner[t.mint] - n)
             return left, last_buy, total, owner
@@ -2142,8 +2231,9 @@ class Service:
 
         def run_parts(held_all: list[dict], now: float) -> list[dict]:
             """The owner's own coins in `held_all` of which the tape says the run still holds tokens (its own landed
-            sales the tape has not written yet counted), bought `hold_secs` ago at most (RUN_HOLD_MAX_SECS, or longer
-            for a long --sweep-after): a copy into a coin the owner holds is their coin by its first buy, and the run's
+            sales the tape has not written yet counted), bought `hold_secs` ago at most (`run_hold_secs`: longer than
+            RUN_HOLD_MAX_SECS for a long exit timer or --sweep-after): a copy into a coin the owner holds is their coin
+            by its first buy, and the run's
             count of its own coins sees nothing (22 Nov review). Each is the run's as much as theirs: no sniper is
             re-armed or stopped while one is held, and the run's own sale sells the run's tokens of it (22 Nov audit,
             runner finding 1: the end stopped the sniper that held such a copy, and the run never sold it). Empty when
@@ -2499,10 +2589,17 @@ class Service:
             # the owner's own coins strand nothing: the newest buy of each says whose it is
             held0, _, _ = await sort_coins(held0_all, time.time(), since=0)
             if held0:
+                # a coin nobody can tell yet (no buy of it read; a buy of seconds ago, which a walk of the chain that
+                # finds no copied buy says nothing of: measure/ours.CHAIN_SETTLE_SECS) may be the owner's own
+                unsure0 = [f"{str(h['mint'])[:6]}…" for h in held0
+                           if h.get("mint") and coins.known(str(h["mint"])) is None]  # fmt: skip
                 raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({float(h.get('value_sol') or 0):.4f} SOL)"
                                                                  for h in held0)
                                  + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
-                                 "pass --ignore-mint MINT for a position no sniper manages.")  # fmt: skip
+                                 "pass --ignore-mint MINT for a position no sniper manages."
+                                 + (f" Whose coin {', '.join(unsure0)} is cannot be told yet (no buy of it is read, or "
+                                    "one of seconds ago): if it is the owner's own, start the run again in a minute."
+                                    if unsure0 else ""))  # fmt: skip
             owner0 = round(sum(owner_val.values()), 6)  # the owner's own coins at their worth now, counted in
             how = ""
             if max_loss is not None:

@@ -19,7 +19,9 @@ first on the server's recording and only then run live in capped batches.
   that lands pays the big bid. (Corrected by the audit of 22 Nov: this said 0.0008 SOL each and 3.8 SOL for all 5,425.
   3.8 SOL is what the 4,900 failed sends read before the credit cap paid, most of them at no moment, and 0.0008 their
   average. The job's own summary line put the 2.05 SOL on the 15 moments with only failed sends; `sends` now gives
-  each outcome its own.) A send that never landed leaves nothing, so these are the fewest tries it made.
+  each outcome its own. The run also stopped reading at its credit limit and left the oldest sends unread, so "62 of
+  406" may be off by about one moment; the fixed code fetches only the sends near a moment, and a rerun is the
+  agents' to start.) A send that never landed leaves nothing, so these are the fewest tries it made.
 - **What the place is worth** (the fee analyst, I609: paper, the place assumed). Every first buy of 1.9 SOL or more,
   copied at 6 SOL right behind with 0.6 SOL charged for the bid: +1.32 SOL a copy behind Cented (311 copies in 7 days,
   lower bound +1.19) and +1.07 behind Decu (339, lower +0.98). Two places further back the same copies lose 0.48 and
@@ -142,9 +144,30 @@ first on the server's recording and only then run live in capped batches.
     refuses a job limit shorter than itself; `remote run oktech cycle` gets the limit its flags need (306c8ef);
   - one runner per wallet: a lock, and no start beside another armed sniper (a04d3ab).
   These wait for a deploy (the daily job holds it). No live run starts on the old code.
+  Added by the audit of 22 Nov (merged as 3b412e0), the runner beside the owner's own trades, one line a fix:
+  - the run's own sale never sells the owner's tokens once its own are sold, or before the tape has its last sale
+    (97d7f15), and it waits while the wallet holds less than the run's and the owner's tokens on the tape
+    together (fa20d7d);
+  - a coin the owner kept after the run's copy was sold becomes theirs (f38ad9b);
+  - the run's tokens in a coin of the owner's keep its snipers armed at an end, in the watch after it and on the
+    way out, and are sold past `--sweep-after` (40f8ea1): never more than the wallet holds beyond the owner's
+    (cddf1d1), and held long enough for that sale (2185c19);
+  - a wallet read that fails at an end is read again for up to 15 minutes, 15 s on the way out (91feda1);
+  - SOL the owner takes out while a copy is held moves the floor (58244bd); a copy whose coin shows one reading
+    before its SOL leaves, such as a PumpSwap copy OKTech wraps again a second later, no longer moves the floor
+    as the owner's (6fa5d25);
+  - own launch and bait go by the copied buy ours followed (2f6bf9f);
+  - whose a buy is: the bot's when the measure stage tied it to a sniper, or when it paid a sniper's own priority
+    with its tip or with no tip (fees nobody recorded still count as the bot's). A copied wallet beside our 0.001
+    SOL priority is no longer enough: the owner's own tool pays that priority too (44bd292). The guard's day stop
+    and the loss alert count by this rule.
+  docs/live-recipe.md ("The ends of a live run") and docs/architecture.md ("Whose trade, whose coin") say how the
+  pieces work together.
 - **The plan, in order** (no SOL until the runner fixes are out): the owner asks OKTech six questions (below, in
-  the report of 05:00); deploy; a fill classifier in the runner (own-launch, bait and repeat copies sold at once and
-  never counted for the place stop); one runner for several strategies; then the 1 SOL day behind Gake Side and
+  the report of 05:00); deploy; a fill classifier in the runner (own-launch and bait copies sold at once and never
+  counted for the place stop; a repeat copy is only tagged. Corrected by the audit of 22 Nov: this said repeats
+  were sold at once too. A copy of another copied wallet's buy in a launcher's coin is a first or a repeat copy,
+  not an own launch); one runner for several strategies; then the 1 SOL day behind Gake Side and
   Cooker as approved, a 0.1 SOL A/B tip test behind Cupseyy, and size only where counted copies make money live.
 
 ## 22 Nov, 03:00 UTC: the night's mistakes, each with its fix; the goal is now 100 SOL a day
@@ -974,7 +997,10 @@ What changed (code on the branch, each piece with its tests; README "How the boo
   is **paused after 5 losing live copies**; **one sniper per leader**; each wallet is copied only on **buys of its own
   floor or more** (the lab's `copy_plan.min_leader_sol`); the paid arm is retired.
 - **The unsold-coin watch**: a Telegram line within about a minute when a held coin's exit was due and nothing sold
-  it, repeated every 15 minutes while held. It never sells.
+  it, repeated every 15 minutes while held. It never sells. (Since the audit of 22 Nov it tells whose the coin is: a
+  coin the owner bought by hand gets one line a day as theirs, with no /sell line; a copy of ours that only the
+  measure stage's fills hold, an older PumpSwap coin, gets the 15-minute alert, not the airdrop line.
+  docs/architecture.md, "Whose trade, whose coin".)
 - **The lab simulates the live sniper**: measured slot time, OKTech's watch delay (1.3 s), the copy exit, the exit the
   book sends, the real round-trip cost. It reproduces 11 of 12 of today's OKTech-sold copies within 2 slots and their
   proceeds within 0.2 %. Every verdict written before this fix is re-qualified first; until then the book copies none.
@@ -1306,7 +1332,8 @@ Consequences for the plan:
   `3fe27cc4b7`: +0.181 over 204 trades (bound +0.162). The lab over the whole 19.6 h tape agrees (+0.121 / +0.192 on
   the newer 40%).
 - OKTech trigger NOT solved: live probes (19:46–20:12) show `hunt` and `crowdBuys` do not gate; with monitorProgram the sniper buys every launch (see live-recipe.md).
-- Sells are safe: snipers cap their own buys and keep selling; the guard only stops in an emergency.
+- Sells are safe: snipers cap their own buys and keep selling; the guard only stops in an emergency. (Since the
+  audit of 22 Nov not even then while a coin is held: it stops its snipers once the wallet holds nothing they bought.)
 - The owner's tracked-wallet list (2,626 Solana addresses: KOLs, devs, snipers, bundles, cabals) is loaded as labels
   (`label --file inputs/tracked_labels.tsv --kind wallet`) and studied below.
 

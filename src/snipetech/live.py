@@ -143,7 +143,8 @@ SLOW_LOG_EVERY_SECS = 60.0
 AMM_SEEN_MAX = 50_000  # signatures recorded on the PumpSwap side, so a replay or a second pool records nothing twice
 # The hourly prune (`_prune`): the tables read whole are walked once a day (`PRUNE_KEY` in the coverage table keeps the
 # day across restarts), and after each step the loop gets PRUNE_REST times the step's own time, so the prune never
-# takes more than a quarter of it.
+# takes more than a quarter of it. The record keeps when the last prune ran as well (`pruned`): held in memory alone,
+# every new process pruned at its first tick, while its replay caught up (22 Nov: a 5.1 s hold of the loop there).
 PRUNE_KEY = "prune"
 PRUNE_WALK_SECS = 86_400.0
 PRUNE_REST = 3.0
@@ -1730,8 +1731,18 @@ class LiveWatcher:
 
     # -- maintenance -------------------------------------------------------------------------------
 
+    def _last_prune(self) -> float:
+        """When the last hourly prune ran, by the database's record (`PRUNE_KEY`): a process before this one may have
+        run it. 0 (prune at the first tick, as every new process did) when there is none, it cannot be read, or it
+        lies ahead of the clock."""
+        try:
+            at = float((self.store.coverage(PRUNE_KEY) or {}).get("pruned") or 0)
+        except Exception:  # noqa: BLE001 - never the end of the maintenance task, and with it of the recorder
+            return 0.0
+        return at if at <= time.time() else 0.0
+
     async def _maintenance(self) -> None:
-        last_prune = 0.0
+        last_prune = self._last_prune()
         pruning: asyncio.Task | None = None
         while True:
             await asyncio.sleep(min(10, self.cfg.live.rescore_interval_secs))
@@ -1807,8 +1818,8 @@ class LiveWatcher:
                 # the loop's turn: with one turn between steps the streams were served once a step for as long as the
                 # prune ran (11 Nov: 47-50 s an hour, PumpSwap dropped with "client could not keep up")
                 await asyncio.sleep(max(PRUNE_REST_MIN_SECS, PRUNE_REST * (time.perf_counter() - t0)))
-            if walks:
-                self.store.set_coverage(PRUNE_KEY, {"walked": int(now)})
+            # the day of the last walk and when this prune ran, for the next process too (`_last_prune`)
+            self.store.set_coverage(PRUNE_KEY, {"walked": int(now if walks else walked), "pruned": int(now)})
         except Exception as exc:  # noqa: BLE001 - the tape goes on; the next hour's prune tries again
             log.warning("tape: the hourly prune failed (%s); the next one goes on from there", exc)
         if self.pay_dests is not None and self.retain_known:

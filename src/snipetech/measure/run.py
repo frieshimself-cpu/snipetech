@@ -43,7 +43,7 @@ from .exits import (
     preset_name,
     shadow_exits,
 )
-from .ours import bot_buy, bot_fill, bot_sale_fees, bot_send, fee_marks
+from .ours import bot_buy, bot_fill, bot_sale_fees, bot_send, fee_marks, odd_fees_line, odd_fill
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
@@ -362,10 +362,13 @@ def sell_priority_of(payload: dict | None) -> float | None:
 
 
 def twin_priority(twins: list[dict]) -> float | None:
-    """The sell priority setting (SOL) a landed sell's failed twins were sent with: the priority of the untipped twins
-    (the shape OKTech's extra copies have; the tipped variant that lost paid the buy's priority instead), else the
-    lowest priority among them. None without a priced twin. Never a median: with one twin of each shape a median
-    reads between the two settings and lands in no group."""
+    """The priority (SOL) a landed sell's failed twins paid, which names their group: the priority of the untipped
+    twins (the shape OKTech's extra copies have), else the lowest priority among them. Before the 8 Nov split that
+    was the sell priority setting (0.002; the tipped variant that lost paid the buy's priority instead). The 0.0001
+    sent since is under the buy priority, and OKTech uses no sell priority under the buy's: every twin then pays its
+    sniper's buy priority, the untipped ones too (fees.py; every sell and failed send from 20 Nov on paid 1,000,000
+    lamports). None without a priced twin. Never a median: with one twin of each shape a median reads between the
+    two and lands in no group."""
     priced = [t for t in twins if t.get("priority_lamports") is not None]
     if not priced:
         return None
@@ -376,11 +379,13 @@ def twin_priority(twins: list[dict]) -> float | None:
 
 def twins_per_sell(sells: list[dict], failed_rows: list[dict], prio_by_sell: dict[str, float | None],
                    window_s: float = TWIN_WINDOW_SECS) -> dict[str, dict[str, Any]]:  # fmt: skip
-    """What the failed twins cost per landed sell, grouped by the sell priority setting that priced the twins (0.002
-    before the 8 Nov split, 0.0001 after), so measure tells whether the split worked. The group is the sell priority
-    the sell's sniper was created with (`prio_by_sell`) when known, else what the sell's twins say (`twin_priority`):
-    twins come in two shapes, untipped sends at the sell priority and the tipped variant that lost, at the buy's
-    priority, so the untipped ones decide and a median is never taken. A sell with neither is 'unknown'."""
+    """What the failed twins cost per landed sell, grouped by the sell priority the sell's sniper was created with
+    (`prio_by_sell`: 0.002 before the 8 Nov split, 0.0001 since), so measure tells what the split changed. A group's
+    name is that setting, not what its twins paid: before the split they paid it; the 0.0001 sent since is under the
+    buy priority, OKTech uses no sell priority under the buy's, and the twins pay the sniper's buy priority
+    (`twin_priority`, fees.py), so cost_sol is the number to read. Where the sniper is not known the group is what
+    the sell's twins paid (`twin_priority`: the untipped ones decide and a median is never taken). A sell with
+    neither is 'unknown'."""
     twins = twin_sells(failed_rows, sells, window_s)
     rows = {f["sig"]: f for f in failed_rows}
     per_sell: dict[str, list[dict]] = {s["sig"]: [] for s in sells}
@@ -480,6 +485,17 @@ def _non_coin_line(buy: dict) -> str:
             "SOL. A sniper made after the fix of 12 Nov is sent platforms and a market-cap ceiling against it "
             "(docs/oktech-features.md, \"Never copy a non-coin\"): if this buy came from one, they did not stop "
             "it.")  # fmt: skip
+
+
+ODD_FEES_SAID_KEY = "measure:odd_fees_said"  # the copies at fees no sniper pays the notes were told of (signatures)
+
+
+def _odd_fees_line(buy: dict, leader: str) -> str:
+    """The owner's line for a copy that paid fees no sniper of ours is set to pay: counted as the bot's by its shape
+    (measure/ours.CopyShape: right behind the copied wallet's buy), with the coin and when."""
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(int(buy.get("ts") or 0)))
+    return (f"[measure] {odd_fees_line(leader, buy.get('priority_lamports'), buy.get('tip_lamports'))} (coin "
+            f"{str(buy.get('mint'))[:6]}…, {when}).")  # fmt: skip
 
 
 def _crossed_line(sell: dict, buy: dict | None) -> str:
@@ -899,8 +915,18 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         told.append(b["sig"])
     if untold:
         store.set_coverage(NON_COIN_SAID_KEY, {"sigs": told[-500:], "ts": int(now)})
-    # did the 8 Nov sell-fee split work: the twins' cost per landed sell by the sell priority they paid, and sells
-    # landed per buy before and after it (the first 20 sells after are said one by one; a fall is an alert line)
+    # a copy at fees no sniper of ours is set to pay, the bot's by its shape alone (measure/ours.odd_fill): said once
+    odd_told = list(store.coverage(ODD_FEES_SAID_KEY).get("sigs") or [])
+    odd_seen = set(odd_told)
+    odd_new = [(b, who) for b in bot_buys if b["sig"] not in odd_seen and (who := odd_fill(b, marks))]
+    for b, who in sorted(odd_new, key=lambda x: (x[0].get("ts") or 0, str(x[0].get("sig")))):
+        _note(cfg, now, notes, _odd_fees_line(b, who))
+        odd_told.append(b["sig"])
+    if odd_new:
+        store.set_coverage(ODD_FEES_SAID_KEY, {"sigs": odd_told[-500:], "ts": int(now)})
+    # what the 8 Nov sell-fee split changed: the twins' cost per landed sell by the sell priority its sniper was sent
+    # (the twins pay the buy priority: `twins_per_sell`), and sells landed per buy before and after it (the first 20
+    # sells after are said one by one; a fall is an alert line)
     prio_by_buy = {b["sig"]: sell_priority_of((buying_sniper(copy_rows, b) or {}).get("payload")) for b in all_buys}
     prio_by_sell = {s["sig"]: prio_by_buy.get(first_buy_for_sell.get(s["sig"]) or "") for s in all_sells}
     per_sell = twins_per_sell([s for s in all_sells if bot_sale(s)], failed_flagged, prio_by_sell)

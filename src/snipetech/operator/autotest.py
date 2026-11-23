@@ -33,7 +33,8 @@ every Hunt setting loses about 0.007 SOL a trade (7 Nov 08:57).
 What holds it. An execution fault never drops a strategy, since it says nothing about the strategy: a cycler that died
 (its sniper stayed armed with nobody watching until the round closed the block, and a buy it made then counts: no block
 in the round that finds it, one at the next round, after a second death in a row none for CYCLER_BACKOFF_SECS, doubling,
-unless a deploy changes the code), OKTech unreachable or erroring, a coin OKTech left unsold (never counted at its whole
+unless a deploy changes the code; "in a row" until a block runs to its end, whatever else holds the strategy between
+two deaths: _streak), OKTech unreachable or erroring, a coin OKTech left unsold (never counted at its whole
 cost while the wallet holds it: once sold its sale counts, once gone its cost), the wallet unreadable, a measure stage
 stalled past MEASURE_WAIT_SECS. It holds new blocks until the fault clears (re-checked each round) and the same strategy
 goes on; the owner hears it once when it starts holding and once when it clears. A wallet without room for a block
@@ -320,11 +321,12 @@ def on_resume(paths: OperatorPaths, now: float | None = None) -> str | None:
             _write(paths, cur | {"resumed": int(now)})
     seq = load_seq(paths)
     if seq and seq.get("state") == "running":
-        hold = seq.get("hold") or {}
         # the faults in a row that back it off (_cycler_wait): dead cyclers and starts that left a sniper idle, one
-        # streak (_streak); /resume lifts the back-off whichever came last (review of 22 Nov: a start's went unsaid)
-        dead = int(hold.get("deaths") or 0) if hold.get("kind") in ("cycler", "start") else 0
-        told = (f"its cycler died {dead} times in a row" if hold.get("kind") == "cycler" else
+        # streak (_streak), whatever holds the strategy now; /resume lifts the back-off whichever came last (review of
+        # 22 Nov: a start's went unsaid)
+        streak = _streak(seq)
+        dead = int(streak.get("n") or 0)
+        told = (f"its cycler died {dead} times in a row" if streak.get("kind") == "cycler" else
                 f"its blocks failed {dead} times in a row (the last could not start and left its sniper idle)")  # fmt: skip
         again = f"; {told}, and your /resume tries one block again" if dead > 1 else ""
         return (f"The automatic live test goes on with {_label(seq)} at the next round, if it still passes on paper "
@@ -995,6 +997,20 @@ async def _begin(r: _Round, at: dict) -> dict | None:
                   "(its floor, never under 1 SOL, a buy and its fees); it starts once the wallet has that (said once a "
                   "day).")  # fmt: skip
         return wait(f"the wallet holds {eq:.2f} SOL, under the {need:.2f} SOL a first block needs")
+    room = _curve_room(float(p["buy_sol"]))
+    native = r.snap.native_sol if r.snap is not None else None
+    if native is not None and float(native) + 1e-9 < room:
+        # a curve buy is paid in plain SOL only: the first block is held as every later one is (_next_block; second
+        # round of the 22 Nov audit: with the wallet's SOL wrapped it made a sniper and a cycler whose every buy fails).
+        # The line never asks for SOL (the owner, 9 Nov): past the check above the wallet holds a floor of 1 SOL and
+        # more beside the buy, so with too little of it plain the rest is there, wrapped
+        sig = "automatic test: too little plain SOL to start"
+        if not r.notes.has_today(sig, now):
+            r.say(f"{sig} {p['label']} ({best['id']}): the wallet's plain SOL is {float(native):.2f} and a curve buy "
+                  f"is paid in plain SOL only: one buy of {p['buy_sol']:g} SOL with its fees and rent needs {room:.2f} "
+                  "SOL. It starts once the wallet has that in plain SOL: turning some of its wrapped SOL back into SOL "
+                  "does it (said once a day).")  # fmt: skip
+        return wait(f"the wallet's plain SOL is {float(native):.2f}, under the {room:.2f} SOL one curve buy needs")
     req = live_test.request(p, best, r.cfg, now, by=BY, sequence={"id": seq["id"], "block": 1}, approved=at["approved"])
     save_seq(paths, seq)  # first: the round's own check asks that the request be the sequence's own
     why, _wait, _kind = await live_test._check(r.svc, r.cfg, paths, req, r.snap, now)
@@ -1020,6 +1036,12 @@ async def _begin(r: _Round, at: dict) -> dict | None:
           f"{_share(at['continue_at'])}, and is dropped for good below that or at its floor. /stop holds it; /test "
           "auto off ends it.")  # fmt: skip
     return seq
+
+
+def _curve_room(size: float) -> float:
+    """The plain SOL one curve buy of `size` needs: the buy, its fees and failed sends (live_test.BUY_FEE_MARGIN_SOL)
+    and the token account's rent. No block starts with less: its sniper's buys would only fail and pay their fees."""
+    return round(float(size) + live_test.BUY_FEE_MARGIN_SOL + RENT_SOL, 4)
 
 
 def _waits_for_oktech(r: _Round, rows: list[dict]) -> None:
@@ -1072,12 +1094,10 @@ async def _advance(r: _Round, seq: dict) -> dict:
         save_seq(r.paths, seq)
         if t.get("fault"):
             error = str(t.get("error") or "no reason known").removeprefix("not started: ")
-            hold = seq.get("hold") or {}
             # a start that left its sniper idle on OKTech counts toward the back-off (review of 7 Nov: a cycler that
             # could not start made a new idle sniper every round), in one streak with the cycler deaths before it; a
             # create that failed left nothing behind, and keeps the streak as it was (audit of 22 Nov)
-            idle = bool(t.get("oktech_id"))
-            faults = _streak(hold) + int(idle)
+            faults = _fault(r, seq, "start", left_a_sniper=bool(t.get("oktech_id")))
             _hold(r, seq, "start", f"block {cur['n']} did not start: {error}",
                   extra={"deaths": faults, "last": int(r.now), "code": CODE_ID})  # fmt: skip
         else:
@@ -1090,8 +1110,10 @@ async def _advance(r: _Round, seq: dict) -> dict:
         kind, why = end_kind(t, int(t.get("fills") or read_autotest(r.paths)["fills"]), live["own_mints"])
         cur["outcome"] = {"kind": kind, "why": why}
         hold = seq.get("hold")
+        if kind != "died":  # it ran to its end (a refusal at its start too: its cycler ran): no fault in a row any more
+            seq.pop("streak", None)
         if kind == "died":  # its sniper stayed armed until this round closed the block: never a block in this round
-            deaths = _streak(hold) + 1
+            deaths = _fault(r, seq, "cycler")
             again = f": {deaths} times in a row" if deaths > 1 else ""
             _hold(r, seq, "cycler", f"block {cur['n']}'s cycler died ({why}){again}",
                   extra={"deaths": deaths, "last": int(r.now), "code": CODE_ID})  # fmt: skip
@@ -1109,14 +1131,32 @@ async def _advance(r: _Round, seq: dict) -> dict:
     return await _next_block(r, seq)
 
 
-def _streak(hold: dict | None) -> int:
+def _streak(seq: dict) -> dict:
     """The execution faults in a row so far that each left a sniper behind: a cycler that died (its sniper armed, nobody
     watching) and a start that left its sniper idle count in one streak, whichever came first (audit of 22 Nov: the
-    count restarted at each change of kind, and a deploy failing both ways in turn never reached the back-off)."""
-    if not hold or hold.get("kind") not in ("cycler", "start"):
-        return 0
+    count restarted at each change of kind, and a deploy failing both ways in turn never reached the back-off). `n`:
+    how many; `last`: when the last one was found; `code`: the code it ran; `kind`: what the last one was ("cycler",
+    "start"). It is the strategy's own record's (`streak`), begun again only by a block that runs to its end. Kept in
+    the hold, a fault hold of another kind (the balance unreadable, OKTech down) took its place between two deaths,
+    cleared when the next block started, and the count began again (second round of that audit: death, wobble, death,
+    wobble never reached the back-off). A record written before then holds it in a dead cycler's or a start's hold."""
+    st = seq.get("streak")
+    if isinstance(st, dict):
+        return st
+    hold = seq.get("hold") or {}
+    if hold.get("kind") not in ("cycler", "start"):
+        return {}
     deaths = int(hold.get("deaths") or 0)
-    return max(deaths, 1) if hold["kind"] == "cycler" else deaths
+    return {"n": max(deaths, 1) if hold["kind"] == "cycler" else deaths, "last": hold.get("last") or hold.get("since"),
+            "code": hold.get("code"), "kind": hold["kind"]}  # fmt: skip
+
+
+def _fault(r: _Round, seq: dict, kind: str, *, left_a_sniper: bool = True) -> int:
+    """Count an execution fault found this round into the strategy's streak (`_streak`): how many in a row now. One
+    that left no sniper behind (a create OKTech refused) leaves the count as it was."""
+    n = int(_streak(seq).get("n") or 0) + int(left_a_sniper)
+    seq["streak"] = {"n": n, "last": int(r.now), "code": CODE_ID, "kind": kind}
+    return n
 
 
 def _live(r: _Round, t: dict) -> dict:
@@ -1368,7 +1408,7 @@ async def _next_block(r: _Round, seq: dict) -> dict:
     eq = live_test.equity_now(r.snap, r.now, wallet)
     if eq is None:
         return _hold(r, seq, "balance", "the wallet's balance could not be read this round")
-    room = round(size + live_test.BUY_FEE_MARGIN_SOL + RENT_SOL, 4)
+    room = _curve_room(size)
     if eq + 1e-9 < room:  # 7 Nov 10:59 the wallet was emptied: that is no result of the strategy's
         return _hold(r, seq, "room", f"the wallet holds {eq:.2f} SOL: no room for a buy of {size:g} SOL with its fees "
                                      f"and rent ({room:.2f} SOL)", daily=True)  # fmt: skip
@@ -1423,21 +1463,19 @@ def _cycler_wait(r: _Round, seq: dict) -> str | None:
     round (7 Nov: a reboot); after a second death in a row CYCLER_BACKOFF_SECS, twice as long after each further one, a
     day at most, unless a deploy changed the code since (its fix may be in) or the owner gave their word since (/resume,
     or a yes again: /test auto off then on, operate autotest --on)."""
-    hold = seq.get("hold") or {}
-    if hold.get("kind") not in ("cycler", "start"):
+    streak = _streak(seq)  # the strategy's own count, whatever holds it now
+    deaths = int(streak.get("n") or 0)
+    if not deaths:  # no fault in a row; a create that failed left nothing idle
         return None
-    if hold["kind"] == "start" and not int(hold.get("deaths") or 0):  # a create that failed left nothing idle
-        return None
-    last = int(hold.get("last") or hold.get("since") or 0)
+    last = int(streak.get("last") or 0)
     if int(r.now) <= last:
-        if hold["kind"] == "start":
+        if streak.get("kind") == "start":
             return "its block did not start this round: the next one is tried at the next round"
         return "its cycler died this round: the next block is tried at the next round"
-    deaths = int(hold.get("deaths") or 1)
     if deaths < 2:
         return None
     nxt = last + min(CYCLER_BACKOFF_SECS * 2 ** min(deaths - 2, 8), CYCLER_BACKOFF_MAX_SECS)
-    if r.now >= nxt or (hold.get("code") and hold["code"] != CODE_ID):
+    if r.now >= nxt or (streak.get("code") and streak["code"] != CODE_ID):
         return None
     at = read_autotest(r.paths)
     try:  # the owner's word since: a yes again (/test auto off then on, operate autotest --on) or /resume
