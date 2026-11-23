@@ -591,4 +591,4 @@ class RunCoins:
             ahead = [b for b in same if (k := _index(txs, b["sig"])) is not None and k < at]
             if ahead:
                 return str(ahead[0]["leader"])
-        return None if short and not found else ""
+        return None if short else ""  # a followed wallet not walked back to our buy may have bought right before it

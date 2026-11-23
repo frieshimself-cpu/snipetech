@@ -20,7 +20,7 @@ from snipetech.measure.ours import RunCoins, bot_buy, bot_tape_buy, fee_marks, o
 from snipetech.models import Trade
 from snipetech.store import Store
 
-from .chain import Chain, key, swap
+from .chain import Chain, key, sig, swap
 
 W = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"  # the sniper wallet, the owner's too
 LEAD = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"  # a wallet our copy sniper follows
@@ -302,6 +302,33 @@ def test_a_chain_that_cannot_place_the_buy_tells_nothing_yet():
     assert whose is None and coins.known(COIN) is None
 
 
+def test_one_followed_wallet_not_walked_back_to_our_buy_tells_nothing_yet():
+    """A1: a run follows two wallets. One bought the coin 40 slots before our buy (no copy of that buy); the other's
+    signatures could not be walked back to our buy (more than the walk's pages since). Its buy right before ours may
+    be there unread: the coin is nobody's yet, not the owner's because the first wallet was read."""
+    from snipetech.measure import chain_landing
+
+    busy = key("a second copied wallet, too busy to walk back")
+    both = {**COPY, "ctbotWallets": [{"address": CW}, {"address": busy}]}
+    chain = Chain(foreign_before=False)  # a node that takes only the wallet's own signature as the cursor
+    chain.put(S - 40, swap("lead", CW, COIN, tokens=3_000_000_000, sol=3.0, priority=0.002, tip=0.001))
+    chain.put(S, swap("ours", ME, COIN, tokens=38_000_000, sol=1.0, priority=0.0015, tip=0.12))
+    real = chain.get_signatures
+    pages = []
+
+    async def never_reached(address, **kw):
+        if address != busy:
+            return await real(address, **kw)
+        pages.append(kw.get("before"))  # a full page of newer transactions, every time: our buy is never reached
+        return [{"signature": sig(f"busy {len(pages)} {k}"), "slot": S + 50 + k, "err": None} for k in range(1000)]
+
+    chain.get_signatures = never_reached
+    whose, coins = _chain_whose(chain, both)
+    # asked once just before our buy, then walked back from its newest: the walk gave up short of our buy
+    assert len(pages) == 1 + chain_landing.LEADER_PAGES
+    assert whose is None and coins.known(COIN) is None
+
+
 def test_a_buy_the_node_gives_no_block_time_for_is_still_placed_by_the_blocks():
     """A1: a node can serve a transaction of seconds ago with no block time yet. That is no old buy: the blocks are
     still asked, and the copy is the run's (taken for an old one it was the owner's by its fees)."""
@@ -464,9 +491,9 @@ def _guard_beside(monkeypatch, behind_slots):
     store.add_oktech_sniper({"id": "a", "kind": "copy", "source": B.L1, "created_at": B.NOW - 86_400,
                              "payload": {"singleSnipe": True, "totalSnipes": 3, "priorityFee": 0.001,
                                          "tipAmount": 0.199, "ctbotWallets": [{"address": B.L1}]}})  # fmt: skip
-    for sig, user, slot, pos, fees in (("lead", B.L1, 400_600_000, 40, (5_000, 0)),
-                                       ("ours", B.W, 400_600_000 + behind_slots, 2, ODD)):  # fmt: skip
-        store.add_trades([Trade(sig=sig, ev=0, slot=slot, pos=pos, ts=int(bought), mint=B.MINT, venue="curve",
+    for name, user, slot, pos, fees in (("lead", B.L1, 400_600_000, 40, (5_000, 0)),
+                                        ("ours", B.W, 400_600_000 + behind_slots, 2, ODD)):  # fmt: skip
+        store.add_trades([Trade(sig=name, ev=0, slot=slot, pos=pos, ts=int(bought), mint=B.MINT, venue="curve",
                                 user=user, is_buy=True, quote=10**9, base=198_000_000, fee=0, fee_bps=125,
                                 q_after=40 * 10**9, b_after=800 * 10**12, priority=fees[0], tip=fees[1])])  # fmt: skip
     rep = asyncio.run(svc.oktech_guard(["a"], B.W, 0.1, 15))
