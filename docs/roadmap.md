@@ -37,6 +37,15 @@ first on the server's recording and only then run live in capped batches.
   later buyers' money, so the place and the crowd behind it are the whole edge. Jobs 20261123-211654-04467b,
   -211737-0d5e42, -211738-128568, -211838-92fa2b, -211839-98b055. (The same moments at a seat taken only part of the
   time, or at a higher auction price, scale down from there: at a quarter of them, about 50 a day.)
+- **How each network admits a searcher (read 23 Nov 21:30 UTC).** Harmonic (harmonic.gg/searcher-network; public beta
+  since 5 Nov): apply, KYC/KYB and AML checks, then a 7 to 14 day pilot on sandboxed validators before admission; an
+  open backrun-only auction, no exclusive access, every backrun logged with its compliance server; it covers the
+  slots of the validators that opted in, not every slot. Inertia (inertia.sh): searcher API "in early alpha",
+  streaming order flow from Amsterdam, a 50 ms auction, the winner placed behind the original flow as one bundle;
+  access through its documentation, Discord or Telegram, no public form. Flowra (flowra.wtf): another Solana order
+  flow auction, searchers register and bid through a documented API in 200 ms rounds, onboarding validators. None
+  says which apps' flow (Axiom's, GMGN's) it carries; only a searcher seat would show how many of the leaders' buys
+  reach us, and at what price.
 - **So 100 a day needs the owner's application to those networks** (an identity or a company, their terms, their
   price for the place, which the 0.6 SOL bid of the paper may not match). Only the owner can apply. With a seat, our
   side is a new buy path the repo does not have (it signs only sales today): a pump.fun buy builder pinned by a test
