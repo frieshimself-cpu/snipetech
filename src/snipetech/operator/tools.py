@@ -88,7 +88,8 @@ SQL_TABLES: dict[str, str] = {
     "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis; since 13 Nov "
     "launches_untraded = launches left out for want of trading, each still counted at a round trip's cost in "
     "verdict.ev_every_launch_sol)",
-    "fills": "every transaction of our own sniper wallet. side = buy, sell or failed (a send that did not land); "
+    "fills": "every transaction of our own sniper wallet, the owner's hand trades in it too (read_fills marks each "
+    "row `ours`: the bot's own). side = buy, sell or failed (a send that did not land); "
     "wallet_copied = the wallet a copy followed; sol = SOL (not lamports); pos_in_slot = its place in the block; "
     "trades_behind = other wallets' buys between the copied buy and ours, the copied wallet's own pack left out (19 "
     "Nov: the buys sent with its own, in its transaction and in the transactions right behind it that each carry "
@@ -1359,13 +1360,14 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
     async def read_round_trips(hours: int = 24, limit: int = 40) -> str:
         """Each live round trip of the last `hours`, newest first, for a post-mortem: the copied wallet, the landing
         (trades behind it, price gap, place in the slot), the exit that fired (exit_reason, exit_name, crossed,
-        failed duplicate sends in twin_fee_sol), the money, what the wallet's latest verdict predicted (mean_sol and
-        lower_sol at the landing, copy_plan), and what every exit on the menu would have made of the same entry
-        (shadow: exit name -> pnl_sol and the exit that would have sold; shadow_best: the best of them; None until
-        the buy is six minutes old).
+        twin_fee_sol: OKTech's failed duplicate sends and the sale's own tries that failed before it landed), the
+        money, what the wallet's latest verdict predicted (mean_sol and lower_sol at the landing, copy_plan), and
+        what every exit on the menu, and the exit that ran, would have made of the same entry (shadow: exit name ->
+        pnl_sol and the exit that would have sold; shadow_best: the best of them; None until the buy is six minutes
+        old).
 
         The money is worked out in code; use its numbers as they are. result_sol is the trip's whole result, each
-        cost once (pnl_sol is the landed trades alone, without the failed duplicate sells). breakdown holds the parts
+        cost once (pnl_sol is the landed trades alone, without twin_fee_sol). breakdown holds the parts
         that add up to result_sol: price_sol (the price move before any cost), venue_fee_sol (pump.fun's 1.25 % a
         side), buy_fee_sol, sell_fee_sol, dup_fee_sol (dups: how many); kind (won, lost_to_costs: it made money on
         the price and the costs took it, lost_on_price: it lost on the price itself); flips (the single costs whose
@@ -2164,9 +2166,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """The measure stage's live fills (buys, sells with PnL, failed sends) of the last `hours`, plus the bid model per
         arm and the live expectancy per copied wallet. These are the truth for the live landing; paper numbers are
         provisional once a wallet's live n reaches 10. A sell's pnl_sol is its landed trip; its failed duplicate
-        sends are beside it in twin_fee_sol; the summary counts the bot's own fills (a row's `ours`; the owner's hand
-        trades in the wallet are counted apart, in `owner`) and its pnl_sol is the bot's sells' whole result, each cost
-        once (a sell measure could not pair, counted in `unpriced`, pays its failed duplicate sends alone).
+        sends, and its own tries that failed before it landed, are beside it in twin_fee_sol; the summary counts the
+        bot's own fills (a row's `ours`; the owner's hand trades in the wallet are counted apart, in `owner`) and its
+        pnl_sol is the bot's sells' whole result, each cost once (a sell measure could not pair, counted in
+        `unpriced`, pays its failed duplicate sends alone).
 
         Args:
             hours: Look back this many hours (default 24).

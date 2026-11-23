@@ -82,7 +82,8 @@ def _costs(s: dict[str, Any]) -> str:
     parts += [f"sell fees {s['sell_fees_sol']:.4f}"] if s["sell_fees_sol"] else []
     if s["duplicates_sol"]:
         n = s["duplicates"]
-        count = f"{n} failed duplicate {_plural(n, 'sell')}" if n else "failed duplicate sells"
+        # the count holds OKTech's duplicates and a sale's own tries that failed before it landed (measure, 22 Nov)
+        count = f"{n} failed sell {_plural(n, 'send')}" if n else "failed sell sends"
         parts.append(f"{count} {s['duplicates_sol']:.4f}")
     return f"Costs: {s['costs_sol']:.4f} SOL: " + ", ".join(parts) + "." if parts else "Costs: none."
 

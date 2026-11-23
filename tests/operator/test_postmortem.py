@@ -23,10 +23,12 @@ def _night() -> list[dict]:
         st.close()
 
 
+# "failed sell sends" (it said "failed duplicate sells" until the audit's second round, 23 Nov, note R-measure-6): the
+# count holds OKTech's duplicates and, since 22 Nov, a sale's own tries that failed before it landed
 NIGHT = """\
 Post-mortem: 3 live round trips, 7 Nov 19:18-19:22 UTC: 1 won, 2 lost.
 Price: +0.0294 SOL before any cost (3 rose, 0 fell).
-Costs: 0.0412 SOL: pump.fun's fee 0.0152, buy fees 0.0090, sell fees 0.0090, 4 failed duplicate sells 0.0080.
+Costs: 0.0412 SOL: pump.fun's fee 0.0152, buy fees 0.0090, sell fees 0.0090, 4 failed sell sends 0.0080.
 Net: -0.0119 SOL. Both losses made money on the price and lost it to the costs.
 Biggest cause: pump.fun's fee, 1.25 % on each buy and each sell (0.0152 SOL). The venue sets it; no setting changes it.
 Would have saved the most: OKTech sending each exit once (it signs up to three copies of every sell, and the copies \
