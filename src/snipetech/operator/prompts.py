@@ -69,7 +69,12 @@ rule's numbers across 19 Nov 18:46 UTC as one record.
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
 behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet.
 The owner trades by hand in that wallet too: each row's `ours` marks the bot's own, the owner's are counted apart
-(`owner`), and the bid model and the live expectancy hold the bot's trades only. A wallet is paused after 5 losing
+(`owner`), and the bid model and the live expectancy hold the bot's trades only. A buy is the bot's by the fees a
+sniper of ours pays or, at other fees, by a copy's place and size: right behind a buy of a wallet a sniper of ours
+follows, at that sniper's size. A note "[measure] a copy behind X… paid fees no sniper of ours is set to pay" names
+such a copy, once (the owner is sent it): compare what the buy paid (read_fills) with its sniper's payload (sql,
+oktech_snipers) to see whether OKTech changed what it pays; behind a wallet no running sniper follows it is most
+likely the owner's own buy. A wallet is paused after 5 losing
 live copies, and from 10 live fills its live mean ranks it instead of its paper number; say so when the two
 disagree. What each kind of sniper bids (buy priority and tip, sell tip and priority) and
 why is the fee policy's (read_fee_policy): the minimums unless 10+ fills at a higher tip landed measurably earlier.
@@ -187,7 +192,8 @@ counted at most 2.5 times its buy) and top5_share (the share of the total its fi
 bound is not above zero or top5_share is above 0.5, read those trades (sql on paper_trades) before calling it an
 edge. 7 Nov: a rule showed +10.6 SOL over 1,200 trades and three trades made +11.0 (create-slot bundles that no live
 buy can reach); without them it lost. A report row with `refuted` (when, on how many trades, at what mean) is a rule
-the paper test dropped: it keeps its numbers and is scored no more. A row's `outside_model` counts its trades priced
+the paper test dropped: it keeps its numbers and is scored no more (the report's text marks it with the word refuted
+in a last column, state). A row's `outside_model` counts its trades priced
 outside the model (trades, sol; of: how many trades say) and the report's `outside_why` says what that is: read the
 rule without them too.
 """

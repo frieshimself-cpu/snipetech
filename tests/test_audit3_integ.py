@@ -470,3 +470,59 @@ def test_i4_a_line_telegram_did_not_take_is_sent_by_the_next_round_and_many_are_
     assert sent[: OR.FORWARD_MAX] == many[: OR.FORWARD_MAX] and len(sent) == OR.FORWARD_MAX + 1, sent
     assert "4 more" in sent[-1] and "operator/notes.md" in sent[-1], sent[-1]
     assert OR.forward_notes(paths, up) == 0
+
+
+# -- I8: what the agents are told --------------------------------------------------------------------------------------
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _tools_text() -> str:
+    """The words of the agents' tools as their descriptions are written (as tests/test_audit2_texts.py reads them)."""
+    import inspect
+
+    from snipetech.operator import tools as T
+
+    return _flat(inspect.getsource(T.make_operator_tools) + inspect.getsource(T.make_learning_tools))
+
+
+def test_i8_the_agents_are_told_a_buy_is_the_bots_by_its_fees_or_by_a_copys_place_and_size():
+    """Since the second round a buy of the wallet is the bot's by the fees a sniper of ours pays OR by a copy's shape
+    (its place right behind a followed wallet's buy; since the third, at that sniper's size too). The agents' rules
+    and the words of the `fills` table still said by its fees: a count of "ours" by priority and tip left such a
+    copy to the owner."""
+    from snipetech.operator import prompts as P
+    from snipetech.operator import tools as T
+
+    said = ("A buy is the bot's by the fees a sniper of ours pays or, at other fees, by a copy's place and size: "
+            "right behind a buy of a wallet a sniper of ours follows, at that sniper's size")  # fmt: skip
+    for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
+        assert said in _flat(system)
+    assert "a buy by a sniper's fees or by a copy's place and size" in T.SQL_TABLES["fills"]
+    assert "a buy at a sniper's fees, or right behind a followed wallet's buy at its sniper's size" in _tools_text()
+
+
+def test_i8_the_agents_are_told_what_the_odd_fees_note_means_and_what_to_do_with_it():
+    """The measure stage's note for a copy at fees no sniper of ours is set to pay (the owner is sent it since this
+    round): the agents were told nothing of it. What it means, what to check, and that behind a wallet no running
+    sniper follows it is most likely the owner's own buy, which no change of OKTech's explains."""
+    from snipetech.measure.ours import odd_fees_line
+    from snipetech.operator import prompts as P
+
+    phrase = "paid fees no sniper of ours is set to pay"
+    assert phrase in odd_fees_line(LEAD, 1, 2)  # the note's own words, as the measure stage writes them
+    for system in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
+        text = _flat(system)
+        assert f'A note "[measure] a copy behind X… {phrase}"' in text
+        assert "compare what the buy paid (read_fills) with its sniper's payload (sql, oktech_snipers)" in text
+        assert "behind a wallet no running sniper follows it is most likely the owner's own buy" in text
+
+
+def test_i8_the_agents_are_told_how_the_reports_text_marks_a_refuted_rule():
+    """The text of `paper report` (no --json) marks a refuted rule in a last column `state` since the second round."""
+    from snipetech.operator import prompts as P
+
+    for system in (P.ANALYST_SYSTEM, P.ROLE_SYSTEM["tester"]):
+        assert "(the report's text marks it with the word refuted in a last column, state)" in _flat(system)

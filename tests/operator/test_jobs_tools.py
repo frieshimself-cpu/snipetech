@@ -1930,6 +1930,17 @@ def test_the_scout_and_the_fee_analyst_are_told_what_a_run_of_sends_may_ask_for(
         assert "left of the month" in text
 
 
+def test_the_sends_help_says_the_command_refuses_a_run_past_the_month_and_whose_the_flag_is(rolebox):
+    """Round 3 of the 22 Nov audit: `sends` itself refuses, before its first request, a run whose --max-credits
+    passes what the month has left, and its --over-month is the owner's (the runner refuses it from an agent). The
+    help said only what the runner allows."""
+    tools, _, _ = rolebox
+    said = ('never more than the backfills and the earlier runs left of the month: the command refuses a run past '
+            'that before its first request, and "--over-month" is the owner\'s')  # fmt: skip
+    for role in (None, "scout", "fees"):
+        assert said in _help(tools(role)["start_job"]), role
+
+
 def test_the_agents_are_told_what_each_and_repeats_score_and_what_refuses_them(rolebox):
     """Round 1 of the 22 Nov audit (lab#0, lab#1, docs#0). The exit analyst is told to run its labs with "--each", and
     the agents froze 17 rules with "repeats": "also" whose forward records held one trade a coin; no text said what
