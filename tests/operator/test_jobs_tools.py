@@ -2031,3 +2031,22 @@ def test_route_is_the_fee_analysts_and_the_scouts_to_start(toolbox):
     fees, tester = " ".join(roles.job_help(full, "fees").split()), " ".join(roles.job_help(full, "tester").split())
     assert phrase in fees and "inside the leader's own Jito bundle" in fees and "no Helius credits" in fees
     assert phrase not in tester
+
+
+def test_an_agent_may_start_forward_tally_but_never_qualify(jobs):
+    """23 Nov (agents' I337): `forward-tally` reads the record of the wallets that passed qualify's forward check; an
+    agent starts it, never `qualify` itself (the timer's, which writes verdicts)."""
+    assert jobs.start(["forward-tally", "--json"], now=1e9)["id"]
+    with pytest.raises(PermissionError, match="not a research command"):
+        jobs.start(["qualify", "run"], now=1e9)
+
+
+def test_the_tester_is_told_what_forward_tally_answers(toolbox):
+    from snipetech.operator import roles
+
+    tools, _, _ = toolbox
+    full = tools["start_job"].to_dict()["description"]
+    tester = " ".join(roles.job_help(full, "tester").split())
+    fees = " ".join(roles.job_help(full, "fees").split())
+    assert '["forward-tally", "--json"]' in tester and "forward check" in tester
+    assert '["forward-tally", "--json"]' not in fees

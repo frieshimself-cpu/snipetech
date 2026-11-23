@@ -1211,6 +1211,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--early", action="store_true",
                     help="run the lab before [qualify] lab_interval_h (the rotation, when the lab has been idle)")  # fmt: skip
     sp = cmd(
+        "forward-tally",
+        "whether the wallets that passed qualify's forward check went on making money after it: each actor's recorded "
+        "copies after the tape its first passing verdict read (reads the record; seconds)",
+    )
+    sp.add_argument("--since", type=float, default=None,
+                    help="wallets that first passed the forward check at or after this unix time (default 19 Nov "
+                         "19:02 UTC)")  # fmt: skip
+    sp = cmd(
         "snapshot-db",
         "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst: "
         "every three hours, by a run with the time for it",
@@ -3807,6 +3815,23 @@ def _main(args) -> int:
             print(f"  {g}: {st['wallets']} wallets, {st['copies']} copies since  mean {st['mean_sol']:+.4f}  "
                   f"lower {st['lower_sol']:+.4f}  win {st['win_rate']:.0%}  {st['wallets_up']} of "
                   f"{st['wallets_judged']} wallets up  (at the verdict: {st['at_verdict_mean_sol']:+.4f})")  # fmt: skip
+        return 0
+    if args.cmd == "forward-tally":
+        from .qualify.tally import SINCE_DEFAULT, tally
+        from .store import Store
+
+        st = Store(cfg.storage.db_path)
+        try:
+            out = tally(st, SINCE_DEFAULT if args.since is None else args.since, time.time())
+        finally:
+            st.close()
+        if args.json:
+            print(json.dumps(out, indent=1))
+            return 0
+        print(out["verdict"])
+        for r in out["actors"]:
+            print(f"  {r['wallet'][:8]}… ({len(r['members'])} wallet(s)): {r['n']} copies {r['sum_sol']:+.4f} SOL, "
+                  f"{r['wins']} up; now {r['latest_status']}{', cold' if r['cold'] else ''}")  # fmt: skip
         return 0
     if args.cmd == "qualify" and args.action == "due":
         from .store import Store

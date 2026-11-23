@@ -1607,7 +1607,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
         stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed, and
-        so are landing, tips, sends and route, and of history only ["history", "amm-backfill", ...] (below); one lab at a
+        so are landing, tips, sends, route and forward-tally, and of history only ["history", "amm-backfill", ...] (below); one lab at a
         time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
         GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
         seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
@@ -1678,6 +1678,12 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         bundle"). It reads Jito's public explorer (no key, no Helius credits, about a month kept), newest moments first
         ("--max-moments", 150 unless told; "--max-requests", 800). A buyer inside the leader's own bundle had the
         leader's transaction before it ran: no sender of ours reaches that place without the same flow.
+        ["forward-tally", "--json"] says whether the wallets that passed qualify's forward check went on making
+        money after it (23 Nov, your idea I337): each actor whose forward status first read "passed" at or after
+        "--since" (unix time; 19 Nov 19:02 UTC unless told), counted once by its member that passed first, and the
+        copies its record keeps after the tape that verdict read ended: n, the sum and mean at the lab's size, how
+        many won, its status now and whether it went cold; with the totals and a day-by-day running sum. A wallet
+        with no record is named, not counted. It reads the record only: seconds, no lab slot.
         ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
         wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
         gives another kol trigger; "--each" takes every wallet's own first buy of 1 to 3 SOL, with no "known";
