@@ -115,7 +115,7 @@ def test_the_credit_limit_stops_before_a_request_that_would_pass_it():
     assert out["outcomes"]["unread"] == 1 and out["outcomes"]["none"] == 1  # M2's try is unread; M3 had no send near
 
 
-def _cut_world(near_last: bool = True, far: int = 0):
+def _cut_world(far: int = 0):
     """Two first buys of LEAD with nothing of the bot's landed: M1 (slot 1100) and M2 (slot 1200), each tried with
     one failed send that names it; `far` newer failed sends name no moment's coin and land near no moment."""
     store = Store(":memory:")
