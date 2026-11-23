@@ -6,6 +6,41 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 23 Nov, 16:30 UTC: the place right behind the big wallets is bought with their own transaction (the route check)
+
+- **The question** (22 Nov 07:50, below): another wallet's buy stands within 3 block places after most first buys of
+  Cented, Decu and theo side, and a buy sent once the leader's buy is seen lands far later. So how do those buyers get
+  there? The new `route` command (379832b, deployed 16:08) answers it from Jito's public bundle explorer, which says
+  for each landed transaction the bundle it came in, and for each bundle its transactions, who paid its tip and its
+  place in the block (no key, no Helius credits).
+- **The answer** (job 20261123-160910-658404: the newest 200 of the 261 first buys of 1.9 SOL or more by Cented,
+  Decu, theo side and Yugi between 21 Nov 03:40 and 23 Nov 08:31 UTC that had another wallet's buy of 0.1 SOL or more
+  within 3 places after; the leaders' own companions apart).
+  - On **103** the closest buyer rode **inside the leader's own Jito bundle**: that bundle carried the leader's signed
+    transaction, and the buyer paid its tip (101 of 103). A bundle can carry a transaction only if its sender holds
+    it signed, so the buyer held the leader's transaction before it ran, wrapped it in its own bundle, and won Jito's
+    auction for it.
+  - **88 of those 103** are one operator's buys of exactly 3.457 SOL, from 47 wallets, always 2nd behind in a bundle
+    of three (in the ones read whole: the leader's buy, an empty transaction of a third key, its buy through the
+    program L2TExMFK…), at a median tip of **0.003 SOL**. 8r6N8w (the +100 SOL a week bot of 22 Nov) won 9 at 1st
+    behind with tips of **0.40 to 1.08 SOL**.
+  - **0** took the place with a bundle of their own. **97** stood there outside Jito (8r6N8w 30 times, FfW5e8 8,
+    6Z91 7, 9AGtz3 5): another route, which Jito's explorer cannot see.
+  - The leaders do not send through Jito themselves: their buy was in a Jito bundle on 109 of the 200, 103 of them
+    a follower's. Cented and Decu buy through one trading platform's program (FLASHX8D…), theo side through GMGN's
+    (GMgnVFR8…). Yugi has almost nobody right behind (3 of 75 moments).
+- **What it means.** The place right behind exists and has a price: the highest Jito tip among the bundles that
+  carry the leader's transaction, usually 0.002 to 0.02 SOL, up to about 1 SOL when 8r6N8w bids. On paper the place
+  is worth about +1.1 to +1.3 SOL a copy at 6 SOL (22 Nov, below). The entry ticket is the leader's signed
+  transaction before it runs; nothing faster or higher-bidding reaches the place without it. Where these buyers get
+  it is the next question: the leaders' trading platforms (FLASH…, GMGN) or a relay that passes their orders on.
+  OKTech question 30 asks whether a copy can go out as such a bundle (docs/oktech-playbook.md). Any sender of our own
+  stays the owner's decision; this is the fact it waits on, not a plan.
+- **The paper against the live test** (lab 20261123-160934-bd53ff, the tape copy of 13:30): Yugi's fill 2 made
+  +0.099 on paper and +0.101 live; the ten refused sends fall at the same moments on paper and live; fill 1 made
+  +0.125 on paper (held 12 s) and +0.023 live (OKTech sold at 3 s when Yugi moved the coin into his own wallets,
+  OKTech question 28). Fills 3 and 4 (the mayhem coins) came after that copy.
+
 ## 23 Nov, 11:10 UTC: the whole system audited and fixed in three rounds; one rule holds in both weeks under the filter the live snipers use; it runs as a 0.2 SOL test
 
 - **The audit (the owner, 22 Nov: "Go through every single thing and find as much as you can to fix or improve").**

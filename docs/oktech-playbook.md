@@ -619,6 +619,12 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     15:23:50 UTC failed while making our token account (`IncorrectProgramId` from the Token-2022 program), before any
     buy: the coin is older than our tape's 14 days, very likely made with the original token program. Each such copy
     costs its priority fee and buys nothing.
+30. (23 Nov) Can a copy go out as a Jito bundle that carries the copied wallet's own transaction, ahead of ours, with
+    our tip? The route check (roadmap, 23 Nov 16:30) found the place right behind Cented, Decu and theo side bought
+    that way on 103 of 200 first buys: the buyer's bundle held the leader's signed transaction and won Jito's
+    auction for it at a median tip of 0.004 SOL (one operator's 3.457 SOL buys 0.003; 8r6N8w 0.40-1.08).
+    That needs the leader's transaction before it runs. Does OKTech see a followed wallet's transaction before it
+    lands, and if so, through which route?
 
 Questions 1, 2, 3, 4 and 5 decide the real-size copy. **The 22 Nov plan's six, in its order: 6 (the signer check),
 20, 10, 21, 22, and 9 with 23.** The smoke tests of 23 Nov add 24 to 26, and the 0.2 SOL test 27 to 29: each costs a live run copies, shots or exits today.
