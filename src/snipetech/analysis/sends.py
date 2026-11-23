@@ -15,6 +15,12 @@ credits for such transactions and the limit then cut the oldest tries), stops be
 `max_credits`, and counts what it asked into the month's Helius number (`Store.usage_add`, USAGE). The window ends
 where the tape ends (a research job reads the hourly copy): a send after it has no moment the tape could hold.
 
+A run that asks for more than the month has left is refused before its first request (`month_left`, `OverMonth`): the
+month's limit for chain reads (amm_backfill.MONTH_CREDITS) less what the backfills and the runs of this command have
+counted this month, together. The agents' job runner holds an agent's run to the same number (operator/jobs.py); until
+23 Nov a run started any other way (`remote run sends`, by hand) asked nothing of the month. `over_month` (the
+command's --over-month) runs it all the same, on the owner's word.
+
 A moment is a leader's first buy of a coin (no buy of it by that leader in the FIRST_LOOKBACK_SECS before) of `min_sol`
 or more. A send tries a moment when it names the moment's coin among its accounts and lands from the moment's slot to
 TRY_SLOTS after it (the latest moment of that coin when several are near). A landed buy of the wallet in that span is
@@ -40,7 +46,8 @@ import json
 from collections import Counter, defaultdict
 from typing import Any
 
-from ..amm_backfill import PAGE, SIGS, TX, Meter, _chunks
+from ..amm_backfill import MONTH_CREDITS, PAGE, SIGS, TX, Meter, _chunks
+from ..amm_backfill import USAGE as BACKFILL_USAGE
 from ..solana.tx import _account_keys
 
 LAMPORTS = 1e9
@@ -49,6 +56,7 @@ TRY_SLOTS = 3  # a send lands this many slots after the leader's buy at most to 
 FIRST_LOOKBACK_SECS = 86400.0  # a leader's buy of a coin it bought in the day before is no first buy
 DEFAULT_MAX_CREDITS = 5000
 USAGE = "helius-sends"  # `Store.usage_add`: the credits this command counted in the month
+MONTH_USAGES = (BACKFILL_USAGE, USAGE)  # what counts into the month's limit together (as operator/jobs.py counts it)
 FETCH_CHUNK = 100
 OUTCOMES = ("adjacent", "block", "later", "failed", "none", "unread")
 UNTRIED = ("none", "unread")  # the outcomes not counted as tried: nothing seen, or nothing read
@@ -61,6 +69,16 @@ FEES_NOTE = (f"fee_sol and priority_sol are over the fetched sends only (the fai
              f"{TRY_SLOTS} slots of a moment: no other is fetched), not over all the failed sends; placed_fee_sol over "
              "the tries at every tried moment, failed_only_fee_sol over those at the moments with failed sends only "
              "(by_outcome: each outcome's own); errors over every failed send (the listing's own)")  # fmt: skip
+
+
+class OverMonth(ValueError):
+    """A run was asked for more credits than the month has left (`month_left`): nothing was read."""
+
+
+def month_left(store, now: float, month_credits: float = MONTH_CREDITS) -> int:
+    """What is left of the month's Helius credits for chain reads: the limit less what the backfills and the runs of
+    sends have counted in `now`'s month (`Store.usage_month` of each of MONTH_USAGES), never under 0."""
+    return max(0, int(month_credits) - sum(int(store.usage_month(usage, now)) for usage in MONTH_USAGES))
 
 
 def _err_text(err: Any) -> str:
@@ -143,9 +161,17 @@ def _place(tape, m: dict[str, Any], buys: list) -> str | None:
 
 async def sends(store, tape, rpc, wallet: str, leaders: list[str], now: float, *, hours: float = 72.0,
                 min_sol: float = 1.9, max_credits: float = DEFAULT_MAX_CREDITS,
-                validators: bool = False) -> dict[str, Any]:  # fmt: skip
+                validators: bool = False, over_month: bool = False) -> dict[str, Any]:  # fmt: skip
     """`store`: where the month's credits are counted (the live store); `tape`: the trades read (the hourly copy);
-    `validators`: also read each moment's block leader and split the moments by it."""
+    `validators`: also read each moment's block leader and split the moments by it. Raises OverMonth, before anything
+    is read, when `max_credits` is more than the month has left (`month_left`) and `over_month` is not set."""
+    if not over_month:
+        left = month_left(store, now)
+        if max_credits > left:
+            raise OverMonth(f"--max-credits {max_credits:,.0f} would pass what the month has left: {left:,} of the "
+                            f"month's {MONTH_CREDITS:,} Helius credits (the backfills and the runs of sends count "
+                            "together). Ask for that much at the most; --over-month runs it all the same, on the "
+                            "owner's word. Nothing was read.")  # fmt: skip
     end = _tape_end(tape, now)
     since = end - float(hours) * 3600
     moments = _moments(tape, list(leaders), since, end, min_sol)

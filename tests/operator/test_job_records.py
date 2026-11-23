@@ -17,11 +17,20 @@ import os
 import pathlib
 import sys
 
+import pytest
+
 from snipetech import ops as O
 from snipetech.operator.snapshot import ended_since, recent_jobs, running_jobs
 
 NOW = 1_794_390_000.0
 DAY = 86400
+
+
+@pytest.fixture(autouse=True)
+def _booted_before_every_record(monkeypatch):
+    """I2 (audit round 2): the records here are dated on NOW's clock (`_job`), and a record written before the machine
+    booted is not running whoever holds its pid. This machine has been up for 60 days of that clock."""
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: int(NOW - 60 * DAY))
 
 
 def _job(jobs, jid, argv, *, started, ended=None, running=False, exit_at=None, written=None, pid=999999, code=0):
@@ -100,6 +109,31 @@ def test_a_running_job_is_found_however_old_its_record(tmp_path):
     _job(jobs, "20261001-000000-grd", ["oktech", "guard"], started=NOW - 40 * DAY, running=True, pid=os.getpid())
     assert [j["id"] for j in running_jobs(jobs)] == ["20261001-000000-grd", "20261111-061900-run"]
     assert ended_since(jobs, since_ts=NOW - 900, already=set(), now=NOW)  # and it is not taken for ended
+
+
+def test_a_record_from_before_the_last_boot_is_not_running_and_is_reported_ended(tmp_path, monkeypatch):
+    """Audit round 2 (I2): the machine restarted while a live run's job ran; the job left no exit file, its record
+    says it runs, and the new boot gave its pid to another process. It read as a running `oktech cycle`: the round's
+    check excused its still-armed snipers as a live runner's, and the leftovers step never took them up."""
+    from snipetech.operator import leftovers
+    from snipetech.operator.gate import runner_ids
+
+    jobs = _world(tmp_path)
+    jid = "20261111-030000-cyc"
+    _job(jobs, jid, ["oktech", "cycle", "--id", "S1", "--id", "S2"], started=NOW - 6 * 3600, running=True,
+         pid=os.getpid())  # fmt: skip  # a live pid, another process's
+    assert runner_ids(running_jobs(jobs)) == {"S1", "S2"}  # no restart since: a live runner's snipers
+    # the restart: after that job started, before the one that started five hours ago
+    monkeypatch.setattr(O, "boot_ts", lambda proc=None: int(NOW - 5.5 * 3600))
+    assert [j["id"] for j in running_jobs(jobs)] == ["20261111-061900-run"]
+    assert runner_ids(running_jobs(jobs)) == set()  # nothing excuses S1 and S2 any more
+    out = {j["id"]: j for j in ended_since(jobs, since_ts=NOW - 900, already=set(), now=NOW)}
+    assert (out[jid]["exit_code"], out[jid]["ended"], out[jid]["note"]) == (None, NOW, "process gone")
+    assert leftovers._runner(out[jid]["argv"]) == "cycle"  # what the leftovers step takes up
+    # brought up to date once, with an exit file: no reader takes it for running again, whatever it asks
+    assert json.loads((jobs / f"{jid}.json").read_text())["running"] is False and (jobs / f"{jid}.exit").exists()
+    assert jid not in {j["id"] for j in ended_since(jobs, since_ts=NOW - 900, already={jid}, now=NOW + 900)}
+    assert _ops(tmp_path, jobs)._meta(jid)["running"] is False
 
 
 def test_the_research_of_the_last_day_opens_a_days_records(tmp_path, monkeypatch):

@@ -400,3 +400,74 @@ def test_the_command_reads_the_validators_only_when_asked(monkeypatch, tmp_path,
     assert cli.main(["--db", str(db), "sends", BOT, "--leader", LEAD]) == 0
     assert cli.main(["--db", str(db), "sends", BOT, "--leader", LEAD, "--validators"]) == 0
     assert got == [False, True]
+
+
+# -- the month's Helius credits (audit round 2, 23 Nov) ---------------------------------------------------------------
+#
+# The agents' job runner holds a run of sends to what is left of the month's limit, which the backfills share
+# (operator/jobs.py, amm_backfill.MONTH_CREDITS). Started any other way (`remote run sends ...`, by hand) the command
+# asked nothing of the month: a --max-credits of any size ran.
+
+
+def test_a_run_that_would_pass_what_the_month_has_left_is_refused_before_it_asks_anything():
+    from snipetech import amm_backfill as ab
+
+    store, chain = _world()
+    store.usage_add(ab.USAGE, ab.MONTH_CREDITS - 3_000, NOW)  # the backfills of this month
+    store.usage_add(S.USAGE, 1_000, NOW)  # and the earlier runs of sends: they count together, 2,000 are left
+    assert S.month_left(store, NOW) == 2_000
+    with pytest.raises(S.OverMonth) as e:
+        _run(store, chain, max_credits=5_000)
+    assert "2,000" in str(e.value) and "--over-month" in str(e.value)
+    assert chain.calls == [] and store.usage_month(S.USAGE, NOW) == 1_000  # nothing asked, nothing counted
+    out = _run(store, chain, max_credits=2_000)  # what is left may be asked for
+    assert out["credits"] == 2 and store.usage_month(S.USAGE, NOW) == 1_002
+
+
+def test_the_owners_word_runs_it_past_the_months_limit():
+    from snipetech import amm_backfill as ab
+
+    store, chain = _world()
+    store.usage_add(ab.USAGE, ab.MONTH_CREDITS, NOW)  # nothing left
+    assert S.month_left(store, NOW) == 0
+    out = _run(store, chain, max_credits=5_000, over_month=True)
+    assert out["credits"] == 2 and store.usage_month(S.USAGE, NOW) == 2  # counted all the same
+
+
+def test_the_credits_of_another_month_do_not_count():
+    from snipetech import amm_backfill as ab
+
+    store, chain = _world()
+    store.usage_add(ab.USAGE, ab.MONTH_CREDITS, NOW - 40 * 86400)  # last month's
+    assert S.month_left(store, NOW) == ab.MONTH_CREDITS
+    assert _run(store, chain)["credits"] == 2
+
+
+def test_the_command_refuses_in_words_and_takes_the_owners_flag(monkeypatch, tmp_path, capsys):
+    import time
+
+    from snipetech import amm_backfill as ab
+    from snipetech import cli
+    from snipetech.solana.rpc import SolanaRpc
+
+    async def no_request(self, method, params=None, final=frozenset()):
+        raise AssertionError(f"{method} was asked of the chain: a refused run asks nothing")
+
+    monkeypatch.setattr(SolanaRpc, "call", no_request)  # the command's own client: this test reaches no network
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    st.usage_add(ab.USAGE, ab.MONTH_CREDITS - 100, time.time())
+    st.close()
+    argv = ["--db", str(db), "sends", BOT, "--leader", LEAD, "--max-credits", "5000"]
+    assert cli.main(argv) == 2  # refused before the first request
+    said = capsys.readouterr()
+    assert said.out == "" and said.err.startswith("sends: ") and "--over-month" in said.err and "100" in said.err
+    got = {}
+
+    async def fake(store, tape, rpc, wallet, leaders, now, **kw):
+        got.update(kw)
+        return {"wallet": wallet, "verdict": "x", "per_leader": {}}
+
+    monkeypatch.setattr(S, "sends", fake)
+    assert cli.main([*argv, "--over-month"]) == 0 and got["over_month"] is True
+    assert cli.main(argv) == 0 and got["over_month"] is False  # off unless said

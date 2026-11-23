@@ -208,3 +208,58 @@ def test_market_cap_of_a_new_curve_and_the_big_names():
     assert not lp.is_big("1 - cookerbruski")
     assert lp.pct([1, 2, 3, 4, 5], 50) == 3 and lp.pct([], 50) is None
     assert lp.capped_mean([9.0, -0.5]) == 0.25  # one coin that went up tenfold counts as +100 %
+
+
+# -- the window of a run (audit round 2, 23 Nov) ---------------------------------------------------------------------
+#
+# `window()` asked for the newest trade of the last ten minutes by the server's clock. A tape silent for ten minutes
+# (a recorder restart, a stream that fell behind, an outage) answers that with NULLs, and the tool died on
+# `None - 7 * 86400`. The window ends where the tape ends.
+
+
+def _tape(monkeypatch, rows):
+    """The tool's Tape over a local database standing in for the server's: its `trades` with the ts index the tool
+    names, read through a stand-in for the ops endpoint's `sql` action. Returns the tape and the queries it sent."""
+    import sqlite3
+
+    lp = _tool()
+    server = sqlite3.connect(":memory:")
+    server.execute("CREATE TABLE trades (ts INT, slot INT)")
+    server.execute("CREATE INDEX trades_ts ON trades(ts)")
+    server.executemany("INSERT INTO trades VALUES (?,?)", rows)
+    monkeypatch.setenv("SNIPETECH_OPS_URL", "https://ops.invalid")
+    monkeypatch.setenv("SNIPETECH_OPS_KEY", "/nowhere/key")
+    tape = lp.Tape(":memory:")
+    sent: list[str] = []
+
+    def call(_url, _key, action, **kw):
+        assert action == "sql"
+        sent.append(kw["query"])
+        cur = server.execute(kw["query"])
+        return {"columns": [d[0] for d in cur.description], "rows": [list(r) for r in cur.fetchall()]}
+
+    tape._call = call
+    return lp, tape, sent
+
+
+def test_the_window_ends_at_the_tapes_last_trade_however_long_it_has_been_silent(monkeypatch):
+    last = 1_794_000_000  # days before this test runs: a tape silent for far more than ten minutes
+    lp, tape, sent = _tape(monkeypatch, [
+        (last - 5_000, 999_999_999),  # more than ten minutes before the last trade: its slot is not the newest block
+        (last - 10, 466_000_500),
+        (last, 466_000_490),  # the newest block time is not always the highest slot handed over
+    ])  # fmt: skip
+    assert tape.window() == (last, 466_000_500, last - 7 * 86400, 466_000_500 - 7 * lp.DAY_SLOTS - 30_000)
+    asked = len(sent)
+    assert tape.window() == (last, 466_000_500, last - 7 * 86400, 466_000_500 - 7 * lp.DAY_SLOTS - 30_000)
+    assert len(sent) == asked  # fixed at the first call: every part of a run reads the same window
+    assert all("INDEXED BY trades_ts" in q for q in sent)  # always on the index
+
+
+def test_the_window_of_a_tape_without_a_trade_says_so(monkeypatch):
+    import pytest
+
+    _lp, tape, _sent = _tape(monkeypatch, [])
+    with pytest.raises(SystemExit) as e:
+        tape.window()
+    assert "no trade" in str(e.value)

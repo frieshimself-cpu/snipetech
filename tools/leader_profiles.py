@@ -317,13 +317,16 @@ class Tape:
 
     def window(self) -> tuple[int, int, int, int]:
         """(now ts, now slot, first ts, first slot) of the 7 days, fixed at the first call so every part of a run
-        reads the same window."""
+        reads the same window. "Now" is the tape's last trade, and its slot the highest of the ten minutes up to it:
+        asked for among the last ten minutes of the server's clock, a tape silent that long (a recorder restart, an
+        outage) answered with nothing and the run died on it."""
         if not self.meta("now_ts"):
-            now = self.rows(
-                "SELECT max(ts), max(slot) FROM trades INDEXED BY trades_ts WHERE ts > strftime('%s','now') - 600"
-            )[0]
-            vals = {"now_ts": now[0], "now_slot": now[1], "t0": now[0] - 7 * 86400,
-                    "s0": now[1] - 7 * DAY_SLOTS - 30_000}  # fmt: skip
+            last = self.rows("SELECT max(ts) FROM trades INDEXED BY trades_ts")[0][0]
+            if last is None:
+                raise SystemExit("the tape holds no trade: nothing to profile")
+            slot = self.rows(f"SELECT max(slot) FROM trades INDEXED BY trades_ts WHERE ts > {int(last) - 600}")[0][0]
+            vals = {"now_ts": int(last), "now_slot": int(slot), "t0": int(last) - 7 * 86400,
+                    "s0": int(slot) - 7 * DAY_SLOTS - 30_000}  # fmt: skip
             for k, v in vals.items():
                 self.db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (k, str(v)))
             self.db.commit()
