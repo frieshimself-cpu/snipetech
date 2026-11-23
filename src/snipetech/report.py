@@ -1148,9 +1148,13 @@ def render_paper(action: str, r: dict) -> str:
 
     def rules(some: list[dict]) -> str:
         heads = ["id", "strategy", "hours", "trades", "mean", "bound", "total", "capped bound", "win", "lab said"]
+        # a rule the paper test dropped says so in its own row (the rows' `refuted`, as the dashboard lists it apart):
+        # until 23 Nov the text showed it like any rule under test. A table without one keeps its columns
+        gone = any(s.get("refuted") for s in some)
         return table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]),
-                       f(s["total"], 3), f(s.get("ev_lower_capped")), pct(s["win_rate"]), f(s["lab_mean"])]
-                      for s in some], heads)  # fmt: skip
+                       f(s["total"], 3), f(s.get("ev_lower_capped")), pct(s["win_rate"]), f(s["lab_mean"]),
+                       *(["refuted" if s.get("refuted") else ""] if gone else [])]
+                      for s in some], heads + ["state"] * gone)  # fmt: skip
 
     # a landing asked for at the freeze, or a bid: listed apart, each with its place and bid, and never under the
     # words for where our trades land live
@@ -1184,6 +1188,11 @@ def render_paper(action: str, r: dict) -> str:
         "mean / bound / total in SOL per trade at the frozen size; 'capped bound' counts each trade's gain at most 2.5x its"
         " buy (a few outliers cannot pass for an edge); 'lab said' is what the lab predicted when it was frozen."
     )
+    dropped = sum(1 for s in rows if s.get("refuted"))
+    if dropped:  # what the word in those rows means, once
+        out.append(f"refuted ({dropped} of the {len(rows)} rules): the paper test dropped the rule, its record losing "
+                   "beyond doubt; the numbers are its record as it stood and it is scored no more (--json: when, on "
+                   "how many trades, at what mean).")  # fmt: skip
     # the records that are not what their sniper would trade (paper.not_as_live: an exit that is not the sniper's,
     # or a rule scored without serial crews' coins or on them alone): what their trades are not
     out += [f"{', '.join(ids)}: {why}." for why, ids in _by_note(rows, "exit_note")]
