@@ -298,12 +298,33 @@ def trade_cash(is_buy, quote, fee, priority, tip) -> float:
     return (-(int(quote) + fees) if is_buy else int(quote) - fees) / 1e9
 
 
+TAPE_BUY_COLS = "sig, slot, pos, ts, priority, tip, quote, fee"  # what `_tape_buy` takes of a buy on the tape
+FILL_BUY_KEYS = ("sig", "sniper_id", "priority_lamports", "tip_lamports", "wallet_copied")  # and `_fill_buy` of a fill
+
+
+def _tape_buy(mint: str, sig=None, slot=None, pos=None, ts=None, priority=None, tip=None, quote=None, fee=None):
+    """A buy on the tape as measure/ours.bot_tape_buy reads one, whole: its fees, and its signature, coin, place in
+    the block, time and size. That rule tells a buy of the bot's by its fees or, at fees no sniper of ours pays, by a
+    copy's shape (right behind a followed wallet's buy of the coin). The fees alone made such a copy the owner's
+    trade to the round, while the runner, the book and /stop counted it (third round of the 22 Nov audit)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(sig=sig, mint=mint, slot=slot, pos=pos, ts=ts, priority=priority, tip=tip, quote=quote,
+                           fee=fee)  # fmt: skip
+
+
+def _fill_buy(mint: str, values) -> dict:
+    """A buy in the measure stage's fills (FILL_BUY_KEYS) as measure/ours.bot_buy reads one: with its signature and
+    coin, by which that rule reads the rest of the row itself (where the measure stage placed it)."""
+    return dict(zip(FILL_BUY_KEYS, values, strict=True)) | {"mint": mint}
+
+
 def _coin_whose(store, wallet: str, sale: dict, marks: dict[str, frozenset],
                 held_before: dict[str, dict]) -> str | None:  # fmt: skip
     """Whose the coin a sale sells is: as the round before held it (its `whose`), else by the wallet's newest buy of it
-    before the sale, on the tape (its fees) or in the measure stage's fills (measure/ours.bot_buy); None when nothing
-    tells."""
-    from ..measure.ours import _paid, bot_buy
+    before the sale, on the tape (measure/ours.bot_tape_buy) or in the measure stage's fills (measure/ours.bot_buy),
+    each handed over whole (`_tape_buy`, `_fill_buy`); None when nothing tells."""
+    from ..measure.ours import bot_buy, bot_tape_buy
 
     mint = str(sale.get("mint") or "")
     h = held_before.get(mint) or {}
@@ -312,40 +333,48 @@ def _coin_whose(store, wallet: str, sale: dict, marks: dict[str, frozenset],
     if "whose" not in h and h.get("ours") is False:  # marked before `whose`: the tape had said the owner's
         return "owner"
     try:
-        rows = store._q("SELECT priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND (slot<? OR (slot=? "
-                        "AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1",
+        rows = store._q(f"SELECT {TAPE_BUY_COLS} FROM trades WHERE user=? AND mint=? AND is_buy=1 AND (slot<? OR "
+                        "(slot=? AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1",
                         (wallet, mint, sale.get("slot", 0), sale.get("slot", 0), sale.get("pos", 0)))  # fmt: skip
         if rows:
-            return "owner" if _paid(rows[0][0], rows[0][1], marks["buy"]) is False else "ours"
-        rows = store._q("SELECT sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills WHERE wallet=? "
-                        "AND mint=? AND side='buy' AND ts<=? ORDER BY ts DESC LIMIT 1",
-                        (wallet, mint, int(sale.get("ts") or 0)))  # fmt: skip
+            return "ours" if bot_tape_buy(_tape_buy(mint, *rows[0]), marks) else "owner"
+        rows = store._q(f"SELECT {', '.join(FILL_BUY_KEYS)} FROM fills WHERE wallet=? AND mint=? AND side='buy' "
+                        "AND ts<=? ORDER BY ts DESC LIMIT 1", (wallet, mint, int(sale.get("ts") or 0)))  # fmt: skip
     except Exception:  # noqa: BLE001 - not readable now: the sale's own fees tell
         return None
     if rows:
-        row = dict(zip(("sniper_id", "priority_lamports", "tip_lamports", "wallet_copied"), rows[0], strict=True))
-        return "ours" if bot_buy(row, marks) else "owner"
+        return "ours" if bot_buy(_fill_buy(mint, rows[0]), marks) else "owner"
     return None
 
 
+# what `mark_ours` tells a trade by and does not keep: its signature, where it is on the tape, its fees, its amounts
+MARK_KEYS = ("sig", "slot", "pos", "priority", "tip", "quote", "fee")
+
+
 def mark_ours(store, fills: list[dict], prev: Snapshot | None = None, wallet: str = "") -> list[dict]:
-    """Each of the wallet's trades with `ours`: whether the bot made it. A buy by its fees: those our snipers pay
-    (measure/ours.py); unknown fees, or no sniper on record, count as the bot's. A sale goes with the coin it sells
-    (`_coin_whose`: as the round before held it, else by the wallet's buy of it) and only when nothing tells by its own
-    fees (a sniper's, or the run's own sweep): the owner sells the bot's stuck coin by hand as the watch tells them to,
-    and /sell pays the sweep's fees on the owner's own coin (audit 22 Nov, round#2). The owner trades by hand in this
-    wallet too. `slot` and `pos` (where a sale is on the tape) are read here and not kept."""
-    from ..measure.ours import _paid, fee_marks
+    """Each of the wallet's trades with `ours`: whether the bot made it. A buy by measure's own rule for one on the tape
+    (measure/ours.bot_tape_buy): the fees our snipers pay, or, at other fees, a copy's shape (right behind a followed
+    wallet's buy of the coin; the buy is handed over whole, `_tape_buy`); unknown fees, or no sniper on record, count
+    as the bot's. A sale goes with the coin it sells (`_coin_whose`: as the round before held it, else by the wallet's
+    buy of it) and only when nothing tells by its own fees (a sniper's, or the run's own sweep): the owner sells the
+    bot's stuck coin by hand as the watch tells them to, and /sell pays the sweep's fees on the owner's own coin
+    (audit 22 Nov, round#2). The owner trades by hand in this wallet too. What a trade is told by (`MARK_KEYS`) is
+    read here and not kept."""
+    from ..measure.ours import _paid, bot_tape_buy, fee_marks
 
     marks = fee_marks(store)
     held_before = {str(h["mint"]): h for h in (prev.held if prev is not None else None) or [] if h.get("mint")}
     out = []
     for f in fills:
-        side = "buy" if f.get("side") == "buy" else "sell"
-        paid = _paid(f.get("priority"), f.get("tip"), marks[side]) if marks[side] else None
-        whose = _coin_whose(store, wallet, f, marks, held_before) if side == "sell" and marks["buy"] else None
-        ours = whose == "ours" if whose is not None else paid is not False
-        out.append({k: v for k, v in f.items() if k not in ("priority", "tip", "slot", "pos")} | {"ours": ours})
+        if f.get("side") == "buy":
+            ours = bot_tape_buy(_tape_buy(str(f.get("mint") or ""), f.get("sig"), f.get("slot"), f.get("pos"),
+                                          f.get("ts"), f.get("priority"), f.get("tip"), f.get("quote"), f.get("fee")),
+                                marks)  # fmt: skip
+        else:
+            paid = _paid(f.get("priority"), f.get("tip"), marks["sell"]) if marks["sell"] else None
+            whose = _coin_whose(store, wallet, f, marks, held_before) if marks["buy"] else None
+            ours = whose == "ours" if whose is not None else paid is not False
+        out.append({k: v for k, v in f.items() if k not in MARK_KEYS} | {"ours": ours})
     return out
 
 
@@ -367,57 +396,55 @@ def fills_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str,
     """Whose the wallet's holding of `mint` is by the measure stage's fills, which it reads off the chain every five
     minutes and so also holds a buy the tape never does (a PumpSwap copy past the tape's 30 minutes): the wallet's
     newest buy or sale of the coin there since `since_ts`. A buy says "ours" or "owner" by measure's own rule
-    (measure/ours.bot_buy); a sale, or nothing, says nothing (None). With no marks every coin is ours."""
+    (measure/ours.bot_buy, the row handed over with its signature and coin: `_fill_buy`); a sale, or nothing, says
+    nothing (None). With no marks every coin is ours."""
     from ..measure.ours import bot_buy
 
     if not marks["buy"]:
         return "ours"
     try:
-        rows = store._q("SELECT side, sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills "
-                        "WHERE wallet=? AND mint=? AND ts>=? AND side IN ('buy', 'sell') ORDER BY ts DESC, slot DESC "
-                        "LIMIT 1",
+        rows = store._q(f"SELECT side, {', '.join(FILL_BUY_KEYS)} FROM fills WHERE wallet=? AND mint=? AND ts>=? "
+                        "AND side IN ('buy', 'sell') ORDER BY ts DESC, slot DESC LIMIT 1",
                         (wallet, mint, int(since_ts)))  # fmt: skip
     except Exception:  # noqa: BLE001 - not readable now: the next round asks again
         return None
     if not rows or rows[0][0] != "buy":
         return None
-    _side, sniper, priority, tip, copied = rows[0]
-    row = {"sniper_id": sniper, "priority_lamports": priority, "tip_lamports": tip, "wallet_copied": copied}
-    return "ours" if bot_buy(row, marks) else "owner"
+    return "ours" if bot_buy(_fill_buy(mint, rows[0][1:]), marks) else "owner"
 
 
 def window_whose(store, wallet: str, mint: str, since_ts: float, marks: dict[str, frozenset]) -> str | None:
-    """Whose a held coin is by the wallet's newest buy of it since `since_ts`, on the tape (its fees) or in the measure
-    stage's fills (measure/ours.bot_buy), whichever is later, a sale after it or not: the coin is held, so that sale
-    sold part of it (OKTech's take-profit stages, the owner's partial sale). `tape_whose` and `fills_whose` read a buy
-    with a sale after it as an ended holding's, and the rest of a copy half sold between two rounds was nobody's
-    (review of round#1). None with no buy since `since_ts`."""
-    from ..measure.ours import _paid, bot_buy
+    """Whose a held coin is by the wallet's newest buy of it since `since_ts`, on the tape (measure/ours.bot_tape_buy)
+    or in the measure stage's fills (measure/ours.bot_buy), whichever is later, a sale after it or not: the coin is
+    held, so that sale sold part of it (OKTech's take-profit stages, the owner's partial sale). `tape_whose` and
+    `fills_whose` read a buy with a sale after it as an ended holding's, and the rest of a copy half sold between two
+    rounds was nobody's (review of round#1). Each buy goes to its rule whole (`_tape_buy`, `_fill_buy`). None with no
+    buy since `since_ts`."""
+    from ..measure.ours import bot_buy, bot_tape_buy
 
     if not marks["buy"]:
         return "ours"
     try:
-        tape = store._q("SELECT ts, priority, tip FROM trades WHERE user=? AND mint=? AND is_buy=1 AND ts>=? "
+        tape = store._q(f"SELECT {TAPE_BUY_COLS} FROM trades WHERE user=? AND mint=? AND is_buy=1 AND ts>=? "
                         "ORDER BY slot DESC, pos DESC LIMIT 1", (wallet, mint, int(since_ts)))  # fmt: skip
-        fill = store._q("SELECT ts, sniper_id, priority_lamports, tip_lamports, wallet_copied FROM fills "
-                        "WHERE wallet=? AND mint=? AND side='buy' AND ts>=? ORDER BY ts DESC, slot DESC LIMIT 1",
-                        (wallet, mint, int(since_ts)))  # fmt: skip
+        fill = store._q(f"SELECT ts, {', '.join(FILL_BUY_KEYS)} FROM fills WHERE wallet=? AND mint=? AND side='buy' "
+                        "AND ts>=? ORDER BY ts DESC, slot DESC LIMIT 1", (wallet, mint, int(since_ts)))  # fmt: skip
     except Exception:  # noqa: BLE001 - not readable now: the next round asks again
         return None
-    # the same buy in both: measure's rule knows more (its sniper, its copied wallet)
-    if fill and (not tape or int(fill[0][0] or 0) >= int(tape[0][0])):
-        row = dict(zip(("sniper_id", "priority_lamports", "tip_lamports", "wallet_copied"), fill[0][1:], strict=True))
-        return "ours" if bot_buy(row, marks) else "owner"
+    # the same buy in both: measure's rule knows more (its sniper, where the measure stage placed it)
+    if fill and (not tape or int(fill[0][0] or 0) >= int(tape[0][3])):
+        return "ours" if bot_buy(_fill_buy(mint, fill[0][1:]), marks) else "owner"
     if tape:
-        return "owner" if _paid(tape[0][1], tape[0][2], marks["buy"]) is False else "ours"
+        return "ours" if bot_tape_buy(_tape_buy(mint, *tape[0]), marks) else "owner"
     return None
 
 
 def mark_held(store, wallet: str, held: list[dict], prev: Snapshot | None = None,
               now: float | None = None) -> list[dict]:  # fmt: skip
     """Each held coin with `whose` it is and `ours` (whose == "ours"), as the runner tells them apart
-    (measure/ours.RunCoins): the wallet's newest buy of it since the holding began says "ours" (a sniper's fees, or fees
-    nobody recorded) or "owner" (other fees); the tape's buy (measure/ours.tape_whose), else the measure stage's fills
+    (measure/ours.RunCoins): the wallet's newest buy of it since the holding began says "ours" (a sniper's fees, fees
+    nobody recorded, or at other fees a copy's shape: right behind a followed wallet's buy) or "owner" (other fees,
+    no such shape); the tape's buy (measure/ours.tape_whose), else the measure stage's fills
     (`fills_whose`), else the newest buy with a sale after it (`window_whose`: the rest of a coin sold in part). With
     none, nothing tells (None: an airdrop, a coin sent in, a buy not recorded yet), and such a
     coin is not the bot's: 'nothing told' counted as the bot's paged the owner's coins as its gains (audit 22 Nov,
@@ -474,9 +501,10 @@ def off_tape_fills(store, wallet: str, start: float, counted: dict[str, int]) ->
 
 
 def mark_off_tape(store, fills: list[dict], prev: Snapshot | None, wallet: str) -> list[dict]:
-    """Each off-tape fill with `ours`, by measure's own rule: a buy by its sniper, its fees or its copied wallet
-    (measure/ours.bot_buy); a sale with its coin as `mark_ours` tells it, else by the buy it closes (`buy_sig`), else by
-    its own fees (measure/ours.bot_sale_fees)."""
+    """Each off-tape fill with `ours`, by measure's own rule: a buy by its sniper, its fees or a copy's shape
+    (measure/ours.bot_buy: the row carries its signature, so the rule reads where the measure stage placed it); a sale
+    with its coin as `mark_ours` tells it, else by the buy it closes (`buy_sig`), else by its own fees
+    (measure/ours.bot_sale_fees)."""
     from ..measure.ours import bot_buy, bot_sale_fees, fee_marks
 
     marks = fee_marks(store)
@@ -623,8 +651,8 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         if rows is not None:
             new = [r for r in rows if f"{r[0]}:{r[1]}" not in counted and f"{r[0]}:chain" not in counted]
             trades = [{"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4),
-                       "priority": pr, "tip": tp, "slot": sl, "pos": po}
-                      for _s, _e, ts, m, b, q, pr, tp, _fe, sl, po in new]  # fmt: skip
+                       "priority": pr, "tip": tp, "slot": sl, "pos": po, "sig": s, "quote": q, "fee": fe}
+                      for s, _e, ts, m, b, q, pr, tp, fe, sl, po in new]  # fmt: skip
             taped = mark_ours(svc.store, trades, prev, wallet)
             off = mark_off_tape(svc.store, chain, prev, wallet)
             snap.fills = taped + [{"ts": int(f["ts"] or 0), "mint": f["mint"], "side": f["side"],
