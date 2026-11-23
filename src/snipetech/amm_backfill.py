@@ -580,7 +580,7 @@ async def backfill(store: Store, rpc, wallets: list[str], now: float, days: floa
         out["stopped"] = "month_credits"
         notes.append(f"stopped at the month's limit of {month_credits:,.0f} credits ({left:,.0f} were left: the "
                      "backfills and the runs of sends count together): the next request would have passed it. The "
-                     "owner lifts it with --month-credits.")
+                     "owner lifts it with --month-credits.")  # fmt: skip
     elif run.stopped:
         out["stopped"] = "max_credits"
         notes.append(f"stopped at the limit of {max_credits:,.0f} credits: the next request would have passed it. "
