@@ -77,7 +77,7 @@ first on the server's recording and only then run live in capped batches.
 - **The paper against the live test** (lab 20261123-160934-bd53ff, the tape copy of 13:30): Yugi's fill 2 made
   +0.099 on paper and +0.101 live; the ten refused sends fall at the same moments on paper and live; fill 1 made
   +0.125 on paper (held 12 s) and +0.023 live (OKTech sold at 3 s when Yugi moved the coin into his own wallets,
-  OKTech question 28). Fills 3 and 4 (the mayhem coins) came after that copy.
+  OKTech question 28). On the copy of 16:30 (lab 20261123-174151-644eb8): fill 3 (a mayhem coin) -0.147 on paper, -0.140 live; fill 4 -0.131, -0.115. Fill 5 (17:30, behind Cented, +0.0315) was sold at 4 s when Cented moved 79 % of his coins into three other wallets, as fill 1 was on Yugi's transfers. Two gaps the paper does not carry: OKTech's copy exit fires on such transfers (the paper sees no sale and holds 12 s), and after each fill the live sniper waits 20 to 45 s to be armed again, so it misses its wallet's next buys in that time (Yugi's at 14:40:12, -0.046 on paper), which the paper takes. Over Yugi's last 72 hours the paper's copy is about flat (34 moments, -0.0008 SOL a copy at 0.2 SOL).
 
 ## 23 Nov, 11:10 UTC: the whole system audited and fixed in three rounds; one rule holds in both weeks under the filter the live snipers use; it runs as a 0.2 SOL test
 
