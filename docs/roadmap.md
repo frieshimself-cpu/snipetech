@@ -160,7 +160,9 @@ first on the server's recording and only then run live in capped batches.
   - whose a buy is: the bot's when the measure stage tied it to a sniper, or when it paid a sniper's own priority
     with its tip or with no tip (fees nobody recorded still count as the bot's). A copied wallet beside our 0.001
     SOL priority is no longer enough: the owner's own tool pays that priority too (44bd292). The guard's day stop
-    and the loss alert count by this rule.
+    and the loss alert count by this rule. (Since the audit's second and third rounds, 23 Nov, a buy at other fees
+    is the bot's also by a copy's shape: at most 3 slots behind a buy of a wallet one of our snipers follows AND at
+    that sniper's buyAmount, to 0.1 %: aef634a, 9953d4e; docs/architecture.md, "Whose trade, whose coin".)
   docs/live-recipe.md ("The ends of a live run") and docs/architecture.md ("Whose trade, whose coin") say how the
   pieces work together.
 - **The plan, in order** (no SOL until the runner fixes are out): the owner asks OKTech six questions (below, in
@@ -353,7 +355,9 @@ first on the server's recording and only then run live in capped batches.
   (audit row 76).
 - **A wrong alert went to the owner at 22:15 UTC** (audit row 74): "3 failed transactions in the last hour; check
   OKTech sells and the send count". They were the three buys the wallet could not pay. The check now names such
-  buys and does not page for them.
+  buys and does not page for them. (Since 23 Nov, 9197324, it names the buys refused on their own price limit the
+  same way, "N buys refused on their price limit", and pages for none of them: a copy sniper's ceiling refuses every
+  copy above it, 20 of the smoke test's failed sends that day.)
 
 ## 11 Nov, 22:40 UTC: the owner said yes three times; one of the three is waiting for a key only the owner has
 
