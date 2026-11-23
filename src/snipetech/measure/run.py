@@ -4,7 +4,10 @@ Each sell records the exit that closed it and the preset its sniper ran (measure
 six minutes old, is replayed under every exit on the menu (exit_shadow). `backfill` replays a past window.
 A trade of ours the tape does not hold (a coin off pump.fun's curve, a PumpSwap coin past the tape's 30 minutes) is a
 fill too, read off the chain, and a buy the tape cannot place behind the wallet it copied is placed from the blocks
-themselves (measure/chain_landing.py; fills.landing_src says which gave the landing)."""
+themselves (measure/chain_landing.py; fills.landing_src says which gave the landing).
+Every buy and failed buy keeps the price limit its own instruction carried and where it stood against it
+(fills.limit_mcap_sol, fills.fill_mcap_sol; solana/buy_limit.py): what OKTech makes of a sniper's market-cap ceiling
+is a limit on our own fill, and a limit far from the ceiling the sniper was sent is said once a sniper a day."""
 
 from __future__ import annotations
 
@@ -18,14 +21,24 @@ from typing import Any
 from ..analysis.lab import span_slot_secs
 from ..config import Config
 from ..exits_menu import EXIT_MENU_VERSION
+from ..oktech import COPY_MAX_MCAP_USD
 from ..positions import NON_COIN_MINTS
-from ..solana.programs import PUMP_AMM_PROGRAM
+from ..solana import buy_limit
+from ..solana.programs import (
+    INITIAL_VIRTUAL_SOL_RESERVES,
+    INITIAL_VIRTUAL_TOKEN_RESERVES,
+    LAMPORTS_PER_SOL,
+    PUMP_AMM_PROGRAM,
+    WSOL_MINT,
+)
 from ..store import Store
 from .chain_landing import fill_fields, known_mates, own_wallets, read_fill, read_landing, wallet_signatures
 from .classify import (
+    LEADER_WINDOW_SLOTS,
     arm_from_fee,
     classify_trade,
     copy_sniper_rows,
+    leader_buy_at,
     leaders_at,
     off_its_arm,
     pair_round_trips,
@@ -507,6 +520,115 @@ def _crossed_line(sell: dict, buy: dict | None) -> str:
             f"{own:g}. Two snipers copy {leader}… from one OKTech wallet.")  # fmt: skip
 
 
+# A buy's own price limit (23 Nov 2026; solana/buy_limit.py). OKTech turns a copy sniper's market-cap ceiling
+# (`ctbotWallets[].maxMcapUsd`, `oktech copylist --max-mcap`) into the least number of coins OUR buy must get, at its
+# own SOL price: a ceiling on the average price of our own fill, fee included, and no rule about the copied buy. The
+# smoke test of that day: $4,600 sent was 64.3 to 64.7 SOL of market cap at $71.1 to $71.6 a SOL, all six fills under
+# it, sixteen refusals over it; five sends of a new sniper's first minutes carried 23 SOL, worked out at $200 a SOL,
+# under the 28 SOL every pump.fun coin starts at. Until then the measure stage kept nothing of a buy's limit.
+LIMIT_COLS = ("limit_mcap_sol", "fill_mcap_sol")  # on a fills row: the ceiling the buy carried, and where it stood
+LIMIT_REFUSED = "over its price limit"  # how a buy the program refused on its limit begins in fills.exit_reason
+START_MCAP_SOL = buy_limit.mcap_sol(INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES)  # 27.96 SOL
+CEILING_APART = 0.15  # a limit this far from the ceiling its sniper was sent, at our SOL price, is said
+CEILING_SAID_KEY = "measure:ceiling_said"  # {sniper id: the day (UTC) the notes were told of its ceiling}
+CEILING_PRICE_MAX_AGE_SECS = 36 * 3600  # the stored SOL price is asked for again every night and at every capped sniper
+CEILING_NEWS_SECS = 86_400  # a send older than this (a backfill's) is in the run's output and wakes nobody
+
+
+def is_refused(reason: Any) -> bool:
+    """Whether a failed send's reason, as fills holds it, is a buy the program refused on its own price limit: the
+    ceiling of a copy sniper at work. It pays its priority fee and is nothing to look into."""
+    return str(reason or "").startswith(LIMIT_REFUSED)
+
+
+def refused_words(lim) -> str | None:
+    """How fills words a buy the program refused on its limit (`lim`, a `buy_limit.BuyLimit`); None for any other."""
+    if lim is None or lim.would_mcap_sol is None or lim.mcap_sol is None:
+        return None
+    return (f"{LIMIT_REFUSED}: the buy would have filled at {lim.would_mcap_sol:.1f} SOL of market cap, its limit "
+            f"was {lim.mcap_sol:.1f}")  # fmt: skip
+
+
+def limit_fields(lim, tokens: float | None = None, paid_sol: float | None = None) -> dict[str, Any]:
+    """What a fills row keeps of a buy's price limit (`lim`: `buy_limit.BuyLimit`, or None: nothing was read, and
+    nothing is written). limit_mcap_sol: the market cap in SOL above which the program refuses the buy. fill_mcap_sol:
+    where the buy stood, as the limit reads a fill (our SOL, fee included, over our coins): of a landed buy from the
+    coins it got (`tokens`, raw units; `paid_sol` for a buy of so many coins), of a refused one from the coins it would
+    have got; None for a send that failed before the program weighed it."""
+    if lim is None:
+        return {}
+    if tokens is None:
+        fill = lim.would_mcap_sol
+    else:
+        fill = lim.fill_mcap_sol(tokens, None if paid_sol is None else float(paid_sol) * LAMPORTS_PER_SOL)
+    return {"limit_mcap_sol": None if lim.mcap_sol is None else round(lim.mcap_sol, 3),
+            "fill_mcap_sol": None if fill is None else round(fill, 3)}  # fmt: skip
+
+
+def _carries_buy(meta, wallet: str) -> bool:
+    """The fingerprint holds a pump.fun or PumpSwap buy by `wallet` (a swap through two pools among them)."""
+    return any(ix.user == wallet and (str(ix.name).startswith("buy") or ix.name == buy_limit.MULTI_HOP)
+               for ix in meta.pump_ixs)  # fmt: skip
+
+
+def _buys_at(row: dict, lamports: int) -> bool:
+    """The sniper buys at this size (`buyAmount` of its payload, in SOL)."""
+    try:
+        return abs(float((row.get("payload") or {}).get("buyAmount")) * LAMPORTS_PER_SOL - int(lamports)) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def far_ceiling(lim, ts: float, rows: list[dict], sol_usd: float, leader: str | None = None) -> dict[str, Any] | None:
+    """A buy whose price limit (`lim`) is far from the market-cap ceiling its sniper was sent, as {sniper, name,
+    sent_usd, limit_sol, meant_sol, sol_usd, ours_usd}; None when there is nothing to say. `rows`: the copy snipers
+    (`copy_sniper_rows`), of which those alive at `ts` could have sent it. It is laid at the snipers that follow
+    `leader` (the wallet the buy copied) where that is known, of those at the ones that buy at its size, and of those
+    at the one whose ceiling, turned into SOL at `sol_usd` (the server's own SOL price, what `oktech copylist
+    --max-mcap` converts with), is nearest the limit. Far: more than CEILING_APART from it; `sol_usd` in the answer is
+    the SOL price the limit was worked out at, `ours_usd` ours.
+
+    Nothing to say: a limit near such a ceiling; a sniper sent no ceiling, or only the one every copy carries
+    (COPY_MAX_MCAP_USD: no rule about a coin); a buy with no real limit (at or above that ceiling)."""
+    limit = lim.mcap_sol if lim is not None else None
+    if limit is None or not sol_usd or sol_usd <= 0 or limit >= COPY_MAX_MCAP_USD / sol_usd:
+        return None
+    alive = [r for r in snipers_at(rows, float(ts)) if not leader or leader in r["wallets"]]
+    sized = [r for r in alive if lim.exact_in and _buys_at(r, lim.lamports)]
+    cands = []
+    for r in sized or alive:
+        for w in (r.get("payload") or {}).get("ctbotWallets") or []:
+            if not isinstance(w, dict) or (leader and w.get("address") != leader):
+                continue
+            try:
+                cap = float(w.get("maxMcapUsd") or 0)
+            except (TypeError, ValueError):
+                continue
+            if cap > 0:  # nearest first; of two as near, the newer sniper
+                cands.append((abs(math.log(cap / sol_usd / limit)), -float(r.get("created_at") or 0), str(r.get("id")),
+                              cap, r))  # fmt: skip
+    if not cands:
+        return None
+    _gap, _born, _sid, cap, row = min(cands, key=lambda c: c[:3])
+    meant = cap / sol_usd
+    if cap >= COPY_MAX_MCAP_USD or abs(limit / meant - 1.0) <= CEILING_APART:
+        return None
+    return {"sniper": row.get("id"), "name": row.get("name") or str(row.get("id"))[:8], "sent_usd": cap,
+            "limit_sol": limit, "meant_sol": meant, "sol_usd": cap / limit, "ours_usd": float(sol_usd)}  # fmt: skip
+
+
+def ceiling_line(far: dict[str, Any], sig: str, ts: float) -> str:
+    """The owner's line for a ceiling OKTech made something else of (`far_ceiling`), on the send that showed it."""
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(int(ts)))
+    fails = (f"; every pump.fun coin starts at {START_MCAP_SOL:.0f} SOL, so that send could only fail"
+             if far["limit_sol"] < START_MCAP_SOL else "")  # fmt: skip
+    return (f"[measure] OKTech turned the ${far['sent_usd']:,.0f} market-cap ceiling of sniper {far['name']} into "
+            f"{far['limit_sol']:.1f} SOL of market cap (send {str(sig)[:8]}…, {when}): a SOL price of "
+            f"${far['sol_usd']:,.2f}, ours ${far['ours_usd']:,.2f}, so {far['meant_sol']:.1f} SOL was meant{fails}. "
+            "The ceiling is a limit on our own fill: a buy over it fails on chain and pays its priority fee. Said "
+            "once a day a sniper.")  # fmt: skip
+
+
 CHAIN_LANDING = ("chain", "chain-none")  # fills.landing_src of a buy the chain was read for (chain_landing.fill_fields)
 # what a chain reading wrote on a buy and a later read of the same trade from the tape keeps
 CHAIN_KEPT = ("wallet_copied", "trades_behind", "pack_ahead", "price_gap_pct", "landing_src", "blocks_after",
@@ -565,6 +687,48 @@ def _chain_row(fill: dict, landing: dict | None, arms: dict[str, dict] | None) -
     return row
 
 
+def _hold_to_ceilings(store: Store, cfg: Config, now: float, notes, seen: list[tuple[dict, Any]], copy_rows: list[dict],
+                      limits: dict[str, Any]) -> None:  # fmt: skip
+    """Hold every limit a run read (`seen`: the fills row and its `buy_limit.BuyLimit`) against the ceiling its
+    sniper was sent (`far_ceiling`), at the server's own SOL price: the stored one `oktech copylist --max-mcap`
+    converts with, and only while it is under CEILING_PRICE_MAX_AGE_SECS old (else `limits["unchecked"]` says so and
+    nothing is compared). A line for each sniper found far goes into `limits["far"]`, and into the operator's notes
+    once a sniper a day (CEILING_SAID_KEY), there only for a send under CEILING_NEWS_SECS old."""
+    if not seen:
+        return
+    price = store.asset(WSOL_MINT) or {}
+    if not price.get("price_usd") or now - float(price.get("updated") or 0) > CEILING_PRICE_MAX_AGE_SECS:
+        limits["unchecked"] = (f"no SOL price on record under {CEILING_PRICE_MAX_AGE_SECS // 3600} hours old: the "
+                               "limits are kept, and were not held against the ceilings the snipers were sent")  # fmt: skip
+        return
+
+    def copied(row: dict) -> str | None:
+        """The wallet a send copied: the one its row names, else (a failed buy has no place among the coin's trades)
+        the followed wallet whose buy of the coin the tape holds in its block or just before it."""
+        leaders = leaders_at(copy_rows, float(row.get("ts") or 0))
+        if row.get("wallet_copied") or not (row.get("mint") and row.get("slot") is not None and leaders):
+            return row.get("wallet_copied")
+        hit = leader_buy_at(store, row["mint"], int(row["slot"]), 1 << 62, leaders, LEADER_WINDOW_SLOTS)
+        return hit[0] if hit else None
+
+    said = dict(store.coverage(CEILING_SAID_KEY).get("said") or {})
+    day, told = time.strftime("%Y-%m-%d", time.gmtime(now)), dict(said)
+    named: set[Any] = set()
+    for row, lim in sorted(seen, key=lambda x: (x[0].get("ts") or 0, str(x[0].get("sig")))):
+        ts = float(row.get("ts") or 0)
+        far = far_ceiling(lim, ts, copy_rows, float(price["price_usd"]), copied(row))
+        if far is None or far["sniper"] in named:
+            continue
+        named.add(far["sniper"])
+        line = ceiling_line(far, row["sig"], ts)
+        limits["far"].append(line)
+        if now - ts <= CEILING_NEWS_SECS and told.get(far["sniper"]) != day:
+            _note(cfg, now, notes, line)
+            told[far["sniper"]] = day
+    if told != said:
+        store.set_coverage(CEILING_SAID_KEY, {"said": {k: v for k, v in told.items() if v == day}, "ts": int(now)})
+
+
 async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = None, until_ts: int | None = None,
                       ensure_meta: Callable[[list[str]], Awaitable[int]] | None = None,
                       failed_sigs: Callable[[str, int], Awaitable[list[dict]]] | None = None, move_cursor: bool = True,
@@ -575,7 +739,12 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     with neither, one walk of the wallet's own signatures on the RPC gives both. A landed transaction the tape does
     not hold (a coin off pump.fun's curve, a PumpSwap coin past the tape's 30 minutes) is read off the chain: a buy
     or a sell there is a fill, and a buy that a copy sniper could have made is placed against the copied wallet from
-    the blocks themselves (measure/chain_landing.py), as is a buy on the tape whose copied buy the tape lacks."""
+    the blocks themselves (measure/chain_landing.py), as is a buy on the tape whose copied buy the tape lacks.
+
+    A buy's price limit (LIMIT_COLS, `limit_fields`): of a buy on the tape from its fingerprint, of one read off the
+    chain from its transaction, of a failed buy from its transaction too, asked for once (a failed buy the chain is
+    not read for keeps no limit: nothing is guessed). `limits` in the answer: how many were read, how many buys were
+    refused on theirs, and a line for each sniper whose ceiling OKTech made something else of (`far_ceiling`)."""
     store: Store = svc.store
     wallet = cfg.operator.wallet
     m = cfg.measure
@@ -605,11 +774,20 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         ctx = ctx or _chain_context(svc, cfg, now)
         return ctx["mates"](leader)
 
+    # (the row, its `buy_limit.BuyLimit`) of every buy and failed buy whose price limit this run read for the first
+    # time, or again in a backfill: each is held against the ceiling its sniper was sent, below
+    seen_limits: list[tuple[dict, Any]] = []
+
     def store_fill(t, meta) -> dict:
         row = classify_trade(store, t, leaders_at(copy_rows, t.ts), meta, arms=cfg.book.bid_arms, mates=mates)
+        # a buy the tape holds is a trade in SOL: its limit is in its fingerprint
+        lim = buy_limit.meta_limit(meta, wallet, t.mint) if row["side"] == "buy" else None
+        row.update(limit_fields(lim, row["tokens"], row["sol"]))
         existing = store.fill(t.sig)
+        if lim is not None and (reclassify_arms or (existing or {}).get("limit_mcap_sol") is None):
+            seen_limits.append((row, lim))
         if existing:  # a re-read of the same trade keeps what pairing wrote and the arm it bid at fill time
-            for k in ("pnl_sol", "exit_reason", "buy_sig", "exit_name", "crossed", "twin_fee_sol"):
+            for k in ("pnl_sol", "exit_reason", "buy_sig", "exit_name", "crossed", "twin_fee_sol", *LIMIT_COLS):
                 if row.get(k) is None:
                     row[k] = existing.get(k)
             if row["side"] == "sell" and existing.get("buy_sig") and existing.get("bid_arm"):
@@ -717,6 +895,10 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                     continue  # a transfer, a conversion of wrapped SOL: no trade
                 landing = await place(sig, float(fill["ts"] or 0), tx) if fill["side"] == "buy" else None
                 row = _chain_row(fill, landing, cfg.book.bid_arms)
+                lim = buy_limit.tx_limit(tx, wallet) if row["side"] == "buy" else None
+                row.update(limit_fields(lim, row["tokens"], row["sol"]))
+                if lim is not None:
+                    seen_limits.append((row, lim))
                 existing = store.fill(sig)
                 if existing:  # a re-read keeps what pairing wrote, as a re-read of a tape trade does
                     for k in ("pnl_sol", "exit_reason", "buy_sig", "exit_name", "crossed", "twin_fee_sol"):
@@ -757,10 +939,15 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     bare = [sg for sg in fsigs if read_chain and (fm := fmetas.get(sg)) is not None and not fm.pump_ixs
             and fm.fee_payer in ("", wallet)
             and (reclassify_arms or not (store.fill(sg) or {}).get("venue"))]  # fmt: skip
+    # and a failed buy's price limit, with what the program made of it, is in its own transaction (the fingerprint
+    # keeps no account and no log): asked for once too, and kept on its row
+    limited = {sg for sg in fsigs if read_chain and (fm := fmetas.get(sg)) is not None and fm.fee_payer in ("", wallet)
+               and _carries_buy(fm, wallet)
+               and (reclassify_arms or (store.fill(sg) or {}).get("limit_mcap_sol") is None)}  # fmt: skip
     failed_txs: dict[str, Any] = {}
-    if bare:
+    if bare or limited:
         try:
-            failed_txs = await svc.rpc.get_transactions(bare)
+            failed_txs = await svc.rpc.get_transactions([*bare, *sorted(limited)])
         except Exception as exc:  # noqa: BLE001
             chain_error("our failed sends", exc)
     for f in failed_list:
@@ -789,7 +976,15 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                     arm = prev[0][0]
         before = store.fill(sig) or {}
         venue = before.get("venue")
-        if failed_txs.get(sig):
+        lim = None
+        if sig in limited:
+            try:
+                lim = buy_limit.tx_limit(failed_txs.get(sig), wallet)
+            except Exception as exc:  # noqa: BLE001
+                chain_error(sig, exc)
+            if lim is not None:
+                mint = mint or lim.mint or None  # a buy through two pools names its coin in its accounts only
+        elif failed_txs.get(sig):
             try:
                 named = read_fill(failed_txs[sig], wallet, ours=True)
             except Exception as exc:  # noqa: BLE001
@@ -797,17 +992,30 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                 chain_error(sig, exc)
             if named:
                 mint, venue = mint or named["mint"], fill_fields(named)["venue"]
-        elif mint is None and venue:
+        if mint is None and (venue or before.get("limit_mcap_sol") is not None):
             mint = before.get("mint")  # read off the chain on an earlier run
-        cause = failed_cause(f.get("err"), meta.pump_ixs if meta is not None else [])
+        cause = failed_cause(f.get("err"), meta.pump_ixs if meta is not None else []) or refused_words(lim)
         why = f"{cause}: {f.get('err')}" if cause else str(f.get("err"))
+        if cause is None and is_refused(before.get("exit_reason")):
+            why = before["exit_reason"]  # said by the run that read its transaction
+        # the limit as this run read it, else as an earlier run did
+        kept = limit_fields(lim) if lim is not None else {k: before.get(k) for k in LIMIT_COLS}
         row = {"sig": sig, "ts": ts, "slot": f.get("slot"), "wallet": wallet, "side": "failed", "sol": 0.0, "tokens": 0.0, "mint": mint,
                "bid_arm": arm, "priority_lamports": int(meta.priority_lamports) if meta else None,
                "tip_lamports": int(meta.tip_lamports) if meta else None, "cu_limit": meta.cu_limit if meta else None,
                "cu_used": meta.cu_consumed if meta else None, "exit_reason": why[:FAILED_WHY_CHARS],
-               "venue": venue}  # fmt: skip
+               "venue": venue, **kept}  # fmt: skip
         store.put_fill(row)
         failed_rows.append(row)
+        if lim is not None:
+            seen_limits.append((row, lim))
+    # every limit read this run against the ceiling its sniper was sent, at the server's own SOL price
+    limits: dict[str, Any] = {"read": len(seen_limits), "far": [],
+                              "refused": sum(1 for _row, lim in seen_limits if lim.would_get is not None)}  # fmt: skip
+    try:
+        _hold_to_ceilings(store, cfg, now, notes, seen_limits, copy_rows, limits)
+    except Exception as exc:  # noqa: BLE001 - the limits are on their rows: a check that fails never fails the run
+        limits["unchecked"] = f"the check against the snipers' ceilings failed: {type(exc).__name__}: {exc}"
     # round trips over the lookback window; a sale closes the lots of its own maker first, the bot's or the owner's
     # (the owner trades by hand in the same wallet: measure/ours.py)
     all_buys = store.fills(wallet=wallet, since_ts=look, side="buy", limit=100_000)
@@ -989,7 +1197,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     return {"fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
-            "from_chain": from_chain, "non_coin_buys": non_coins,
+            "from_chain": from_chain, "limits": limits, "non_coin_buys": non_coins,
             "non_coin_failed": len(bot_failed) - len(on_coins(bot_failed)),
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
             "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed,
