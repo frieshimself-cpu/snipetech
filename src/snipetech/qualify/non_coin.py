@@ -58,14 +58,22 @@ def reason(words: str) -> str:
     return f"{NON_COIN_REASON}: {words}. {WHY}"
 
 
+def gated(v: dict[str, Any]) -> bool:
+    """Whether the non-coin gate looks at verdict `v`: a qualified one, or a pick still under its forward test (a
+    candidate with a forward block), which holds its actor's place as a qualified wallet does (agents' I640, 22 Nov:
+    3 of 13 picks swapped USDC and none was gated)."""
+    return v.get("status") == "qualified" or (v.get("status") == "candidate" and v.get("forward") is not None)
+
+
 def not_a_coin_trader(v: dict[str, Any], words: str | None, cfg, now: float) -> dict[str, Any]:
-    """A qualified verdict of a wallet that trades a non-coin, as a candidate's: not qualified (the book arms only
-    qualified wallets), the reason last, due again when the window has passed, and without its forward block: a
-    candidate under its forward test holds its actor's place (one_actor.standing_wallets), and this one must not,
-    so the wallets it was chosen over can take it (one_actor.OneActor.release). Its copies since it was picked stay in
-    its record and are read again at its next review. `v` itself when nothing is known of the wallet or it is not
-    qualified anyway. `cfg` is not read (kept for the gates' common shape)."""
-    if not words or v.get("status") != "qualified":
+    """A qualified verdict, or a pick under its forward test (`gated`), of a wallet that trades a non-coin, as a plain
+    candidate's: not qualified (the book arms only qualified wallets), the reason last, due again when the window has
+    passed, and without its forward block: a candidate under its forward test holds its actor's place
+    (one_actor.standing_wallets), and this one must not, so the wallets it was chosen over can take it
+    (one_actor.OneActor.release). Its copies since it was picked stay in its record and are read again at its next
+    review. `v` itself when nothing is known of the wallet or the gate does not look at it. `cfg` is not read (kept
+    for the gates' common shape)."""
+    if not words or not gated(v):
         return v
     return dict(v, status="candidate", gate=GATE, forward=None, next_review=int(now) + NON_COIN_DAYS * 86400,
                 reasons=[*list(v.get("reasons") or []), reason(words)])  # fmt: skip

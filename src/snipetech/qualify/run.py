@@ -37,6 +37,7 @@ from .gates import (
     verdict_for,
     with_followed_note,
 )
+from .non_coin import gated as non_coin_gated
 from .non_coin import non_coin_traders, not_a_coin_trader
 from .one_actor import GATE as ACTOR_GATE
 from .one_actor import OneActor, same_actor
@@ -567,13 +568,16 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         # how copied the wallet is by GMGN's count: one more reason on the finished verdict, read by no gate
         followed = _followed(store, c)
         v = with_followed_note(v, followed)
-        if v["status"] == "qualified":  # a copy sniper follows a wallet into every swap, a dollar coin included
+        # a copy sniper follows a wallet into every swap, a dollar coin included; a pick under its forward test holds
+        # its actor's place, so it is gated too (agents' I640)
+        if non_coin_gated(v):
             try:
                 swaps = non_coin_traders(tape, [w], now).get(w)
             except Exception:  # noqa: BLE001 - not known this run: the verdict stands, the book reads the tape itself
                 swaps = None
+            before = v
             v = not_a_coin_trader(v, swaps, q_eff, now)
-            out["non_coin"] = out.get("non_coin", 0) + (v["status"] != "qualified")
+            out["non_coin"] = out.get("non_coin", 0) + (v is not before)
         one.release(w, v, now)  # it was its actor's candidate and no longer is: the wallets behind it are due at once
         # the score at the size that pays: kept in the score record with the lab row it rides on, named in the run's
         # answer when it pays on the copies its verdict would need (audit of 22 Nov: the run-wide least, 10, named

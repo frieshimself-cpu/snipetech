@@ -205,3 +205,44 @@ def test_a_qualify_run_leaves_a_wallet_that_trades_usdc_a_candidate_with_the_rea
                 assert "USDC (3 trades" in v["reasons"][-1]
         finally:
             st.close()
+
+
+def test_a_picked_wallet_under_its_forward_test_that_trades_usdc_is_released_with_the_reason(tmp_path):
+    """Agents' I640 (22 Nov 12:50): 3 of the 13 picked wallets (candidates under their forward test) swapped USDC in
+    the week before their verdict, and none carried the reason: the gate looked at qualified verdicts only, so a dollar
+    coin swapper held its actor's place for the days of its forward test (one_actor.standing_wallets), however surely
+    the book would refuse it. A pick is gated as a qualified wallet is: the reason last, no forward block."""
+    from snipetech.qualify.run import run_qualify
+    from tests.test_qualify_one_actor import _latest, _runner
+    from tests.test_qualify_run import STRONG, _svc
+    from tests.test_qualify_twins import SOLO, _tape
+
+    few = [[NOW_Q - 24 * 3600 + 600 * k, 0.03] for k in range(3)]  # too few copies since the pick to pass or fail it
+    for swaps in (0, 3):
+        (tmp_path / f"swaps-{swaps}").mkdir()
+        svc, st, data = _svc(tmp_path / f"swaps-{swaps}")
+        try:
+            _tape(st, groups=())
+            st.upsert_candidate(SOLO, "solanatracker", STRONG, NOW_Q - 30 * 3600)
+            run_qualify(svc, svc.cfg, data / "jobs", NOW_Q - 25 * 3600, lab_runner=_runner())  # picked a day ago
+            st.add_trades([_swap(SOLO, USDC, NOW_Q - 600 - i, 9000 + i) for i in range(swaps)])
+            run_qualify(svc, svc.cfg, data / "jobs", NOW_Q, lab_runner=_runner(moments={SOLO: few}))
+            v = _latest(st)[SOLO]
+            assert v["status"] == "candidate", v["reasons"]
+            if swaps:
+                assert v["reasons"][-1].startswith(NON_COIN_REASON) and v.get("forward") is None, v
+            else:  # the control: still under its forward test, its place held
+                assert v.get("forward") is not None and not v["reasons"][-1].startswith(NON_COIN_REASON), v
+        finally:
+            st.close()
+
+
+def test_the_gate_takes_a_pick_and_leaves_a_plain_candidate_alone():
+    cfg = Config()
+    picked = {"wallet": A, "status": "candidate", "reasons": ["passes every gate; forward test running"],
+              "next_review": NOW + 3600, "forward": {"status": "running", "n": 3, "picked_at": NOW - 86400}}  # fmt: skip
+    out = not_a_coin_trader(picked, WORDS, cfg.qualify, NOW)
+    assert out["status"] == "candidate" and out["gate"] == "non_coin" and out["forward"] is None
+    assert out["reasons"][-1].startswith(NON_COIN_REASON) and out["next_review"] == NOW + NON_COIN_DAYS * 86400
+    plain = {"wallet": A, "status": "candidate", "reasons": ["too few copies"], "forward": None}
+    assert not_a_coin_trader(plain, WORDS, cfg.qualify, NOW) is plain  # holds no place: nothing to release

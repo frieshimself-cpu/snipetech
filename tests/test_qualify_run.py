@@ -147,6 +147,7 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             "lab_wallets": 3,
             "chunks": 1,
             "left_due": 0,
+            "non_coin": 0,  # GOOD, picked, was looked at by the non-coin gate (agents' I640: picks are gated too)
         }
         by = {v["wallet"]: v for v in st.latest_verdicts()}
         # GOOD passed every gate on the tape so far: picked now, it waits for its copies on the tape after now
