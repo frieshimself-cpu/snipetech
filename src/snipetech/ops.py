@@ -222,6 +222,19 @@ UPDATE_OUT = "UPDATE_OUT"
 UPDATE_OUT_MAX_SECS = 300
 
 
+def deploy_waiting(data: Path, now: float | None = None) -> bool:
+    """Whether a deploy was asked for, refused and is still being asked for (`DEPLOY_WAITS` in the data directory
+    `data`): asked again within DEPLOY_ASK_FRESH_SECS, and waiting for no longer than DEPLOY_HOLD_MAX_SECS. A job
+    that holds deploys and runs in parts reads it between parts and stops there (qualify's chunks, 23 Nov)."""
+    try:
+        mark = json.loads((Path(data) / DEPLOY_WAITS).read_text())
+        since, asked = float(mark["since"]), float(mark["asked"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):  # no mark, a broken one, no data directory
+        return False
+    now = time.time() if now is None else float(now)
+    return now - asked <= DEPLOY_ASK_FRESH_SECS and now - since <= DEPLOY_HOLD_MAX_SECS
+
+
 def holds_deploy(argv: list[str]) -> bool:
     """Whether a running job with this command line should end before an update goes out (`HOLDS_DEPLOY`; a profiled
     job is the job it profiles; `research` does but for its idle picker, `research next`; of `operate` only a
@@ -668,15 +681,9 @@ class Ops:
         return out
 
     def deploy_waiting(self) -> bool:
-        """Whether a deploy was asked for, refused and is still being asked for (`DEPLOY_WAITS`): asked again within
-        DEPLOY_ASK_FRESH_SECS, and waiting for no longer than DEPLOY_HOLD_MAX_SECS."""
-        try:
-            mark = json.loads((self.data / DEPLOY_WAITS).read_text())
-            since, asked = float(mark["since"]), float(mark["asked"])
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):  # no mark, a broken one, no data directory
-            return False
-        now = time.time()
-        return now - asked <= DEPLOY_ASK_FRESH_SECS and now - since <= DEPLOY_HOLD_MAX_SECS
+        """Whether a deploy was asked for, refused and is still being asked for (`deploy_waiting`; no data directory:
+        none)."""
+        return deploy_waiting(getattr(self, "data", None))
 
     def update_going_out(self) -> bool:
         """Whether the update `op_update` started last is still going out (`UPDATE_OUT`): its job has written no exit

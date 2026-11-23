@@ -18,6 +18,7 @@ from ..analysis.lab_lock import LabBusy, lab_lock, lab_slots
 from ..analysis.lab_lock import want as lab_want
 from ..config import Config
 from ..operator.snapshot import running_jobs
+from ..ops import deploy_waiting
 from .gates import (
     IDLE_GATE,
     PUMP_VENUES,
@@ -610,7 +611,8 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
     # The wallets CHUNK at a time, in the queue's order, each chunk's verdicts written before the next chunk's lab. In
     # one lab of all of them every verdict waited for the last wallet (the first of the queue two hours for what the
     # lab had after minutes), and a run the unit killed at its three hours lost them all. A run starts no new chunk
-    # once `budget_secs` have gone: the rest stay due.
+    # once `budget_secs` have gone, nor while a deploy is being asked for (ops.deploy_waiting: 23 Nov, one run held
+    # two 20-minute deploy waits): the rest stay due, for the next run on the new code.
     secs = {"lab": 0.0, "gates": 0.0}  # where the run's time goes (11 Nov: 2 h 18 min, and nothing said which part)
     lab_info: dict[str, Any] = {}
     out["chunks"], out["left_due"] = 0, 0
@@ -620,6 +622,9 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
             for i in range(0, len(measurable), CHUNK):
                 if i and time.monotonic() - started >= budget_secs:
                     out["left_due"] = len(measurable) - i
+                    break
+                if i and deploy_waiting(Path(jobs_dir).parent):
+                    out["left_due"], out["stopped"] = len(measurable) - i, "a deploy waits for this run"
                     break
                 chunk = measurable[i : i + CHUNK]
                 t0 = time.monotonic()

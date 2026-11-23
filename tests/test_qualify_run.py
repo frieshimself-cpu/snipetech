@@ -1465,6 +1465,41 @@ def test_a_run_out_of_time_starts_no_new_chunk_and_leaves_the_rest_due(tmp_path,
         st.close()
 
 
+def test_a_run_stops_at_its_next_chunk_while_a_deploy_waits_for_it(tmp_path, monkeypatch):
+    """23 Nov: a qualify run takes 36 to 45 minutes (up to RUN_BUDGET_SECS, 100) and holds every deploy that long:
+    two `remote update --when-quiet` waits of 20 minutes each ran out behind one run that afternoon. A deploy that is
+    being asked for leaves a fresh mark in the data directory (ops.DEPLOY_WAITS); the run reads it before each new
+    chunk and stops there, as it does when its time is up: the rest stay due for the next run, on the new code."""
+    import json as _json
+    import time as _time
+
+    from snipetech import ops
+    from snipetech.qualify import run as R
+
+    monkeypatch.setattr(R, "CHUNK", 2)
+    svc, st, data = _svc(tmp_path)
+    try:
+        wallets = [f"W{i}" for i in range(5)]
+        _tape(st, wallets)
+        for i, w in enumerate(wallets):
+            st.upsert_candidate(w, "coinfirst", {}, NOW - 9000 + i)
+        t = _time.time()
+        (data / ops.DEPLOY_WAITS).write_text(_json.dumps({"since": t - 120, "asked": t - 5}))
+        calls = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: calls.append(list(ws)) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert calls == [["W0", "W1"]]  # the first chunk always runs
+        assert out["evaluated"] == 2 and out["left_due"] == 3 and out["chunks"] == 1
+        assert out["stopped"] == "a deploy waits for this run"
+        (data / ops.DEPLOY_WAITS).write_text(_json.dumps({"since": t - 4000, "asked": t - 600}))  # stale: holds nothing
+        calls.clear()
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW + 1, early=True,  # the next run, past the lab interval
+                          lab_runner=lambda ws, pos: calls.append(list(ws)) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert calls == [["W2", "W3"], ["W4"]] and out["left_due"] == 0 and "stopped" not in out
+    finally:
+        st.close()
+
+
 def _set_tape(st, wallet, mates, coins=12):
     """`wallet` buys a dozen coins, each time with its companions in the next transactions of its block, then a small
     crowd in the blocks after."""
