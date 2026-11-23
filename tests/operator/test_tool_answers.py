@@ -5,9 +5,12 @@ idea list was 8,000 characters a call, 57 idea writes were refused for a field a
 again, and every write was echoed back. These tests hold the shorter forms, and that a shorter answer always says how
 to read the rest."""
 
+import contextlib
 import json
 import os
 import re
+import signal
+import sys
 
 import pytest
 
@@ -1238,27 +1241,37 @@ def test_the_lab_slots_line_says_what_start_job_will_do(rolebox, jobs, monkeypat
 
     monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
     _, paths, _ = rolebox
+    # the tester's lab runs while the lines below are read: the test probe printed and ended at once, and a probe
+    # that had ended before a line was read made that line read no agents' lab running (a flake under -n 3)
+    jobs.ops.command = [sys.executable, "-c", "import time; time.sleep(60)"]
     kol = '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}'
-    with lab_lock.lab_lock(paths.data, wait=False):
-        lab_lock.want(paths.data, "qualify")
-        assert learning.lab_slots_line(paths, "tester") == (
-            "Lab slots: 1 of 2 free (a lab, a freeze and qualify each take one); qualify waits for a slot too."
-        )
-        started = jobs.start(["lab", "--trigger", kol, "--hours", "24", "--json"], role="tester",
-                             idea=_queue(jobs, "tester"))  # fmt: skip
-        assert started["id"]  # as the line said: nothing stood in its way
-        lab_lock.want(paths.data, "qualify")
-        # now a lab of the agents' runs: they are at their share (one of two), and the next free slot is qualify's
-        assert learning.lab_slots_line(paths, "fees").endswith(
-            "; qualify waits for the next free one and gets it before a lab of yours."
-        )
-        assert learning.lab_slots_line(paths, "scout").endswith("gets it before a lab-slot job of yours.")
-        with pytest.raises(PermissionError, match="asked for a slot"):
-            jobs.start(
-                ["lab", "--trigger", kol, "--copy-position", "+0", "--hours", "48", "--json"],
-                role="fees",
-                idea=_queue(jobs, "fees"),
+    started = {}
+    try:
+        with lab_lock.lab_lock(paths.data, wait=False):
+            lab_lock.want(paths.data, "qualify")
+            assert learning.lab_slots_line(paths, "tester") == (
+                "Lab slots: 1 of 2 free (a lab, a freeze and qualify each take one); qualify waits for a slot too."
             )
+            started = jobs.start(["lab", "--trigger", kol, "--hours", "24", "--json"], role="tester",
+                                 idea=_queue(jobs, "tester"))  # fmt: skip
+            assert started["id"]  # as the line said: nothing stood in its way
+            lab_lock.want(paths.data, "qualify")
+            # now a lab of the agents' runs: they are at their share (one of two), and the next free slot is qualify's
+            assert learning.lab_slots_line(paths, "fees").endswith(
+                "; qualify waits for the next free one and gets it before a lab of yours."
+            )
+            assert learning.lab_slots_line(paths, "scout").endswith("gets it before a lab-slot job of yours.")
+            with pytest.raises(PermissionError, match="asked for a slot"):
+                jobs.start(
+                    ["lab", "--trigger", kol, "--copy-position", "+0", "--hours", "48", "--json"],
+                    role="fees",
+                    idea=_queue(jobs, "fees"),
+                )
+    finally:
+        if started.get("id"):  # the sleeping job ends with the test
+            meta = json.loads((paths.data / "jobs" / f"{started['id']}.json").read_text())
+            with contextlib.suppress(ProcessLookupError, TypeError):
+                os.kill(int(meta.get("pid")), signal.SIGTERM)
 
 
 def test_the_words_left_over_after_round_two_agree_with_the_code(rolebox):
