@@ -862,3 +862,16 @@ def test_the_owners_coin_once_told_starts_no_sniper_again(monkeypatch):
     rep, client = _hand_buy_told_late(monkeypatch, rearm_after=1800)
     assert not [(kind, t - T0) for kind, _i, t in client.timed if T0 + 10 < t < T0 + 350], client.timed
     assert rep["restarts"] == 0 and rep["owner_coins"] == [OWN] and rep["fills"] == 0
+
+
+def test_a_coin_that_left_between_the_last_reading_and_the_end_still_counts(monkeypatch):
+    """The end reads the wallet itself. A coin nobody could tell is held at the loop's last reading (105 s) and sold
+    at 107 s; the owner's /stop comes at 106 s. The end's reading finds it gone, and the count took it for one "held
+    now that nobody can tell": the report said 0 fills (review of 23 Nov). It left before anybody could tell, so it
+    counts, as it does when it leaves while the loop runs."""
+
+    def unpriced(now):
+        return [{"mint": "OffTape", "amount": 1.0}] if T0 + 102 <= now < T0 + 107 else []
+
+    rep, _client = _run(monkeypatch, lambda now: 10.0, payload=FEES, minutes=6, unpriced=unpriced, stop_at=T0 + 106)
+    assert "/stop" in rep["reason"] and rep["fills"] == 1, (rep["reason"], rep["fills"])

@@ -2307,8 +2307,10 @@ class Service:
             """The run's fills so far: the larger of its buys on the tape and the coins seen in the wallet. A coin held
             now that nobody can tell yet (`sort_coins`: it may be the owner's own buy of seconds ago) is in neither
             count of the wallet's coins until it is told as the run's (23 Nov audit: a run one fill short of its cap
-            ended on the owner's hand buy); one that left before anybody could tell counts, as before."""
-            unsure = [m for m in held_since if coins.known(m) is None]
+            ended on the owner's hand buy); one that left before anybody could tell counts, as before. Held now: by
+            the last reading (`sight`), the end's own too, which forgets a coin that has left without taking it off
+            `held_since` (review of 23 Nov: such a coin dropped out of the report's count)."""
+            unsure = [m for m in held_since if m in sight and coins.known(m) is None]
             new = sum(1 for m in unsure if first_seen.get(m, -1.0) >= sight.get(m, 0.0))  # first seen in this holding
             return max(fills_since(t0), arrivals - len(unsure), len(first_seen) - new)
 
