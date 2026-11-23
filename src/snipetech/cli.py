@@ -2068,6 +2068,9 @@ async def _run(args, cfg: Config) -> int:
                                      "bot's own: give one of the two")  # fmt: skip
                 if args.no_copy_exit and not named:
                     raise ValueError("--no-copy-exit goes with --exit: name the exits to score without the copy exit")
+                if args.rearm and len(named) != 1:  # each exit's sniper is armed again after its own hold
+                    raise ValueError("--rearm scores one exit at a time: name it once with --exit LABEL (the sniper "
+                                     "is armed again after that exit's own hold)")  # fmt: skip
                 if rec is not None and args.sell_parts > 1:
                     raise ValueError("--recipe scores the bot's own exit, which has its own parts: leave --sell-parts "
                                      "out (or type the triggers with --trigger to put every exit in "
