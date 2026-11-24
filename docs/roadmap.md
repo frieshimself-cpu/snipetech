@@ -6,6 +6,35 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 24 Nov, 17:30 UTC: OKTech's three modes never scored at our landing (ClaimSniper, Web, the [A] dev-funding gate): no edge
+
+- **The owner (~13:20):** "is there nothing else we can do with oktech like fee claim snipes or other snipes using the
+  tools". The other modes were already scored and lose at our landing (launch, hunt, MIG, dev snipes: the playbook's
+  table 1a). Three never were; one workflow (wf_6a752298-042, an agent each; scratch under okmodes/) scored them on the
+  older 60 % / newer 40 % split, at OKTech's landing, 0.2 SOL, 0.0031 SOL a transaction plus the venue's fee.
+- **ClaimSniper:** every variant loses, about the round trip's cost: every claim -0.0113 (lab exit) on about 2,300 newer
+  trades, first claims -0.0121, claims of 0.5 SOL+ -0.0107, first claims of 0.5 SOL+ -0.0104; -4.6 to -6.8 SOL a day
+  for every claim. Buying stops at the claim: a median 238 buys and 83 SOL in the 300 s before a first claim, 2 buys and
+  0.04 SOL after. The claim moment is never better than the same coin 15 minutes earlier. (The five-way claim study
+  above says the same.) The lab refuses an event trigger at the command line (parse_trigger takes launch, burst, whale,
+  kol, momentum, hunt, mig): the agent scored with the project's simulator directly.
+- **Web** (snipe the launches of wallets a known creator funds): the best set (wallets funded by a creator whose earlier
+  coin reached 60 SOL, their first coin, bought a slot after the create, STALE2s SL-15 % hold300s) made +0.0735 a trade
+  on the older part and +0.0046 on the newer (255 trades, lower bound -0.0042, +0.13 SOL a day): two days carried it,
+  -0.0094 without its best three trades. The funding filter is worth about +0.013 a trade over all launches (-0.0086 at
+  the same landing and exit), not enough. A lead found on the newer part only (hold30s, +0.0346, lower bound +0.0167;
+  +0.0076 on the older part) is a hypothesis for a forward paper test, not a result; the lab has no funded-launch
+  trigger to paper-freeze it with.
+- **[A] dev-funding gate** (buy launches whose deployer's first funding was a round sum shortly before): OKTech's own
+  defaults (0.5-10 SOL, 15 min) -0.0049 a trade on 141 newer trades; the older part's pick (1-10 SOL, 60 min, at most 1
+  transaction) -0.0078 on 109 (lower bound -0.0174). Both lose less than all launches (-0.0098 to -0.0103 at the same
+  landing) but lose. A test-only finding (0.25-20 SOL in whole SOL, 60 min, at most 2 transactions: +0.026 a trade on
+  the newer part) rests on three trades and lost -0.021 a trade on the unseen 11-17 Nov days. The `funders` table covers
+  no creators: scoring [A] in the system would need a per-launch lookup of the signer's first funding and transaction
+  count (about 6,800 lookups a day). It also needs an OKTech account level we may not have.
+- **For comparison:** all launches a slot after the create, on the tape copy of 24 Nov: -0.0098 a trade (lab job
+  20261124-133750-bb32c2, 152,171 newer trades): milder than the -0.015 to -0.023 quoted from earlier labs, still a loss.
+
 ## 24 Nov, 17:00 UTC: fee-claim snipes, tested five ways at our landing: a claim is a sell signal, not a buy signal
 
 - **The owner (13:2x-14:0x):** "is there nothing else we can do with oktech like fee claim snipes or other snipes",
