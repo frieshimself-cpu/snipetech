@@ -6,6 +6,44 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 24 Nov, 01:10 UTC: would a fast sender of our own reach the money? No (the check of the forwarded feeds analysis)
+
+- **The question.** The owner forwarded an analysis (23 Nov ~22:00): buyable feeds (Yellowstone gRPC, Jito
+  ShredStream) and landing paths (private relays, co-location) beat most traders, so buy a feed, send blind Jito
+  bundles with tight slippage, then co-locate. A workflow (wf_b9d0e0a5-29e, 23 Nov 22:0x-23:36) checked it against our
+  own record and tape and current vendor facts, then had an adversarial reviewer correct the answer (verdict "needs
+  fixes"; the numbers below are the corrected ones).
+- **The money sits right behind Cented's and Decu's first buys of 1.9 SOL or more:** paper, 6 SOL a copy, the place won
+  every time, a 0.003 SOL tip: +1.90 SOL a copy behind Cented, +1.68 behind Decu; one buyer back +0.69, two back +0.22
+  (Cented; Decu's one-back and two-back never scored at 6 SOL).
+- **Speed rarely wins that place.** On 56 % of those buys someone stands within two transactions after the leader's.
+  About half of them ride in the bundle Lunar (Axiom's sender) builds; most of the others pay 0.2 to 1 SOL in fees
+  outside Jito and probably see the trade early (inferred from order, fees and failures, not shown). On the other 44 %
+  nobody stands within 2 places: a sender landing 10 places back would be right behind on 27 % of the moments (37 %
+  behind Cented), but no reacting wallet lands that close every time.
+- **Where reacting senders land:** the fastest reacting wallets a median 42 to 58 block places behind the leader's buy;
+  OKTech about 68 (15 to 177); the few reacting Jito bundles seen (about 13, in the route check's 26 blocks, not a random
+  sample) 65 to 328. Jito rejects any bundle that puts a transaction carrying its don't-front marker anywhere but first,
+  and the leaders' buys carry it: a bundle right behind the leader needs the leader's signed transaction, which only
+  order flow gives.
+- **What our own buyer could add without a seat, an estimate and not a lab result:** if it landed like the best
+  reacting wallets (unmeasured: no buy of ours has been sent, and the tape keeps no receive time), 0.05 to 0.17 SOL on a
+  6 SOL copy behind Cented, before tips and failed sends; 6 SOL is 30 times the standing yes, and big live copies have
+  run 0.18 to 0.40 SOL each below paper. **On launches:** the first place an outside sender can take makes about nothing
+  at 12 s and loses 5 to 7 % at 30 and 120 s (one six-hour window, our own price impact left out).
+- **Vendor facts that changed (read 23 Nov):** Jito shut ShredStream down on 5 Sep 2026; raw-shred feeds now cost $450
+  to 1,500 per IP a month (decoded shreds from $199), about 5 to 12 ms ahead of a processed gRPC feed like our
+  LaserStream at the median. Slots are about 200 ms since Alpenglow (21 Oct; measured 215 ms and about 500 transactions
+  a slot on 23 Nov). A Jito bundle that fails or loses its auction pays nothing, except when its block is skipped and
+  its transactions land outside the bundle. Order-flow sellers: Harmonic (backrun only, KYC/KYB, a strategy family for
+  copy trading, its validators' slots only), Inertia (searcher API in early alpha, key by Telegram or Discord,
+  Amsterdam only), Flowra (open auction of validators' pending transactions, searchers register keys at its portal,
+  Frankfurt and London, live since 21 Aug); Lunar sells no public product for the place inside its bundles.
+- **What follows.** No live test of a reacting buyer of our own (the check's advice: no; nothing was asked of the
+  owner). The buyer built tonight (branch work/own-buyer, merged 24 Nov: docs/own-buyer.md) is kept for a seat
+  (`--behind`). The seat applications stand as the only route to 100 SOL a day, even on paper; nothing is likely by 29
+  Nov. Meanwhile the 0.2 SOL OKTech copy runs (fill 9 at 00:47, +0.077).
+
 ## 23 Nov, 22:05 UTC: the place right behind Axiom's users is filled by the service that lands their trades (Lunar)
 
 - **The owner's contact (Discord, shown 23 Nov ~21:50 UTC):** "axiom leaks orderflow through lunar", "pump through
