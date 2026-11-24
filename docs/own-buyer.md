@@ -23,6 +23,9 @@ OKTech cannot use a seat, because it only reacts to buys that have already lande
   - Each such test is written into docs/live-recipe.md before it starts (what it tests, the sniper or buyer, the stop
     rule) and again after (every fill).
   - Anything else needs the owner's yes for that step: a run for profit, a bigger size, another wallet.
+  - **This buyer's first live send waits for the owner's yes in chat, whatever its size** (the owner was told so on 23
+    Nov ~22:15 UTC, when the build began: "Nothing goes live until you say yes to a 0.1 SOL test"). Sending our own
+    signed buys is a new way of placing live buys, which the hourly round's rules also put to the owner first.
 - `--slippage C` (default 0.10): the buy fails rather than fill at a price more than C above the quote's.
 - `--tip SOL` (default 0.001, at most 0.01): the tip to Jito. It is always the transaction's last instruction.
 - `--behind B64`: the leader's signed transaction, as a seat hands it over (see below). A blank value is refused.
@@ -120,8 +123,12 @@ OKTech cannot use a seat, because it only reacts to buys that have already lande
 
 ## Not done yet
 
-- **No live test.** The first one is a 0.02 SOL dry run on the server's RPC, then a 0.02 SOL send inside the standing
-  yes, each written into docs/live-recipe.md.
+- **No live test.** The first step is a dry run on the server's RPC (nothing sent). The first send, a test of at most
+  0.1 SOL, waits for the owner's yes in chat, and is written into docs/live-recipe.md before it starts and after.
+- **What it is for (the check of 23 Nov, docs/roadmap.md 24 Nov 01:10):** a seat right behind a big wallet's buy,
+  bought from whoever holds that order flow, with `--behind`. Sent on its own, reacting to a landed buy, it would land
+  about where OKTech's copies land (the fastest reacting wallets stand a median 42-58 block places behind those buys,
+  OKTech about 68), so it is not built to race.
 - **Not on the server's job list** (`ops.ALLOWED`), and not an agent's command. Adding it to the job list is its own
   step.
 - **PumpSwap buys**, and mayhem, cashback and own-creator-rate coins, wait for a landed copy to build from.
