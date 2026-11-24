@@ -390,9 +390,11 @@ def bot_fill(row: dict, marks: dict[str, frozenset]) -> bool:
     return bot_send(row, marks) if side == "failed" else bot_sale_fees(row, marks)
 
 
-def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None) -> list[dict]:
+def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None,
+              own: frozenset[str] = frozenset()) -> list[dict]:  # fmt: skip
     """The sales among `rows` (fills) that are the bot's: each closes a buy of the bot's (its `buy_sig`), or, with no
-    buy on record, paid a sniper's or the fallback sale's fees."""
+    buy on record, paid a sniper's or the fallback sale's fees. `own`: our own buyer's buys (`own_buy_sigs`); a sale
+    that closes one of them is the bot's too (the wallet-wide guard's day result asks this)."""
     marks = fee_marks(store) if marks is None else marks
     sells = [r for r in rows if r.get("side") == "sell"]
     if not marks["buy"]:
@@ -400,10 +402,26 @@ def bot_sells(store, rows: list[dict], marks: dict[str, frozenset] | None = None
     out = []
     for r in sells:
         bsig = r.get("buy_sig")
+        if bsig and bsig in own:
+            out.append(r)
+            continue
         b = store.fill(bsig) if bsig else None
         if bot_buy(b, marks) if b is not None else bot_sale_fees(r, marks):
             out.append(r)
     return out
+
+
+def own_buy_sigs(store, wallet: str | None = None) -> frozenset[str]:
+    """The signatures of our own buyer's buys (`snipetech buy`, solana/buy.py), from the record it writes before each
+    bundle goes out (Store.own_buys). They pay none of the snipers' fees and have no copy's shape, so the rule of this
+    module calls them the owner's; the wallet-wide guard's day result counts them and the sales that close them as the
+    bot's (review of 23 Nov: a day of losing sends never tripped the day stop). Only that result asks: no sniper holds
+    such a coin, so the readers that keep a sniper running or count its buys never see them. A store without the record
+    (a stand-in that has no such method) has none; one whose read fails raises, and the guard then cannot tell."""
+    reader = getattr(store, "own_buys", None)
+    if reader is None:
+        return frozenset()
+    return frozenset(str(r["sig"]) for r in reader(wallet) if r.get("sig"))
 
 
 def bot_rows(store, rows: list[dict], marks: dict[str, frozenset] | None = None) -> list[dict]:

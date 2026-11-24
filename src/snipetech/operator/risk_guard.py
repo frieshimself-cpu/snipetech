@@ -3,13 +3,15 @@ plan"): "no new live trade once the day is 1 SOL down or the wallet is under 10 
 
 The day's result is our own trading only: the round trips closed today (UTC) in the measure stage's fills, with their
 real fees and failed duplicate sells (book/state.py, the book's own day accounting), plus the coins our own buys still
-hold, marked at the tape's price against what those buys cost. The fills lag the tape by up to 5 minutes and the cycler
-re-arms seconds after a sale, so the wallet's trades the fills do not have yet are counted from the tape, and a coin our
-buys of today hold by the fills that has left the wallet with no sale seen counts its whole cost as lost. A measure
-stage that has not run for 40 minutes while the wallet trades makes the day one the guard cannot tell. Never the change
-of the wallet's balance: a deposit, a withdrawal or OKTech wrapping SOL is not a trading result (6 Nov 15:16 the owner
-moved 2.54 SOL out of the sniper wallet in the middle of a test, and OKTech wrapped 0.0996 SOL at its start). The floor
-is the wallet itself: SOL, wrapped SOL and the coins at the tape's price, the owner's ignored coins left out.
+hold, marked at the tape's price against what those buys cost. Our own buyer's buys (`snipetech buy`, whose fees are no
+sniper's) count by the record it writes before each send (measure/ours.own_buy_sigs; review of 23 Nov). The fills lag
+the tape by up to 5 minutes and the cycler re-arms seconds after a sale, so the wallet's trades the fills do not have
+yet are counted from the tape, and a coin our buys of today hold by the fills that has left the wallet with no sale seen
+counts its whole cost as lost. A measure stage that has not run for 40 minutes while the wallet trades makes the day one
+the guard cannot tell. Never the change of the wallet's balance: a deposit, a withdrawal or OKTech wrapping SOL is not a
+trading result (6 Nov 15:16 the owner moved 2.54 SOL out of the sniper wallet in the middle of a test, and OKTech
+wrapped 0.0996 SOL at its start). The floor is the wallet itself: SOL, wrapped SOL and the coins at the tape's price,
+the owner's ignored coins left out.
 
 While it is tripped, no new live trade starts: the book creates and starts nothing and stops its own snipers once the
 wallet holds nothing; /test go, the round's start of a test and the cycler's re-arm refuse; the automatic test requests
@@ -187,16 +189,18 @@ def _lots(store, wallet: str, now: float, per_tx_sol: float, lookback_days: floa
     cost], paired first in first out as measure pairs its round trips (the buy's SOL and its share of the buy's fees);
     the wallet's trades on the tape that the fills do not have yet, oldest first)."""
     from ..measure.classify import _fill_fee_sol, pair_round_trips
-    from ..measure.ours import bot_buy, bot_sells, bot_tape_buy, fee_marks
+    from ..measure.ours import bot_buy, bot_sells, bot_tape_buy, fee_marks, own_buy_sigs
 
     since = int(now - lookback_days * 86400)
     rows = store.fills(wallet=wallet, since_ts=since, limit=100_000)
     measured = {str(r.get("sig")) for r in rows if r.get("sig")}
     # the bot's own trades only (measure/ours.py): the owner's hand trades in the wallet, and the coins they send away,
-    # are no result of the bot's (22 Nov 02:45: three hand buys read as -10.51 tripped the day stop)
+    # are no result of the bot's (22 Nov 02:45: three hand buys read as -10.51 tripped the day stop); our own buyer's
+    # buys are on its own record (review of 23 Nov: they pay no sniper's fees, and a day of them never counted)
     marks = fee_marks(store)
-    buys = _usable([r for r in rows if r.get("side") == "buy" and bot_buy(r, marks)])
-    sells = _usable(bot_sells(store, rows, marks))
+    own = own_buy_sigs(store, wallet)
+    buys = _usable([r for r in rows if r.get("side") == "buy" and (r.get("sig") in own or bot_buy(r, marks))])
+    sells = _usable(bot_sells(store, rows, marks, own))
     by_sig = {b["sig"]: b for b in buys}
     lots: dict[str, list[list[float]]] = {}
     for lot in pair_round_trips(buys, sells, per_tx_sol)["open"]:
@@ -206,7 +210,7 @@ def _lots(store, wallet: str, now: float, per_tx_sol: float, lookback_days: floa
         cost = (float(b["sol"]) + (per_tx_sol if fee is None else fee)) * share
         lots.setdefault(str(lot["mint"]), []).append([float(b["ts"]), float(lot["tokens_left"]), cost])
     unread = sorted((t for t in store.trades_for_user(wallet, since, fees=True)
-                     if t.sig not in measured and t.mint and (not t.is_buy or bot_tape_buy(t, marks))),
+                     if t.sig not in measured and t.mint and (not t.is_buy or t.sig in own or bot_tape_buy(t, marks))),
                     key=lambda t: (t.ts, t.slot, t.pos))  # fmt: skip
     return lots, unread
 

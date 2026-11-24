@@ -1306,7 +1306,7 @@ def test_no_role_starts_an_owner_command(jobs):
     from snipetech.operator.jobs import OWNER_COMMANDS
     from snipetech.operator.roles import ROLES
 
-    assert OWNER_COMMANDS == {"operate", "oktech", "sweep", "unwrap", "book", "strategist", "config"}
+    assert OWNER_COMMANDS == {"operate", "oktech", "sweep", "unwrap", "buy", "book", "strategist", "config"}
     for role in ROLES:
         idea = _queue(jobs, role, f"{role}'s")
         for command in sorted(OWNER_COMMANDS):

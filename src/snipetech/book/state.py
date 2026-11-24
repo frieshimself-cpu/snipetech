@@ -51,11 +51,12 @@ def realised_today(store: Store, wallet: str, now: float) -> float:
     the buys it closed, whenever they were made, real fees included) less its failed duplicate sends; a sell with no
     buy on record counts its failed duplicate sends alone. Only the bot's own trades are in it (measure/ours.py: the
     owner's hand trades in the same wallet are not; 22 Nov 02:45 they tripped the day stop), so a deposit or a
-    withdrawal never moves it either (the wallet-wide guard's day stop rests on it)."""
-    from ..measure.ours import bot_sells
+    withdrawal never moves it either (the wallet-wide guard's day stop rests on it). The sales that close our own
+    buyer's buys count too (measure/ours.own_buy_sigs: `snipetech buy`, whose fees are no sniper's)."""
+    from ..measure.ours import bot_sells, own_buy_sigs
 
     rows = store.fills(wallet=wallet, since_ts=int(now // 86400) * 86400, side="sell", limit=100_000)
-    return _realised(bot_sells(store, rows))
+    return _realised(bot_sells(store, rows, own=own_buy_sigs(store, wallet)))
 
 
 def day_accounting(store: Store, wallet: str, now: float, equity_now: float | None = None) -> dict[str, Any]:

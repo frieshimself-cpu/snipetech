@@ -266,8 +266,9 @@ OPTIONAL_COLUMNS = frozenset(
 )  # fmt: skip
 # Tables a reader of the tape does not need either: the destinations the recorder learned to be tip accounts
 # (14 Nov; solana/pay_dests.py). The recorder writes it and `tips --accounts` reads it from the live database; on a
-# file without it `pay_dests` and `tip_accounts` answer that nothing is learned.
-OPTIONAL_TABLES = frozenset({"pay_dests"})
+# file without it `pay_dests` and `tip_accounts` answer that nothing is learned. And our own buyer's sent buys
+# (`own_buys`, 23 Nov): `snipetech buy --send` writes them and the wallet-wide guard reads them, both in the live file.
+OPTIONAL_TABLES = frozenset({"pay_dests", "own_buys"})
 # A destination is stored once this many different wallets paid it. Most destinations the recorder sees are a
 # wallet's own transfers, one payer each: none of what the table is for, and most of what it would hold.
 PAY_DESTS_MIN_PAYERS = 3
@@ -2049,3 +2050,42 @@ Store.prune_events = _prune_events
 Store.upsert_edge = _upsert_edge
 Store.upsert_edges = _upsert_edges
 Store.edges_to = _edges_to
+
+
+# -- our own buyer's sent buys (appended so earlier line numbers stay put) ------------------------------------------
+
+SCHEMA_OWN_BUYS = """
+CREATE TABLE IF NOT EXISTS own_buys (
+    sig TEXT PRIMARY KEY, ts INTEGER NOT NULL, wallet TEXT NOT NULL, mint TEXT NOT NULL, spendable INTEGER NOT NULL,
+    tip INTEGER NOT NULL, fee INTEGER NOT NULL, region TEXT, leader TEXT
+);
+CREATE INDEX IF NOT EXISTS own_buys_wallet ON own_buys(wallet, ts);
+"""
+SCHEMA = SCHEMA + SCHEMA_OWN_BUYS
+
+_OWN_BUY_COLS = ("sig", "ts", "wallet", "mint", "spendable", "tip", "fee", "region", "leader")
+
+
+def _add_own_buy(self, rec: dict) -> None:
+    """One buy of our own buyer (solana/buy.py `buy`: its signature, wallet, coin, the lamports it spends, its tip and
+    network fee, the block engine's region, the leader it stands behind), written before its bundle goes out. The
+    wallet-wide guard's day stop counts the wallet's trades by it (measure/ours.own_buy_sigs); a buy whose bundle never
+    lands leaves a signature no trade carries, which counts for nothing."""
+    row = (str(rec["sig"]), int(rec.get("ts") or time.time()), str(rec["wallet"]), str(rec["mint"]),
+           int(rec["spendable"]), int(rec.get("tip") or 0), int(rec.get("fee") or 0), rec.get("region"),
+           rec.get("leader"))  # fmt: skip
+    cols = ", ".join(_OWN_BUY_COLS)
+    self._exec(f"INSERT OR REPLACE INTO own_buys ({cols}) VALUES ({', '.join('?' * len(_OWN_BUY_COLS))})", row)
+
+
+def _own_buys(self, wallet: str | None = None, since_ts: int = 0) -> list[dict[str, Any]]:
+    """Our own buyer's buys on record since `since_ts`, oldest first (`wallet`: that wallet's only)."""
+    sql, params = f"SELECT {', '.join(_OWN_BUY_COLS)} FROM own_buys WHERE ts >= ?", [int(since_ts)]
+    if wallet is not None:
+        sql += " AND wallet = ?"
+        params.append(str(wallet))
+    return [dict(zip(_OWN_BUY_COLS, r)) for r in self._q(sql + " ORDER BY ts, sig", params)]
+
+
+Store.add_own_buy = _add_own_buy
+Store.own_buys = _own_buys
