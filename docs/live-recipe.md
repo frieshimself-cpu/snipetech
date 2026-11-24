@@ -14,6 +14,17 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
 **Stop rules.** 0.3 SOL lost by the run's own trades; plain SOL under 0.22 at a re-arm; 2 of the last 3 placed copies behind no buy of the copied wallet or more than 8 buyers behind; 24 hours; 100 fills; the owner's /stop.
 
+**What happened (written as it runs; chain and tape reads).**
+- 10:11:19, Yugi: refused by the ceiling, as meant. Yugi bought 2.33 SOL of 7fmD1p3jzva28EPP9bPqbDoxZGj5j398yJoE3EVypump
+  (made 10:11:11) in slot 473306177, at 118 SOL of market cap after his buy. Our copy landed in the next slot
+  (473306178, signature 2mu1Mnqtbu2r1RY1…). The program refused it on its least coins: OKTech asked at least 2,666,415
+  coins for 0.2 SOL, a price of 75.0 SOL of market cap (pump.fun error 6042, BuySlippageBelowMinTokensOut). It cost
+  the network fee, 0.0011 SOL. Yugi sold 19 s later, at 94 SOL of market cap, for 2.01 SOL: he lost 0.32 SOL. A fill
+  at 118 would have lost too (about 0.04 to 0.05 SOL; an estimate from the tape's prices). The runner re-armed the
+  sniper at 10:11:47.
+- Totals at 10:15 UTC: 0 fills; 1 send that bought nothing (the ceiling's refusal above, 0.0011 SOL). Cented has not
+  traded since the start; Yugi's buy above is his only one.
+
 ## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day: ENDED 24 Nov 09:10:47 UTC on its time limit, nothing held, its snipers stopped by the runner; about +0.01 SOL over the whole test, +0.15 since the 19:59 restart (STARTED 23 Nov 09:11 UTC, runner 20261123-091103-3940b3 and its restarts; written 09:10 UTC, before anything was started)
 
 **The end, read 24 Nov 09:15 UTC.** The last runner (20261123-195929-0bc2c6, since 19:59): 5 fills (+0.0768, -0.0141, +0.0722, +0.0929, -0.0183), 89 re-arms, about 50 sends that bought nothing (0.0567 SOL to 04:17), and its own reading of the run: **+0.1506 SOL** (the wallet's SOL and wrapped SOL at the start and the end, nothing held). With the test's -0.14 before 19:59, the whole test came out at about **+0.01 SOL** over 24 hours: 13 fills, the last 13 hours positive.
