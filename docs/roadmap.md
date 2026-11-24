@@ -6,6 +6,39 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 24 Nov, 18:30 UTC: the whole market searched again in five families where speed matters less: all lose at our landing
+
+- **The owner (~14:05):** "Also go through the entire market and find a strat that works". One workflow
+  (wf_a182679b-510, an agent per family; scratch under the session scratchpad okmodes/market/), each choosing on the
+  older 60 % and judging on the newer 40 % at our real landing (a copy 1-3 buyers behind its wallet, +3x; a trigger a
+  block later), 0.0031 SOL a transaction plus the venue's fee, at 0.2 and 1 SOL.
+- **Slow profitable wallets** (hold 5 minutes or more, profitable over 20+ coins, own launches, bundles and twins left
+  out): 42 wallets; their own trades kept paying (+670 SOL on the older part, +212 on the newer). Copied at +3x they
+  lose: the older part's pick of 9 wallets (hold600s with the copy exit) made -0.0077 a 0.2 SOL copy on 277 newer copies
+  (-0.39 SOL a day; -1.07 at 1 SOL); all 42, every exit, -0.007 to -0.015. Right behind them (+0, a place no reacting copy
+  reaches) the same copies make +0.0057: the 1-3 buyers ahead of us cost about 6.4 % of the stake. 26 variants.
+- **Momentum on older coins** (30 min to 3 days old, a new high on rising buyers, held 5-60 min or trailed): 6,480
+  variants; the older part's best (new 2-hour high, 20 SOL from 10+ buyers in 15 min, 1.5x the buyers before) made
+  -0.0118 a trade on 22 newer trades.
+- **Entries after migration** (buy 1-15 min after a coin moves to PumpSwap, only when it holds up): 213,972 variants;
+  the older part's best made -0.0297 a trade on 115 newer trades. The tape keeps a migrated coin's PumpSwap trades for
+  30 minutes only ([live] amm_recent_secs 1800), so later entries cannot be scored.
+- **Several good wallets in one coin** (the k-th of the older part's 50 best wallets within T minutes; OKTech's
+  ctbotMinWallets): 19,200 variants; the pick made -0.0188 a trade on 50 newer trades.
+- **Socials and metadata as a launch filter** (links, tweet timing, name and ticker, creator history; files fetched on
+  24 Nov, 31,980 readable): no social filter is positive on either part. The pick (a creator with at most 10 launches in
+  3 days and at least one completed coin, SL-15 % trailing 18 % hold60s) made -0.0027 a trade on 1,632 newer trades at 0.2
+  SOL; its +2.76 SOL a day at 1 SOL rests on 5 runners of 30-60x (without them -0.033 a trade), and the older part gets
+  worse with size. Launch metadata is not stored for this window (token_meta holds 447 rows from 10-11 Nov).
+- **What still pays on paper** (the same agent's labs, 1 SOL, +3x, hold12s with the copy exit, the newer week): the live
+  copy rule (Cented, Decu, Yugi first buys of 2 SOL or more) +0.0195 a copy on 560, lower bound +0.0140, 2.27 SOL a day at
+  a 64.6 ceiling, 4.78 at 75. Skipping coins whose metadata file 2 or more other creators used in the last day adds
+  about 0.2 SOL a day, within noise.
+- **The common thread** (this search, the fee-claim and OKTech-mode studies above, and 22-24 Nov): the money is right
+  behind a buyer who knows something, and a copy that reacts to a landed buy arrives one to three buyers too late.
+  Nothing found today changes the plan: the 1 SOL day of the copy rule (the owner's yes), and the seat (Inertia,
+  Harmonic) for anything larger.
+
 ## 24 Nov, 17:30 UTC: OKTech's three modes never scored at our landing (ClaimSniper, Web, the [A] dev-funding gate): no edge
 
 - **The owner (~13:20):** "is there nothing else we can do with oktech like fee claim snipes or other snipes using the
