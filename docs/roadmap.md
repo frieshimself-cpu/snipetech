@@ -31,8 +31,17 @@ first on the server's recording and only then run live in capped batches.
   Yugi's 2-4 SOL buys at 80 (lab 20261124-023125-43c5b6). Every newer day positive; Cented carries about 80 %. The
   8NdJBk check saw the same on the earlier week for Cented at 1 SOL: a 100 SOL ceiling +10.47 against +5.80 at 64.6 at
   +2x, +5.03 against +4.00 at +3x (both newer lower bounds -0.0007). Hour of day, SOL or price rise ahead of us,
-  consensus between the four, repeats and coin kind all failed on the newer part. A second agent is checking the
-  ceiling curve on two separate weeks and on the live test's real refused sends.
+  consensus between the four, repeats and coin kind all failed on the newer part. **CHECKED (03:10 UTC, not refuted,
+  smaller than claimed):** the ceiling curve at 0.2 SOL is one step between 64.6 and 70-75 and then flat, in both weeks
+  (+3x, SOL a day, older / newer week: 64.6 0.29 / 0.34, 75 0.46 / 0.63, 80 0.47 / 0.65, 100 0.38 / 0.64; jobs
+  20261124-025148-77514e, -025003-5dd2b9, -024248-400855, -024525-0787eb); our real fills land at +3x (the 59 live sends
+  placed on the tape: median ratio of fill price to the lab's +3x fill 1.000), so the gain at the real landing is +0.16
+  to +0.29 SOL a day at 0.2 SOL, not +0.44. At 1 SOL, +3x, newer week (job -024723-aec1d3): 1.73 SOL a day at 64.6, 3.47
+  at 75, 3.79 at 80. On the test's real moments: 9 of the 49 curve sends the 64.6 ceiling refused would have filled
+  under 75, worth +0.31 SOL held 12 s (two winners carry it; +0.10 at 10 s, +0.05 at 8 s, so the gain depends on the
+  exit's timing). Separately, 5 sends were refused at a 23.5 SOL ceiling: OKTech's SOL price was wrong after a restart
+  of its own (the ceiling is set in dollars). The checker's guess for the live gain at 0.2 SOL: +0.05 to +0.2 SOL a day;
+  its advice: test 75 (70 if cautious), several days to tell it from noise.
 - **New coin kinds and curve events: no edge.** Mayhem coins are 41 % of launches; pump.fun's agent (BwWK17…) trades
   each one about every 1.4 s for a median 44 s, and its next move is a coin flip whatever came before; all 35 mayhem
   completions ended drained (median 0.39 SOL of virtual SOL). Every kind and event loses at a landing a slot later:
