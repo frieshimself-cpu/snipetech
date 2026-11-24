@@ -22,7 +22,7 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
   the network fee, 0.0011 SOL. Yugi sold 19 s later, at 94 SOL of market cap, for 2.01 SOL: he lost 0.32 SOL. A fill
   at 118 would have lost too (about 0.04 to 0.05 SOL; an estimate from the tape's prices). The runner re-armed the
   sniper at 10:11:47.
-- 10:20 to 11:11: six fills behind Yugi, all lost: -0.1232 SOL together. Each coin was 1 to 11 s old when he
+- 10:20 to 11:15: seven fills behind Yugi, six lost and one won: -0.0973 SOL together. Each coin was 1 to 11 s old when he
   bought 3.42 SOL of it. Each time the same fast trader (Ca9uop1Qmobv8wizP5aM9ampmpGciEpikQ3NpBPcrFS5: 588 buys of
   about 1.1 SOL in a day, 9 of them behind Yugi) bought 1.48 SOL between him and us, and sold about 3 s later. Market
   caps in SOL; results are the wallet's own SOL, buy and sale, after every fee:
@@ -35,6 +35,7 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
   | 4 | 10:26:42 | 5qA5sYK6d91Rrg4kFtnSAqBpBx2XNgAvhfrNCzvXpump (1 s) | 50 → 58.6 | his slot, 1 between, at 63.2 | 3 s later, at 49.7 | -0.0531 |
   | 5 | 10:49:30 | BRCntx9EpKeZ6aqPXvPcTz3c3DAMf56Y5bz2eZKKpump (1 s) | 47 → 55.7 | his slot, 1 between, at 60.2 | 12 s later (the timer), about where we bought | -0.0065 |
   | 6 | 11:10:37 | 4iXjAMfqez5kdbKkMTnJAgbm8BwTa8325FzcYthPpump (10 s) | 36 → 44.0 | his slot, 1 between, at 48.0 | 2 s later, at 49.8, on his real sale | -0.0013 |
+  | 7 | 11:14:42 | FMBsjsfaPYPobJHmcVC1v8nte1SXEBURDwLv1Hm8ctUD (6 s) | 45 → 53.9 | his slot, none between, at 54.4 | 7 s later, at 64.5 | +0.0259 |
 
   Fill 4's second sale found nothing left to sell (pump.fun NotEnoughTokensToSell, 0.0011 SOL). Fill 5's coin went
   from 60 to about 100 SOL of market cap in the 3 s after our buy and fell back by 12 s; Yugi sold at 22 s, at 57.7.
@@ -63,8 +64,9 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
   (JDQKg6At…, Yugi at 140), 10:28:38 and 10:29:34 (FVsLx73N…, 176 and 206), 10:34:03 (6YUtZq1T…, 155) and 10:44:18 (a
   PumpSwap coin, 2Bd3EyAx…, pump-amm error 6040); at a limit worked out at $200 a SOL (26.5 SOL, under every coin's
   start) 10:41:29 (E6UVGWuu…).
-- Totals at 11:15 UTC: 6 fills, -0.1232 SOL; 10 failed transactions (8 refused buys, 2 empty second sales),
-  -0.0111 SOL; the run -0.134 SOL of its 0.3 SOL stop. Cented has not traded since the start. One more refusal at
+- Totals at 11:20 UTC: 7 fills, -0.0973 SOL; 10 failed transactions (8 refused buys, 2 empty second sales),
+  -0.0111 SOL; the run -0.108 SOL of its 0.3 SOL stop. Fill 7 stood first behind Yugi (nobody between) and
+  sold 7 s after the buy, 8 s before his own sale (3.97 SOL at 52.3). Cented has not traded since the start. One more refusal at
   the ceiling: 10:59:41 (GRXwEAQY…, a limit of 75.35 SOL of market cap).
 
 ## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day: ENDED 24 Nov 09:10:47 UTC on its time limit, nothing held, its snipers stopped by the runner; about +0.01 SOL over the whole test, +0.15 since the 19:59 restart (STARTED 23 Nov 09:11 UTC, runner 20261123-091103-3940b3 and its restarts; written 09:10 UTC, before anything was started)
