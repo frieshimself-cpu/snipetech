@@ -22,7 +22,7 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
   the network fee, 0.0011 SOL. Yugi sold 19 s later, at 94 SOL of market cap, for 2.01 SOL: he lost 0.32 SOL. A fill
   at 118 would have lost too (about 0.04 to 0.05 SOL; an estimate from the tape's prices). The runner re-armed the
   sniper at 10:11:47.
-- 10:20 to 10:27: four fills behind Yugi, all lost: -0.1154 SOL together. Each coin was 1 to 11 s old when he
+- 10:20 to 10:50: five fills behind Yugi, all lost: -0.1219 SOL together. Each coin was 1 to 11 s old when he
   bought 3.42 SOL of it. Each time the same fast trader (Ca9uop1Qmobv8wizP5aM9ampmpGciEpikQ3NpBPcrFS5: 588 buys of
   about 1.1 SOL in a day, 9 of them behind Yugi) bought 1.48 SOL between him and us, and sold about 3 s later. Market
   caps in SOL; results are the wallet's own SOL, buy and sale, after every fee:
@@ -33,8 +33,10 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
   | 2 | 10:22:15 | A7pwxPpLR7LZQo2rDpRpYJmiX7dMd4XyL8TzYZ5aYLev (2 s) | 45 → 53.9 | next slot, 1 between, at 58.4 | 6 s later, at 48.0 | -0.0460 |
   | 3 | 10:23:33 | 8Lg46wChB5NxGnbsavgDgqLts2vSCPrE6HFwkGEcpump (3 s) | 35 → 42.5 | next slot, 1 between, at 46.5 | 3 s later, at 46.0 | -0.0126 |
   | 4 | 10:26:42 | 5qA5sYK6d91Rrg4kFtnSAqBpBx2XNgAvhfrNCzvXpump (1 s) | 50 → 58.6 | his slot, 1 between, at 63.2 | 3 s later, at 49.7 | -0.0531 |
+  | 5 | 10:49:30 | BRCntx9EpKeZ6aqPXvPcTz3c3DAMf56Y5bz2eZKKpump (1 s) | 47 → 55.7 | his slot, 1 between, at 60.2 | 12 s later (the timer), about where we bought | -0.0065 |
 
-  Fill 4's second sale found nothing left to sell (pump.fun NotEnoughTokensToSell, 0.0011 SOL).
+  Fill 4's second sale found nothing left to sell (pump.fun NotEnoughTokensToSell, 0.0011 SOL). Fill 5's coin went
+  from 60 to about 100 SOL of market cap in the 3 s after our buy and fell back by 12 s; Yugi sold at 22 s, at 57.7.
 - **Why each copy sold 3 to 6 s after the buy: Yugi moves his coins, and OKTech's copy exit takes the move for a
   sale.** Off the chain (Yugi's token account in each coin): in fills 1, 2 and 3 he moved 63 to 69 % of his coins into
   two wallets of his (H772Ka…, Bps6uS…), in two transfers of 28 to 37 % each, 3 to 6 s after his buy, in the very slot
@@ -58,8 +60,8 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
   (JDQKg6At…, Yugi at 140), 10:28:38 and 10:29:34 (FVsLx73N…, 176 and 206), 10:34:03 (6YUtZq1T…, 155) and 10:44:18 (a
   PumpSwap coin, 2Bd3EyAx…, pump-amm error 6040); at a limit worked out at $200 a SOL (26.5 SOL, under every coin's
   start) 10:41:29 (E6UVGWuu…).
-- Totals at 10:50 UTC: 4 fills, -0.1154 SOL; 8 failed transactions (7 refused buys, 1 empty second sale), -0.0088
-  SOL; the run -0.124 SOL of its 0.3 SOL stop. Cented has not traded since the start.
+- Totals at 10:55 UTC: 5 fills, -0.1219 SOL; 8 failed transactions (7 refused buys, 1 empty second sale), -0.0088
+  SOL; the run -0.131 SOL of its 0.3 SOL stop. Cented has not traded since the start.
 
 ## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day: ENDED 24 Nov 09:10:47 UTC on its time limit, nothing held, its snipers stopped by the runner; about +0.01 SOL over the whole test, +0.15 since the 19:59 restart (STARTED 23 Nov 09:11 UTC, runner 20261123-091103-3940b3 and its restarts; written 09:10 UTC, before anything was started)
 
@@ -161,6 +163,8 @@ The rule stays positive in both weeks with the gap; it costs up to a quarter of 
 - **Yugi's exit stays as it is** (labs 20261123-113155-493dda and -113156-c583df with the copy exit, -113302-88b420 and -113303-0e73a7 without). With the copy exit, sold at 3 s: +2.41 / +1.82 SOL a week; 5 s +2.97 / +2.32; 8 s +3.40 / +6.26; 12 s +4.15 / +6.29. Without the copy exit, 12 s: +3.34 / +6.40. So a copy OKTech sells early on one of Yugi's transfers gives up about half of what that copy makes on paper, and taking the copy exit away entirely would cost as much in the newer week (his real sales come early and the copy exit follows them). It stays on. How often: in the 66 hours to 23 Nov 11:50 UTC Yugi moved a coin into other wallets within 12 s of buying it after 76 of his 427 buys (18 %; within 5 s after 51), read off the chain; so about one copy in six is sold early, which costs roughly a tenth of his paper result.
 
 ## The small-coin copy behind Cented, Decu and Yugi at 1 SOL: PREPARED 23 Nov, WAITS (the owner left 0.7 SOL for testing at ~09:08: the 0.2 SOL test above runs instead); its two idle snipers of 09:02 wait for it (written 23 Nov 03:00 UTC, before anything is made; the third wallet and the run's own fees added 05:03, the wallets' own launches 05:13, the ceiling labs, the snipers and the start 09:05)
+
+**UPDATED 24 Nov 11:00 UTC: Yugi on the timer alone (`hold12-nocopy`), if the owner says yes.** The morning's test (the section at the top) found OKTech's copy exit selling Yugi's copies on his coin moves into his own wallets, 3 to 6 s after his buys (7 of his last 16 big buys; all five of today's under the ceiling but one). On paper (the week to 24 Nov 08:30, 1 SOL, ceiling 75, +3x, newer part) a copy sold at 3 to 7 s makes +0.002 to +0.012, the 12 s timer alone +0.0141 (+0.44 SOL a day), and the 12 s timer with a copy exit that fires only on his sales +0.0227 (+0.71), a copy exit OKTech does not have. So Yugi's sniper is made with `hold12-nocopy` (the timer alone, the copy exit off; code of 24 Nov) and Cented's keeps `hold12` (his moves cost up to a sixth on paper, and his copy exit pays: 20:10 on 23 Nov). The pair's 3.47 SOL a day on paper (job 20261124-024723-aec1d3, the week to 23 Nov 23:15) falls to about 3.1 with Yugi on the timer alone (his part +0.90 with the copy exit, +0.56 without, the same week); the expectation said to the owner (1 to 2 SOL a day live, with losing days) stands, and the morning's five Yugi fills (-0.12 SOL at 0.2 SOL) are its losing side.
 
 **UPDATED 24 Nov 03:45 UTC: the settings proposed to the owner for the 1 SOL day (asked ~03:15, "yes or no"; nothing is made before a yes).** Cented and Yugi (Decu came out of the 0.2 SOL test on 23 Nov 15:35: his copies failed before any buy), their buys of 2 SOL or more, **1 SOL a copy, our fill's ceiling at 75 SOL of market cap** (in dollars at the server's SOL price when the snipers are made; checked 24 Nov 03:10, docs/roadmap.md), sold 12 s after the buy or by OKTech's copy exit, **the copy exit kept on both** (the paper's exit: Yugi at 1 SOL, ceiling 75, +3x, the week to 23 Nov 23:15: +0.0227 a copy and +0.90 SOL a day on the newer part with it, +0.0141 and +0.56 without; jobs 20261124-033206-7c79e4, -033237-a7f86e), one buy a start, the run's own sale 15 s after the buy (--sweep-after 15), 24 hours, stopped at 2 SOL lost, 100 fills. Paper for the pair at 1 SOL, +3x, the newer week: 3.47 SOL a day at 75 against 1.73 at 64.6 (job 20261124-024723-aec1d3); told to the owner as 1 to 2 SOL a day expected live, with losing days. **The other two big wallets under the same rule** (1 SOL, ceiling 75, +3x, the week to 23 Nov 23:15, newer part): Decu +0.0189 a copy over 109, +0.92 SOL a day (job 20261124-042406-1d0214; his copies that fail before any buy, when he buys coins at their launch, are not in the paper: the runner's streak guard rests a sniper after such a streak); theo side -0.0298 a copy over 68, -0.73 a day (job -042429-74ce8e): out. Proposed to the owner (04:25): Decu added on day two if day one works.
 

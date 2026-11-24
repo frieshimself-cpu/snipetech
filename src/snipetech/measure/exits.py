@@ -56,6 +56,11 @@ def _part(d: dict, key: str) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def _copy_off(payload: dict | None) -> bool:
+    """A copy sniper sent with its copy exit switched off (oktech.named_exit's `holdN-nocopy`)."""
+    return isinstance(payload, dict) and _part(payload, "ctbotCopyExit").get("enabled") is False
+
+
 def exit_spec(payload: dict | None) -> dict[str, Any] | None:
     """A sniper's exit rules from the OKTech config it was created with, in percent and seconds; None when it has
     none (or no config is on record)."""
@@ -133,6 +138,8 @@ def preset_name(payload: dict | None) -> str | None:
     spec = exit_spec(payload)
     if spec is None:
         return None
+    if _copy_off(payload):  # the presets carry the copy exit: a sniper sent without it is no preset
+        return _hold_name(payload, spec) or "custom"
     for name, params in named_exits().items():
         ref = exit_spec({"autoSell": autosell(dict(params) | {"copy_exit": True}, [])})
         if ref is not None and _shape(ref) == _shape(spec):
@@ -154,7 +161,7 @@ def _hold_name(payload: dict | None, spec: dict[str, Any]) -> str | None:
               if isinstance(st, dict) and _num(st.get("sellAfterMs"))]  # fmt: skip
     if any((_num(p) or 0) < 100 - 1e-9 for p in parts):
         return None  # a timer that sells a part is no holdN
-    name = f"hold{spec['hold_secs'][0]:g}"
+    name = f"hold{spec['hold_secs'][0]:g}" + ("-nocopy" if _copy_off(payload) else "")
     try:
         named_exit(name)
     except ValueError:

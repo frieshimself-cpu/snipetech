@@ -617,15 +617,17 @@ def named_exit(name: str) -> dict:
     """The exit a hand-made copy sniper is sent, by name: a preset (`EXITS`: lab, hold60), or `holdN` / `holdNs`, a
     sell-all timer of N seconds (1 to EXIT_MAX_HOLD_SECS) beside the copy exit every copy sniper carries: the lab's
     `holdNs copy50%` (lab f9cc32, 20 Nov: hold12s made +0.121 SOL a 2 SOL copy behind the big wallets). It goes out the
-    way hold60 does, whose 60 s timer sold 7bDN at 61.2 s on 6 Nov. Any other name raises: an exit nobody named is
-    never sent in its place."""
+    way hold60 does, whose 60 s timer sold 7bDN at 61.2 s on 6 Nov. `holdN-nocopy` is the same timer alone, the copy
+    exit switched off (`copy_exit` False): OKTech's copy exit takes the copied wallet's coin moves into its own wallets
+    for a sale (Yugi, 24 Nov: all four of the morning's copies sold in the slot of his move, 3 to 6 s after his buy).
+    Any other name raises: an exit nobody named is never sent in its place."""
     if name in EXITS:
         return dict(EXITS[name])
-    m = re.fullmatch(r"hold(\d+(?:\.\d+)?)s?", str(name or ""))
+    m = re.fullmatch(r"hold(\d+(?:\.\d+)?)s?(-nocopy)?", str(name or ""))
     if m and 1 <= float(m[1]) <= EXIT_MAX_HOLD_SECS:
-        return {"max_hold_secs": float(m[1])}
-    raise ValueError(f"no such exit {name!r}: {', '.join(EXITS)}, or holdN (sell everything N seconds after the buy, "
-                     f"1 to {EXIT_MAX_HOLD_SECS:g})")  # fmt: skip
+        return {"max_hold_secs": float(m[1])} | ({"copy_exit": False} if m[2] else {})
+    raise ValueError(f"no such exit {name!r}: {', '.join(EXITS)}, holdN (sell everything N seconds after the buy, "
+                     f"1 to {EXIT_MAX_HOLD_SECS:g}, beside the copy exit), or holdN-nocopy (the timer alone)")  # fmt: skip
 
 
 def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
@@ -762,11 +764,12 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     notes.append(choice.note() + hand_words)
     ex = dict(exit_params or named_exit(exit_name))
     ex.setdefault("sell_on_dev_sell", False)
+    copy_on = ex.get("copy_exit") is not False  # off only when the exit says so (`holdN-nocopy`)
     config: dict[str, Any] = {
         "mode": "ctbot",
         "ctbotWallets": [{"address": address, "label": f"snipetech {label}"[:40], "minSol": _round(min_sol, 3)}],
         "ctbotMinWallets": 1, "ctbotTimeWindowMs": cfg.oktech.copy_time_window_ms,
-        "ctbotCopyExit": {"enabled": True, "sellThresholdPercent": cfg.oktech.copy_exit_threshold_percent, "sellPercent": 100,
+        "ctbotCopyExit": {"enabled": copy_on, "sellThresholdPercent": cfg.oktech.copy_exit_threshold_percent, "sellPercent": 100,
                           "triggerWalletOnly": True, "delayMs": 0},
         "buyAmount": _round(max(0.001, buy_sol)), "priorityFee": prio, "tipAmount": tip,
         "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))), "speedMode": cfg.oktech.jetstream,
@@ -780,7 +783,7 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     config["extraParams"] = execution_params(send_count, cu, smart_fees=smart_fees)
     if cfg.oktech.preconf:
         config["preconf"] = True
-    sell = autosell(ex | {"copy_exit": True}, notes, **choice.autosell_fees())
+    sell = autosell(ex | {"copy_exit": copy_on}, notes, **choice.autosell_fees())
     if sell:
         config["autoSell"] = sell
         confirm_ms = (sell.get("stopLoss") or {}).get("confirmMs")
@@ -796,7 +799,9 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     )
     cap = f"{floor}{ceiling}"
     summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL{cap}, {buy_sol:g} SOL per copy, "
-               f"stops after {config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
+               f"stops after {config['totalSnipes']} buys",
+               (f"exit: when it sells, or {_describe_exit(ex)}" if copy_on else
+                f"exit: {_describe_exit(ex)} alone, no copy exit (the wallet's sales and its coin moves sell nothing)"),
                f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {choice.sell_tip:g} tip + {choice.sell_priority:g} priority SOL, "
                f"send count {config['extraParams']['globalSendCount']}, no seed account"
                + (f", {cu:,} compute units" if cu else "") + (", preconfs requested" if config.get("preconf") else "")

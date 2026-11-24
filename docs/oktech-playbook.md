@@ -126,7 +126,7 @@ under mode `shapes`.
 | Buy multiplier (key unknown; F:58) | size our copy as a multiple of the leader's buy | no | no (a rule has one size) | unknown | 5: the winners size per wallet and per buy (W) |
 | Consensus (`ctbotMinWallets` within `ctbotTimeWindowMs`) | buy only when N of the listed wallets bought the coin inside the window (S) | sent as 1 wallet, 10,000 ms | partly (the "2nd known wallet in" rule) | never above 1 | 6: the analyst's best paper lead today is a second-wallet-in rule (docs/autopilot.md, 12 Nov) |
 | Re-buy cooldown (`ctbotRetriggerCooldownMs`) | wait before copying the same trigger again | the speed probe only (15,000 ms) | no | unknown | 4: a leader's second buy of a coin is copied again and lost twice on 8 Nov (Gwje9b, AJNiDe) |
-| Copy exit (`ctbotCopyExit {sellThresholdPercent, sellPercent, triggerWalletOnly, delayMs}`) | sell when the copied wallet sells (F:59) | yes: 50 %, sell 100 %, at once | yes (`copy_exit_pct`) | 19 live sells; when the leader dumps everything our sell lands behind it (AG89fn, three exits at -55 to -85 %, 8 Nov) | 7 |
+| Copy exit (`ctbotCopyExit {sellThresholdPercent, sellPercent, triggerWalletOnly, delayMs}`) | sell when the copied wallet sells (F:59) | yes: 50 %, sell 100 %, at once | yes (`copy_exit_pct`) | 19 live sells; when the leader dumps everything our sell lands behind it (AG89fn, three exits at -55 to -85 %, 8 Nov); it also sells on the leader's coin moves into its own wallets (Cented 23 Nov, Yugi 24 Nov: question 17); `holdN-nocopy` sends a copy sniper without it | 7 |
 | Buy-on-Sell and Sell-on-Buy (reversal) | do the opposite of the wallet (F:59) | no | no | never run | 1 |
 | Migration follow (`ctbotMigrationFollow`) | when the leader's buy completes the curve, buy the pool (F:60) | no | no | never run | 2 |
 | Groups, skip check | wallet groups; a check that can be skipped. No help text (S, F:60) | no | no | unknown | 1 |
@@ -574,7 +574,12 @@ For the owner to paste to their support. Each is one sentence, and each changes 
 16. For ClaimSniper: which claims count (the creator's own, a fee-sharing user's), and how soon after the claim does
     the buy land?
 17. For `ctbotCopyExit`: is `sellThresholdPercent` the share the wallet sells in one transaction or added up over
-    several, and can `sellPercent` follow the wallet's part sales?
+    several, and can `sellPercent` follow the wallet's part sales? PARTLY ANSWERED BY THE CHAIN (24 Nov): it reads the
+    wallet's coins, not its sales. Yugi moved 63 to 69 % of his coins into two wallets of his in two transfers of 28 to
+    37 % each, 3 to 6 s after a buy, and selling nothing; our copy sold in that very slot, three times out of three
+    (docs/live-recipe.md, the test at the 75 ceiling). So transfers count as sales and a slot's are added up. A copy
+    sniper that must not sell on a leader's moves is sent `holdN-nocopy` (the timer alone, the copy exit off).
+    Still open: whether OKTech can tell a transfer from a sale.
 18. For MIG: how is "no migration window" sent, what is the largest Migration Window it takes (is 86,400 s allowed?),
     and where does the buy land against the migration transaction?
 19. For `ctbotCopyExit` past the curve: does it follow the followed wallet's sell on PumpSwap? The one time it was

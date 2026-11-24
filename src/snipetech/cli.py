@@ -939,11 +939,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--copy",
         action="append",
         metavar="ADDRESS[:LABEL[:MIN_SOL[:EXIT]]]",
-        help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1); EXIT lab|hold60|holdN",
+        help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1); EXIT "
+        "lab|hold60|holdN|holdN-nocopy",
     )
     sp.add_argument("--exit", default="lab",
-                    help="copylist: default exit for wallets without one: lab, hold60, or holdN (sell everything N s "
-                         "after the buy, beside the copy exit; hold12 is the big-wallet lab's best, 20 Nov)")  # fmt: skip
+                    help="copylist: default exit for wallets without one: lab, hold60, holdN (sell everything N s "
+                         "after the buy, beside the copy exit; hold12 is the big-wallet lab's best, 20 Nov), or "
+                         "holdN-nocopy (the timer alone: OKTech's copy exit takes a wallet's coin moves into its own "
+                         "wallets for a sale, as Yugi's 3 to 6 s after his buys on 24 Nov)")  # fmt: skip
     sp.add_argument("--bid", type=float,
                     help="copylist: the whole bid in SOL per buy, sent as priority 0.001 (OKTech's minimum) + tip BID "
                          "- 0.001; 0.003 at least. Use this, not --priority: OKTech charges the buy priority again on "

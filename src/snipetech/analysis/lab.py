@@ -122,7 +122,7 @@ def _as_live(e: Mapping[str, Any], copy_exit_pct: float) -> ExitParams:
         sell_on_dev_sell=False,
         stale_secs=float(e.get("stale_secs") or 0),
         watch_secs=WATCH_SECS,
-        copy_exit_pct=copy_exit_pct,
+        copy_exit_pct=0.0 if e.get("copy_exit") is False else copy_exit_pct,  # holdN-nocopy: the timer alone
         migration_sell_frac=float(e.get("migration_sell_frac") or 0),  # autosell sends it as it stands
         migration_sell_delay=float(e.get("migration_sell_delay") or 0),
         tp_stages=e.get("tp_stages") or (),  # the ladders too (a momentum hold is never sent: research only)
