@@ -4,7 +4,7 @@ The log of every live test, newest first: each entry's fills are live, with the 
 paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every
 number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
-## The same copy behind Cented and Yugi at 0.2 SOL with our fill's ceiling at 75 SOL: STARTED 24 Nov 09:15:12 UTC (runner 20261124-091510-fefe83; snipers Cented 6b055589ca420f45d7a957d1 and Yugi 6b05558aca420f45d7a957dd, $5,300 ceiling at the server's SOL price; the old two deleted 09:14; written ~09:10 UTC, before anything was made)
+## The same copy behind Cented and Yugi at 0.2 SOL with our fill's ceiling at 75 SOL: ENDED 24 Nov 14:06:15 UTC on its plain-SOL rule, nothing held, its snipers stopped by the runner; -0.108 SOL from its own trades (7 fills, all behind Yugi; Cented never traded) (STARTED 24 Nov 09:15:12 UTC, runner 20261124-091510-fefe83; snipers Cented 6b055589ca420f45d7a957d1 and Yugi 6b05558aca420f45d7a957dd, $5,300 ceiling at the server's SOL price; the old two deleted 09:14; written ~09:10 UTC, before anything was made)
 
 **Under which yes.** The standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet, written here before and after). It runs while the owner decides on the 1 SOL day (asked 24 Nov ~03:15, no answer yet); a yes to that day stops this test once it holds nothing and starts the 1 SOL one.
 
@@ -68,6 +68,13 @@ number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
   -0.0111 SOL; the run -0.108 SOL of its 0.3 SOL stop. Fill 7 stood first behind Yugi (nobody between) and
   sold 7 s after the buy, 8 s before his own sale (3.97 SOL at 52.3). Cented has not traded since the start. One more refusal at
   the ceiling: 10:59:41 (GRXwEAQY…, a limit of 75.35 SOL of market cap).
+- **The end, 14:06:15 UTC.** No trade after fill 7 (11:15). The wallet's plain SOL fell under the next copy's 0.22
+  after a move that was not a trade of the run, so the runner re-armed nothing more and, holding nothing, stopped
+  both snipers (its own rule; exit 0). Off the chain, the run's own trades: 7 fills -0.0973 SOL, 10 failed
+  transactions -0.0111 (8 refused buys, 2 empty second sales): -0.108 SOL. The runner's own reading, the move
+  taken out, is -0.074; the 0.034 between them is not reconciled here. What it taught: the 75 ceiling refused 8
+  of Yugi's buys above it (the four checked lost for him too) and filled none between 64.6 and 75, so the ceiling's
+  gain is still unmeasured live; Yugi's coin moves trip OKTech's copy exit (the sections above).
 
 ## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day: ENDED 24 Nov 09:10:47 UTC on its time limit, nothing held, its snipers stopped by the runner; about +0.01 SOL over the whole test, +0.15 since the 19:59 restart (STARTED 23 Nov 09:11 UTC, runner 20261123-091103-3940b3 and its restarts; written 09:10 UTC, before anything was started)
 
