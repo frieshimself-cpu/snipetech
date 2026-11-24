@@ -326,8 +326,10 @@ class OperatorConfig:
 
     wallet: str = ""  # the sniper wallet to watch (public key)
     # The most SOL one buy of our own buyer may spend (`snipetech buy`, solana/buy.py), the program's fee included: the
-    # owner's standing yes of 12 Nov 2026 covers live tests up to 0.2 SOL a buy (and 2 SOL lost a day). Raising it is
-    # the owner's decision, said in chat for that step; no agent, strategist or session raises it on its own
+    # owner's standing yes of 12 Nov 2026 covers live tests up to 0.2 SOL a buy (and 2 SOL lost a day). This setting
+    # can only lower the cap: solana/buy.py BUY_MAX_SOL holds it at 0.2 whatever is written here, and a value that is
+    # no finite number above 0 is refused. Raising the ceiling is the owner's decision, said in chat for that step, and
+    # a reviewed change of the code; no agent, strategist or session raises it on its own
     buy_max_sol: float = 0.2
     # coins the owner said to ignore (an airdropped token, a coin kept on purpose): the unsold-coin watch never
     # alerts on them and neither the watch nor the book counts them as held

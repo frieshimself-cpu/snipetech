@@ -11,6 +11,11 @@ buy can never land in front of the leader's, and a bundle that cannot land whole
 * `behind(leader, ours)`: the bundle [leader, ours...], the leader first.
 * `leader(b64)`: a transaction handed over as base64, checked to be one and signed (every signature verified here).
 
+What an answer says (review of 23 Nov): a refusal (`BundleError`) is only what the block engine itself said no with,
+a JSON-RPC error or a 4xx (400, 429: it did not take the request). A 5xx (the gateway in front of the engine: 502,
+503, 504), a body that is no JSON-RPC answer, or a 2xx with no bundle id says neither yes nor no (`BundleUnknown`):
+the bundle may have been taken and may still land, so whoever sent it looks it up before sending another.
+
 The HTTP client is handed in (`http`: anything with an async `post(url, json=...)`), so tests run without a network;
 without one, an httpx client is made for the call and closed after it. The block engines' addresses carry no key.
 """
@@ -34,6 +39,11 @@ TIMEOUT_SECS = 10.0
 
 class BundleError(RuntimeError):
     """A bundle refused, here or by the block engine, in plain words."""
+
+
+class BundleUnknown(RuntimeError):
+    """The request reached the block engine's address and the answer says neither taken nor refused (module
+    docstring): the bundle may land. Not a BundleError, so nothing that catches a refusal takes it for one."""
 
 
 def http_client():
@@ -93,26 +103,32 @@ async def _call(url: str, method: str, params: list, http=None) -> Any:
         if http is None:
             await client.aclose()
     status = getattr(resp, "status_code", 200)
+    text = str(getattr(resp, "text", ""))[:200]
+    if status >= 500:  # the gateway's or the engine's own failure: it may have passed the bundle on first
+        raise BundleUnknown(f"the block engine's address answered {status}: {text}")
     try:
         body = resp.json()
     except ValueError:
         body = None
-    error = (body or {}).get("error") if isinstance(body, dict) else None
+    error = body.get("error") if isinstance(body, dict) else None
     if error is not None:
         said = error.get("message") if isinstance(error, dict) else error
         raise BundleError(f"the block engine refused it: {str(said)[:200]}")
-    if status >= 400 or not isinstance(body, dict):
-        raise BundleError(f"the block engine answered {status}: {str(getattr(resp, 'text', ''))[:200]}")
-    return body.get("result")
+    if status >= 400:
+        raise BundleError(f"the block engine answered {status}: {text}")
+    if not isinstance(body, dict) or "result" not in body:
+        raise BundleUnknown(f"the block engine answered {status} with no JSON-RPC answer: {text}")
+    return body["result"]
 
 
 async def send_bundle(transactions, url: str, http=None) -> str:
     """Send the bundle (each transaction a signed solders transaction or its base64, in landing order); the block
-    engine's id for it."""
+    engine's id for it. BundleError: refused, here or by the engine; BundleUnknown: whether it was taken is not
+    known (module docstring)."""
     txs = _checked([_b64(tx) for tx in transactions])
     out = await _call(url, "sendBundle", [txs, {"encoding": "base64"}], http)
     if not isinstance(out, str) or not out:
-        raise BundleError("the block engine answered no bundle id")
+        raise BundleUnknown("the block engine answered no bundle id")
     return out
 
 

@@ -21,29 +21,47 @@ The transaction is the landed buy's shape: its compute budget (price, then limit
 coin opened as the landed buy opened it (the associated-token program's CreateIdempotent, unwrap.py), the buy, and
 then the tip: a System transfer to one of Jito's tip accounts, the last instruction. What the landed buy had and ours
 has not: OKTech's durable nonce (ours is signed on a recent blockhash, as our sale is), its tip to Astralane before the
-buy (ours tips Jito, last), its lookup table (ours is a legacy message, well under the size limit).
+buy (ours tips Jito, last), its lookup table (ours is a legacy message, well under the size limit). A wallet's first
+buy through this instruction also opens the wallet's pump.fun volume accumulator, inside the buy (the 7 Nov graduating
+buy 3PorWwJF… paid 1,346,200 lamports for it), and the wallet check counts that rent while the account is missing.
 
-The quote is pump.fun's own arithmetic, read off nine landed exact-in buys (ours and eight of other wallets', normal,
-holder-reward and mayhem coins; tests/test_buy.py): of what is spent, the most SOL whose fees fit goes into the curve
+The quote is pump.fun's own arithmetic, read off eight landed exact-in buys (three of ours and five of other wallets',
+normal, holder-reward and mayhem coins, 1.8 to 359 SOL of market cap; tests/test_buy.py; the ninth in the fixtures takes
+a curve's last coins, a buy this buyer refuses): of what is spent, the most SOL whose fees fit goes into the curve
 (spent x 10,000 / (10,000 + 125), rounded down, then lowered while that and its fees would spend more), the protocol
 fee (95 basis points) and the creator's (30) are each rounded up on it, and the coins are the curve's constant product
 on one lamport less than goes in, rounded down. The SOL in plus both fees is exactly what is spent, nothing else: the
 buyback's share (half the protocol fee on most coins) is taken out of the protocol fee, never on top. The program
-names its rates in every TradeEvent (95 and 30 on all nine, from 1.8 to 359 SOL of market cap, so the fee config's
-tiers are not read here); a dry run's simulation checks the arithmetic against the program's own fill.
+names its rates in every TradeEvent (95 and 30 on all nine exact-in buys of the fixtures, the curve-ending one too,
+so the fee config's tiers are not read here). A coin may carry a creator rate of its own (create_v2's creator_fee_bps;
+0, the program's default, on every curve of a landed buy): such a coin is refused until a landed buy of one shows what
+the program charges. A dry run's simulation checks the quote, with the plan's own spend and rates, against the
+program's own fill, so a rate the quote did not use shows.
 
 Behind a leader (a seat's transaction): the leader's transaction is simulated as it is, on the chain's current state,
-with the coin's curve asked back, and the quote stands on the curve it leaves. That holds for a leader that calls
-pump.fun through a router (Axiom's buys do), whose instructions say nothing of the coins they buy.
+with the coin's curve asked back, and the quote stands on the curve it leaves. What the leader buys is its own fill in
+that simulation, pump.fun's TradeEvent of the coin in the log (logged under a router's call too: Axiom's buys go
+through one), and the curve given back must be the one that fill ends on; nothing is compared with the curve read
+before, which may come from another moment.
 
 Refused, with the reason in plain words: a curve that has completed (the coin trades on PumpSwap now: buying there is a
-later step), a curve priced in another token, a mayhem-mode or cashback coin (no landed buy of one through this
-instruction to check its accounts against), a coin of the older token program (every landed buy checked is of a
-Token-2022 coin), a buy that would take the curve's last coins (the program then buys on past the curve's end, which
-is not quoted here), more SOL than the per-buy cap ([operator] buy_max_sol, the owner's standing yes: 0.2 SOL), a
-signed buy without the wallet's key. The send (`buy(send=True)`) is also refused while the owner's /stop flag is set,
-while the owner's wallet-wide guard holds, and when the wallet holds less than the buy, its fees, its tip, the coin's
-account and what selling the coin back costs.
+later step), a curve priced in another token or naming WSOL as its quote (every landed buy's curve holds the default
+key), a mayhem-mode or cashback coin or one with a creator rate of its own (no landed buy of one through this
+instruction to check against), a coin of the older token program (every landed buy checked is of a Token-2022 coin), a
+buy that would take the curve's last coins (the program then buys on past the curve's end, which is not quoted here),
+more SOL than the per-buy cap or a tip above the tip's own cap (both below), a signed buy without the wallet's key. A
+send (`buy(send=True)`) needs the owner's /stop check, the wallet-wide guard and the record of our own buys handed in,
+and is refused while the /stop flag is set (read again right before the bundle goes out), while the guard holds, and
+when the wallet holds less than the buy, its fees, its tip, the accounts it opens and what selling the coin back costs.
+
+The caps are in the code (review of 23 Nov: a setting of inf or nan switched the per-buy cap off): BUY_MAX_SOL, the
+owner's standing yes of 0.2 SOL a buy, which [operator] buy_max_sol can only lower, and BUY_MAX_TIP_SOL for the tip.
+Raising either is a reviewed change of the code, made with the owner's yes for that step.
+
+A dry run never signs over a live blockhash (review of 23 Nov: those bytes were a whole buy anyone who saw them could
+land): it fetches no blockhash, has the chain simulate the buy unsigned, on no blockhash of the chain's, and the key
+signs a copy over no blockhash, checked here and never sent. A send writes the buy into the store's record of our own
+buys (Store.own_buys) before its bundle goes out: the guard's day stop counts these buys by it.
 
 The secret key is read from SNIPER_SECRET (base58 text of 64 bytes, or the list of 64 numbers) in the environment, as
 the sale reads it (sell.keypair_from_secret), and never printed, logged or put in an error.
@@ -52,14 +70,17 @@ the sale reads it (sell.keypair_from_secret), and never printed, logged or put i
 from __future__ import annotations
 
 import base64
+import math
 import os
 import random
 import struct
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 from typing import Any
 
-from .programs import DEFAULT_PUBKEY, PUMP_PROGRAM, SOL_QUOTES, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, pump_idl
+from .programs import DEFAULT_PUBKEY, PUMP_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, pump_idl
 from .sell import (
     LAMPORTS,
     PUMP_BUYBACK_FEE_RECIPIENT,
@@ -82,22 +103,31 @@ from .unwrap import create_account_idempotent
 BUY_V3 = "buy_exact_quote_in_v3"
 BUY_V3_DISCRIMINATOR = next(d for d, (name, _a) in pump_idl().instructions.items() if name == BUY_V3)
 BUY_V3_ACCOUNT_NAMES = pump_idl().instructions[BUY_V3_DISCRIMINATOR][1]
-# the rates the program logged on all nine landed exact-in buys of the fixtures (TradeEvent fee_basis_points and
-# creator_fee_basis_points), from 1.8 to 359 SOL of market cap
+# the rates the program logged on all nine landed exact-in buys of the fixtures, the curve-ending one included
+# (TradeEvent fee_basis_points and creator_fee_basis_points), from 1.8 to 359 SOL of market cap
 CURVE_PROTOCOL_FEE_BPS = 95
 CURVE_CREATOR_FEE_BPS = 30
-# the owner's standing yes (12 Nov 2026): live tests up to 0.2 SOL a buy. [operator] buy_max_sol; the owner raises it
+# The per-buy cap's ceiling: the owner's standing yes (12 Nov 2026), live tests up to 0.2 SOL a buy. [operator]
+# buy_max_sol may lower it and never raises it; raising it is a reviewed change of this line, made with the owner's yes
 BUY_MAX_SOL = 0.2
+# The tip's own cap (review of 23 Nov: held to the buy's cap, one send could tip 0.2 SOL away beside a 0.2 SOL buy). The
+# paper's seat tip is 0.003 SOL (docs/roadmap.md, 23 Nov); raised as BUY_MAX_SOL is
+BUY_MAX_TIP_SOL = 0.01
 # the landed buy's compute budget: 100,000 units (it used 82,941, opening the coin's account included) at 10,000,000
 # micro-lamports a unit, 0.001 SOL of priority fee; with the base fee, the 1,005,000 lamports it paid
 BUY_CU_LIMIT = 100_000
 BUY_CU_PRICE_MICRO = 10_000_000
 COIN_ACCOUNT_RENT = 1_513_840  # what the landed buy paid to open the coin's token account (Token-2022, 170 bytes)
+# what a wallet's first buy through this instruction pays to open its volume accumulator (the 7 Nov graduating buy
+# 3PorWwJF…, tests/fixtures/graduating_bundle_7nov_migrate_tx.json: 1,346,200 lamports to 3AZL688P…, inside the buy)
+VOLUME_ACCUMULATOR_RENT = 1_346_200
 MIN_TIP_LAMPORTS = 1_000  # the least tip Jito's block engine takes in a bundle (its documented minimum)
 MAX_SLIPPAGE = 1.0  # the widest cap: a fill at up to twice the quote's price
 DEFAULT_SLIPPAGE = 0.10
 DEFAULT_TIP_SOL = 0.001
 COMMITMENT = "processed"  # a buy behind a leader prices the newest state the node has
+# a dry run's blockhash: the all-zero hash, on which no transaction can ever land (module docstring)
+NO_BLOCKHASH = "11111111111111111111111111111111"
 
 
 class BuyRefused(RuntimeError):
@@ -106,6 +136,11 @@ class BuyRefused(RuntimeError):
 
 class BuySendUnknown(RuntimeError):
     """The bundle went out and no answer came back: whether the block engine took it is not known."""
+
+
+def volume_accumulator(user: str) -> str:
+    """The wallet's pump.fun volume accumulator (PDA "user_volume_accumulator", wallet), one of the buy's accounts."""
+    return pda([b"user_volume_accumulator", bytes(_pk(user))], PUMP_PROGRAM)
 
 
 def buy_v3_accounts(user: str, mint: str, token_program: str = TOKEN_2022_PROGRAM) -> list[tuple[str, bool, bool]]:
@@ -125,7 +160,7 @@ def buy_v3_accounts(user: str, mint: str, token_program: str = TOKEN_2022_PROGRA
         (user, True, True),  # user
         (ata(user, mint, token_program), False, True),  # associated_base_user
         (ata(user, WSOL_MINT, TOKEN_PROGRAM), False, True),  # associated_quote_user
-        (pda([b"user_volume_accumulator", bytes(_pk(user))], PUMP_PROGRAM), False, True),  # user_volume_accumulator
+        (volume_accumulator(user), False, True),  # user_volume_accumulator
         (PUMP_FEE_CONFIG, False, False),  # fee_config
         (PUMP_BUYBACK_FEE_RECIPIENT, False, True),  # buyback_fee_recipient
         (SYSTEM_PROGRAM, False, False),  # system_program
@@ -168,7 +203,7 @@ def _fee(amount: int, bps: int) -> int:
 def quote_buy(spendable: int, virtual_sol: int, virtual_tokens: int, protocol_bps: int = CURVE_PROTOCOL_FEE_BPS,
               creator_bps: int = CURVE_CREATOR_FEE_BPS) -> BuyQuote:  # fmt: skip
     """pump.fun's exact-SOL-in buy on a curve of `virtual_sol` and `virtual_tokens` (module docstring): the coins out,
-    to the coin, on nine landed buys."""
+    to the coin, on eight landed buys."""
     spendable = max(int(spendable), 0)
     net = spendable * 10_000 // (10_000 + int(protocol_bps) + int(creator_bps))
     over = net + _fee(net, protocol_bps) + _fee(net, creator_bps) - spendable
@@ -199,15 +234,44 @@ def tx_fee(cu_limit: int = BUY_CU_LIMIT, cu_price_micro: int = BUY_CU_PRICE_MICR
     return BASE_FEE_PER_SIGNATURE + -(-int(cu_limit) * int(cu_price_micro) // 1_000_000)
 
 
+def _number(x: Any) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def per_buy_cap(max_sol: Any = BUY_MAX_SOL) -> float:
+    """The per-buy cap in SOL for the cap asked for ([operator] buy_max_sol): a finite number above 0, held to
+    BUY_MAX_SOL. A setting lowers the cap; nothing but a change of the code raises it (module docstring)."""
+    cap = _number(max_sol)
+    if not (math.isfinite(cap) and cap > 0):
+        raise BuyRefused(f"a per-buy cap of {max_sol!r}: it is a number above 0, at most {BUY_MAX_SOL:g} SOL "
+                         "([operator] buy_max_sol can lower the code's cap, never switch it off or raise it)")  # fmt: skip
+    return min(cap, BUY_MAX_SOL)
+
+
+def tip_lamports(tip_sol: Any) -> int:
+    """The tip in lamports for `tip_sol` SOL: 0 to BUY_MAX_TIP_SOL, the tip's own cap; anything else is refused."""
+    tip = _number(tip_sol)
+    if not (math.isfinite(tip) and 0 <= tip <= BUY_MAX_TIP_SOL + 1e-12):
+        raise BuyRefused(f"a tip of {tip_sol} SOL: it is 0 to {BUY_MAX_TIP_SOL:g} SOL, the tip's own cap (raising it is "
+                         "the owner's decision, a change of the code)")  # fmt: skip
+    return round(tip * LAMPORTS)
+
+
 @dataclass
 class CoinCurve(Curve):
     """A coin's curve as a buy needs it: the sale's Curve (reserves, complete, creator) and the flags a buy checks,
-    read with the vendored IDL's BondingCurve. A curve account from before a flag existed is shorter and has it unset."""
+    read with the vendored IDL's BondingCurve. A curve account from before a flag existed is shorter and has it unset.
+    `creator_fee_bps`: the coin's own creator rate (create_v2), 0 when it has none (the program's default)."""
 
     is_mayhem_mode: bool = False
     is_cashback_coin: bool = False
     is_holder_reward: bool = False
     quote_mint: str = DEFAULT_PUBKEY
+    creator_fee_bps: int = 0
+    can_edit_creator_fee: bool = False
 
     @classmethod
     def decode(cls, data: bytes) -> CoinCurve:
@@ -215,13 +279,16 @@ class CoinCurve(Curve):
         f = pump_idl().decoder.decode_struct("BondingCurve", data, 8)
         return cls(**asdict(base), is_mayhem_mode=bool(f.get("is_mayhem_mode")),
                    is_cashback_coin=bool(f.get("is_cashback_coin")), is_holder_reward=bool(f.get("is_holder_reward")),
-                   quote_mint=str(f.get("quote_mint") or DEFAULT_PUBKEY))  # fmt: skip
+                   quote_mint=str(f.get("quote_mint") or DEFAULT_PUBKEY),
+                   creator_fee_bps=int(f.get("creator_fee_bps") or 0),
+                   can_edit_creator_fee=bool(f.get("can_edit_creator_fee")))  # fmt: skip
 
 
 @dataclass
 class Coin:
     """What a buy knows of the coin, read in one call: its curve, its token program (the mint's owner), whether the
-    wallet's account of it exists, the wallet's SOL. `leader`: the leader's buy this curve stands behind, if any."""
+    wallet's account of it exists, the wallet's SOL, whether the wallet's volume accumulator exists. `leader`: the
+    leader's buy this curve stands behind, if any."""
 
     mint: str
     token_program: str
@@ -229,6 +296,7 @@ class Coin:
     account_exists: bool = False
     wallet_lamports: int | None = None
     leader: dict | None = None
+    accumulator_exists: bool = True
 
 
 @dataclass(frozen=True)
@@ -237,6 +305,7 @@ class BuyPlan:
     quote: BuyQuote
     min_tokens_out: int
     slippage: float
+    rates: tuple[int, int] = (CURVE_PROTOCOL_FEE_BPS, CURVE_CREATOR_FEE_BPS)  # the fee rates the quote used (bps)
 
 
 def coin_refusal(coin: Coin) -> str | None:
@@ -245,13 +314,21 @@ def coin_refusal(coin: Coin) -> str | None:
     if c.complete:
         return ("the coin has left its pump.fun curve (the curve reads complete): it trades on PumpSwap now, and this "
                 "buyer buys on the curve only (a PumpSwap buy is a later step)")  # fmt: skip
-    if c.quote_mint not in SOL_QUOTES:
+    if c.quote_mint == WSOL_MINT:
+        return ("the coin's curve names WSOL as its quote mint, not the default key every landed buy's curve holds: no "
+                "landed buy covers one, and its buy may take the SOL from the wallet's WSOL account (OKTech's working "
+                "WSOL) rather than plain SOL")  # fmt: skip
+    if c.quote_mint != DEFAULT_PUBKEY:
         return f"the coin's curve is priced in another token ({c.quote_mint}), not SOL"
     if c.is_mayhem_mode:
         return ("a mayhem-mode coin: no landed buy of one through buy_exact_quote_in_v3 is on record to check its "
                 "accounts against (the landed buys are of normal and holder-reward coins)")  # fmt: skip
     if c.is_cashback_coin:
         return "a cashback coin: no landed buy of one is on record to check its accounts against"
+    if c.creator_fee_bps:
+        return (f"a coin with a creator rate of its own ({c.creator_fee_bps} basis points), set when it was made: every "
+                f"landed buy is of a coin without one (the program's default, {CURVE_CREATOR_FEE_BPS}), and none shows "
+                "what the program charges on such a coin, so the quote and its least coins would be off")  # fmt: skip
     if coin.token_program == TOKEN_PROGRAM:
         return ("a coin of the older token program (Tokenkeg…): every landed buy this buyer is checked against is of a "
                 "Token-2022 coin")  # fmt: skip
@@ -268,7 +345,7 @@ def _data(account: dict) -> bytes:
 class Buyer:
     """Our own buy, from the sniper wallet. With its key (SNIPER_SECRET) it signs; with the wallet's address alone
     (`wallet`, [operator] wallet) it builds the buy unsigned, for the chain's simulation only. `max_sol`: the per-buy
-    cap ([operator] buy_max_sol)."""
+    cap asked for ([operator] buy_max_sol), held to BUY_MAX_SOL (`per_buy_cap`)."""
 
     def __init__(self, rpc, secret_b58: str | None = None, wallet: str | None = None, max_sol: float = BUY_MAX_SOL):
         secret = (secret_b58 or os.environ.get("SNIPER_SECRET", "")).strip()
@@ -284,19 +361,20 @@ class Buyer:
             raise BuyRefused("SNIPER_SECRET is not set (the sniper wallet's secret key, in /etc/snipetech/env) and no "
                              "sniper wallet is named ([operator] wallet): there is no wallet to buy for")  # fmt: skip
         self.rpc = rpc
-        self.max_sol = float(max_sol)
+        self.max_sol = per_buy_cap(max_sol)
 
     def __repr__(self) -> str:
         return f"Buyer(wallet={self.user})"
 
     async def coin(self, mint: str) -> Coin:
-        """The coin's curve, its mint, the wallet and the wallet's account of the coin, in one read."""
+        """The coin's curve, its mint, the wallet, the wallet's account of the coin and its volume accumulator, in one
+        read."""
         try:
             _pk(mint)
         except Exception:  # noqa: BLE001 - whatever it is, it is not an address
             raise BuyRefused("the coin given is not a coin's address (a base58 public key)") from None
         curve_address, account = bonding_curve(mint), ata(self.user, mint, TOKEN_2022_PROGRAM)
-        keys = [curve_address, mint, self.user, account]
+        keys = [curve_address, mint, self.user, account, volume_accumulator(self.user)]
         res = await self.rpc.call("getMultipleAccounts", [keys, {"encoding": "base64", "commitment": COMMITMENT}])
         got = dict(zip(keys, (res or {}).get("value") or [None] * len(keys)))
         found = got.get(curve_address)
@@ -313,13 +391,17 @@ class Buyer:
             raise BuyRefused("the coin's mint account does not exist")
         wallet = got.get(self.user) or {}
         return Coin(mint, str(mint_account.get("owner") or ""), curve, got.get(account) is not None,
-                    int(wallet.get("lamports") or 0))  # fmt: skip
+                    int(wallet.get("lamports") or 0),
+                    accumulator_exists=got.get(volume_accumulator(self.user)) is not None)  # fmt: skip
 
     async def behind(self, coin: Coin, leader_b64: str) -> Coin:
-        """The coin as it stands right behind the leader's transaction: the leader is simulated as it is (its own
-        signature and blockhash checked) with the coin's curve asked back. Refused when the leader fails there or does
-        not buy this coin: a bundle with it could not do what it is for."""
+        """The coin as it stands right behind the leader's transaction, from one simulation of it as it is (its own
+        signature and blockhash checked) with the coin's curve asked back (module docstring): the leader's own fill is
+        pump.fun's TradeEvent of the coin in that simulation's log, and the curve given back is the one that fill must
+        end on. Refused when the leader fails there, buys none of the coin, or the two disagree: a bundle with it could
+        not do what it is for."""
         from .bundle import BundleError, leader
+        from .tx import extract_from_logs
 
         try:
             sig = str(leader(leader_b64).signatures[0])
@@ -340,11 +422,18 @@ class Buyer:
             after = CoinCurve.decode(_data(accounts[0]))
         except (ValueError, struct.error, IndexError):
             raise BuyRefused("the leader's simulation gave back no bonding curve for the coin") from None
-        added = after.virtual_quote_reserves - coin.curve.virtual_quote_reserves
-        taken = coin.curve.virtual_token_reserves - after.virtual_token_reserves
+        fills = [e.fields for e in extract_from_logs([str(line) for line in value.get("logs") or []])
+                 if e.name == "TradeEvent" and e.fields.get("mint") == coin.mint]  # fmt: skip
+        sign = [1 if f.get("is_buy") else -1 for f in fills]
+        added = sum(s * int(f["sol_amount"]) for s, f in zip(sign, fills))
+        taken = sum(s * int(f["token_amount"]) for s, f in zip(sign, fills))
         if added <= 0 or taken <= 0:
-            raise BuyRefused("the leader's transaction does not buy this coin: in its simulation the coin's curve takes "
-                             "no SOL in and gives no coins out")  # fmt: skip
+            raise BuyRefused("the leader's transaction does not buy this coin: its simulation logs no buy of it by "
+                             "pump.fun (a TradeEvent of the coin)")  # fmt: skip
+        ends = (int(fills[-1]["virtual_sol_reserves"]), int(fills[-1]["virtual_token_reserves"]))
+        if ends != (after.virtual_quote_reserves, after.virtual_token_reserves):
+            raise BuyRefused("the curve the leader's simulation gave back is not the one the leader's own fill ends on: "
+                             "nothing is priced on a curve that may come from another moment")  # fmt: skip
         return replace(coin, curve=after, leader={"signature": sig, "sol_in_curve": added, "tokens": taken})
 
     def _spendable(self, sol_in: float) -> int:
@@ -352,9 +441,9 @@ class Buyer:
         if not sol > 0:
             raise BuyRefused(f"a buy of {sol:g} SOL: a buy spends more than nothing")
         if sol > self.max_sol + 1e-12:
-            raise BuyRefused(f"{sol:g} SOL is above the per-buy cap of {self.max_sol:g} SOL ([operator] buy_max_sol; "
-                             "the owner's standing yes of 12 Nov 2026 is up to 0.2 SOL a buy): raising it is the "
-                             "owner's decision")  # fmt: skip
+            raise BuyRefused(f"{sol:g} SOL is above the per-buy cap of {self.max_sol:g} SOL (the owner's standing yes "
+                             f"of 12 Nov 2026 is up to {BUY_MAX_SOL:g} SOL a buy; [operator] buy_max_sol can only lower "
+                             "it): raising it is the owner's decision, a change of the code")  # fmt: skip
         return round(sol * LAMPORTS)
 
     def plan(self, coin: Coin, sol_in: float, slippage: float) -> BuyPlan:
@@ -364,22 +453,24 @@ class Buyer:
         if why:
             raise BuyRefused(why)
         c = coin.curve
-        q = quote_buy(spendable, c.virtual_quote_reserves, c.virtual_token_reserves)
+        rates = (CURVE_PROTOCOL_FEE_BPS, CURVE_CREATOR_FEE_BPS)  # a coin with a rate of its own is refused above
+        q = quote_buy(spendable, c.virtual_quote_reserves, c.virtual_token_reserves, *rates)
         if q.tokens <= 0:
             raise BuyRefused("the quote is no coins at all: the SOL is too little for this curve")
         if q.tokens >= c.real_token_reserves:
             raise BuyRefused(f"the buy would take the last of the curve's coins ({c.real_token_reserves:,} raw units "
                              f"left, the quote is {q.tokens:,}): the program then buys on past the curve's end, which "
                              "this buyer does not quote")  # fmt: skip
-        return BuyPlan(spendable, q, min_tokens_out(q.tokens, slippage), float(slippage))
+        return BuyPlan(spendable, q, min_tokens_out(q.tokens, slippage), float(slippage), rates)
 
     def need_lamports(self, coin: Coin, sol_in: float, tip_lamports: int = 0, cu_limit: int = BUY_CU_LIMIT,
                       cu_price: int = BUY_CU_PRICE_MICRO) -> int:  # fmt: skip
         """What the wallet must hold for the buy: the SOL it spends (the program's fees in it), the network fee, the
-        tip, the coin's account when it is not open yet, and what selling the coin back costs (sell.SALE_FEE_LAMPORTS:
-        a buy never leaves the wallet unable to pay for its own exit)."""
+        tip, the coin's account and the wallet's volume accumulator when the buy opens them, and what selling the coin
+        back costs (sell.SALE_FEE_LAMPORTS: a buy never leaves the wallet unable to pay for its own exit)."""
         return (self._spendable(sol_in) + tx_fee(cu_limit, cu_price) + max(int(tip_lamports), 0)
-                + (0 if coin.account_exists else COIN_ACCOUNT_RENT) + SALE_FEE_LAMPORTS)  # fmt: skip
+                + (0 if coin.account_exists else COIN_ACCOUNT_RENT)
+                + (0 if coin.accumulator_exists else VOLUME_ACCUMULATOR_RENT) + SALE_FEE_LAMPORTS)  # fmt: skip
 
     def build(self, coin: Coin, sol_in: float, slippage: float, blockhash: str, tip_lamports: int = 0,
               cu_limit: int = BUY_CU_LIMIT, cu_price: int = BUY_CU_PRICE_MICRO, *, tip_account: str | None = None,
@@ -400,6 +491,8 @@ class Buyer:
         tip = int(tip_lamports)
         if tip < 0:
             raise BuyRefused("a tip below nothing")
+        if tip > round(BUY_MAX_TIP_SOL * LAMPORTS):
+            raise BuyRefused(f"a tip of {tip:,} lamports: above the tip's own cap of {BUY_MAX_TIP_SOL:g} SOL")
         ixs = [set_compute_unit_price(int(cu_price)), set_compute_unit_limit(int(cu_limit)),
                create_account_idempotent(self.user, self.user, coin.mint, coin.token_program),
                buy_v3_instruction(self.user, coin.mint, coin.token_program, plan.spendable, plan.min_tokens_out)]  # fmt: skip
@@ -415,10 +508,11 @@ class Buyer:
     async def blockhash(self) -> str:
         return (await self.rpc.call("getLatestBlockhash", [{"commitment": "confirmed"}]))["value"]["blockhash"]
 
-    async def simulate(self, tx) -> dict[str, Any]:
+    async def simulate(self, tx, plan: BuyPlan | None = None) -> dict[str, Any]:
         """What the chain says the buy would do now: run without the signature check, on a blockhash of its own. The
-        program's TradeEvent in the log is its fill; `check` is the quote's arithmetic on the curve that event records
-        less the coins the program gave (0: exact)."""
+        program's TradeEvent in the log is its fill; `check` is the quote's arithmetic, with the plan's own spend and
+        rates (the module's rates and the fill's spend without a plan), on the curve that event records, less the
+        coins the program gave (0: exact). `fee_bps` are the rates the program charged, `quoted_bps` the quote's."""
         from .tx import extract_from_logs
 
         res = await self.rpc.call("simulateTransaction", [base64.b64encode(bytes(tx)).decode(), {
@@ -433,61 +527,81 @@ class Buyer:
         )
         if ev is not None:
             spent = int(ev["sol_amount"]) + int(ev["fee"]) + int(ev["creator_fee"])
-            bps = [int(ev["fee_basis_points"]), int(ev["creator_fee_basis_points"])]
-            q = quote_buy(spent, *reserves_before(ev), *bps)
+            rates = list(plan.rates) if plan is not None else [CURVE_PROTOCOL_FEE_BPS, CURVE_CREATOR_FEE_BPS]
+            q = quote_buy(plan.spendable if plan is not None else spent, *reserves_before(ev), *rates)
             out["fill"] = {"tokens": int(ev["token_amount"]), "sol_in_curve": int(ev["sol_amount"]), "spent": spent,
-                           "fee_bps": bps, "check": q.tokens - int(ev["token_amount"])}  # fmt: skip
+                           "fee_bps": [int(ev["fee_basis_points"]), int(ev["creator_fee_basis_points"])],
+                           "quoted_bps": rates, "check": q.tokens - int(ev["token_amount"])}  # fmt: skip
         return out
 
 
 NO_KEY = ("SNIPER_SECRET is not set: nothing here can sign for the wallet (the owner puts the key in /etc/snipetech/env "
           "over SSH, never in chat)")  # fmt: skip
+NO_SAFEGUARDS = ("a send needs the owner's /stop check (a function, read again right before the bundle goes out), the "
+                 "owner's wallet-wide guard and the record of our own buys the day stop counts them by; one of them was "
+                 "not handed in: nothing sent")  # fmt: skip
 
 
 def _sol(lamports: int) -> float:
     return round(int(lamports) / LAMPORTS, 9)
 
 
+async def _guard_says(guard: Callable[[str], Awaitable[str | None]], wallet: str) -> str | None:
+    """The owner's wallet-wide guard on the wallet: why it refuses a start now, or None; one that cannot answer
+    refuses too."""
+    try:
+        return await guard(wallet)
+    except Exception as exc:  # noqa: BLE001 - cannot tell is never clear
+        return f"the owner's wallet-wide guard cannot tell ({type(exc).__name__})"
+
+
 async def buy(rpc, mint: str, sol: float, *, slippage: float = DEFAULT_SLIPPAGE, tip_sol: float = DEFAULT_TIP_SOL,
               behind: str | None = None, region: str | None = None, send: bool = False, max_sol: float = BUY_MAX_SOL,
-              stopped: bool = False, guard=None, wallet: str | None = None, secret_b58: str | None = None, http=None,
-              tip_account: str | None = None) -> dict[str, Any]:  # fmt: skip
+              stopped: Callable[[], bool] | None = None, guard: Callable[[str], Awaitable[str | None]] | None = None,
+              record: Callable[[dict], None] | None = None, wallet: str | None = None, secret_b58: str | None = None,
+              http=None, tip_account: str | None = None) -> dict[str, Any]:  # fmt: skip
     """`snipetech buy`: one buy of `sol` SOL of the coin from the sniper wallet, with a tip to Jito, behind the leader's
     transaction `behind` when one is handed over.
 
-    Without `send` it is a dry run: the coin is read, quoted, the buy built (signed with the key, unsigned without) and
-    simulated on the chain, and what a send would refuse is said. With `send` the bundle goes to the `region`'s block
-    engine and its id comes back. Every cap is checked before anything is built for sending: the per-buy cap
-    (`max_sol`) and the tip before the chain is read; the wallet's key, the owner's /stop flag (`stopped`), the least
-    tip a bundle takes and the owner's wallet-wide guard (`guard`, an async wallet -> reason or None) before the chain
-    is read too; what the wallet holds against the buy, its fees, tip, account and exit after the read and before
-    the build. A refusal is a BuyRefused in plain words; a bundle that went out with no answer, BuySendUnknown."""
+    Without `send` it is a dry run: the coin is read, quoted, the buy built and simulated unsigned on no blockhash of
+    the chain's (the key, when there is one, signs a copy over no blockhash, checked here and never sent), and what a
+    send would refuse is said, the owner's guard asked too. With `send` the bundle goes to the `region`'s block engine
+    and its id comes back. A send needs `stopped` (the owner's /stop check, a function), `guard` (the wallet-wide guard,
+    an async wallet -> reason or None) and `record` (writes the buy into the record of our own buys the day stop counts,
+    before the bundle goes out); without all three nothing is sent. Every cap is checked before anything is built for
+    sending: a blank `behind`, the per-buy cap (`max_sol`, held to BUY_MAX_SOL), the tip's own cap and the slippage cap
+    before anything is read; the wallet's key, the /stop flag, the least tip a bundle takes and the guard before the
+    chain is read; what the wallet holds against the buy, its fees, tip, the accounts it opens and its exit after the
+    read and before the build; the /stop flag once more right before the bundle goes out. A refusal is a BuyRefused in
+    plain words; a bundle that went out with no clear answer, BuySendUnknown."""
     from . import bundle as J
     from .buy_limit import mcap_sol
 
     region = region or J.DEFAULT_REGION
     if region not in J.REGIONS:
         raise BuyRefused(f"no Jito block engine called {region!r} here (the regions: {', '.join(sorted(J.REGIONS))})")
-    if not 0 <= float(tip_sol) <= float(max_sol):
-        raise BuyRefused(f"a tip of {float(tip_sol):g} SOL: it is 0 to the per-buy cap of {float(max_sol):g} SOL")
-    tip = round(float(tip_sol) * LAMPORTS)
-    buyer = Buyer(rpc, secret_b58, wallet=wallet, max_sol=max_sol)
+    if behind is not None and not str(behind).strip():
+        raise BuyRefused("--behind is empty: there is no leader's transaction to land behind (a variable that was not "
+                         "set?); without --behind the buy is not behind anyone")  # fmt: skip
+    tip = tip_lamports(tip_sol)
+    buyer = Buyer(rpc, secret_b58, wallet=wallet, max_sol=per_buy_cap(max_sol))
     buyer._spendable(sol)  # the per-buy cap, and more than nothing
     min_tokens_out(0, slippage)  # the slippage cap is 0 to 1
     if send:
+        if not callable(stopped) or guard is None or record is None:
+            raise BuyRefused(NO_SAFEGUARDS)
         if buyer.kp is None:
             raise BuyRefused(NO_KEY)
-        if stopped:
+        if stopped():
             raise BuyRefused("the owner's /stop flag is set: /resume first")
         if tip < MIN_TIP_LAMPORTS:
             raise BuyRefused(f"a bundle needs a tip of at least {MIN_TIP_LAMPORTS:,} lamports to a Jito tip account "
                              "(the block engine's least); --tip 0 is for a dry run only")  # fmt: skip
-        if guard is not None:
-            why = await guard(buyer.user)
-            if why:
-                raise BuyRefused(why)
+    guarded = await _guard_says(guard, buyer.user) if guard is not None else None  # it only reads: a dry run asks too
+    if send and guarded:
+        raise BuyRefused(guarded)
     coin = await buyer.coin(mint)
-    if behind:
+    if behind is not None:
         coin = await buyer.behind(coin, behind)
     plan = buyer.plan(coin, sol, slippage)
     need = buyer.need_lamports(coin, sol, tip)
@@ -495,13 +609,15 @@ async def buy(rpc, mint: str, sol: float, *, slippage: float = DEFAULT_SLIPPAGE,
     refusals = []
     if buyer.kp is None:
         refusals.append(NO_KEY)
-    if stopped:
+    if callable(stopped) and stopped():
         refusals.append("the owner's /stop flag is set")
     if tip < MIN_TIP_LAMPORTS:
         refusals.append(f"a bundle needs a tip of at least {MIN_TIP_LAMPORTS:,} lamports")
+    if guarded:
+        refusals.append(guarded)
     if held < need:
         refusals.append(f"the wallet holds {held / LAMPORTS:.4f} SOL, under the {need / LAMPORTS:.4f} SOL this buy needs "
-                        "(the buy, its network fee and tip, the coin's account and what selling it back costs)")  # fmt: skip
+                        "(the buy, its network fee and tip, the accounts it opens and what selling it back costs)")  # fmt: skip
     if send and refusals:
         raise BuyRefused(refusals[0])
     c, q = coin.curve, plan.quote
@@ -510,31 +626,57 @@ async def buy(rpc, mint: str, sol: float, *, slippage: float = DEFAULT_SLIPPAGE,
         "wallet": buyer.user, "mint": coin.mint, "sol": float(sol), "slippage": float(slippage), "tip_sol": _sol(tip),
         "region": region, "token_program": coin.token_program,
         "curve": {"virtual_sol": c.virtual_quote_reserves, "virtual_tokens": c.virtual_token_reserves,
-                  "real_tokens": c.real_token_reserves, "holder_reward": c.is_holder_reward},
+                  "real_tokens": c.real_token_reserves, "holder_reward": c.is_holder_reward,
+                  "can_edit_creator_fee": c.can_edit_creator_fee},
         "behind": coin.leader,
-        "quote": asdict(q) | {"mcap_sol": mcap_sol(q.spendable, q.tokens)},
+        "quote": asdict(q) | {"mcap_sol": mcap_sol(q.spendable, q.tokens), "fee_bps": list(plan.rates)},
         "min_tokens_out": plan.min_tokens_out,
         "ceiling_mcap_sol": mcap_sol(q.spendable, plan.min_tokens_out),
         "accounts": [{"name": n, "address": k, "signer": s, "writable": w}
                      for n, (k, s, w) in zip(BUY_V3_ACCOUNT_NAMES, accounts, strict=True)],
         "compute": {"unit_limit": BUY_CU_LIMIT, "unit_price_micro_lamports": BUY_CU_PRICE_MICRO},
         "fee_sol": _sol(tx_fee()), "need_sol": _sol(need), "wallet_sol": _sol(held),
+        "opens_volume_account": not coin.accumulator_exists,
     }  # fmt: skip
-    tx = buyer.build(coin, sol, slippage, await buyer.blockhash(), tip, tip_account=tip_account,
-                     signed=buyer.kp is not None)  # fmt: skip
     if not send:
-        return row | {"dry_run": True, "signed": buyer.kp is not None, "simulation": await buyer.simulate(tx),
+        # no blockhash of the chain's, no signature: these bytes can never land, whoever sees them (module docstring)
+        tx = buyer.build(coin, sol, slippage, NO_BLOCKHASH, tip, tip_account=tip_account, signed=False)
+        signs = buyer.kp is not None and buyer.build(coin, sol, slippage, NO_BLOCKHASH, tip,
+                                                     tip_account=tip_account).verify_with_results() == [True]  # fmt: skip
+        return row | {"dry_run": True, "signed": signs, "simulation": await buyer.simulate(tx, plan),
                       "send_refusals": refusals}  # fmt: skip
-    txs = J.behind(behind, tx) if behind else [tx]
+    tx = buyer.build(coin, sol, slippage, await buyer.blockhash(), tip, tip_account=tip_account)
+    try:
+        txs = J.behind(behind, tx) if behind is not None else [tx]
+    except J.BundleError as exc:
+        raise BuyRefused(str(exc)) from None
     sig = str(tx.signatures[0])
     row |= {"signature": sig, "bundle": [*([coin.leader["signature"]] if coin.leader else []), sig]}
+    # the owner's /stop, read again: the reads and the build above can each take minutes of retries (solana/rpc.py)
+    stopped_since = "the owner's /stop flag was set while the buy was read and built: /resume first"
+    if stopped():
+        raise BuyRefused(stopped_since)
+    try:
+        record({"sig": sig, "ts": int(time.time()), "wallet": buyer.user, "mint": coin.mint, "spendable": plan.spendable,
+                "tip": tip, "fee": tx_fee(), "region": region,
+                "leader": coin.leader["signature"] if coin.leader else None})  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - a buy the day stop cannot see is not sent
+        raise BuyRefused(
+            f"the buy could not be written into the record of our own buys the day stop counts ({type(exc).__name__})"
+        ) from None
+    if stopped():  # and once more right before the bundle goes out (the record may have waited on the database)
+        raise BuyRefused(stopped_since)
     try:
         row["bundle_id"] = await J.send_bundle(txs, J.REGIONS[region], http=http)
     except J.BundleError as exc:
         raise BuyRefused(str(exc)) from None
+    except J.BundleUnknown as exc:
+        raise BuySendUnknown(f"the bundle went to the {region} block engine and its answer says neither taken nor "
+                             f"refused ({exc}): whether it was taken is not known; look up {sig} before sending "
+                             "again") from None  # fmt: skip
     except Exception as exc:  # noqa: BLE001 - it went out: whether it was taken is not known, and that is said
         raise BuySendUnknown(
             f"the bundle went to the {region} block engine and no answer came back "
-            f"({type(exc).__name__}): whether it was taken is not known; look up {sig}"
+            f"({type(exc).__name__}): whether it was taken is not known; look up {sig} before sending again"
         ) from None
     return row

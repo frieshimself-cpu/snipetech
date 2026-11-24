@@ -107,10 +107,26 @@ def test_the_block_engines_refusal_is_said_in_its_own_words():
     }
     with pytest.raises(J.BundleError, match="already processed"):
         asyncio.run(J.send_bundle([_signed()], J.REGIONS["ny"], http=Http(refusal)))
-    with pytest.raises(J.BundleError, match="429"):
-        asyncio.run(J.send_bundle([_signed()], J.REGIONS["ny"], http=Http("rate limited", status=429)))
-    with pytest.raises(J.BundleError, match="no bundle id"):
-        asyncio.run(J.send_bundle([_signed()], J.REGIONS["ny"], http=Http({"jsonrpc": "2.0", "id": 1})))
+    with pytest.raises(J.BundleError, match="already processed"):  # the engine's own no, whatever 4xx carries it
+        asyncio.run(J.send_bundle([_signed()], J.REGIONS["ny"], http=Http(refusal, status=400)))
+    for status in (400, 429):
+        with pytest.raises(J.BundleError, match=str(status)):
+            asyncio.run(J.send_bundle([_signed()], J.REGIONS["ny"], http=Http("rate limited", status=status)))
+
+
+def test_an_answer_that_says_neither_yes_nor_no_is_not_known_never_a_refusal():
+    """Review of 23 Nov: any status of 400 or more, or any answer that is no JSON, was a refusal, and the buyer said
+    "nothing sent". A 5xx from the gateway in front of the block engine, a body that is no JSON-RPC answer, or a 2xx
+    with no bundle id does not say the bundle was refused: it may have been taken, and may land. Those are
+    BundleUnknown, never a BundleError."""
+    for http in (Http("<html>502 Bad Gateway</html>", status=502), Http("<html>504 Gateway Time-out</html>", status=504),
+                 Http({"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "internal"}}, status=503),
+                 Http("<html>maintenance</html>", status=200), Http({"jsonrpc": "2.0", "id": 1}),
+                 Http({"jsonrpc": "2.0", "id": 1, "result": None})):  # fmt: skip
+        with pytest.raises(J.BundleUnknown) as e:
+            asyncio.run(J.send_bundle([_signed()], J.REGIONS["ny"], http=http))
+        assert not isinstance(e.value, J.BundleError) and len(http.posts) == 1
+    assert not issubclass(J.BundleUnknown, J.BundleError) and not issubclass(J.BundleError, J.BundleUnknown)
 
 
 def test_bundle_statuses_asks_for_each_id_and_returns_the_engines_list():
@@ -157,3 +173,26 @@ def test_the_leader_must_be_a_signed_transaction():
             J.behind(bad, _signed())
     tx = J.leader(_b64(_signed(3)))
     assert tx.verify_with_results() == [True]
+
+
+def test_a_leader_signed_wrongly_is_refused_too():
+    """Review of 23 Nov: only an unsigned leader was tried, so a check that merely refused all-zero signatures passed.
+    Every signature is verified: a well-formed signature over other bytes, or by another key, is refused as well."""
+    from solders.hash import Hash
+    from solders.keypair import Keypair
+    from solders.message import Message
+    from solders.system_program import TransferParams, transfer
+    from solders.transaction import Transaction
+
+    good = bytearray(bytes(_signed(4)))
+    good[-1] ^= 1  # one byte of the message changed after it was signed (the transfer's amount)
+    kp, other = Keypair(), Keypair()
+    ix = transfer(TransferParams(from_pubkey=kp.pubkey(), to_pubkey=Keypair().pubkey(), lamports=5))
+    msg = Message.new_with_blockhash([ix], kp.pubkey(), Hash.from_string(BLOCKHASH))
+    signed_by_another = Transaction.new_unsigned(msg)
+    signed_by_another.signatures = [other.sign_message(bytes(msg))]  # well-formed, by the wrong key
+    for bad in (base64.b64encode(bytes(good)).decode(), _b64(signed_by_another)):
+        with pytest.raises(J.BundleError, match="not signed"):
+            J.leader(bad)
+        with pytest.raises(J.BundleError, match="not signed"):
+            J.behind(bad, _signed())

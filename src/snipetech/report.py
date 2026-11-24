@@ -1301,7 +1301,9 @@ def render_buy(r: dict) -> str:
     out.append(f"  least coins out: {r['min_tokens_out']:,} (slippage cap {r['slippage'] * 100:g} percent: the buy fails "
                f"rather than fill above {r['ceiling_mcap_sol']:.2f} SOL of market cap)")  # fmt: skip
     out.append(f"  tip {r['tip_sol']:g} SOL to a Jito tip account (the last instruction), network fee {r['fee_sol']:g} "
-               f"SOL; the wallet holds {r['wallet_sol']:.4f} SOL of the {r['need_sol']:.4f} SOL this buy needs")  # fmt: skip
+               f"SOL; the wallet holds {r['wallet_sol']:.4f} SOL of the {r['need_sol']:.4f} SOL this buy needs"
+               + (" (its pump.fun volume account opened too: a wallet's first buy pays 0.0013462 SOL for it)"
+                  if r.get("opens_volume_account") else ""))  # fmt: skip
     out.append("  accounts of buy_exact_quote_in_v3:")
     for a in r["accounts"]:
         role = "signer, writable" if a["signer"] else ("writable" if a["writable"] else "read only")
@@ -1312,20 +1314,22 @@ def render_buy(r: dict) -> str:
         out += [f"    {line}" for line in sim.get("log") or []]
     elif sim is not None:
         f = sim.get("fill")
+        quoted = (f or {}).get("quoted_bps") or (f or {}).get("fee_bps")
+        rates = "" if not f or quoted == f["fee_bps"] else f" (the quote used {quoted[0]} + {quoted[1]})"
         fill = "; no fill in its log" if not f else (
             f"; the program's fill: {f['tokens']:,} coins for {f['spent'] / 1e9:g} SOL at {f['fee_bps'][0]} + "
-            f"{f['fee_bps'][1]} basis points of fees; the quote's arithmetic on the curve it met: "
-            + ("exact" if f["check"] == 0 else f"off by {f['check']:+,} coins"))  # fmt: skip
+            f"{f['fee_bps'][1]} basis points of fees{rates}; the quote's arithmetic, with its own spend and rates, on "
+            "the curve it met: " + ("exact" if f["check"] == 0 else f"off by {f['check']:+,} coins"))  # fmt: skip
         out.append(f"  the chain's simulation: ok, {sim.get('units') or 0:,} compute units{fill}")
         if lead:
             out.append(
                 "    (our buy simulated alone, ahead of the leader's: in the bundle it fills on the quote's curve)"
             )
     if r.get("dry_run"):
-        unsigned = (
-            "" if r.get("signed") else " (no wallet key here: built unsigned, simulated without the signature check)"
-        )
-        out.append("  dry run: nothing sent" + unsigned)
+        how_signed = ("; the wallet's key signed a copy over no blockhash, checked here and never sent" if r.get("signed")
+                      else " (no wallet key here: built unsigned, simulated without the signature check)")  # fmt: skip
+        out.append("  dry run: nothing sent; the chain simulated the buy unsigned, on no blockhash of the chain's"
+                   + how_signed)  # fmt: skip
         out += [f"  a --send would be refused: {why}" for why in r.get("send_refusals") or []]
     if r.get("bundle_id"):
         out.append(f"  sent: bundle {r['bundle_id']} to the {r['region']} block engine, {len(r['bundle'])} "

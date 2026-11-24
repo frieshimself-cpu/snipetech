@@ -828,13 +828,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("mint", help="the coin's address")
     sp.add_argument("--sol", type=float, required=True,
-                    help="SOL the buy spends, the program's fee included; at most [operator] buy_max_sol (0.2: the "
-                         "owner's standing yes). Raising that cap is the owner's decision")  # fmt: skip
+                    help="SOL the buy spends, the program's fee included; at most 0.2 (the owner's standing yes; "
+                         "[operator] buy_max_sol can only lower it). Raising that cap is the owner's decision, a change "
+                         "of the code")  # fmt: skip
     sp.add_argument("--slippage", type=float, default=0.10,
                     help="price cap over the quote, 0 to 1 (default 0.10: the buy fails rather than fill at a price "
                          "more than 10 percent above the quote's)")  # fmt: skip
     sp.add_argument("--tip", type=float, default=0.001,
-                    help="Jito tip in SOL, the transaction's last instruction (default 0.001)")  # fmt: skip
+                    help="Jito tip in SOL, the transaction's last instruction (default 0.001; at most 0.01, the tip's "
+                         "own cap)")  # fmt: skip
     sp.add_argument("--behind", metavar="B64",
                     help="a leader's signed transaction (base64), as a seat hands it over: the bundle is the leader's "
                          "transaction, then ours, priced on the curve the leader's simulation leaves")  # fmt: skip
@@ -2269,10 +2271,13 @@ async def _run(args, cfg: Config) -> int:
             from .solana.sell import _refused
 
             try:  # every cap before anything is built for sending (solana/buy.py `buy`); a dry run without --send
+                # /stop and the guard are the ones beside the database this command opens (--db, SNIPETECH_DB): the
+                # server's own on the server. The /stop check goes in as a function, read again before the send
                 res = await _buy.buy(svc.rpc, args.mint, args.sol, slippage=args.slippage, tip_sol=args.tip,
                                      behind=args.behind, region=args.region, send=args.send,
-                                     max_sol=cfg.operator.buy_max_sol, stopped=svc.stop_flag_set(),
-                                     guard=svc.start_refusal, wallet=cfg.operator.wallet or None)  # fmt: skip
+                                     max_sol=cfg.operator.buy_max_sol, stopped=svc.stop_flag_set,
+                                     guard=svc.start_refusal, record=svc.store.add_own_buy,
+                                     wallet=cfg.operator.wallet or None)  # fmt: skip
             except _buy.BuyRefused as exc:
                 raise SystemExit(f"buy: refused, nothing sent: {exc}") from None
             except _buy.BuySendUnknown as exc:

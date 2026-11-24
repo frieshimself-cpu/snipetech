@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import struct
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ from snipetech.solana.sell import (
     SYSTEM_PROGRAM,
     ata,
     bonding_curve,
+    pda,
     sell_v3_accounts,
 )
 from snipetech.solana.tips import JITO_TIP_ACCOUNTS
@@ -68,19 +70,22 @@ PRE = _before(EVENT)
 
 
 def curve_bytes(vt=PRE["vt"], vs=PRE["vs"], rt=PRE["rt"], rs=PRE["rs"], *, complete=False, creator=EVENT["creator"],
-                mayhem=False, cashback=False, quote_mint=DEFAULT_PUBKEY, holder=False) -> bytes:  # fmt: skip
+                mayhem=False, cashback=False, quote_mint=DEFAULT_PUBKEY, holder=False, creator_fee_bps=0,
+                can_edit=False) -> bytes:  # fmt: skip
     """A bonding curve account as the vendored IDL lays BondingCurve out (166 bytes, the size of the real one in
     tests/fixtures/pumpswap_pool_state.json)."""
     return (BONDING_CURVE_DISCRIMINATOR + struct.pack("<QQQQQ", vt, vs, rt, rs, TOKEN_TOTAL_SUPPLY) + bytes([complete])
-            + b58decode(creator) + bytes([mayhem, cashback]) + b58decode(quote_mint) + struct.pack("<Q", 0)
-            + bytes([0, holder]) + struct.pack("<QQ", 0, 0) + bytes([0]) + struct.pack("<QQQ", 30 * SOL, 0, 0))  # fmt: skip
+            + b58decode(creator) + bytes([mayhem, cashback]) + b58decode(quote_mint) + struct.pack("<Q", creator_fee_bps)
+            + bytes([can_edit, holder]) + struct.pack("<QQ", 0, 0) + bytes([0]) + struct.pack("<QQQ", 30 * SOL, 0, 0))  # fmt: skip
 
 
 def coin(**kw) -> "B.Coin":
     token_program = kw.pop("token_program", TOKEN_2022_PROGRAM)
     lamports = kw.pop("wallet_lamports", 1 * SOL)
     account = kw.pop("account_exists", False)
-    return B.Coin(MINT, token_program, B.CoinCurve.decode(curve_bytes(**kw)), account, lamports)
+    accumulator = kw.pop("accumulator_exists", True)
+    return B.Coin(MINT, token_program, B.CoinCurve.decode(curve_bytes(**kw)), account, lamports,
+                  accumulator_exists=accumulator)  # fmt: skip
 
 
 @pytest.fixture
@@ -89,6 +94,14 @@ def key():
 
     kp = Keypair()
     return str(kp.pubkey()), str(kp)
+
+
+@pytest.fixture(autouse=True)
+def _no_key_from_the_machine(monkeypatch):
+    """Whatever key the machine's environment holds (the sniper wallet's own, on the server) is never read here: a test
+    that needs a key makes a throwaway one (review of 23 Nov: two tests read SNIPER_SECRET and failed wherever it was
+    exported, and would have run on the real key)."""
+    monkeypatch.delenv("SNIPER_SECRET", raising=False)
 
 
 # -- the template: the landed buy of our wallet --------------------------------------------------------------------------
@@ -271,11 +284,14 @@ def _exact_in_buys():
 
 
 def test_the_quote_is_every_other_landed_exact_in_buy_in_the_fixtures_to_the_coin():
-    """Seven more landed buys of other wallets (buy_exact_sol_in, buy_exact_quote_in_v2 and v3; mayhem coins and
-    holder-reward coins among them; 1.8 to 359 SOL of market cap), each from the curve its own TradeEvent recorded:
-    the SOL in, both fees and the coins out are what the program logged, and SOL in plus fees is what was spent."""
+    """Seven more landed buys (two more of ours, five of other wallets; buy_exact_sol_in, buy_exact_quote_in_v2 and v3;
+    mayhem coins and holder-reward coins among them; 1.8 to 359 SOL of market cap), each from the curve its own
+    TradeEvent recorded: the SOL in, both fees and the coins out are what the program logged, and SOL in plus fees is
+    what was spent. With the template, eight landed buys: three of ours and five of other wallets (the ninth exact-in
+    buy in the fixtures takes a curve's last coins, a buy the buyer refuses)."""
     buys = _exact_in_buys()
     assert len(buys) == 7
+    assert sorted(ev["user"] == OUR_WALLET for _f, _s, ev in buys) == [False] * 5 + [True] * 2
     kinds = {(ev["mayhem_mode"], ev["holder_rewards_bps"] > 0) for _f, _s, ev in buys}
     assert kinds == {(False, False), (True, False), (False, True)}
     for name, spent, ev in buys:
@@ -333,6 +349,12 @@ def test_the_curve_is_read_with_the_idls_layout_and_a_real_completed_curve_reads
     ]
     old = B.CoinCurve.decode(base64.b64decode(real["data"][0]))
     assert old.complete and old.is_holder_reward and not old.is_mayhem_mode and old.quote_mint == DEFAULT_PUBKEY
+    # the coin's own creator rate (create_v2's creator_fee_bps): 0 on the real curve, whose trades logged 30 basis points
+    # (the program's default); a coin that set a rate of its own carries it
+    assert (old.creator_fee_bps, old.can_edit_creator_fee) == (0, False)
+    own_rate = B.CoinCurve.decode(curve_bytes(creator_fee_bps=100, can_edit=True))
+    assert (own_rate.creator_fee_bps, own_rate.can_edit_creator_fee) == (100, True)
+    assert (c.creator_fee_bps, c.can_edit_creator_fee) == (0, False)
     short = B.CoinCurve.decode(curve_bytes()[:81])  # an account from before the flags: none of them is set
     assert (short.is_mayhem_mode, short.is_cashback_coin, short.is_holder_reward, short.quote_mint) == (
         False,
@@ -433,6 +455,11 @@ def test_refusals(key):
     assert "priced in another token" in _refused(buyer, coin(quote_mint=other)) and other in _refused(
         buyer, coin(quote_mint=other)
     )
+    # a curve that names WSOL as its quote mint (not the default key every landed buy's curve holds): no landed buy
+    # covers one, and the program may take its SOL from the wallet's WSOL account, where OKTech keeps its working WSOL
+    assert "names WSOL" in _refused(buyer, coin(quote_mint=WSOL_MINT))
+    # a coin with a creator rate of its own: no landed buy shows what the program charges on one (every one logged 30)
+    assert "creator rate of its own (100 basis points)" in _refused(buyer, coin(creator_fee_bps=100))
     assert "older token program" in _refused(buyer, coin(token_program=TOKEN_PROGRAM))
     assert "token program" in _refused(buyer, coin(token_program=SYSTEM_PROGRAM))
     assert "above the per-buy cap of 0.2 SOL" in _refused(buyer, coin(), sol=0.2001)
@@ -445,11 +472,51 @@ def test_refusals(key):
     assert "last of the curve's coins" in _refused(buyer, near_end)
     holder = buyer.build(coin(holder=True), 0.02, 0.1, BLOCKHASH)  # holder-reward coins: landed v3 buys cover them
     assert _ixs(holder)[3][0] == PUMP_PROGRAM
-    assert B.Buyer(object(), secret, max_sol=0.5).build(coin(), 0.3, 0.1, BLOCKHASH) is not None  # the caller's cap
+    # a caller's cap only lowers the code's ceiling (0.2 SOL, the owner's standing yes), never raises it
+    assert "above the per-buy cap of 0.2 SOL" in _refused(B.Buyer(object(), secret, max_sol=0.5), coin(), sol=0.3)
+    assert "above the per-buy cap of 0.05 SOL" in _refused(B.Buyer(object(), secret, max_sol=0.05), coin(), sol=0.1)
     unsigned = B.Buyer(object(), wallet=user)  # no key: a buy can be built for the chain's simulation, never signed
     assert "SNIPER_SECRET" in _refused(unsigned, coin())
     tx = unsigned.build(coin(), 0.02, 0.1, BLOCKHASH, signed=False)
     assert str(tx.signatures[0]) == "1" * 64
+
+
+def test_a_buy_of_exactly_the_cap_is_inside_it(key):
+    """The owner's "up to 0.2 SOL a buy" includes 0.2 itself; a lamport's worth more does not."""
+    _user, secret = key
+    buyer = B.Buyer(object(), secret)
+    args = decode_instruction(PUMP_PROGRAM, _ixs(buyer.build(coin(), 0.2, 0.1, BLOCKHASH))[3][1])[2]
+    assert args["spendable_quote_in"] == 200_000_000
+    assert "above the per-buy cap" in _refused(buyer, coin(), sol=0.2000001)
+
+
+def test_the_per_buy_cap_can_be_neither_switched_off_nor_raised_past_the_codes_ceiling(key):
+    """Review of 23 Nov: a cap of inf or nan switched the cap off (`sol > inf` is never true) and any number raised it.
+    A cap that is not a finite number above 0 is refused; any other is held to BUY_MAX_SOL, the owner's standing yes,
+    which only a reviewed change of the code raises."""
+    _user, secret = key
+    assert B.BUY_MAX_SOL == 0.2
+    for bad in (float("inf"), float("nan"), 0, -1, "lots"):
+        with pytest.raises(B.BuyRefused, match="per-buy cap"):
+            B.Buyer(object(), secret, max_sol=bad)
+    assert B.Buyer(object(), secret, max_sol=1e9).max_sol == 0.2 == B.Buyer(object(), secret, max_sol=0.3).max_sol
+    assert B.Buyer(object(), secret, max_sol=0.05).max_sol == 0.05
+
+
+def test_the_tip_has_a_cap_of_its_own(key):
+    """Review of 23 Nov: the tip was held only to the buy's cap, so one send could put 0.2 SOL into the curve and tip
+    another 0.2 SOL away. The tip has its own cap, BUY_MAX_TIP_SOL (0.01 SOL), in the build too."""
+    _user, secret = key
+    buyer = B.Buyer(object(), secret)
+    assert B.BUY_MAX_TIP_SOL == 0.01
+    tip = buyer.build(coin(), 0.02, 0.1, BLOCKHASH, tip_lamports=10_000_000)
+    assert _ixs(tip)[-1][1] == struct.pack("<IQ", 2, 10_000_000)
+    with pytest.raises(B.BuyRefused, match="tip"):
+        buyer.build(coin(), 0.02, 0.1, BLOCKHASH, tip_lamports=10_000_001)
+    assert B.tip_lamports(0.01) == 10_000_000 and B.tip_lamports(0) == 0
+    for bad in (0.0100001, 0.2, -0.001, float("nan"), float("inf")):
+        with pytest.raises(B.BuyRefused, match="tip"):
+            B.tip_lamports(bad)
 
 
 def test_a_key_for_another_wallet_than_the_sniper_wallet_is_refused(key, monkeypatch):
@@ -469,23 +536,82 @@ def test_a_key_for_another_wallet_than_the_sniper_wallet_is_refused(key, monkeyp
 # -- the chain, faked: it answers the reads and simulations from the template, and lands nothing -------------------------------
 
 TEMPLATE_LOGS = _builder().source_transaction()["meta"]["logMessages"]
+EVENT_LINE = next(line for line in TEMPLATE_LOGS if line.startswith("Program data: "))  # the landed buy's TradeEvent
+TRADE_EVENT = next(t["type"]["fields"] for t in json.loads(resources.files("snipetech.solana.idl").joinpath("pump.json")
+                   .read_text())["types"] if t["name"] == "TradeEvent")  # fmt: skip
+
+
+def event_line(**fields) -> str:
+    """The landed buy's TradeEvent as the program logs it ("Program data: ..."), with `fields` replaced (any of the
+    fixed-size fields before ix_name): the event a simulation of another buy would log."""
+    payload = bytearray(base64.b64decode(EVENT_LINE[len("Program data: ") :]))
+    size, at, where = {"pubkey": 32, "u64": 8, "i64": 8, "bool": 1}, 8, {}
+    for f in TRADE_EVENT:
+        if f["type"] not in size:
+            break
+        where[f["name"]] = (at, f["type"])
+        at += size[f["type"]]
+    for name, value in fields.items():
+        i, kind = where[name]
+        raw = (b58decode(value) if kind == "pubkey" else bytes([bool(value)]) if kind == "bool"
+               else struct.pack("<q" if kind == "i64" else "<Q", int(value)))  # fmt: skip
+        payload[i : i + len(raw)] = raw
+    return "Program data: " + base64.b64encode(bytes(payload)).decode()
+
+
+def own_logs(**fields) -> list[str]:
+    """The landed buy's log with its TradeEvent's `fields` replaced."""
+    return [event_line(**fields) if line == EVENT_LINE else line for line in TEMPLATE_LOGS]
+
+
+def bought(spends: int, vs=PRE["vs"], vt=PRE["vt"], rs=PRE["rs"], rt=PRE["rt"]) -> tuple["B.BuyQuote", dict]:
+    """A buy of `spends` lamports on a curve: the program's fill and the curve it leaves (curve_bytes' arguments)."""
+    q = B.quote_buy(spends, vs, vt)
+    return q, {"vs": vs + q.net_sol, "vt": vt - q.tokens, "rs": rs + q.net_sol, "rt": rt - q.tokens}
+
+
+def leader_logs(user: str, spends: int, router: str | None = None, mint: str = MINT, is_buy: bool = True) -> list[str]:
+    """What the chain's simulation of a leader's buy of `spends` lamports on the template's curve logs: pump.fun's
+    invocation and its TradeEvent, under a router's invocation when one calls it (Axiom's buys do)."""
+    q, after = bought(spends)
+    ev = event_line(mint=mint, user=user, is_buy=is_buy, sol_amount=q.net_sol, token_amount=q.tokens, fee=q.protocol_fee,
+                    creator_fee=q.creator_fee, virtual_sol_reserves=after["vs"], virtual_token_reserves=after["vt"],
+                    real_sol_reserves=after["rs"], real_token_reserves=after["rt"])  # fmt: skip
+    pump = [f"Program {PUMP_PROGRAM} invoke [{2 if router else 1}]", "Program log: Instruction: BuyExactQuoteInV3", ev,
+            f"Program {PUMP_PROGRAM} success"]  # fmt: skip
+    return [f"Program {router} invoke [1]", *pump, f"Program {router} success"] if router else pump
+
+
+def volume_accumulator(user: str) -> str:
+    """The wallet's pump.fun volume accumulator (PDA "user_volume_accumulator", wallet): the buy opens it when it is
+    missing (the 7 Nov graduating buy's 3AZL688P…, 1,346,200 lamports)."""
+    from solders.pubkey import Pubkey
+
+    return pda([b"user_volume_accumulator", bytes(Pubkey.from_string(user))], PUMP_PROGRAM)
 
 
 class Chain:
     """The chain as the buyer reads it: the template coin's curve just before its landed buy, the coin's mint (a
-    Token-2022 account), the wallet holding `lamports`, the wallet's account of the coin missing. The simulation of a
-    transaction the wallet signed answers with the landed buy's own log (its TradeEvent: the program's fill of 0.02
-    SOL on this curve); a leader's (anyone else's) answers with the curve after `leader_spends` lamports bought."""
-
-    commitment = "confirmed"
+    Token-2022 account), the wallet holding `lamports`, the wallet's account of the coin missing, its volume accumulator
+    there (`accumulator`). The simulation of a transaction the wallet pays for answers with the landed buy's own log
+    (`own_logs`: its TradeEvent, the program's fill of 0.02 SOL on this curve); a leader's (anyone else's) answers with
+    the curve after the leader's buy of `leader_spends` lamports and that buy's TradeEvent in its log (`leader_after`
+    and `leader_logs` replace either). Each chain has a blockhash of its own; every read is checked for its commitment."""
 
     def __init__(self, user, lamports=1 * SOL, curve=None, leader_spends=2 * SOL, leader_err=None, sim_err=None,
-                 mint_owner=TOKEN_2022_PROGRAM, curve_owner=PUMP_PROGRAM):  # fmt: skip
+                 mint_owner=TOKEN_2022_PROGRAM, curve_owner=PUMP_PROGRAM, accumulator=True, leader_router=None):  # fmt: skip
+        from solders.hash import Hash
+
         self.user, self.lamports, self.curve = user, lamports, curve or curve_bytes()
         self.leader_spends, self.leader_err, self.sim_err = leader_spends, leader_err, sim_err
-        self.mint_owner, self.curve_owner = mint_owner, curve_owner
+        self.mint_owner, self.curve_owner, self.accumulator = mint_owner, curve_owner, accumulator
+        self.leader_router, self.leader_after, self.leader_logs = leader_router, None, None
+        self.own_logs = list(TEMPLATE_LOGS)
+        self.blockhash = str(Hash.new_unique())
+        self.on_blockhash = None  # called while getLatestBlockhash is answered (something happening meanwhile)
         self.calls: list[str] = []
         self.simulated: list[tuple[str, dict]] = []
+        self.simulated_txs: list = []  # the very transactions handed to simulateTransaction
 
     def _account(self, address):
         if address == bonding_curve(MINT):
@@ -494,6 +620,8 @@ class Chain:
             return {"data": ["", "base64"], "owner": self.mint_owner, "lamports": 1}
         if address == self.user:
             return {"data": ["", "base64"], "owner": SYSTEM_PROGRAM, "lamports": self.lamports}
+        if address == volume_accumulator(self.user) and self.accumulator:
+            return {"data": ["", "base64"], "owner": PUMP_PROGRAM, "lamports": 1_346_200}
         return None
 
     async def call(self, method, params=None):
@@ -501,23 +629,29 @@ class Chain:
 
         self.calls.append(method)
         if method == "getMultipleAccounts":
-            assert params[1]["encoding"] == "base64"
+            assert params[1] == {"encoding": "base64", "commitment": "processed"}  # the newest state the node has
             return {"context": {"slot": 472790129}, "value": [self._account(a) for a in params[0]]}
         if method == "getLatestBlockhash":
-            return {"value": {"blockhash": BLOCKHASH, "lastValidBlockHeight": 1}}
+            assert params == [{"commitment": "confirmed"}]
+            if self.on_blockhash is not None:
+                self.on_blockhash()
+            return {"value": {"blockhash": self.blockhash, "lastValidBlockHeight": 1}}
         if method == "simulateTransaction":
+            assert params[1]["encoding"] == "base64" and params[1]["commitment"] == "processed"
             tx = VersionedTransaction.from_bytes(base64.b64decode(params[0]))
             payer = str(tx.message.account_keys[0])
             self.simulated.append((payer, params[1]))
+            self.simulated_txs.append(tx)
             if payer == self.user:
-                return {
-                    "value": {"err": self.sim_err, "logs": TEMPLATE_LOGS, "unitsConsumed": 82_941, "accounts": None}
-                }
-            q = B.quote_buy(self.leader_spends, PRE["vs"], PRE["vt"])
-            after = curve_bytes(vs=PRE["vs"] + q.net_sol, vt=PRE["vt"] - q.tokens, rs=PRE["rs"] + q.net_sol,
-                                rt=PRE["rt"] - q.tokens)  # fmt: skip
-            return {"value": {"err": self.leader_err, "logs": [], "unitsConsumed": 70_000,
-                              "accounts": [{"data": [base64.b64encode(after).decode(), "base64"], "owner": PUMP_PROGRAM}]}}  # fmt: skip
+                return {"value": {"err": self.sim_err, "logs": self.own_logs, "unitsConsumed": 82_941,
+                                  "accounts": None}}  # fmt: skip
+            q, after = bought(self.leader_spends)
+            curve = self.leader_after or (curve_bytes(**after) if q.tokens > 0 else curve_bytes())
+            logs = self.leader_logs
+            if logs is None:
+                logs = leader_logs(payer, self.leader_spends, self.leader_router) if q.tokens > 0 else []
+            return {"value": {"err": self.leader_err, "logs": logs, "unitsConsumed": 70_000,
+                              "accounts": [{"data": [base64.b64encode(curve).decode(), "base64"], "owner": PUMP_PROGRAM}]}}  # fmt: skip
         raise AssertionError(f"the buyer asked the chain for {method}: it never sends through the RPC")
 
 
@@ -528,6 +662,8 @@ def test_the_coin_is_read_in_one_call(key):
     assert chain.calls == ["getMultipleAccounts"]
     assert (c.mint, c.token_program, c.account_exists, c.wallet_lamports) == (MINT, TOKEN_2022_PROGRAM, False, 3 * SOL)
     assert c.curve.virtual_token_reserves == PRE["vt"] and not c.curve.complete
+    assert c.accumulator_exists  # the wallet's volume accumulator, read in the same call
+    assert not asyncio.run(B.Buyer(Chain(user, accumulator=False), secret).coin(MINT)).accumulator_exists
     for chain, why in ((Chain(user, curve_owner=SYSTEM_PROGRAM), "not pump.fun's"),
                        (Chain(user, curve=bytes(166)), "not a pump.fun bonding curve")):  # fmt: skip
         with pytest.raises(B.BuyRefused, match=why):
@@ -539,17 +675,27 @@ def test_the_coin_is_read_in_one_call(key):
 
 
 def _leader_tx(spends=2 * SOL):
-    """A leader's signed buy of the coin: another wallet's (a throwaway key), built by the same builder."""
+    """A leader's signed buy of the coin: another wallet's (a throwaway key), the same instruction as ours, at whatever
+    size (a leader is no buyer of ours, so the per-buy cap is not its)."""
+    from solders.hash import Hash
     from solders.keypair import Keypair
+    from solders.message import Message
+    from solders.transaction import Transaction
 
-    tx = B.Buyer(object(), str(Keypair()), max_sol=100).build(coin(), spends / SOL, 0.5, BLOCKHASH)
+    kp = Keypair()
+    who = str(kp.pubkey())
+    q = B.quote_buy(spends, PRE["vs"], PRE["vt"])
+    ix = B.buy_v3_instruction(who, MINT, TOKEN_2022_PROGRAM, spends, B.min_tokens_out(q.tokens, 0.5))
+    msg = Message.new_with_blockhash([ix], kp.pubkey(), Hash.from_string(BLOCKHASH))
+    tx = Transaction([kp], msg, Hash.from_string(BLOCKHASH))
     return base64.b64encode(bytes(tx)).decode(), str(tx.signatures[0])
 
 
 def test_behind_a_leader_the_curve_is_the_one_its_simulation_leaves(key):
     """The leader's transaction is simulated as it is (its own signature and blockhash checked) with the coin's curve
-    asked back: the quote stands on the curve after the leader's buy. A leader that fails in simulation, that does not
-    buy this coin, or that is no signed transaction is refused: a bundle with it could only fail."""
+    asked back: the quote stands on the curve after the leader's buy, and what the leader puts in and takes is its own
+    fill, the TradeEvent pump.fun logs for it in that simulation. A leader that fails in simulation, that does not buy
+    this coin, or that is no signed transaction is refused: a bundle with it could only fail."""
     user, secret = key
     chain = Chain(user)
     buyer = B.Buyer(chain, secret)
@@ -578,48 +724,116 @@ def test_behind_a_leader_the_curve_is_the_one_its_simulation_leaves(key):
             asyncio.run(buyer.behind(asyncio.run(buyer.coin(MINT)), bad))
 
 
+def test_behind_a_leader_its_buy_is_told_by_its_own_fill_never_by_two_reads_of_the_curve(key):
+    """Review of 23 Nov: whether the leader buys the coin was the curve its simulation leaves less the curve read
+    before, in another call that may answer from another moment, so trades in between were the leader's: a real leader
+    was refused after others sold in between, and one that bought nothing passed after others bought. Now the leader's
+    own TradeEvent in its simulation's log decides (pump.fun logs it under a router's call too), and the curve the
+    simulation gives back must be the one that fill ends on."""
+    user, secret = key
+    leader, sig = _leader_tx()
+    lead, after = bought(2 * SOL)
+
+    def behind(chain):
+        b = B.Buyer(chain, secret)
+        return asyncio.run(b.behind(asyncio.run(b.coin(MINT)), leader))
+
+    # read first: someone's 3 SOL buy on the curve, sold again before the leader's simulation ran
+    _q, busier = bought(3 * SOL)
+    got = behind(Chain(user, curve=curve_bytes(**busier)))
+    assert got.leader == {"signature": sig, "sol_in_curve": lead.net_sol, "tokens": lead.tokens}
+    assert got.curve.virtual_quote_reserves == after["vs"] and got.curve.virtual_token_reserves == after["vt"]
+    # a leader that calls pump.fun through a router: its buy is found under the router's invocation
+    routed = behind(Chain(user, leader_router="FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9"))
+    assert routed.leader == got.leader
+    # a leader that buys nothing while someone else's 1 SOL buy lands before its simulation; one that buys another
+    # coin; one that sells this one; and a simulation whose curve is not the one the leader's fill ends on
+    _q, other = bought(1 * SOL)
+    quiet, elsewhere, selling, torn = Chain(user), Chain(user), Chain(user), Chain(user)
+    quiet.leader_after, quiet.leader_logs = curve_bytes(**other), []
+    elsewhere.leader_logs = leader_logs(DEFAULT_PUBKEY, 2 * SOL, mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+    selling.leader_logs = leader_logs(DEFAULT_PUBKEY, 2 * SOL, is_buy=False)
+    torn.leader_after = curve_bytes(**other)  # the leader's own fill (2 SOL) ends on another curve
+    for chain, why in ((quiet, "does not buy this coin"), (elsewhere, "does not buy this coin"),
+                       (selling, "does not buy this coin"), (torn, "not the one the leader's own fill ends on")):  # fmt: skip
+        with pytest.raises(B.BuyRefused, match=why):
+            behind(chain)
+
+
 def test_a_dry_run_simulates_and_checks_the_arithmetic_against_the_programs_own_fill(key):
     """The simulation runs the built buy without the signature check and on the chain's own blockhash; the program's
-    TradeEvent in its log is the fill, and the quote's arithmetic on the curve that event records gives the very same
-    coins (`check` 0)."""
+    TradeEvent in its log is the fill, and the quote's arithmetic, with the plan's own spend and rates, on the curve that
+    event records gives the very same coins (`check` 0)."""
     user, secret = key
     chain = Chain(user)
     buyer = B.Buyer(chain, secret)
-    tx = buyer.build(asyncio.run(buyer.coin(MINT)), 0.02, 0.1, BLOCKHASH, tip_lamports=1_000_000)
-    sim = asyncio.run(buyer.simulate(tx))
+    c = asyncio.run(buyer.coin(MINT))
+    tx = buyer.build(c, 0.02, 0.1, BLOCKHASH, tip_lamports=1_000_000, signed=False)
+    sim = asyncio.run(buyer.simulate(tx, buyer.plan(c, 0.02, 0.1)))
     assert chain.simulated[-1][1]["sigVerify"] is False and chain.simulated[-1][1]["replaceRecentBlockhash"] is True
     assert sim["err"] is None and sim["units"] == 82_941
     assert sim["fill"] == {"tokens": 371_200_971_351, "sol_in_curve": 19_753_085, "spent": SPENT, "fee_bps": [95, 30],
-                           "check": 0}  # fmt: skip
+                           "quoted_bps": [95, 30], "check": 0}  # fmt: skip
     failed = asyncio.run(B.Buyer(Chain(user, sim_err={"InstructionError": [4, {"Custom": 6042}]}), secret).simulate(tx))
     assert failed["err"] == {"InstructionError": [4, {"Custom": 6042}]} and failed["log"]
+
+
+def test_the_check_says_when_the_programs_fill_is_not_the_quotes_arithmetic(key):
+    """Review of 23 Nov: every test fed the check a fill that agreed with the quote, so a check stuck at 0 passed them
+    all, and the check re-quoted with the event's own rates, so a coin charged another creator rate read "exact". It
+    now quotes with the plan's spend and rates on the curve the fill records: a fill one coin short is off by +1, and a
+    fill at a creator rate of 100 basis points (a rate of the coin's own) is off by the 2,547,483,004 coins that rate
+    takes, its rates beside the quote's."""
+    user, secret = key
+    chain = Chain(user)
+    buyer = B.Buyer(chain, secret)
+    c = asyncio.run(buyer.coin(MINT))
+    plan = buyer.plan(c, 0.02, 0.1)
+    tx = buyer.build(c, 0.02, 0.1, BLOCKHASH, signed=False)
+    chain.own_logs = own_logs(token_amount=EVENT["token_amount"] - 1)
+    fill = asyncio.run(buyer.simulate(tx, plan))["fill"]
+    assert (fill["check"], fill["tokens"]) == (1, EVENT["token_amount"] - 1)
+    q100 = B.quote_buy(SPENT, PRE["vs"], PRE["vt"], 95, 100)
+    chain.own_logs = own_logs(sol_amount=q100.net_sol, token_amount=q100.tokens, fee=q100.protocol_fee,
+                              creator_fee=q100.creator_fee, creator_fee_basis_points=100,
+                              virtual_sol_reserves=PRE["vs"] + q100.net_sol,
+                              virtual_token_reserves=PRE["vt"] - q100.tokens)  # fmt: skip
+    fill = asyncio.run(buyer.simulate(tx, plan))["fill"]
+    assert (fill["fee_bps"], fill["quoted_bps"]) == ([95, 100], [95, 30])
+    assert fill["check"] == 371_200_971_351 - q100.tokens == 2_547_483_004
 
 
 # -- the command: snipetech buy -------------------------------------------------------------------------------------------
 
 
 class _Answer:
-    status_code = 200
+    """An HTTP answer: its status, its text, and its body read as JSON (a ValueError when it is none, as httpx's)."""
 
-    def __init__(self, body):
-        self._body, self.text = body, ""
+    def __init__(self, body, status=200, text=None):
+        self._body, self.status_code = body, status
+        self.text = text if text is not None else json.dumps(body)
 
     def json(self):
+        if self._body is None:
+            raise ValueError("not JSON")
         return self._body
 
 
 class Engine:
-    """Jito's block engine, faked: it records each request and answers a bundle id (or `answer`)."""
+    """Jito's block engine, faked: it records each request and answers a bundle id, or `answer` (an exception: the
+    answer is lost on the way), or `text` with `status` (a gateway's page, no JSON at all)."""
 
-    def __init__(self, answer=None):
+    def __init__(self, answer=None, status=200, text=None):
         self.posts: list[tuple[str, dict]] = []
-        self.answer = answer
+        self.answer, self.status, self.text = answer, status, text
 
     async def post(self, url, json=None, headers=None):
         self.posts.append((url, json))
         if isinstance(self.answer, Exception):
             raise self.answer
-        return _Answer(self.answer or {"jsonrpc": "2.0", "id": json["id"], "result": "BUNDLE-1"})
+        if self.text is not None:
+            return _Answer(None, self.status, self.text)
+        return _Answer(self.answer or {"jsonrpc": "2.0", "id": json["id"], "result": "BUNDLE-1"}, self.status)
 
     async def aclose(self):
         pass
@@ -667,16 +881,20 @@ def _sent(env, i=0) -> list:
     return [Transaction.from_bytes(base64.b64decode(t)) for t in env.engine.posts[i][1]["params"][0]]
 
 
+def _store(env):
+    """The database the command wrote to (the --db of `cmd.run`)."""
+    from snipetech.store import Store
+
+    return Store(env.tmp / "t.db")
+
+
 def test_without_send_the_command_is_a_dry_run_that_sends_nothing(cmd, capsys):
-    """It reads the coin, quotes, builds and signs the buy and has the chain simulate it; it prints the quote, the
-    least coins out, every account's role and the simulation, and the block engine hears nothing."""
+    """It reads the coin, quotes, builds the buy and has the chain simulate it; it prints the quote, the least coins
+    out, every account's role and the simulation, says what the wallet must hold to the lamport, and asks the owner's
+    guard as a send would (it only reads). The block engine hears nothing."""
     assert cmd.run("--sol", "0.02") == 0
     out = capsys.readouterr().out
-    assert cmd.engine.posts == [] and cmd.chain.calls == [
-        "getMultipleAccounts",
-        "getLatestBlockhash",
-        "simulateTransaction",
-    ]
+    assert cmd.engine.posts == [] and cmd.chain.calls == ["getMultipleAccounts", "simulateTransaction"]
     assert "371,200,971,351" in out and "337,455,428,501" in out  # the quote and the least coins out
     assert all(name in out for name in B.BUY_V3_ACCOUNT_NAMES) and "signer, writable" in out
     assert "the chain's simulation: ok" in out and "exact" in out and "dry run: nothing sent" in out
@@ -687,6 +905,26 @@ def test_without_send_the_command_is_a_dry_run_that_sends_nothing(cmd, capsys):
                                                                                                     337_455_428_501, 0)  # fmt: skip
     assert [a["name"] for a in row["accounts"]] == list(B.BUY_V3_ACCOUNT_NAMES) and cmd.engine.posts == []
     assert cmd.chain.simulated[-1][1]["sigVerify"] is False and cmd.chain.simulated[-1][1]["replaceRecentBlockhash"]
+    # the buy 20,000,000, its network fee 1,005,000, the tip 1,000,000, the coin's new account 1,513,840 and the sale
+    # back 1,004,999 lamports
+    assert (row["need_sol"], row["fee_sol"]) == (0.024523839, 0.001005)
+    assert cmd.asked_guard == cmd.user
+
+
+def test_a_dry_run_signs_nothing_over_a_live_blockhash(cmd, capsys):
+    """Review of 23 Nov: the dry run signed the buy with the wallet's key over a live blockhash and handed those bytes to
+    the RPC's simulation: a whole buy and its tip that anyone who saw them could land for a minute or so, with no --send
+    and no yes. A dry run fetches no blockhash and has the chain simulate the buy unsigned, on no blockhash; the key
+    signs a copy over no blockhash, checked here and never sent."""
+    from solders.hash import Hash
+
+    assert cmd.run("--sol", "0.02", "--json") == 0
+    row = json.loads(capsys.readouterr().out)
+    assert "getLatestBlockhash" not in cmd.chain.calls and row["signed"] is True
+    (tx,) = cmd.chain.simulated_txs
+    assert str(tx.message.recent_blockhash) == str(Hash.default())
+    assert [str(s) for s in tx.signatures] == ["1" * 64] and tx.verify_with_results() == [False]
+    assert cmd.engine.posts == []
 
 
 def test_send_sends_one_bundle_with_the_signed_buy_and_says_its_id(cmd, capsys):
@@ -701,6 +939,7 @@ def test_send_sends_one_bundle_with_the_signed_buy_and_says_its_id(cmd, capsys):
     )
     (tx,) = _sent(cmd)
     assert tx.verify_with_results() == [True] and str(tx.message.account_keys[0]) == cmd.user
+    assert str(tx.message.recent_blockhash) == cmd.chain.blockhash  # the one the chain just gave, each chain its own
     assert str(tx.signatures[0]) in out
     ixs = _ixs(tx)
     assert ixs[3][0] == PUMP_PROGRAM and ixs[-1][0] == SYSTEM_PROGRAM and ixs[-1][2][1] in JITO_TIP_ACCOUNTS
@@ -720,6 +959,18 @@ def test_behind_a_leader_the_bundle_is_the_leader_then_ours_priced_on_the_curve_
     assert args == {"spendable_quote_in": SPENT, "min_tokens_out": B.min_tokens_out(want.tokens, 0.10)}
 
 
+def test_a_blank_behind_is_refused_before_anything_is_read(cmd):
+    """Review of 23 Nov: `--behind "$LEADER"` with the variable unset passed "", which read as no leader at all: the
+    buy went out alone, on today's curve, ahead of the leader it was meant to follow. A blank --behind is refused, in a
+    dry run too."""
+    for blank in ("", " "):
+        for extra in ([], ["--send"]):
+            with pytest.raises(SystemExit) as e:
+                cmd.run("--sol", "0.02", "--behind", blank, *extra)
+            assert "--behind is empty" in str(e.value) and "nothing sent" in str(e.value)
+    assert cmd.chain.calls == [] and cmd.engine.posts == []
+
+
 def test_the_per_buy_cap_and_the_tip_are_checked_before_anything_is_read(cmd):
     from snipetech.config import Config
 
@@ -734,7 +985,64 @@ def test_the_per_buy_cap_and_the_tip_are_checked_before_anything_is_read(cmd):
         cmd.run("--sol", "0.02", "--tip", "0", "--send")
     assert cmd.chain.calls == [] and cmd.engine.posts == []
     assert Config().operator.buy_max_sol == 0.2
-    assert cmd.run("--sol", "0.25", config="[operator]\nbuy_max_sol = 0.3\n") == 0  # the owner's setting, raised
+
+
+def test_no_setting_switches_the_per_buy_cap_off_or_raises_it(cmd):
+    """Review of 23 Nov: [operator] buy_max_sol comes from whatever file --config or SNIPETECH_CONFIG names; `inf` there
+    switched the cap off and a 1 SOL buy went out. A cap that is no finite number above 0 is refused; a higher one is
+    held to the code's ceiling (0.2 SOL, the owner's standing yes; only a reviewed change of the code raises it); a
+    lower one holds."""
+    for value in ("inf", "nan", "0", "-1"):
+        with pytest.raises(SystemExit, match="per-buy cap"):
+            cmd.run("--sol", "0.02", "--send", config=f"[operator]\nbuy_max_sol = {value}\n")
+    for value in ("1e9", "0.3"):
+        with pytest.raises(SystemExit, match="above the per-buy cap of 0.2 SOL"):
+            cmd.run("--sol", "0.25", "--send", config=f"[operator]\nbuy_max_sol = {value}\n")
+    with pytest.raises(SystemExit, match="above the per-buy cap of 0.1 SOL"):
+        cmd.run("--sol", "0.15", "--send", config="[operator]\nbuy_max_sol = 0.1\n")
+    assert cmd.chain.calls == [] and cmd.engine.posts == []
+
+
+def test_a_buy_of_exactly_the_cap_goes_out_and_a_hair_more_does_not(cmd):
+    assert cmd.run("--sol", "0.2", "--send") == 0
+    (tx,) = _sent(cmd)
+    assert decode_instruction(PUMP_PROGRAM, _ixs(tx)[3][1])[2]["spendable_quote_in"] == 200_000_000
+    calls = list(cmd.chain.calls)
+    with pytest.raises(SystemExit, match="above the per-buy cap"):
+        cmd.run("--sol", "0.2000001", "--send")
+    assert cmd.chain.calls == calls and len(cmd.engine.posts) == 1
+
+
+def test_the_tip_has_its_own_cap_checked_before_anything_is_read(cmd, capsys):
+    """Review of 23 Nov: the tip was held to the buy's cap, so `--sol 0.2 --tip 0.2 --send` put 0.4 SOL out of the
+    wallet, half of it tipped away, and a slip of `--tip 0.1` for 0.001 would burn 0.1 SOL. The tip's own cap is
+    0.01 SOL, inclusive."""
+    for args in (("--sol", "0.2", "--tip", "0.2"), ("--sol", "0.02", "--tip", "0.1"),
+                 ("--sol", "0.02", "--tip", "0.0100001"), ("--sol", "0.02", "--tip", "nan"),
+                 ("--sol", "0.02", "--tip", "inf")):  # fmt: skip
+        for extra in ([], ["--send"]):
+            with pytest.raises(SystemExit) as e:
+                cmd.run(*args, *extra)
+            assert "tip" in str(e.value) and "0.01 SOL" in str(e.value)
+    assert cmd.chain.calls == [] and cmd.engine.posts == []
+    assert cmd.run("--sol", "0.02", "--tip", "0.01") == 0 and "tip 0.01 SOL" in capsys.readouterr().out
+    assert cmd.run("--sol", "0.02", "--tip", "0.01", "--send") == 0
+    assert _ixs(_sent(cmd)[0])[-1][1] == struct.pack("<IQ", 2, 10_000_000)
+
+
+def test_the_slippage_cap_given_is_the_one_the_buy_carries(cmd, capsys):
+    """Review of 23 Nov: no test passed --slippage, so a buy wired to the default 10 percent passed them all."""
+    assert cmd.run("--sol", "0.02", "--slippage", "0.05", "--json") == 0
+    row = json.loads(capsys.readouterr().out)
+    assert row["slippage"] == 0.05 and row["min_tokens_out"] == B.min_tokens_out(371_200_971_351, 0.05)
+    assert cmd.run("--sol", "0.02", "--slippage", "0.05", "--send") == 0
+    args = decode_instruction(PUMP_PROGRAM, _ixs(_sent(cmd)[0])[3][1])[2]
+    assert args["min_tokens_out"] == B.min_tokens_out(371_200_971_351, 0.05)
+    calls = list(cmd.chain.calls)
+    for extra in ([], ["--send"]):
+        with pytest.raises(SystemExit, match="slippage"):
+            cmd.run("--sol", "0.02", "--slippage", "2", *extra)
+    assert cmd.chain.calls == calls and len(cmd.engine.posts) == 1
 
 
 def test_the_owners_stop_refuses_a_send_before_anything_is_read(cmd, capsys):
@@ -751,11 +1059,53 @@ def test_the_owners_stop_refuses_a_send_before_anything_is_read(cmd, capsys):
     assert "a --send would be refused: the owner's /stop flag is set" in out and cmd.engine.posts == []
 
 
+def test_a_stop_set_while_the_buy_is_read_and_built_refuses_the_send(cmd):
+    """Review of 23 Nov: the /stop flag was read once, before the guard, the coin, the leader and the blockhash, each a
+    read that can take minutes of retries; a /stop sent meanwhile did not stop the send. It is read again right before
+    the bundle goes out."""
+    stop = cmd.tmp / "operator" / "STOP"
+
+    def the_owner_stops():
+        stop.parent.mkdir(exist_ok=True)
+        stop.write_text("1795400000")
+
+    cmd.chain.on_blockhash = the_owner_stops
+    with pytest.raises(SystemExit) as e:
+        cmd.run("--sol", "0.02", "--send")
+    assert "/stop" in str(e.value) and "getLatestBlockhash" in cmd.chain.calls and cmd.engine.posts == []
+    assert _store(cmd).own_buys(cmd.user) == []  # nothing went out, so nothing is on the record either
+
+
+def test_a_stop_set_while_the_buy_is_written_into_the_record_refuses_the_send(key):
+    """The record's write can wait on the database (a write waits out another's lock): /stop is read once more after it,
+    right before the bundle goes out."""
+    user, secret = key
+    written: list[dict] = []
+    engine = Engine()
+
+    async def clear(_wallet):
+        return None
+
+    with pytest.raises(B.BuyRefused, match="/stop flag was set"):
+        asyncio.run(B.buy(Chain(user), MINT, 0.02, send=True, http=engine, secret_b58=secret,
+                          stopped=lambda: bool(written), guard=clear, record=written.append))  # fmt: skip
+    assert engine.posts == [] and [r["mint"] for r in written] == [MINT]
+
+
 def test_the_owners_wallet_guard_refuses_a_send(cmd):
     cmd.guard[0] = "the owner's wallet-wide guard holds (today is 1.20 SOL down, at or past the 1 SOL day stop)"
     with pytest.raises(SystemExit, match="wallet-wide guard holds"):
         cmd.run("--sol", "0.02", "--send")
     assert cmd.engine.posts == [] and cmd.chain.calls == []
+
+
+def test_a_dry_run_says_when_the_owners_guard_would_refuse_the_send(cmd, capsys):
+    """Review of 23 Nov: a dry run never asked the guard, so its list of what a send would refuse could be empty while a
+    send was refused. It asks (the guard only reads) and says so."""
+    cmd.guard[0] = "the owner's wallet-wide guard holds (today is 1.20 SOL down, at or past the 1 SOL day stop)"
+    assert cmd.run("--sol", "0.02") == 0
+    assert "a --send would be refused: the owner's wallet-wide guard holds" in capsys.readouterr().out
+    assert cmd.asked_guard == cmd.user and cmd.engine.posts == []
 
 
 def test_a_wallet_that_cannot_pay_the_buy_its_fees_and_its_exit_is_refused_before_anything_is_built(cmd, capsys):
@@ -768,16 +1118,45 @@ def test_a_wallet_that_cannot_pay_the_buy_its_fees_and_its_exit_is_refused_befor
     assert "a --send would be refused: the wallet holds 0.0200 SOL" in capsys.readouterr().out
 
 
+def test_a_wallets_first_buy_also_pays_for_its_volume_account(cmd, capsys):
+    """Review of 23 Nov: a wallet's first buy_exact_quote_in_v3 opens the wallet's pump.fun volume accumulator inside the
+    buy (the 7 Nov graduating buy: 1,346,200 lamports to 3AZL688P…), which the wallet check left out, so a new sniper
+    wallet passed it that much short. The account is read with the coin, and its rent is part of what the wallet must
+    hold while it is missing."""
+    cmd.chain.accumulator = False
+    assert cmd.run("--sol", "0.02", "--json") == 0
+    row = json.loads(capsys.readouterr().out)
+    assert row["need_sol"] == 0.025870039 and row["opens_volume_account"] is True
+    cmd.chain.lamports = 25_000_000  # enough without that account, not with it
+    with pytest.raises(SystemExit, match="0.0259 SOL"):
+        cmd.run("--sol", "0.02", "--send")
+    assert cmd.engine.posts == []
+
+
 def test_without_the_key_a_dry_run_simulates_the_buy_unsigned_and_a_send_is_refused(cmd, capsys, monkeypatch):
     monkeypatch.delenv("SNIPER_SECRET")
     settings = f'[operator]\nwallet = "{cmd.user}"\n'
+    with pytest.raises(SystemExit, match="SNIPER_SECRET"):
+        cmd.run("--sol", "0.02", "--send", config=settings)
+    assert cmd.engine.posts == [] and cmd.chain.calls == []  # refused before the chain is asked anything
     assert cmd.run("--sol", "0.02", config=settings) == 0
     out = capsys.readouterr().out
     assert "built unsigned" in out and "a --send would be refused: SNIPER_SECRET is not set" in out
     assert cmd.chain.simulated[-1][0] == cmd.user and cmd.chain.simulated[-1][1]["sigVerify"] is False
-    with pytest.raises(SystemExit, match="SNIPER_SECRET"):
-        cmd.run("--sol", "0.02", "--send", config=settings)
-    assert cmd.engine.posts == []
+
+
+def test_a_dry_run_says_when_the_programs_fill_is_not_the_quotes_arithmetic(cmd, capsys):
+    cmd.chain.own_logs = own_logs(token_amount=EVENT["token_amount"] - 1)
+    assert cmd.run("--sol", "0.02") == 0
+    assert "off by +1 coins" in capsys.readouterr().out
+    q100 = B.quote_buy(SPENT, PRE["vs"], PRE["vt"], 95, 100)
+    cmd.chain.own_logs = own_logs(sol_amount=q100.net_sol, token_amount=q100.tokens, fee=q100.protocol_fee,
+                                  creator_fee=q100.creator_fee, creator_fee_basis_points=100,
+                                  virtual_sol_reserves=PRE["vs"] + q100.net_sol,
+                                  virtual_token_reserves=PRE["vt"] - q100.tokens)  # fmt: skip
+    assert cmd.run("--sol", "0.02") == 0
+    out = capsys.readouterr().out
+    assert "off by +2,547,483,004 coins" in out and "95 + 100 basis points" in out and "the quote used 95 + 30" in out
 
 
 def test_a_refused_coin_or_a_refusing_engine_is_said_in_plain_words(cmd):
@@ -791,25 +1170,123 @@ def test_a_refused_coin_or_a_refusing_engine_is_said_in_plain_words(cmd):
         "id": 1,
         "error": {"code": -32602, "message": "bundle contains an already processed transaction"},
     }
-    with pytest.raises(SystemExit, match="already processed"):
+    with pytest.raises(SystemExit) as e:
         cmd.run("--sol", "0.02", "--send")
+    assert str(e.value).startswith("buy: refused, nothing sent: ") and "already processed" in str(e.value)
     cmd.engine.answer = ConnectionResetError("reset")
     with pytest.raises(SystemExit) as e:
         cmd.run("--sol", "0.02", "--send")
-    assert "not known" in str(e.value) and "ConnectionResetError" in str(e.value)  # it may have been taken: say so
+    said = str(e.value)
+    assert "not known" in said and "ConnectionResetError" in said  # it may have been taken: say so
+    assert "nothing sent" not in said and not said.startswith("buy: refused")
+    assert str(_sent(cmd, 1)[0].signatures[0]) in said  # what to look up before trying again
+
+
+def test_a_gateways_error_or_a_garbled_answer_is_not_known_never_refused(cmd):
+    """Review of 23 Nov: a 502, 503 or 504 from the gateway in front of the block engine, or a 200 that is no JSON-RPC
+    answer, said "refused, nothing sent", though the bundle may have been taken and may land; told that, the owner runs
+    it again and buys twice (the rebuild tips another tip account, so the engine drops nothing as a duplicate). Only the
+    engine's own refusal or a 4xx is a refusal; the rest is "not known"."""
+    for status, text in ((502, "<html>502 Bad Gateway</html>"), (504, "<html>504 Gateway Time-out</html>"),
+                         (200, "<html>maintenance</html>")):  # fmt: skip
+        cmd.engine.status, cmd.engine.text = status, text
+        with pytest.raises(SystemExit) as e:
+            cmd.run("--sol", "0.02", "--send")
+        said = str(e.value)
+        assert "not known" in said and "nothing sent" not in said and not said.startswith("buy: refused"), said
+    cmd.engine.status, cmd.engine.text = 429, "rate limited"
+    with pytest.raises(SystemExit) as e:
+        cmd.run("--sol", "0.02", "--send")
+    assert str(e.value).startswith("buy: refused, nothing sent: ") and "429" in str(e.value)
+    assert len(cmd.engine.posts) == 4
+
+
+def test_buy_says_not_known_for_a_lost_answer_and_refused_for_the_engines_no(key):
+    """The two ends of a send, straight from buy(): a bundle whose answer is lost or says neither yes nor no is
+    BuySendUnknown; one the block engine refused is BuyRefused."""
+    user, secret = key
+
+    async def clear(_wallet):
+        return None
+
+    def send(engine):
+        return asyncio.run(B.buy(Chain(user), MINT, 0.02, send=True, http=engine, secret_b58=secret,
+                                 stopped=lambda: False, guard=clear, record=lambda row: None))  # fmt: skip
+
+    for lost in (Engine(ConnectionResetError("reset")), Engine(status=504, text="<html>504</html>"),
+                 Engine({"jsonrpc": "2.0", "id": 1})):  # fmt: skip
+        with pytest.raises(B.BuySendUnknown):
+            send(lost)
+    no = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "bundle contains an already processed one"}}
+    with pytest.raises(B.BuyRefused, match="already processed"):
+        send(Engine(no))
+    assert send(Engine())["bundle_id"] == "BUNDLE-1"
+
+
+def test_buy_refuses_a_send_without_the_stop_check_the_guard_and_the_record(key):
+    """Review of 23 Nov: buy() took the kill switch and the guard with defaults that let a send through (stopped=False,
+    guard=None), so a caller other than the command (the resident buyer to come) that left them out sent with neither.
+    A send needs all three: the /stop check (a function, read again right before the bundle goes out), the wallet-wide
+    guard, and the record of our own buys the day stop counts them by."""
+    user, secret = key
+
+    async def clear(_wallet):
+        return None
+
+    parts = {"stopped": lambda: False, "guard": clear, "record": lambda row: None}
+    for missing in [*parts, "a flag read once"]:
+        chain, engine = Chain(user), Engine()
+        given = {k: v for k, v in parts.items() if k != missing} | ({"stopped": False} if missing not in parts else {})
+        with pytest.raises(B.BuyRefused, match="nothing sent"):
+            asyncio.run(B.buy(chain, MINT, 0.02, send=True, http=engine, secret_b58=secret, **given))
+        assert chain.calls == [] and engine.posts == [], missing
+
+
+def test_a_sent_buy_is_on_the_record_the_day_stop_reads_and_its_losing_trip_counts(cmd):
+    """Review of 23 Nov: the wallet-wide guard's day stop counts the bot's trades only, told by the snipers' fees or a
+    copy's shape, and this buyer's buys are neither: a day of losing sends would never trip it. Each buy is written into
+    the store's record of our own buys before its bundle goes out, and the guard counts the buys on that record and the
+    sales that close them, on the tape before the measure stage has written them and in the fills after."""
+    from snipetech.models import Trade
+    from snipetech.operator import risk_guard as RG
+
+    assert cmd.run("--sol", "0.02", "--send") == 0
+    sig = str(_sent(cmd)[0].signatures[0])
+    store = _store(cmd)
+    (rec,) = store.own_buys(cmd.user)
+    assert (rec["sig"], rec["mint"], rec["spendable"], rec["tip"], rec["fee"], rec["region"]) == (
+        sig, MINT, SPENT, 1_000_000, 1_005_000, "amsterdam")  # fmt: skip
+    # a sniper on record, whose fees tell the bot's buys from the owner's hand buys: ours pay other fees
+    store.add_oktech_sniper({"id": "s1", "kind": "copy", "source": "x",
+                             "payload": {"priorityFee": 0.001, "tipAmount": 0.002}})  # fmt: skip
+    now = 1_795_431_600  # 23 Nov 2026 11:00 UTC
+    # on the tape alone (the measure stage has not written it yet): 0.02 SOL in, the coin gone from the wallet
+    store.add_trades([Trade(sig=sig, ev=0, slot=1, pos=0, ts=now - 600, mint=MINT, venue="curve", user=cmd.user,
+                            is_buy=True, quote=19_753_085, base=371_200_971_351, fee=246_915, fee_bps=125, q_after=1,
+                            b_after=1, priority=1_000_000, tip=1_000_000)])  # fmt: skip
+    assert RG.day_result(store, cmd.user, now, [], per_tx_sol=0.0035)["total_sol"] == pytest.approx(-0.0235)
+    # in the fills, sold back at a loss
+    store.put_fill({"sig": sig, "ts": now - 600, "wallet": cmd.user, "mint": MINT, "side": "buy", "sol": 0.02,
+                    "tokens": 371_200_971_351, "priority_lamports": 1_000_000, "tip_lamports": 1_000_000})  # fmt: skip
+    store.put_fill({"sig": "sale", "ts": now - 300, "wallet": cmd.user, "mint": MINT, "side": "sell", "sol": 0.012,
+                    "tokens": 371_200_971_351, "pnl_sol": -0.0095, "buy_sig": sig, "priority_lamports": 2_000_000,
+                    "tip_lamports": 0})  # fmt: skip
+    day = RG.day_result(store, cmd.user, now, [], per_tx_sol=0.0035)
+    assert day["realised_sol"] == pytest.approx(-0.0095) and day["total_sol"] == pytest.approx(-0.0095)
 
 
 def test_the_secret_never_appears_in_any_output_or_error(cmd, capsys, monkeypatch):
-    """Every path of the command, dry run and send, accepted and refused, prints nothing of the wallet's key in either
-    form, and the block engine's requests carry signed transactions, never the key."""
+    """Every path of the command, dry run and send, accepted and refused (a key for another wallet than the sniper
+    wallet, the engine's refusal, a lost answer, a gateway's error), prints nothing of the wallet's key in either form,
+    and the block engine's requests carry signed transactions, never the key."""
     from solders.keypair import Keypair
 
     as_list = json.dumps(list(bytes(Keypair.from_base58_string(cmd.secret))))
     said: list[str] = []
 
-    def run(*args):
+    def run(*args, config=""):
         try:
-            cmd.run(*args)
+            cmd.run(*args, config=config)
         except SystemExit as e:
             said.append(str(e.code))
         got = capsys.readouterr()
@@ -819,10 +1296,19 @@ def test_the_secret_never_appears_in_any_output_or_error(cmd, capsys, monkeypatc
     for args in (("--sol", "0.02"), ("--sol", "0.02", "--json"), ("--sol", "0.02", "--send"), ("--sol", "5"),
                  ("--sol", "0.02", "--behind", leader, "--send", "--json"), ("--sol", "0.02", "--behind", "bm8=")):  # fmt: skip
         run(*args)
+    run("--sol", "0.02", "--send", config=f'[operator]\nwallet = "{Keypair().pubkey()}"\n')  # another wallet's key
+    for answer in ({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "bundle refused"}},
+                   ConnectionResetError("reset")):  # fmt: skip
+        cmd.engine.answer = answer
+        run("--sol", "0.02", "--send")
+    cmd.engine.answer, cmd.engine.status, cmd.engine.text = None, 504, "<html>504 Gateway Time-out</html>"
+    run("--sol", "0.02", "--send")
+    cmd.engine.status, cmd.engine.text = 200, None
     cmd.chain.curve = curve_bytes(mayhem=True)
     run("--sol", "0.02", "--send")
     text = "\n".join(said)
-    assert "BUNDLE-1" in text and "mayhem" in text and "per-buy cap" in text
+    assert "BUNDLE-1" in text and "mayhem" in text and "per-buy cap" in text and "not the sniper wallet" in text
+    assert "bundle refused" in text and "ConnectionResetError" in text and "504" in text
     for form in (cmd.secret, as_list, as_list.replace(" ", "")):
         assert form not in text and form not in json.dumps([b for _u, b in cmd.engine.posts])
     monkeypatch.setenv("SNIPER_SECRET", "x" + cmd.secret[1:])  # a slip of the paste: no key, and nothing of it repeated
