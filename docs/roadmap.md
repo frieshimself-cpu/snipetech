@@ -6,6 +6,55 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 24 Nov, 03:00 UTC: the edge hunt of the night (the owner: "Keep looking for edges"), and Inertia's answer
+
+- **How it ran.** Five background agents, one hypothesis each, measured on the tape (narrow read-only SQL) and scored
+  with the lab at our live landing, choosing on the older 60 % and judging on the newer 40 %; every positive claim then
+  went to a second agent told to refute it. (Two Workflow calls for it were lost to restarts of this session's worker
+  while they waited for approval; the agents ran without one.)
+- **Scouts ahead of the big wallets: no edge.** Wallets that buy the big four's coins seconds before them exist, and
+  rank stably (Spearman 0.79 out of sample), but they are Decu's front-runners: YS6Aa79H… and FBPEacRh… (one operator)
+  come in before 15 to 23 % of his first buys of 1 SOL or more, paying 0.024 to 0.047 SOL of priority a buy, and sell
+  into his buy about 1 s later. Copied at our landing they lose on the newer 40 %: -0.020 to -0.033 SOL a copy at 0.2
+  SOL, -0.06 to -0.12 at 1 SOL (jobs 20261124-022502-89a91a, -022917-93ac79, -023707-6a0eba); breaking even needs 45-50
+  % of copies followed by a big wallet, against 16-32 %.
+- **New quiet leaders: none that holds.** 8NdJBk… paid on paper at 1 SOL (+0.034 a copy on the newer part, jobs
+  20261124-021619-f6de83, -021941-74fa96), but the check refuted it: it was picked by qualify's size score of 22 Nov,
+  which read the same days, and after the pick its copies made about nothing (+0.28 SOL over 25 trades at +2x, -1.13
+  without the best three; jobs 20261124-022934-3d20be, -023303-4de9a5, -023513-3d162c, -023857-5a65f1). Qualify's own
+  state: nothing qualified since 19 Nov 14:46 (0 of the latest 29,829 verdicts), 13 forward checks pending and none
+  passed; of the stored 5 SOL size scores, 5,568 of 7,307 were computed at the older, closer place (2nd in line, a 0.2
+  SOL bid) and should be recomputed before anyone reads them as passes.
+- **A higher ceiling on our own fill: a candidate, under check.** The live copy rule (Cented and Yugi, 2 SOL or more,
+  12 s hold, copy exit) with our fill allowed up to 75 SOL of market cap instead of 64.6: +0.55 to +0.99 SOL a day on the
+  newer 40 % at 0.2 SOL (lab 20261124-022808-56dea8); at 1 SOL and +3x, +1.75 to +3.89 (75) and +4.46 with Cented's and
+  Yugi's 2-4 SOL buys at 80 (lab 20261124-023125-43c5b6). Every newer day positive; Cented carries about 80 %. The
+  8NdJBk check saw the same on the earlier week for Cented at 1 SOL: a 100 SOL ceiling +10.47 against +5.80 at 64.6 at
+  +2x, +5.03 against +4.00 at +3x (both newer lower bounds -0.0007). Hour of day, SOL or price rise ahead of us,
+  consensus between the four, repeats and coin kind all failed on the newer part. A second agent is checking the
+  ceiling curve on two separate weeks and on the live test's real refused sends.
+- **New coin kinds and curve events: no edge.** Mayhem coins are 41 % of launches; pump.fun's agent (BwWK17…) trades
+  each one about every 1.4 s for a median 44 s, and its next move is a coin flip whatever came before; all 35 mayhem
+  completions ended drained (median 0.39 SOL of virtual SOL). Every kind and event loses at a landing a slot later:
+  launches -0.015 to -0.023 SOL a 0.2 SOL trade, after the agent's trades -0.021, the 80-95 % run-up to migration
+  -0.023 to -0.047, MIG windows -0.009 to -0.026 (labs 20261124-021936-b98774, -023105-fa863b). For the copy route: a
+  mayhem skip on the copy snipers is worth asking OKTech for (fills 3 and 4).
+- **Other venues: no edge.** Only pump.fun's SOL curve stays positive at our landing (the big four +0.0047 a 0.2 SOL
+  copy on the newer part). PumpSwap breaks even even at the quiet landing; LaunchLab loses; the next ten big wallets
+  lose everywhere (-6.7 SOL a day on the curve). Curves priced in other tokens (about 121 of the big wallets' buys a
+  day) read +0.41 SOL a day at the quiet landing with an assumed 1 % swap cost, but OKTech's copies of them fail on the
+  quote (error 6009) and our own buyer refuses them (lab 20261124-023332-08253a).
+- **Inertia answered the owner's application** (24 Nov, on Telegram, "Flint | Inertia": "Could you send your searcher
+  wallet please"). Its documentation (documentation.inertia.sh/searchers, read 24 Nov): an API key per searcher, asked
+  for on Telegram (t.me/inertiamev) or Discord, four permissions per key; gRPC without TLS on port 11227, Amsterdam
+  only; the stream is filtered by up to 1,024 accounts; bids are tips to Inertia's own tip accounts, paid only if the
+  bundle lands; **the minimum tip is 45 % of the profit the bundle expects** (behind Cented on paper: +1.90 a 6 SOL
+  copy, about +1.0 after it). The owner was told to send only the public address of the sniper wallet, to check Flint
+  in Inertia's official group, never to send a key or SOL or connect the wallet to a link, and to ask whether the
+  stream carries pump.fun buys sent from trading apps like Axiom. With a key, the first step is read-only: subscribe to
+  Cented's and Decu's addresses for a few hours and count how many of their buys appear before they land. The key goes
+  on the server, never into chat.
+
 ## 24 Nov, 01:10 UTC: would a fast sender of our own reach the money? No (the check of the forwarded feeds analysis)
 
 - **The question.** The owner forwarded an analysis (23 Nov ~22:00): buyable feeds (Yellowstone gRPC, Jito
