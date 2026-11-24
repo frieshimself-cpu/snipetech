@@ -4,7 +4,19 @@ The log of every live test, newest first: each entry's fills are live, with the 
 paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every
 number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
-## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day: STARTED 23 Nov 09:11 UTC (runner 20261123-091103-3940b3; written 09:10 UTC, before anything was started)
+## The same copy behind Cented and Yugi at 0.2 SOL with our fill's ceiling at 75 SOL: STARTED 24 Nov (written ~09:20 UTC, before anything is made)
+
+**Under which yes.** The standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet, written here before and after). It runs while the owner decides on the 1 SOL day (asked 24 Nov ~03:15, no answer yet); a yes to that day stops this test once it holds nothing and starts the 1 SOL one.
+
+**What it tests.** The one change the night's checked hunt found (docs/roadmap.md 24 Nov 03:00, CHECKED 03:10): our fill's ceiling at 75 SOL of market cap instead of 64.6, on the rule that has just run 13 hours at +0.15 SOL. At the real landing the check expects +0.16 to +0.29 SOL a day more on paper at 0.2 SOL, and guessed +0.05 to +0.2 live; it takes several days of fills to tell such a gain from noise. Each fill is recorded against the paper's copy of the same moment.
+
+**What runs.** The two stopped snipers of the last test (Cented 6b040315ca420f45d7755bb3, Yugi …5bcc; they hold nothing) are deleted, and two new ones made: `oktech copylist --copy CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o:Cented:2:hold12 --copy AQ46kfYT3hW28Xg5gWHrJkzFSz1oGWBHC3FsTbqgMEco:Yugi:2:hold12 --buy 0.2 --snipes 1 --priority 0.0011 --tip 0.002 --compute-units 100000 --max-mcap 75 --platforms pumpfun --tag arm:test02c --create` (the ceiling in dollars at the server's SOL price when made). The runner: `oktech cycle --id <Cented> --id <Yugi> --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --max-loss 0.3 --keep-plain 0.22 --max-fills 100 --max-minutes 1440 --rearm-after 1800 --sweep-after 15 --place-stop 2/3 --place-max 8`, on the server's code of 5203d03.
+
+**Stop rules.** 0.3 SOL lost by the run's own trades; plain SOL under 0.22 at a re-arm; 2 of the last 3 placed copies behind no buy of the copied wallet or more than 8 buyers behind; 24 hours; 100 fills; the owner's /stop.
+
+## The small-coin copy behind Cented, Decu and Yugi at 0.2 SOL, a day: ENDED 24 Nov 09:10:47 UTC on its time limit, nothing held, its snipers stopped by the runner; about +0.01 SOL over the whole test, +0.15 since the 19:59 restart (STARTED 23 Nov 09:11 UTC, runner 20261123-091103-3940b3 and its restarts; written 09:10 UTC, before anything was started)
+
+**The end, read 24 Nov 09:15 UTC.** The last runner (20261123-195929-0bc2c6, since 19:59): 5 fills (+0.0768, -0.0141, +0.0722, +0.0929, -0.0183), 89 re-arms, about 50 sends that bought nothing (0.0567 SOL to 04:17), and its own reading of the run: **+0.1506 SOL** (the wallet's SOL and wrapped SOL at the start and the end, nothing held). With the test's -0.14 before 19:59, the whole test came out at about **+0.01 SOL** over 24 hours: 13 fills, the last 13 hours positive.
 
 **Why this and not the 1 SOL day.** The owner, 23 Nov ~09:08 UTC: "Left .7 in the wallet for testings". So the 1 SOL day below waits, and the same rule runs now as a test at the most a test may buy. **Under which yes:** the standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet). At 0.2 SOL the copy pays its bid (0.0031 SOL) as 1.5 % of its size, near the paper's economics, where smoke tests at 0.02 paid 15 %: it measures whether the rule makes money live, not only whether the machinery works.
 
