@@ -4,7 +4,7 @@ The log of every live test, newest first: each entry's fills are live, with the 
 paid; paper numbers in an entry name their lab and landing. (Until 22 Nov this head, written on 5 Nov, said every
 number here was paper at about 1 trade behind and 0.0035 SOL a transaction.)
 
-## The same copy behind Cented and Yugi at 0.2 SOL with our fill's ceiling at 75 SOL: STARTED 24 Nov (written ~09:20 UTC, before anything is made)
+## The same copy behind Cented and Yugi at 0.2 SOL with our fill's ceiling at 75 SOL: STARTED 24 Nov 09:15:12 UTC (runner 20261124-091510-fefe83; snipers Cented 6b055589ca420f45d7a957d1 and Yugi 6b05558aca420f45d7a957dd, $5,300 ceiling at the server's SOL price; the old two deleted 09:14; written ~09:10 UTC, before anything was made)
 
 **Under which yes.** The standing yes of 12 Nov (a live test up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet, written here before and after). It runs while the owner decides on the 1 SOL day (asked 24 Nov ~03:15, no answer yet); a yes to that day stops this test once it holds nothing and starts the 1 SOL one.
 
