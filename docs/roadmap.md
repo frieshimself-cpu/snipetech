@@ -6,6 +6,51 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 24 Nov, 17:00 UTC: fee-claim snipes, tested five ways at our landing: a claim is a sell signal, not a buy signal
+
+- **The owner (13:2x-14:0x):** "is there nothing else we can do with oktech like fee claim snipes or other snipes",
+  "Test claim depending on how the coin went pre claim, there's a pattern", "Also check who bought the coin pre claim",
+  "Also add market cap and volume", "After the claim and before the claim". Four workflows in this session
+  (wf_e1ea98f4-f90, wf_2e66a98b-584, wf_eec2e0e1-189, wf_f946b113-86d; scratch under the session scratchpad okmodes/),
+  each choosing on the older 60 % of the claims and judging on the newer 40 %, at OKTech's landing (a block after the
+  claim, behind that block's first 3 trades of the coin), 0.2 SOL, 0.0031 SOL a transaction plus the venue's fee.
+- **Every claim, bought a block later, loses** on both parts: on normal coins, newer part, -0.0115 / -0.0157 / -0.0285 /
+  -0.0413 SOL a trade at 12 s / 60 s / 5 min / 15 min (the round trip alone costs -0.0111); buying every claim at 60 s
+  would lose about 19.6 SOL a day. 4-8 % of buys win.
+- **What the coin did before the claim (price path, wf_eec2e0e1-189):** creators mostly claim after the coin has been
+  dumped: 70 % of claims came 40 % or more under the hour's high (median 84 % under), 63 % within twice the launch
+  market cap, and in half the creator had sold in that hour. The few claims in a run-up (6 %: +20 % in 15 min, near the
+  hour's high) are followed by a fall: a median -18 % (older) and -24 % (newer) 15 minutes later, -0.03 to -0.05 SOL a
+  trade. 1,448 filter-and-exit combinations: none with a positive older mean on normal coins; the pick (market cap up
+  16.5x in the hour, 12 s) made -0.0115 on 106 newer trades.
+- **The coin's state (wf_eec2e0e1-189):** a busy coin at the claim keeps falling (median -3.1 % / -3.2 % over 5 min, mean
+  -6.7 % / -9.6 %); a coin already falling keeps falling (-5.8 % / -8.5 %); a quiet coin (37 % of claims) does nothing
+  (98 % within 2 %). A wallet's first recorded claim is followed by bigger falls than repeats. The older part's best
+  buckets were carried by two or three mayhem coins and lost on the newer part (-0.0105, 62 trades).
+- **Who bought before (wf_e1ea98f4-f90):** 99 % of these coins had a 2 SOL+ buyer, 82 % a tracked-list wallet, 12 % the
+  big four (usually sold out before the claim). The more recent the last big-wallet buy and the more big wallets still
+  holding, the worse the buy after the claim: last big buy within 10 s, -0.024 / -0.080 at 15 min (older / newer); 21+
+  big holders, -0.054 / -0.108. Coins the big wallets left long ago lose only the fees. No bucket positive on both
+  parts; the pick (more than 4 named-list holders, 5 min) went +0.0374 on 175 older trades to -0.0232 on 83 newer.
+- **Market cap and volume (wf_2e66a98b-584):** no band or cell pays. 100-1,000 SOL coins lose least in the first minute
+  (-0.006 to -0.012); coins still trading drift down (2-4 % over 5-15 min); dead coins lose the fees. The best older cell
+  (300-1,000 SOL with 200+ SOL traded in the 15 min before, 5-min hold, +0.0079 on 71) made -0.0346 on 87 newer.
+- **After the claim (wf_f946b113-86d):** most claimed coins are already dead (median volume 0 in the 5 min after). Live
+  coins fade: median -2.7 % at 5 min and -8 % at 15 min; 41 % fall 20 %+ within 5 min (29 % for the same coins 10 min
+  earlier); volume dries up (median 69 SOL in the 5 min before, 2.6 after). By size: under 60 SOL the claim follows a
+  crash and the coin is dead; 60-300 SOL it follows a run-up (+85 % median over 15 min) and the coin falls 13 % in the
+  next 15 min; over 300 SOL it follows a huge run-up (+1,229 %) and falls 53 % in 15 min (78 % fall 20 %+). A buy that
+  waits 30 s to 5 min and decides only on what has happened: 64,512 rules, all 16 delay-hold baselines lose on both
+  parts; the older pick (a dip buy at claim + 30 s on coins over 300 SOL, 5 min) made -0.0141 on 35 newer trades.
+- **Limits of the data:** the claims come from the creator scan (events/dev.py): creators of coins whose curve reached
+  60 SOL, plain creator-vault claims (collect_creator_fee, collect_coin_creator_fee), found after the fact. The
+  fee-sharing / GitHub claims that OKTech's "First Claim Only" and "by GitHub user" are about are not decoded, so that
+  exact OKTech option is untested; which coin ClaimSniper buys on a creator-vault claim is unknown (playbook question
+  16). Claims whose creator's coin reached 60 SOL only after the claim were dropped (hindsight).
+- **The use:** defensive. A creator claim on a busy or pumping coin says sell; no OKTech exit fires on a claim, our own
+  runner could (unmeasured; the live copies hold 12 s, so it rarely matters for them). Told to the owner as a hand-trading
+  rule: if the creator claims while the coin pumps, get out.
+
 ## 24 Nov, 03:00 UTC: the edge hunt of the night (the owner: "Keep looking for edges"), and Inertia's answer
 
 - **How it ran.** Five background agents, one hypothesis each, measured on the tape (narrow read-only SQL) and scored
