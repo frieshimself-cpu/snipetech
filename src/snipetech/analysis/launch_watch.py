@@ -12,8 +12,10 @@ candles over the 500 s after its start and for its security numbers, and writes 
 start is its open time (a pool can open after its coin was made), else its creation, else when the watch first saw it.
 
 A read GMGN refuses is written into that coin's line and the job goes on. A rate limit is waited out and the read asked
-again. A read that fails on the way (no answer, a server error) is tried again a round later, three rounds at most,
-then written as refused. A key GMGN refuses ends the job and writes nothing more: no read could work. A restarted job
+again, never past the time the read has: --minutes is the job's end. Each round's reads stop when the next look at new
+coins is due, and the one pass after the end stops a minute later at most (FINAL_SLACK_SECS); a read left by then, or
+held by a rate limit past it, waits for a later round or the next job. A read that fails on the way (no answer, a
+server error) is tried again a round later, three rounds at most, then written as refused. A key GMGN refuses ends the job and writes nothing more: no read could work. A restarted job
 reads both files and goes on where the last one stopped; one job at a time watches a chain. It keeps the coins it has
 seen and the coins waiting for their candles, nothing else. Like every GMGN call it only reads.
 
@@ -55,6 +57,7 @@ LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way
 RATE_WAITS = 10  # waits for one read's rate limit; after them the read is tried again a round later
 RATE_WAIT_MAX = 900.0  # the longest single wait
 RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
+FINAL_SLACK_SECS = 60.0  # the last reads after a watch's minutes: they stop this long after its end at the latest
 STATUS_SECS = 900.0  # a line in the job's log this often
 # GMGN's refusals of the key or of this machine: waiting does not end them, and no read can work while they hold
 STOP_ERRORS = frozenset(
@@ -252,9 +255,8 @@ class LaunchWatch:
         self.pending: dict[str, dict] = {}  # each coin waiting for its candles: its row, in the order recorded
         self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
         self.resumed = {"seen": 0, "waiting": 0}
-        self.counts = dict.fromkeys(
-            ("polls", "polls_all_new", "recorded", "scored", "rate_limit_waits", "tried_again_later"), 0
-        )
+        self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "scored", "rate_limit_waits",
+                                     "rate_limit_left", "tried_again_later"), 0)  # fmt: skip
         self.refused = {"poll": 0, "candles": 0, "security": 0}
 
     def resume(self) -> None:
@@ -277,9 +279,12 @@ class LaunchWatch:
                         self.pending[_key(mint)] = row
         self.resumed = {"seen": len(self.seen), "waiting": len(self.pending)}
 
-    def _ask(self, read: Callable[[], Any]) -> tuple[str, Any]:
-        """One read: ("ok", the answer), ("refused", GMGN's words) or ("later", what failed on the way). A rate limit is
-        waited out (until the time GMGN names, and a second); a key GMGN refuses raises WatchStopped."""
+    def _ask(self, read: Callable[[], Any], until: float) -> tuple[str, Any]:
+        """One read: ("ok", the answer), ("refused", GMGN's words), ("later", what failed on the way) or ("unasked",
+        GMGN's words): a rate limit that holds past `until`, the time this read has (the next look at new coins, or the
+        job's end). A rate limit is waited out (until the time GMGN names, and a second) only when it ends before
+        `until`; the read is not asked again while it holds, since every ask makes it longer. A key GMGN refuses raises
+        WatchStopped."""
         waits = 0
         while True:
             try:
@@ -291,19 +296,27 @@ class LaunchWatch:
                     return ("later" if exc.status is None or exc.status >= 500 else "refused"), str(exc)
                 if waits >= RATE_WAITS:
                     return "later", str(exc)
-                waits += 1
                 wait = RATE_WAIT_UNNAMED if not exc.reset_at else exc.reset_at - self.clock() + 1.0
                 wait = min(RATE_WAIT_MAX, max(1.0, wait))
+                if self.clock() + wait > until:
+                    self.counts["rate_limit_left"] += 1
+                    self.log(f"gmgn launch-watch {self.chain}: rate limit for {wait:.0f} s more, past the time this "
+                             "read has: it is left for later")  # fmt: skip
+                    return "unasked", str(exc)
+                waits += 1
                 self.counts["rate_limit_waits"] += 1
                 self.log(f"gmgn launch-watch {self.chain}: rate limit, waiting {wait:.0f} s")
                 self.sleep(wait)
 
-    def poll(self, first: bool) -> None:
-        """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down."""
-        self.counts["polls"] += 1
+    def poll(self, first: bool, until: float) -> None:
+        """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down.
+        A rate limit that holds past `until` (the job's end) leaves it unasked."""
         kind, got = self._ask(
-            functools.partial(self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT)
+            functools.partial(self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT), until
         )
+        if kind == "unasked":
+            return
+        self.counts["polls"] += 1
         if kind != "ok":
             self.refused["poll"] += 1
             self.log(f"gmgn launch-watch {self.chain}: the look at the newest coins failed: {got}")
@@ -325,21 +338,29 @@ class LaunchWatch:
         if rows and fresh == len(rows) and not first:  # coins may have come and gone between the two looks
             self.counts["polls_all_new"] += 1
 
-    def settle(self) -> None:
-        """Every waiting coin past its settle time: its candles and its security, read once and written."""
+    def settle(self, until: float) -> None:
+        """Every waiting coin past its settle time, in the order recorded: its candles and its security, read once and
+        written. It stops at `until` (the next look at new coins, or the job's end), and when a rate limit holds past
+        it: the coins not reached wait for the next round, which counts as no failed round of theirs."""
         for key, row in list(self.pending.items()):
             start, asked_at = start_of(row), self.clock()
+            if asked_at >= until:
+                return
             if asked_at < start + self.settle_secs:
                 continue
             last_round = self.tries.get(key, 0) + 1 >= LATER_ROUNDS
             mint = row["mint"]
             candles = self._ask(
-                functools.partial(self.client.candles, mint, "1s", start=start, end=start + WINDOW_SECS)
+                functools.partial(self.client.candles, mint, "1s", start=start, end=start + WINDOW_SECS), until
             )
+            if candles[0] == "unasked":
+                return
             if candles[0] == "later" and not last_round:
                 self._later(key)
                 continue
-            sec = self._ask(functools.partial(self.client.token_security, mint))
+            sec = self._ask(functools.partial(self.client.token_security, mint), until)
+            if sec[0] == "unasked":
+                return
             if sec[0] == "later" and not last_round:
                 self._later(key)
                 continue
@@ -376,7 +397,10 @@ class LaunchWatch:
         self.counts["scored"] += 1
 
     def run(self, minutes: float) -> dict:
-        """Watch for `minutes` (0: only read what has settled), then read what has settled by the end."""
+        """Watch for `minutes` (0: only read what has settled), then read in one pass what has settled by the end. The
+        minutes are the job's end (review of 25 Nov: rate-limit waits and the last reads ran past them): each round's
+        reads stop when the next look is due, no wait runs past the end, and the last pass stops FINAL_SLACK_SECS
+        after it; what is left waits for the next job."""
         try:
             with chain_lock(self.data_dir, self.chain):
                 self.resume()
@@ -385,9 +409,9 @@ class LaunchWatch:
                 first = True
                 while (now := self.clock()) < deadline:
                     if now >= next_poll:
-                        self.poll(first)
+                        self.poll(first, deadline)
                         first, next_poll = False, now + self.every
-                    self.settle()
+                    self.settle(min(next_poll, deadline))
                     if self.clock() >= next_status:
                         next_status += STATUS_SECS
                         self.log(
@@ -395,7 +419,7 @@ class LaunchWatch:
                             f"seen, {self.counts['scored']} read, {len(self.pending)} waiting"
                         )
                     self.sleep(max(0.0, min(next_poll, deadline) - self.clock()))
-                self.settle()
+                self.settle(deadline + FINAL_SLACK_SECS)
         except WatchBusy as exc:
             return {"ok": False, "chain": self.chain, "error": str(exc)}
         except WatchStopped as exc:
@@ -418,6 +442,7 @@ class LaunchWatch:
             "waiting": len(self.pending),
             "refused": dict(self.refused),
             "rate_limit_waits": c["rate_limit_waits"],
+            "rate_limit_left": c["rate_limit_left"],  # reads a rate limit held past the time they had: left for later
             "tried_again_later": c["tried_again_later"],
             "files": {"launches": str(self.launches), "scored": str(self.scored)},
         }

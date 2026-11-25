@@ -274,10 +274,71 @@ def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):
         "/v1/market/token_kline": kline({}),
         "/v1/token/security": sec,
     }
-    out = watch(tmp_path, ft, routes, minutes=1)
+    out = watch(tmp_path, ft, routes, minutes=3)
     assert calls[0] == T and T + 120 <= calls[1] <= T + 125  # asked again once GMGN's limit ended, not before
     assert scored(tmp_path)[0]["security"] == REAL_SECURITY
-    assert out["rate_limit_waits"] == 1 and out["refused"] == {"poll": 0, "candles": 0, "security": 0}
+    # the limit outlasted the first round's minute: the read was left for a later round, and the next look waited
+    assert (out["rate_limit_left"], out["rate_limit_waits"]) == (1, 1)
+    assert out["refused"] == {"poll": 0, "candles": 0, "security": 0}
+
+
+def test_minutes_is_the_jobs_end_and_a_rate_limit_past_it_is_left_to_the_next_job(tmp_path):
+    """Review of 25 Nov: a rate limit was waited out whatever --minutes said (up to 900 s, ten times over), and the
+    reads after the end took as long as they took: a watch could run hours past its minutes and past its job limit."""
+    ft, asks = FakeTime(T), []
+
+    def sec(req):
+        asks.append(ft.now)
+        return httpx.Response(
+            429, json={"code": 429, "error": "RATE_LIMIT_BANNED", "message": "too many", "reset_at": T + 5000}
+        )
+
+    routes = {
+        "/v1/trenches": polls([trench(A, T - 1000)]),
+        "/v1/market/token_kline": kline({}),
+        "/v1/token/security": sec,
+    }
+    out = watch(tmp_path, ft, routes, minutes=2)
+    assert ft.now <= T + 120 + LW.FINAL_SLACK_SECS  # it ended at its minutes, and its last reads' slack at the most
+    assert asks == [T]  # asked once: every ask while the limit holds makes it longer
+    assert (out["scored"], out["waiting"], scored(tmp_path)) == (0, 1, [])  # the coin is the next job's
+    assert out["rate_limit_left"] >= 1 and out["refused"]["security"] == 0
+
+
+def test_reading_the_settled_coins_gives_way_to_the_next_look_at_new_ones(tmp_path):
+    ft, looks = FakeTime(T), []
+
+    def trenches(req):
+        looks.append(ft.now)
+        return answer({"new_creation": [trench(m, T - 1000) for m in (A, B, C, D, E)]})
+
+    def slow(req):  # each coin's candles take 20 s to come
+        ft.now += 20
+        return answer({"list": []})
+
+    routes = {"/v1/trenches": trenches, "/v1/market/token_kline": slow, "/v1/token/security": security({})}
+    out = watch(tmp_path, ft, routes, minutes=3)
+    assert looks == [T, T + 60, T + 120]  # every look on time: the reads stopped when the next look was due
+    assert [s["fetched_at"] for s in scored(tmp_path)] == [T, T + 20, T + 40, T + 60, T + 80] and out["scored"] == 5
+
+
+def test_the_last_reads_stop_at_the_end_and_a_short_slack(tmp_path):
+    folder = tmp_path / "history" / "gmgn_launches"
+    folder.mkdir(parents=True)
+    rows = [{"mint": m, "platform": "clanker", "created_ts": T - 1000, "first_seen": T - 990, "chain": "base"}
+            for m in (A, B, C, D, E)]  # fmt: skip
+    (folder / "base.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    ft = FakeTime(T)
+
+    def slow(req):  # each coin's candles take 25 s to come
+        ft.now += 25
+        return answer({"list": []})
+
+    out = watch(tmp_path, ft, {"/v1/market/token_kline": slow, "/v1/token/security": security({})}, minutes=0)
+    assert LW.FINAL_SLACK_SECS == 60
+    # A at T, B at T + 25, C at T + 50; at T + 75 the minute after the end is over: D and E are the next job's
+    assert [s["mint"] for s in scored(tmp_path)] == [A, B, C] and (out["scored"], out["waiting"]) == (3, 2)
+    assert ft.now == T + 75
 
 
 def test_a_refused_key_ends_the_job_and_leaves_the_coin_for_the_next_one(tmp_path):
