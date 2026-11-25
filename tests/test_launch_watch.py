@@ -666,6 +666,22 @@ def test_a_plan_that_lost_its_one_second_candles_writes_no_coin_off_and_ends_the
     assert (out["scored"], out["waiting"]) == (3, 0)
 
 
+def test_a_plan_without_the_pool_or_the_security_route_writes_those_reads_refused_and_goes_on(tmp_path):
+    """Fourth review of 25 Nov: a plan's refusal stopped the job whatever the read: a key whose plan lacks only the pool
+    route ended a day's watch in four minutes with nothing scored, though candles and security answered. Only the
+    candles read stops the job on a plan's refusal (without 1 s candles nothing can be scored); a pool or a security
+    read the plan refuses is written as refused at once, and the watch goes on."""
+    stops = [(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0), (T - 990, 3.0, 3.0, 3.0, 3.0, 5.0)]
+    for read, code in (("/v1/token/pool_info", "PLAN_UPGRADE_REQUIRED"), ("/v1/token/security", "PRO_PLAN_REQUIRED")):
+        ft, folder = FakeTime(T), tmp_path / code
+        routes = {"/v1/trenches": polls([trench(A, T - 1000)]), "/v1/market/token_kline": kline({A: stops}),
+                  "/v1/token/security": security({}), read: refused(403, code, "needs a higher plan")}  # fmt: skip
+        out = watch(folder, ft, routes, minutes=10)
+        (a,) = scored(folder)
+        said = a["pool"]["error"] if read.endswith("pool_info") else a["security"]["error"]
+        assert (out["ok"], ft.now >= T + 600, a["fetched_at"], code in said) == (True, True, T, True), code
+
+
 def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):
     """A job too short for five rounds whose every read GMGN refused says so: no read could work."""
     refusal = refused(401, "AUTH_KEY_INVALID", "api key not found")

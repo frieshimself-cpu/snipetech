@@ -101,6 +101,10 @@ STOP_ERRORS = frozenset(
      "AUTH_TIMESTAMP_SKEW", "PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"}
 )  # fmt: skip
 STOP_ROUNDS = 5  # rounds in a row one kind of read meets the same such refusal, none answered between, before the end
+# a plan's refusals: they stop the job only on the candles read, without which nothing can be scored; a plan that lacks
+# the pool or the security route writes those reads refused (fourth review of 25 Nov: one ended a day's watch in four
+# minutes with nothing scored, though candles and security answered)
+PLAN_ERRORS = frozenset({"PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"})
 # what leaves the round, its coins waiting for the next one: a rate limit past the read's time, or the time over
 # ("unasked"), and a refusal of the key or of this machine ("halted")
 LEAVE_ROUND = ("unasked", "halted")
@@ -573,6 +577,9 @@ class LaunchWatch:
             try:
                 got = read()
             except GmgnError as exc:
+                if exc.error in PLAN_ERRORS and kind != "candles":  # the plan lacks this route: the read is refused
+                    self._answered(kind)
+                    return "refused", str(exc)
                 if exc.status in STOP_STATUSES or exc.error in STOP_ERRORS:
                     return self._refused_key(kind, exc)
                 if exc.status != 429:
