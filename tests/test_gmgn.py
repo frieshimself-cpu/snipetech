@@ -549,6 +549,37 @@ def test_a_rate_limit_is_waited_out_once_when_short_and_never_hammered_when_long
     assert len(g.smart_money_feed()) == 4
 
 
+def test_a_ban_given_in_milliseconds_or_far_ahead_blocks_the_client_ten_minutes_at_most():
+    """Third review of 25 Nov: a reset_at in milliseconds (GMGN gives its candle times so; no real 429 pins the unit)
+    was read as a time in the year 58,000, and the client sent nothing more for the rest of a three-hour watch, in
+    silence. The reset is read as a time (milliseconds become seconds), and no limit holds the client longer than ten
+    minutes: GMGN's longest documented ban is five."""
+    t = [NOW]
+    seen: list[httpx.Request] = []
+    banned = fixture("error_rate_limit_banned.json")
+    answers = [httpx.Response(429, json=dict(banned, reset_at=(int(NOW) + 300) * 1000))]
+
+    def handler(req):
+        seen.append(req)
+        return answers[0]
+
+    g = Gmgn(KEY, transport=httpx.MockTransport(handler), sleep=lambda s: None, clock=lambda: t[0])
+    with pytest.raises(GmgnError) as exc:
+        g.kol_feed()
+    assert exc.value.reset_at == int(NOW) + 300  # the milliseconds read as a time five minutes ahead
+    t[0] = NOW + 301
+    answers[:] = [httpx.Response(200, json=fixture("kol.json"))]
+    assert len(g.kol_feed()) == 4 and len(seen) == 2
+    # a reset a day ahead holds the client ten minutes, no more
+    answers[:] = [httpx.Response(429, json=dict(banned, reset_at=int(t[0]) + 86_400))]
+    with pytest.raises(GmgnError) as exc:
+        g.kol_feed()
+    assert exc.value.reset_at == int(t[0]) + 600
+    t[0] += 601
+    answers[:] = [httpx.Response(200, json=fixture("kol.json"))]
+    assert len(g.kol_feed()) == 4 and len(seen) == 4
+
+
 def test_a_route_the_plan_does_not_include_is_not_retried():
     seen: list[httpx.Request] = []
     g = client(seen, routes={"/v1/market/rank": httpx.Response(403, json=fixture("error_plan_upgrade.json"))})

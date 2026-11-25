@@ -101,6 +101,9 @@ RESOLUTIONS = ("1s", "30s", "1m", "5m", "15m", "1h", "4h", "1d")
 PERIOD_DAYS = {"1d": 1, "7d": 7, "30d": 30}
 RETRY_STATUSES = (500, 502, 503, 504)
 WAITABLE = ("RATE_LIMIT_EXCEEDED", "RATE_LIMIT_BANNED")  # a limit that passes; the others never do by waiting
+# the longest a rate limit holds the client: GMGN's longest documented ban is 5 minutes (RATE_LIMIT_BANNED_MAX), so a
+# reset further ahead is a misread time; the client asks again after this, as it would after any ban
+MAX_BAN_SECS = 600
 HINTS = {
     "AUTH_KEY_INVALID": "GMGN does not know this key: check GMGN_API_KEY in /etc/snipetech/env",
     "AUTH_IP_BLOCKED": "this machine's address is not on the key's whitelist (GMGN takes IPv4 only)",
@@ -319,12 +322,15 @@ class Gmgn:
                 return data
             code = _text(str(answer.get("error") or ""), 60)
             said = _text(str(answer.get("message") or ""), 200) or "no message"
-            reset = _int(answer.get("reset_at")) or _int(r.headers.get("x-ratelimit-reset"))
+            # a time, whether GMGN wrote it in seconds or in milliseconds (third review of 25 Nov: milliseconds read
+            # as seconds blocked the client for the rest of a run)
+            reset = _ts(answer.get("reset_at")) or _ts(r.headers.get("x-ratelimit-reset"))
             if not reset and r.headers.get("retry-after"):
                 reset = int(self.clock()) + _int(r.headers["retry-after"])
             text = f"{where}: HTTP {r.status_code} {code or 'error'}: {said}"
             if r.status_code == 429:
                 reset = reset or int(self.clock()) + 60  # no time given: stay away a minute
+                reset = min(reset, int(self.clock()) + MAX_BAN_SECS)  # never longer than any ban GMGN documents
                 self._blocked_until = float(reset)
                 wait = max(0.0, reset - self.clock())
                 if code in WAITABLE and not waited and wait + 1.0 <= self.max_wait:
