@@ -75,6 +75,10 @@ CANNOT_SELL = ("is_honeypot", "honeypot", "can_not_sell")  # a yes in one of the
 TAXES = ("buy_tax", "sell_tax")
 FLAGS = (*CANNOT_SELL, "can_sell")
 SAFETY_FIELDS = frozenset((*CANNOT_SELL, *TAXES))  # what the score reads of a security answer (can_sell is not read)
+# what the watch keeps of GMGN's own row of a new coin, as GMGN gave it, beside the client's conversion of the row: its
+# taxes and its flags when the coin was first seen (review of 25 Nov: they were dropped). The real rows of 12 Nov give
+# buy_tax and sell_tax (0 on pump.fun coins) and no honeypot flag (tests/fixtures/gmgn/real/trenches.json).
+FIRST_SIGHT = (*CANNOT_SELL, *TAXES)
 SCORED_HEAD = '{"mint":"'  # how every line of a scored file begins (written compact, the coin first)
 # what a delay means on each chain, printed with the report (CLAUDE.md: a paper result names its landing)
 LANDING = {
@@ -103,7 +107,11 @@ SCORE_READING = (
     "is not scored (unsettled)."
 )
 SECURITY_READING = (
-    "A coin cannot be sold when GMGN's security answer says so in is_honeypot, honeypot or can_not_sell (1, true or "
+    "Each coin is read twice: its row on GMGN's list of new coins when the watch first saw it (first_sight: the "
+    "is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax GMGN gave there, kept in the coin's line) and its "
+    "security answer at settle. Each leg pays the higher of the two reads' taxes, and a coin either read says cannot "
+    "be sold is all lost; taxes_changed counts the coins whose two reads gave a tax and differ. "
+    "A coin cannot be sold when GMGN says so in is_honeypot, honeypot or can_not_sell (1, true or "
     "yes). can_sell is counted and not read: the one real answer we hold (a Solana coin, 12 Nov) said can_sell 0 and "
     "can_not_sell 0 of a coin that traded. A sell tax of 50 percent or more counts as a coin that cannot be sold. "
     "buy_tax and sell_tax are shares of 1 (0.05 is 5 percent), as GMGN's coin rows give theirs; when either is above 1 "
@@ -169,6 +177,24 @@ def _price(v: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return x if math.isfinite(x) and x > 0 else None
+
+
+def _new_rows(data: Any) -> list[dict]:
+    """GMGN's newest coins as its trenches answer sends them (`new_pairs` with raw): each row as the client converts it
+    (Gmgn._coin_row), with the fields of FIRST_SIGHT GMGN gave on it kept as given; POLL_LIMIT rows at most, as the
+    client cuts them."""
+    raw = data.get("new_creation") if isinstance(data, dict) else None
+    rows = []
+    for given in raw if isinstance(raw, list) else []:
+        row = Gmgn._coin_row(given) if isinstance(given, dict) else None
+        if row is not None:
+            rows.append(row | {k: given[k] for k in FIRST_SIGHT if k in given})
+    return rows[:POLL_LIMIT]
+
+
+def first_sight(rec: dict) -> dict:
+    """The fields of FIRST_SIGHT a coin's line holds: its row's taxes and flags when the watch first saw it."""
+    return {k: rec[k] for k in FIRST_SIGHT if k in rec}
 
 
 def _key(mint: str) -> str:
@@ -329,10 +355,14 @@ class LaunchWatch:
                 self.sleep(wait)
 
     def poll(self, first: bool, until: float) -> None:
-        """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down.
-        A rate limit that holds past `until` (the job's end) leaves it unasked."""
+        """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down,
+        its row as the client converts it and the taxes and flags GMGN gave on it (FIRST_SIGHT). A rate limit that
+        holds past `until` (the job's end) leaves it unasked."""
         kind, got = self._ask(
-            functools.partial(self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT), until
+            functools.partial(
+                self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT, raw=True
+            ),
+            until,
         )
         if kind == "unasked":
             return
@@ -341,8 +371,7 @@ class LaunchWatch:
             self.refused["poll"] += 1
             self.log(f"gmgn launch-watch {self.chain}: the look at the newest coins failed: {got}")
             return
-        rows = got.get("new") if isinstance(got, dict) else None
-        rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        rows = _new_rows(got)
         now = int(self.clock())
         fresh = 0
         for row in rows:
@@ -627,18 +656,32 @@ class _Score:
         self.platforms: dict[str, int] = {}
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
-                                "percent"), 0)  # fmt: skip
-        self.given = dict.fromkeys((*FLAGS, *TAXES), 0)
-        self.yes, self.taxed = dict.fromkeys(FLAGS, 0), dict.fromkeys(TAXES, 0)
+                                "first_sight_honeypots", "taxes_changed", "percent"), 0)  # fmt: skip
+        # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
+        # settle ("settle") and of the coin's row when first seen ("first")
+        self.given = {read: dict.fromkeys((*FLAGS, *TAXES), 0) for read in ("settle", "first")}
+        self.yes = {read: dict.fromkeys(FLAGS, 0) for read in ("settle", "first")}
+        self.taxed = {read: dict.fromkeys(TAXES, 0) for read in ("settle", "first")}
 
     def add(self, rec: dict) -> None:
         self.n["coins"] += 1
-        sec = read_security(rec.get("security"))
-        for name, flag in (("security_refused", "refused"), ("honeypots", "honeypot"), ("percent", "percent")):
-            self.n[name] += sec[flag]
-        for counts, part in ((self.given, "given"), (self.yes, "yes"), (self.taxed, "taxed")):
-            for k in sec[part]:
-                counts[k] += 1
+        sec, first = read_security(rec.get("security")), read_security(first_sight(rec))
+        for read, said in (("settle", sec), ("first", first)):
+            for counts, part in ((self.given, "given"), (self.yes, "yes"), (self.taxed, "taxed")):
+                for k in said[part]:
+                    counts[read][k] += 1
+        # each leg pays the higher of the two reads' taxes, and a coin either read says cannot be sold is all lost
+        taxes = {k: max(sec[k], first[k]) for k in TAXES}
+        honeypot = sec["honeypot"] or first["honeypot"]
+        changed = any(k in sec["given"] and k in first["given"] and abs(sec[k] - first[k]) > 1e-9 for k in TAXES)
+        for name, value in (
+            ("security_refused", sec["refused"]),
+            ("honeypots", honeypot),
+            ("taxes_changed", changed),
+            ("first_sight_honeypots", first["honeypot"]),
+            ("percent", sec["percent"] or first["percent"]),
+        ):
+            self.n[name] += value
         # refused, or an answer without one field read here: whether the coin can be sold, and its taxes, are unknown
         without_fields = not sec["refused"] and not sec["given"] & SAFETY_FIELDS
         self.n["security_without_fields"] += without_fields
@@ -652,7 +695,7 @@ class _Score:
         self.n["without_a_price"] += not ts
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
         fetched = _int(rec.get("fetched_at"))
-        keep = (1 - sec["buy_tax"]) * (1 - sec["sell_tax"])
+        keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
         for d in DELAYS:
             i = _at(ts, start + d)
             if i < 0:
@@ -667,8 +710,8 @@ class _Score:
                     pair.unsettled += 1
                     continue
                 out = closes[_at(ts, end)]
-                ret = -1.0 if sec["honeypot"] else out / closes[i] * self.kept * keep - 1.0 - self.share
-                pair.add(ret, plat, rug, sec["honeypot"])
+                ret = -1.0 if honeypot else out / closes[i] * self.kept * keep - 1.0 - self.share
+                pair.add(ret, plat, rug, honeypot)
 
     @staticmethod
     def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:
@@ -693,9 +736,13 @@ class _Score:
                 "refused": self.n["security_refused"],
                 "without_fields": self.n["security_without_fields"],
                 "honeypots": self.n["honeypots"],
+                "taxes_changed": self.n["taxes_changed"],
                 "taxes_read_as_percent": self.n["percent"],
-                "fields": {k: {"given": self.given[k], "yes": self.yes[k]} for k in FLAGS}
-                | {k: {"given": self.given[k], "above_0": self.taxed[k]} for k in TAXES},
+                "fields": self._fields("settle", FLAGS),
+                "first_sight": {
+                    "honeypots": self.n["first_sight_honeypots"],
+                    "fields": self._fields("first", CANNOT_SELL),
+                },
                 "reading": SECURITY_READING,
             },
             "by_delay": [{"delay": d, "with_entry": self.entries[d], "no_trade_yet": self.no_trade[d]} for d in DELAYS],
@@ -719,6 +766,12 @@ class _Score:
                 "chosen_by": "mean_without_best5" if best["mean_without_best5"] is not None else "median",
             },
             "by_platform": [] if best is None else self._by_platform(self.pairs[(best["delay"], best["hold"])]),
+        }
+
+    def _fields(self, read: str, flags: tuple[str, ...]) -> dict:
+        """On how many coins one read gave each field, said yes to each flag and gave each tax above 0."""
+        return {k: {"given": self.given[read][k], "yes": self.yes[read][k]} for k in flags} | {
+            k: {"given": self.given[read][k], "above_0": self.taxed[read][k]} for k in TAXES
         }
 
     def _by_platform(self, pair: _Pair) -> list[dict]:

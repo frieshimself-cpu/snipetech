@@ -171,6 +171,37 @@ def test_a_launch_is_recorded_once_across_polls_and_across_a_restart(tmp_path):
     assert out2["resumed"] == {"seen": 5, "waiting": 5} and out2["recorded"] == 1 and out2["waiting"] == 6
 
 
+def test_the_taxes_and_the_honeypot_flag_on_a_launchs_first_row_are_kept(tmp_path):
+    """Review of 25 Nov: the taxes and the honeypot flag on GMGN's row of a new coin were dropped when the row was
+    recorded, and only the security read 900 s later was charged."""
+    taxed = dict(trench(A, T - 1000), buy_tax=0.05, sell_tax="0.1", is_honeypot=1)
+    routes = {
+        "/v1/trenches": polls([taxed, trench(B, T - 1000)]),
+        "/v1/market/token_kline": kline({}),
+        "/v1/token/security": security({}),
+    }
+    watch(tmp_path, FakeTime(T), routes, minutes=1)
+    a, b = launches(tmp_path)
+    assert (a["buy_tax"], a["sell_tax"], a["is_honeypot"]) == (0.05, "0.1", 1)  # as GMGN gave them
+    assert (b["buy_tax"], b["sell_tax"]) == (0, 0) and "is_honeypot" not in b  # a real row gives no honeypot flag
+    by = {s["mint"]: s for s in scored(tmp_path)}
+    assert (by[A]["buy_tax"], by[A]["sell_tax"], by[A]["is_honeypot"]) == (0.05, "0.1", 1)  # and in the coin's line
+
+
+def test_real_rows_of_gmgns_newest_coins_are_recorded_with_their_taxes(tmp_path):
+    real = fixture("real/trenches.json")["data"]
+    seen: list = []
+    watch(tmp_path, FakeTime(1_794_506_800), {"/v1/trenches": lambda req: answer(real)}, seen, chain="sol", minutes=1)
+    rows = launches(tmp_path, "sol")
+    assert [r["mint"] for r in rows] == [r["address"] for r in real["new_creation"]]
+    assert [(r["symbol"], r["platform"], r["created_ts"], r["open_ts"]) for r in rows] == [
+        ("Ryfa", "Pump.fun", 1_794_506_736, 0),
+        ("SU", "Pump.fun", 1_794_506_732, 0),
+    ]
+    assert all((r["buy_tax"], r["sell_tax"], "is_honeypot" in r) == (0, 0, False) for r in rows)
+    assert len(seen) == 1 and seen[0].url.params["chain"] == "sol"
+
+
 def test_a_settled_launch_gets_its_candles_and_security_once(tmp_path):
     ft, seen = FakeTime(T), []
     sec_a = dict(REAL_SECURITY, address=A, buy_tax="0.03", sell_tax="0.05")
@@ -473,9 +504,9 @@ def test_a_line_cut_short_by_a_killed_job_is_written_again_on_a_line_of_its_own(
 # -- the score: what an early buyer would have made ---------------------------------------------------------------------
 
 
-def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None):
-    """A line of <chain>_scored.jsonl as the watch writes it: a coin started at S, its candles as [ts, open, high, low,
-    close, dollars] and its security as GMGN sent it."""
+def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=None):
+    """A line of <chain>_scored.jsonl as the watch writes it: a coin started at S, the taxes and flags of its row when
+    first seen (`first`), its candles as [ts, open, high, low, close, dollars] and its security as GMGN sent it."""
     return {
         "mint": mint,
         "chain": "base",
@@ -483,6 +514,7 @@ def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None):
         "platform": platform,
         "symbol": "TKN",
         "first_seen": S + 3,
+        **(first or {}),
         "fetched_at": S + 900 if fetched_at is None else fetched_at,
         "candles": [list(c) for c in candles],
         "security": dict(NO_TAX) if sec is None else sec,
@@ -563,6 +595,28 @@ def test_a_coin_that_cannot_be_sold_is_all_lost(tmp_path):
     assert row["coins"] == 6 and row["honeypots"] == 5
     assert row["mean"] == pytest.approx((5 * -1.0 + (3.0 * 0.51 - 1)) / 6, abs=1e-4)
     assert out["security"]["honeypots"] == 5
+
+
+def test_each_leg_pays_the_higher_of_the_launchs_tax_and_the_settled_one(tmp_path):
+    """Review of 25 Nov: the taxes on a launch's row when the watch first met it were thrown away, so a tax lowered
+    by the time of the settle read was charged at its low. Each leg pays the higher of the two reads, and a coin
+    either read says cannot be sold is all lost."""
+    up = [flat(1.0), flat(2.0, 10)]
+    lines = [
+        coin(A, up, dict(NO_TAX, buy_tax="0.02", sell_tax="0.1"), first={"buy_tax": 0.05, "sell_tax": 0.03}),
+        coin(B, up, dict(NO_TAX), first={"buy_tax": 0, "sell_tax": 0, "is_honeypot": 1}),  # no sale when first seen
+        coin(C, up, dict(NO_TAX, sell_tax="0.04"), first={"buy_tax": 0, "sell_tax": 0.04}),
+        coin(D, up, dict(NO_TAX), first={"sell_tax": 0.6}),  # a launch tax of 60 percent on a sale: no sale
+    ]
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    row = pair(out, 2, 30)
+    a, c = 2 * 0.95 * 0.9 - 1, 2 * 0.96 - 1  # A: in at the 5 percent seen first, out at the 10 read at settle
+    assert (row["coins"], row["honeypots"]) == (4, 2) and row["mean"] == pytest.approx((a - 1 + c - 1) / 4)
+    sec = out["security"]
+    assert (sec["honeypots"], sec["first_sight"]["honeypots"], sec["taxes_changed"]) == (2, 2, 2)  # A's, D's moved
+    assert sec["first_sight"]["fields"]["is_honeypot"] == {"given": 1, "yes": 1}
+    assert sec["first_sight"]["fields"]["sell_tax"] == {"given": 4, "above_0": 3}
 
 
 def test_the_table_says_how_the_coins_did_without_the_five_best_and_how_many_rugged(tmp_path):
