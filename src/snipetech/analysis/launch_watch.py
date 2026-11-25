@@ -113,7 +113,8 @@ LANDING = {
     "behind the launch reaches; 12 s is the next block.",
 }
 SCORE_READING = (
-    "A copy buys D seconds after the coin's start (its open time, else its creation, else when the watch first saw it) "
+    "A copy buys D seconds after the coin's start (its open time, else its creation; a coin timed from when the watch "
+    "first saw it is scored apart, timed_from_sighting) "
     "at the close of the last 1 s candle that opened a second or more before then (the candle that opens at that "
     "moment closes after it), and sells H seconds later at the close of the last candle that opened a second or more "
     "before that. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
@@ -170,6 +171,11 @@ CAVEATS = (
         "chains are unchecked until the first real run; no real pool answer is in them for any chain either, so the "
         "pool's liquidity is read by the name GMGN's documents give it."
     ),
+)
+SIGHTING_READING = (
+    "The coins with no open or creation time GMGN gave: the watch timed them from when it first saw them, up to a look "
+    "(60 s) after their launch, so their first seconds were never read and their delays say nothing. They are scored "
+    "here alone, and left out of `table`, `best`, `by_platform` and `by_delay`."
 )
 UNKNOWN_READING = (
     "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
@@ -272,10 +278,19 @@ def _key(mint: str) -> str:
     return mint.lower() if mint.startswith("0x") else mint
 
 
+START_FROM = (("open_ts", "open"), ("created_ts", "created"), ("first_seen", "sighting"))
+
+
 def start_of(row: dict) -> int:
     """When a coin's 500 s begin: its open time (a pool can open after its coin was made), else its creation, else when
     the watch first saw it."""
-    return next((t for t in (_int(row.get(k)) for k in ("open_ts", "created_ts", "first_seen")) if t > 0), 0)
+    return next((t for t in (_int(row.get(k)) for k, _ in START_FROM) if t > 0), 0)
+
+
+def start_source(row: dict) -> str:
+    """Where start_of took a coin's start from: "open", "created", or "sighting" (when the watch first saw it, up to a
+    look after its launch: its first seconds were never read, and the score sets it apart); "none" without any."""
+    return next((name for k, name in START_FROM if _int(row.get(k)) > 0), "none")
 
 
 def _number(what: str, value: Any, low: float, *, above: bool = False) -> float:
@@ -596,7 +611,8 @@ class LaunchWatch:
         candles as [ts, open, high, low, close, dollars], the time of its last priced candle in its 500 s
         (`last_candle_ts`), its security as GMGN sent it and, when it was read, its pool as GMGN sent it; a refused
         read's words in place of what it would have given."""
-        rec = {"mint": row["mint"], "chain": self.chain, "start": start, "platform": row.get("platform")}
+        rec = {"mint": row["mint"], "chain": self.chain, "start": start, "start_from": start_source(row),
+               "platform": row.get("platform")}  # fmt: skip
         rec.update((k, v) for k, v in row.items() if k not in rec)
         rec["fetched_at"] = int(asked_at)
         if candles[0] == "ok":
@@ -929,12 +945,14 @@ class _Score:
         self.size = size  # a pool that held less at settle could not give a stale sale its price (pool_state)
         self.pairs = {pair: _Pair() for pair in PAIRS}  # every coin a copy bought
         self.apart = {pair: _Pair() for pair in PAIRS}  # those whose security is not known, alone (security_unknown)
+        self.sighted = {pair: _Pair() for pair in PAIRS}  # the coins timed from a sighting, apart (timed_from_sighting)
         self.pools = dict.fromkeys(("coins_with_a_stale_exit", "there", "gone", "unknown"), 0)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
-                                "first_sight_honeypots", "taxes_changed", *TAX_COUNTS), 0)  # fmt: skip
+                                "first_sight_honeypots", "taxes_changed", "timed_from_sighting", *TAX_COUNTS),
+                               0)  # fmt: skip
         # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
         # settle ("settle") and of the coin's row when first seen ("first")
         self.given = {read: dict.fromkeys((*FLAGS, *TAXES), 0) for read in ("settle", "first")}
@@ -975,6 +993,12 @@ class _Score:
         self.n["security_without_fields"] += without_fields
         unknown = sec["refused"] or without_fields
         tables = (self.pairs, self.apart) if unknown else (self.pairs,)
+        # timed from when the watch first saw it, not from its launch: its delays say nothing, so it is scored apart
+        # and left out of the table and the delays (third review of 25 Nov)
+        sighted = (rec.get("start_from") or start_source(rec)) == "sighting"
+        self.n["timed_from_sighting"] += sighted
+        if sighted:
+            tables = (self.sighted,)
         if "candles_error" in rec:
             self.n["candles_refused"] += 1
             return
@@ -994,9 +1018,9 @@ class _Score:
         for d in DELAYS:
             i = _at(ts, start + d)
             if i < 0:
-                self.no_trade[d] += 1
+                self.no_trade[d] += not sighted
                 continue
-            self.entries[d] += 1
+            self.entries[d] += not sighted
             for h in HOLDS:
                 end = start + d + h
                 if (d, h) not in self.pairs:
@@ -1053,6 +1077,11 @@ class _Score:
                 "coins": self.n["security_refused"] + self.n["security_without_fields"],
                 "why": UNKNOWN_READING,
                 "table": self._table(self.apart),
+            },
+            "timed_from_sighting": {
+                "coins": self.n["timed_from_sighting"],
+                "why": SIGHTING_READING,
+                "table": self._table(self.sighted),
             },
             "not_scored": [
                 {"delay": d, "hold": h, "why": f"{d} + {h} s runs past the {WINDOW_SECS} s of candles"}

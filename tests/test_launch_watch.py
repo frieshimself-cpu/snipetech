@@ -350,6 +350,8 @@ def test_the_window_starts_at_the_open_else_the_creation_else_the_first_sighting
     watch(tmp_path, FakeTime(T + 950), routes, seen3, minutes=0)
     assert [r.url.params["address"] for r in asked(seen3, "/v1/market/token_kline")] == [C]
     assert [(s["mint"], s["start"]) for s in scored(tmp_path)] == [(A, T - 100), (B, T - 200), (C, T)]
+    # third review of 25 Nov: and each line says where its start came from
+    assert [s["start_from"] for s in scored(tmp_path)] == ["open", "created", "sighting"]
 
 
 def test_a_refused_read_is_written_into_the_coins_line_and_the_job_goes_on(tmp_path):
@@ -769,6 +771,7 @@ def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=
         "start": S,
         "platform": platform,
         "symbol": "TKN",
+        "created_ts": S,
         "first_seen": S + 3,
         **(first or {}),
         "fetched_at": S + 900 if fetched_at is None else fetched_at,
@@ -1114,6 +1117,20 @@ def test_the_report_says_in_plain_words_what_it_does_not_count(tmp_path):
                   "usually after the entries", "Base, BNB Chain or Ethereum", "unchecked until the first real run",
                   "pool"):  # fmt: skip
         assert words in caveats, words
+
+
+def test_a_coin_timed_from_its_first_sighting_is_scored_apart(tmp_path):
+    """Third review of 25 Nov: a coin with no usable open or creation time was timed from when the watch first saw it,
+    up to a look after its launch, and nothing said so: its first seconds were never read, and a "2 s" entry priced a
+    moment a minute in. Such a coin is left out of the table, the best pair and the delays, counted, and scored apart."""
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
+    sighted = coin(B, up) | {"created_ts": 0, "start_from": "sighting"}
+    unsaid = {k: v for k, v in coin(C, up).items() if k != "created_ts"}  # an older line: its start read as written
+    write_scored(tmp_path, [coin(A, up), sighted, unsaid])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert pair(out, 2, 30)["coins"] == 1 and {d["with_entry"] for d in out["by_delay"]} == {1}
+    apart = out["timed_from_sighting"]
+    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (2, 2, pytest.approx(1.0))
 
 
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
