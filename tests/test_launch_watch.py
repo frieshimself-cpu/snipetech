@@ -510,6 +510,38 @@ def test_a_403_or_a_401_of_any_kind_is_a_refusal_of_the_key_and_writes_no_coin_o
     assert out["outage_waits"] >= 15 and out["tried_again_later"] == 0
 
 
+def test_a_coin_whose_reads_keep_failing_goes_to_the_back_and_is_written_in_the_end(tmp_path):
+    """Fourth review of 25 Nov: a coin whose read failed on the way stayed at the head of the queue, and one whose
+    failures no answer of its kind ever counted (an outage of one read) was never written: two coins whose candles
+    timed out every time (20 s a try, two tries) held every round, and in two hours nothing was written, a healthy coin
+    behind them included, with ok true. A coin left waiting goes to the back of the queue; a coin failing alone counts
+    a round anyway after OUTAGE_ROUNDS rounds of it, so three counted rounds, at most, write it."""
+    ft = FakeTime(T)
+
+    def candles(req):
+        if req.url.params["address"] in (A, B):
+            ft.now += 20  # GMGN does not answer these coins' candles: the client's 20 s timeout
+            raise httpx.ReadTimeout("timed out", request=req)
+        return answer({"list": [gmgn_candle(T - 900 + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in range(0, 500, 10)]})
+
+    held = [trench(A, T - 1000), trench(B, T - 1000)]
+    looks = polls(held, [*held, trench(C, T - 900)])  # C from the second look on
+    routes = {"/v1/trenches": looks, "/v1/market/token_kline": candles, "/v1/token/security": security({})}
+    out = watch(tmp_path / "held", ft, routes, minutes=120)
+    by = {x["mint"]: x for x in scored(tmp_path / "held")}
+    assert by[C]["fetched_at"] <= T + 300 and "candles_error" not in by[C]  # read in its first rounds
+    assert "candles_error" in by[A] and "candles_error" in by[B] and out["waiting"] == 0
+    # a coin alone, its pool read failing on the way every round: an outage of one read, counted once in 30 rounds
+    ft = FakeTime(T)
+    stops = [(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0), (T - 990, 3.0, 3.0, 3.0, 3.0, 5.0)]
+    routes = {"/v1/trenches": polls([trench(A, T - 1000)]), "/v1/market/token_kline": kline({A: stops}),
+              "/v1/token/security": security({}),
+              "/v1/token/pool_info": lambda req: httpx.Response(503, text="upstream unavailable")}  # fmt: skip
+    out = watch(tmp_path / "alone", ft, routes, minutes=100)
+    (a,) = scored(tmp_path / "alone")
+    assert LW.OUTAGE_ROUNDS == 30 and a["fetched_at"] == T + 90 * 60 and "HTTP 503" in a["pool"]["error"]
+
+
 def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):
     ft, calls = FakeTime(T), []
 

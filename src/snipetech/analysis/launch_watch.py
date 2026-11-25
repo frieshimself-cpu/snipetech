@@ -18,9 +18,10 @@ again, never past the time the read has: --minutes is the job's end. Each round'
 coins is due, and the one pass after the end starts no read more than a minute after it (FINAL_SLACK_SECS; a read
 under way then finishes, a minute more at most when GMGN does not answer); a coin left by then, or held by a rate limit
 past it, waits for a later round or the next job. A read that fails on the way (no answer, a
-server error) or that GMGN refuses with a 404 or a 403 (a coin it has not read yet; a request that left over the wrong
-route) is tried again a round later, three rounds at most, then written as refused. A refusal of the key or of this
-machine leaves the round, and the next round asks again; the same refusal of one kind of read in five rounds in a row,
+server error) or that GMGN refuses with a 404 (a coin it has not read yet) is tried again a round later, at the back of
+the queue, three counted rounds at most, then written as refused; a round in an outage of its kind of read (none of
+that kind answered) is not counted, but thirty of them count as one. A refusal of the key or of this machine (any 401
+or 403) leaves the round, and the next round asks again; the same refusal of one kind of read in five rounds in a row,
 none answered in between, ends the job and writes nothing more: no read could work. A restarted job reads both files
 and goes on where the last one
 stopped; one job at a time watches a chain. It keeps the coins it has seen and the coins waiting for their candles,
@@ -80,6 +81,9 @@ BEST_LEFT_OUT = 5
 # (third review of 25 Nov: one coin that tripled was the best pair at +200 percent)
 MIN_COINS = 30
 LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way, before they are written as refused
+# rounds of an outage of a coin's read (no read of its kind answered in them) that count as one failed round of it: a
+# coin failing alone is written in the end (fourth review of 25 Nov: one never was, and two held the queue for good)
+OUTAGE_ROUNDS = 30
 # a refusal that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
 # yet (review of 25 Nov: it was final). A 403 or a 401 is a refusal of the key or of this machine (STOP_STATUSES).
 LATER_STATUSES = (404,)
@@ -523,6 +527,7 @@ class LaunchWatch:
         self.seen: set[str] = set()
         self.pending: dict[str, dict] = {}  # each coin waiting for its candles: its row, in the order recorded
         self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
+        self.outages: dict[str, int] = {}  # rounds of an outage a waiting coin's read failed in, not yet counted
         self.resumed = {"seen": 0, "waiting": 0}
         self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "bad_rows", "scored", "pools_read",
                                      "rate_limit_waits", "rate_limit_left", "read_errors", "tried_again_later",
@@ -697,11 +702,13 @@ class LaunchWatch:
             if candles[0] in LEAVE_ROUND:
                 return
             if candles[0] == "later" and self._wait(key, "candles"):
+                self.pending[key] = self.pending.pop(key)  # to the back of the queue: it holds no other coin up
                 continue
             sec = self._ask(functools.partial(self.client.token_security, mint), until, "security")
             if sec[0] in LEAVE_ROUND:
                 return
             if sec[0] == "later" and self._wait(key, "security"):
+                self.pending[key] = self.pending.pop(key)
                 continue
             if candles[0] == "ok":
                 candles = ("ok", _bars(candles[1]))
@@ -713,18 +720,21 @@ class LaunchWatch:
                 if pool[0] in LEAVE_ROUND:
                     return
                 if pool[0] == "later" and self._wait(key, "pool"):  # as the other reads (third review of 25 Nov)
+                    self.pending[key] = self.pending.pop(key)
                     continue
             self._write(row, start, asked_at, candles, sec, pool, ts[-1] if ts else None)
             del self.pending[key]
             self.tries.pop(key, None)
+            self.outages.pop(key, None)
 
     def _wait(self, key: str, kind: str) -> bool:
         """Whether a coin whose read of `kind` failed ("later") waits for a later round (True), or is written now with
         that read as refused (False). A failed round counts against the coin only when GMGN answered a read of the same
         kind in that round (this one, or another coin's): a failure on the way before any such answer is counted at the
         round's end if one comes later in it (`_close_round`), and never in an outage (third review of 25 Nov: a
-        three-minute outage wrote every coin due in it as refused). The coin is written in its third counted round, or
-        at its next failure once three rounds were counted."""
+        three-minute outage wrote every coin due in it as refused), but OUTAGE_ROUNDS rounds of an outage count as one.
+        The coin is written in its third counted round, or at its next failure once three rounds were counted; a coin
+        left waiting goes to the back of the queue (`settle`)."""
         tries = self.tries.get(key, 0)
         if tries >= LATER_ROUNDS:
             return False
@@ -742,12 +752,17 @@ class LaunchWatch:
 
     def _close_round(self) -> None:
         """The round's end: a coin whose read failed on the way before any read of its kind was answered in the round
-        gets its failed round counted if one was answered after it; in an outage, none is."""
+        gets its failed round counted if one was answered after it; in an outage, none is, but OUTAGE_ROUNDS such
+        rounds of a coin count as one (a coin failing alone is written in the end)."""
         for key, kind in self.unanswered:
             if kind in self.answered_kinds:
                 self._later(key)
-            else:
-                self.counts["outage_waits"] += 1
+                continue
+            self.counts["outage_waits"] += 1
+            self.outages[key] = self.outages.get(key, 0) + 1
+            if self.outages[key] >= OUTAGE_ROUNDS:
+                self.outages[key] = 0
+                self._later(key)
         self.unanswered.clear()
         self.answered_kinds.clear()
 
