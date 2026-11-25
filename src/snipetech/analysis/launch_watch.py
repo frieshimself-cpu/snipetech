@@ -155,7 +155,9 @@ SCORE_READING = (
     "its price, the sale qx / (qx + "
     "worth), where qx = q x sqrt(exit / entry) is that side at the exit and worth = size x exit / entry x the buy's "
     "impact is what the copy holds at that price. over_5pct_of_pool counts the copies above 5 percent of that pool at "
-    "their entry (2 x q). A coin without a liquidity or a price on that row is scored apart (without_pool_size). A coin with no candle that opened before D - 1 "
+    "their entry (2 x q). A coin without a liquidity or a price on that row stays in the table, charged at the side a "
+    "tenth of the chain's coins were smaller than when first seen (pool_sizes), and is scored alone as well "
+    "(without_pool_size). A coin with no candle that opened before D - 1 "
     "or at it is no trade "
     "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
     "is missing or zero is "
@@ -245,9 +247,12 @@ SIGHTING_READING = (
 )
 UNSIZED_READING = (
     "The coins whose line gives no liquidity GMGN could be read by when the watch first saw them (missing, zero or not "
-    "a number): a copy's own price impact cannot be counted, so they are scored here alone, at the candles' prices, and "
-    "left out of `table`, `best`, `by_platform` and `by_delay`. A coin timed from a sighting is in timed_from_sighting "
-    "instead."
+    "a number), or no price on that row: a pool emptied before that sighting reads 0. A buyer at the launch could not "
+    "know it, so they stay in `table`, `best`, `by_platform` and `by_delay`, each row counting them (pool_size_unknown), "
+    "their own price impact charged at the cash side a tenth of the chain's coins were smaller than when first seen "
+    "(pool_sizes.fallback_cash_side), not taken back to the entry; this table holds them alone. With no coin of the "
+    "chain giving a pool size there is no such side, and they are scored here only, at no impact. A coin timed from a "
+    "sighting is in timed_from_sighting instead."
 )
 UNKNOWN_READING = (
     "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
@@ -1081,16 +1086,17 @@ class _Pair:
     """The copies of one entry delay and hold, side by side: returns and their pessimistic bounds, launchpads (by
     number), halves (half_of), and rug, honeypot, stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
 
-    __slots__ = ("big", "bounds", "half", "honeypot", "lost", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
+    __slots__ = ("big", "bounds", "half", "honeypot", "lost", "plats", "rets", "rugs", "sizeless", "stale", "unknown",
+                 "unsettled")  # fmt: skip
 
     def __init__(self) -> None:
         self.rets, self.bounds, self.plats = array("d"), array("d"), array("I")
         self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
-        self.lost, self.big, self.half = bytearray(), bytearray(), bytearray()
+        self.lost, self.big, self.sizeless, self.half = bytearray(), bytearray(), bytearray(), bytearray()
         self.unsettled = 0
 
     def add(self, ret: float, bound: float, plat: int, rug: bool, honeypot: bool, stale: bool, lost: bool,
-            unknown: bool, big: bool, half: int) -> None:  # fmt: skip
+            unknown: bool, big: bool, sizeless: bool, half: int) -> None:  # fmt: skip
         self.rets.append(ret)
         self.bounds.append(bound)
         self.plats.append(plat)
@@ -1100,21 +1106,24 @@ class _Pair:
         self.lost.append(lost)
         self.unknown.append(unknown)
         self.big.append(big)
+        self.sizeless.append(sizeless)
         self.half.append(half)
 
     def row(self, half: int | None = None) -> dict:
         """The pair's numbers (_stats), its honeypots, its holds not over when read, its copies whose security is not
         known, its copies above 5 percent of their pool and its stale sales; with `half`, those of its copies of that
         half of the coins (half_of), without the holds not over."""
-        cols: Any = (self.rets, self.bounds, self.rugs, self.honeypot, self.unknown, self.big, self.stale)
+        marks = (self.rugs, self.honeypot, self.unknown, self.sizeless, self.big, self.stale)
+        cols: Any = (self.rets, self.bounds, *marks)
         if half is not None:
             keep = [k for k, h in enumerate(self.half) if h == half]
             cols = tuple([col[k] for k in keep] for col in cols)
-        rets, bounds, rugs, honeypot, unknown, big, stale = cols
+        rets, bounds, rugs, honeypot, unknown, sizeless, big, stale = cols
         out = {**_stats(rets, rugs, bounds), "honeypots": sum(honeypot)}
         if half is None:
             out["unsettled"] = self.unsettled
-        return out | {"security_unknown": sum(unknown), "over_5pct_of_pool": sum(big), "stale_exits": sum(stale)}
+        return out | {"security_unknown": sum(unknown), "pool_size_unknown": sum(sizeless),
+                      "over_5pct_of_pool": sum(big), "stale_exits": sum(stale)}  # fmt: skip
 
     def stale_row(self) -> dict:
         """The pair's stale sales alone: how many, their mean and its bound's, and how many were lost (no liquidity
@@ -1125,14 +1134,28 @@ class _Pair:
         return {"coins": len(rets), "pessimistic": pessimistic, **central, "lost": sum(self.lost)}
 
 
+def _first_side(rec: dict) -> tuple[float | None, bool]:
+    """A coin's pool when the watch first saw it, as the cash side of a constant-product pool: half the liquidity on its
+    row, at most the market cap on that row, and whether that cap bit; None when the row gives no liquidity or no price
+    (price_usd: the side is taken back to an entry's price from it)."""
+    depth, seen_at = _amount(rec.get("liquidity_usd")) or 0.0, _price(rec.get("price_usd"))
+    if not (depth and seen_at):
+        return None, False
+    cap = _price(rec.get("market_cap_usd"))
+    return (cap, True) if cap and depth / 2 > cap else (depth / 2, False)
+
+
 class _Score:
     """What `score` adds up, one coin at a time; only the copies' numbers are kept, never a coin's candles."""
 
-    def __init__(self, share: float, fee: float, size: float, block: int = 1):
+    def __init__(self, share: float, fee: float, size: float, block: int = 1, fallback: float | None = None):
         self.share = share  # the two transactions' gas, as a share of the size
         self.block = block  # the chain's block, in seconds: where a copy lands (_fill)
         self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
         self.size = size  # a pool that held less at settle could not give a stale sale its price (pool_state)
+        # the cash side a coin with no pool size of its own is charged at: one a tenth of the chain's coins were smaller
+        # than when first seen (`score` reads it off the file first); None: no coin gave one
+        self.fallback = fallback
         self.pairs = {pair: _Pair() for pair in PAIRS}  # every coin a copy bought
         self.apart = {pair: _Pair() for pair in PAIRS}  # those whose security is not known, alone (security_unknown)
         self.sighted = {pair: _Pair() for pair in PAIRS}  # the coins timed from a sighting, apart (timed_from_sighting)
@@ -1192,15 +1215,19 @@ class _Score:
         self.n["timed_from_sighting"] += sighted
         # the pool's dollars when the watch first saw the coin, half of them on each side, at the price on the same
         # row: what its own price impact is paid in, taken back to each entry's price (third review of 25 Nov: none
-        # was paid; fourth: the pool seen was charged as the pool at the entry). A coin without them is scored apart.
-        depth, seen_at = _amount(rec.get("liquidity_usd")) or 0.0, _price(rec.get("price_usd"))
-        unsized = not sighted and not (depth and seen_at)
-        self.n["without_pool_size"] += unsized
+        # was paid; fourth: the pool seen was charged as the pool at the entry). A coin without them stays in the
+        # table, charged at the chain's fallback pool, and is scored alone as well (fourth review: leaving it out made
+        # a table of the coins that lived); with no fallback, alone only.
+        q_seen, capped = _first_side(rec)
+        unsized = not sighted and q_seen is None
+        seen_at = _price(rec.get("price_usd"))
         if sighted:
             tables = (self.sighted,)
-        elif unsized:
+        elif unsized and self.fallback is None:
             tables = (self.unsized,)
-        main = not (sighted or unsized)  # in the table and the delays
+        elif unsized:
+            tables = (*tables, self.unsized)
+        main = not sighted and not (unsized and self.fallback is None)  # in the table and the delays
         if "candles_error" in rec:
             self.n["candles_refused"] += 1
             return
@@ -1214,13 +1241,10 @@ class _Score:
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
         fetched = _int(rec.get("fetched_at"))
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
-        q_seen = depth / 2 if depth and seen_at else 0.0
         # a pool's cash side is worth no more than every coin there is, about the market cap on the same row (fourth
         # review of 25 Nov: GMGN's rows give a liquidity of up to eleven times it)
-        cap = _price(rec.get("market_cap_usd"))
-        capped = bool(q_seen and cap and q_seen > cap)
-        q_seen = cap if capped and cap else q_seen
         self.n["capped_at_market_cap"] += capped and main
+        self.n["without_pool_size"] += unsized
         # a sale no later sale shows (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
         copies, unsettled = [], []
@@ -1230,8 +1254,9 @@ class _Score:
                 continue
             self.entries[d] += main
             i = _fill(ts, start + d, self.block)
-            # the pool's cash side at the entry: the side seen, along its own curve, at the entry's price
-            q = q_seen * math.sqrt(closes[i] / seen_at) if q_seen and seen_at else 0.0
+            # the pool's cash side at the entry: the side seen, along its own curve, at the entry's price; else the
+            # chain's fallback side (0 when there is none: scored apart, at no impact)
+            q = q_seen * math.sqrt(closes[i] / seen_at) if q_seen and seen_at else (self.fallback or 0.0)
             entry_keep = q / (q + self.size) if q else 1.0  # what the buy's own impact leaves of its price
             big = bool(q) and self.size > BIG_FOR_POOL * 2 * q
             for h in HOLDS:
@@ -1265,7 +1290,7 @@ class _Score:
             for key in unsettled:
                 pairs[key].unsettled += 1
             for key, ret, bound, stale, lost, big in copies:
-                pairs[key].add(ret, bound, plat, rug, honeypot, stale, lost, unknown, big, half)
+                pairs[key].add(ret, bound, plat, rug, honeypot, stale, lost, unknown, big, unsized, half)
 
     def _paid(self, ratio: float, moved: float, entry_keep: float, q: float, stale: bool, liquidity: float | None,
               keep: float) -> float:  # fmt: skip
@@ -1325,7 +1350,11 @@ class _Score:
             "table": table,
             "stale_sales": [{"delay": d, "hold": h, **p.stale_row()} for (d, h), p in self.pairs.items()],
             "pools": dict(self.pools),
-            "pool_sizes": {"capped_at_market_cap": self.n["capped_at_market_cap"]},
+            "pool_sizes": {
+                "capped_at_market_cap": self.n["capped_at_market_cap"],
+                "without_one": self.n["without_pool_size"],
+                "fallback_cash_side": None if self.fallback is None else _r(self.fallback),
+            },
             "security_unknown": {
                 "coins": self.n["security_refused"] + self.n["security_without_fields"],
                 "why": UNKNOWN_READING,
@@ -1430,7 +1459,18 @@ def score(
     if not path.exists():
         return {"ok": False, "chain": chain, "error": f"no launch on {chain} has been read yet: {path} does not exist "
                 f"(snipetech gmgn launch-watch --chain {chain} writes it)"}  # fmt: skip
-    tally, done = _Score(2.0 * gas / size, fee / 100.0, size, BLOCK_SECS[chain]), set()
+    # the chain's pools when first seen, read off the file before it is scored: a coin with none of its own is charged
+    # at the cash side a tenth of them were smaller than (fourth review of 25 Nov)
+    sides, seen = [], set()
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            rec = _scored_line(line)
+            if rec is not None and _key(rec["mint"]) not in seen:
+                seen.add(_key(rec["mint"]))
+                sides.append(_first_side(rec)[0])
+    known = sorted(x for x in sides if x is not None)
+    fallback = known[math.ceil(len(known) / 10) - 1] if known else None
+    tally, done = _Score(2.0 * gas / size, fee / 100.0, size, BLOCK_SECS[chain], fallback), set()
     with path.open(encoding="utf-8") as fh:
         for line in fh:
             rec = _scored_line(line)

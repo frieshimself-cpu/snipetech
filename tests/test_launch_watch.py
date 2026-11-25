@@ -1416,20 +1416,46 @@ def test_a_pools_cash_side_is_at_most_its_coins_market_cap(tmp_path):
     assert out["pool_sizes"]["capped_at_market_cap"] == 1 and "market cap" in out["reading"]
 
 
-def test_a_coin_without_a_pool_size_is_scored_apart(tmp_path):
+def test_a_coin_without_a_pool_size_stays_in_the_table_at_a_small_pool(tmp_path):
     """Third review of 25 Nov: a coin whose line gives no liquidity that reads as dollars (missing, null, zero, not a
-    number, below zero, too big for a float) has no price impact to pay: it is counted and scored apart, never at no
-    impact in the table, the best pair, the launchpads or the delays."""
+    number, below zero, too big for a float) was scored at no impact; then it was left out of the table, the best pair,
+    the launchpads and the delays. Fourth review: those are the coins whose pool was emptied before the watch first saw
+    them, so the table was one of the coins that lived: 60 rising coins and 30 rugged ones read +20 percent and no rug
+    where every coin a buyer at 2 s bought made -20. Such a coin stays in the table, counted in each row
+    (pool_size_unknown), its impact charged at a pool a tenth of the chain's coins were smaller than when first seen;
+    the same coins are scored alone beside it."""
+    good, rugged = both_halves(30, 1), both_halves(15, 2)
+    lines = [coin(m, to_the_end([flat(1.0), flat(1.2, 10)])) for m in good]
+    lines += [coin(m, [flat(1.0), flat(3.0, 10)], liquidity=0, pool={"liquidity": "0"}) for m in rugged]
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    row = pair(out, 2, 30)
+    assert (row["coins"], row["pool_size_unknown"], row["mean"]) == (90, 30, pytest.approx(-0.2, abs=1e-4))
+    assert row["rug_share"] == pytest.approx(1 / 3, abs=1e-4) and out["best"]["coins"] == 45
+    assert {d["with_entry"] for d in out["by_delay"]} == {90}
+    apart = out["without_pool_size"]
+    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (30, 30, -1.0)
+    # the pool charged: the cash side a tenth of the chain's coins were smaller than when first seen
     up = to_the_end([flat(1.0), flat(2.0, 10)])
+    sized = [coin(m, up, liquidity=2000.0 * k) for k, m in enumerate(mints(10), 1)]  # sides of 1,000 to 10,000
     missing = {k: v for k, v in coin(B, up).items() if k != "liquidity_usd"}
     unsized = [coin(m, up, liquidity=v) for m, v in zip((C, D, E, F, G), (None, 0, "x", -5, 10**400), strict=True)]
-    write_scored(tmp_path, [*(coin(m, up) for m in both_halves(30)), missing, *unsized])
+    write_scored(tmp_path, [*sized, missing, *unsized])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert pair(out, 2, 30)["coins"] == 60 and {d["with_entry"] for d in out["by_delay"]} == {60}
-    assert [p["coins"] for p in out["by_platform"]] == [30]  # half 1's
-    apart = out["without_pool_size"]
-    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (6, 6, pytest.approx(1.0))
-    assert "price impact" in apart["why"]
+    assert out["pool_sizes"]["fallback_cash_side"] == 1000.0 and out["pool_sizes"]["without_one"] == 6
+    kept = 1000.0 / 1100.0
+    at_1000 = 2 * kept * 1000 * 2**0.5 / (1000 * 2**0.5 + 200 * kept) - 1  # the coin of 2,000 dollars pays as much
+    apart = pair(out["without_pool_size"], 2, 30)
+    assert pair(out, 2, 30)["coins"] == 16 and apart["mean"] == pytest.approx(at_1000, abs=1e-4)
+    assert "price impact" in out["without_pool_size"]["why"]
+    # a chain where no coin gave a pool size has no pool to charge them at: they are scored apart only
+    write_scored(tmp_path, [missing, *unsized])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert (pair(out, 2, 30)["coins"], out["pool_sizes"]["fallback_cash_side"], out["without_pool_size"]["coins"]) == (
+        0,
+        None,
+        6,
+    )
 
 
 def test_a_coin_timed_from_its_first_sighting_is_scored_apart(tmp_path):
