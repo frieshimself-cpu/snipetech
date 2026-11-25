@@ -105,6 +105,9 @@ STOP_ERRORS = frozenset(
      "AUTH_TIMESTAMP_SKEW", "PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"}
 )  # fmt: skip
 STOP_ROUNDS = 5  # rounds in a row one kind of read meets the same such refusal, none answered between, before the end
+# the same, for a kind of read GMGN answered in this job: an hour (fourth review of 25 Nov: five minutes of an incident
+# of GMGN's key service ended a day's watch at its 64th minute)
+STOP_ROUNDS_ANSWERED = 60
 # looks at the newest coins refused in a row with a 4xx (an outage counts none) that end the job: GMGN no longer takes
 # the look (fourth review of 25 Nov: 120 of 120 looks refused, no coin, ok true)
 POLL_REFUSALS = 30
@@ -547,6 +550,7 @@ class LaunchWatch:
         # in a row, the last round counted); an answer of its kind ends the run
         self.streaks: dict[str, tuple[str, int, int]] = {}
         self.answered_any = False  # GMGN answered a read of this job (anything but a refusal of the key)
+        self.ever_answered: set[str] = set()  # the kinds of read GMGN answered in this job
         self.last_refusal = ""
         self.last_status: int | None = None  # the HTTP status of the last read GMGN refused, or None
         self.looks_refused = 0  # looks at the newest coins refused in a row with a 4xx (POLL_REFUSALS)
@@ -630,21 +634,23 @@ class LaunchWatch:
         failure on the way): that kind's run of such refusals ends, and this round's failed reads of its kind count."""
         self.answered_any = True
         self.answered_kinds.add(kind)
+        self.ever_answered.add(kind)
         self.streaks.pop(kind, None)
 
     def _refused_key(self, kind: str, exc: GmgnError) -> tuple[str, str]:
         """A refusal of the key or of this machine (STOP_ERRORS, or any 401 or 403: STOP_STATUSES): this round's reads
         wait ("halted") and the next round asks again, as after a rate limit with no end named. The job ends
         (WatchStopped) once one kind of read has met the same refusal in STOP_ROUNDS rounds in a row with none of its
-        kind answered in between; a refused key does so in five rounds, a passing refusal never (third review of 25
-        Nov)."""
+        kind answered in between, STOP_ROUNDS_ANSWERED if GMGN answered that kind in this job: a key refused from the
+        start does so in five rounds, a passing refusal of a key that answered in an hour of it, a shorter one never
+        (third and fourth reviews of 25 Nov)."""
         code = exc.error or f"HTTP {exc.status}"
         self.counts["stop_refusals"] += 1
         self.last_refusal = str(exc)
         was = self.streaks.get(kind)
         rounds = was[1] + (was[2] != self.round) if was and was[0] == code else 1
         self.streaks[kind] = (code, rounds, self.round)
-        if rounds >= STOP_ROUNDS:
+        if rounds >= (STOP_ROUNDS_ANSWERED if kind in self.ever_answered else STOP_ROUNDS):
             raise WatchStopped(f"GMGN refused the key or this machine, so no read can work: {rounds} rounds in a row, "
                                f"no {kind} read answered in between: {exc}")  # fmt: skip
         self.halted = True

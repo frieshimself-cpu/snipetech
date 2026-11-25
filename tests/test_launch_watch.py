@@ -763,6 +763,27 @@ def test_looks_refused_for_good_end_the_job_not_ok(tmp_path):
     assert (out["ok"], out["polls"]) == (True, 120)
 
 
+def test_a_refusal_of_a_key_that_answered_in_this_job_ends_it_only_after_an_hour_of_it(tmp_path):
+    """Fourth review of 25 Nov: five rounds of a passing refusal ended a day's watch: a key that answered for an hour,
+    then met five minutes of GMGN's 401 (its real AUTH_INVALID; an incident of GMGN's key service), ended a three-hour
+    job at minute 64. Five rounds still end a job whose kind of read GMGN never answered in it (a key refused from the
+    start); a kind it answered in this job ends it after STOP_ROUNDS_ANSWERED rounds of the refusal (an hour)."""
+    auth = refused(401, "AUTH_INVALID", "missing api key or client_id")
+    reads = {"/v1/trenches": polls([trench(A, T - 1000)]), "/v1/market/token_kline": kline({}),
+             "/v1/token/security": security({})}  # fmt: skip
+    for name, ends in (("five minutes", T + 3900), ("for good", None)):
+        ft = FakeTime(T)
+
+        def gate(ok, ft=ft, ends=ends):
+            return lambda req: auth if T + 3600 <= ft.now < (ends or ft.now + 1) else ok(req)
+
+        out = watch(tmp_path / name, ft, {path: gate(ok) for path, ok in reads.items()}, minutes=600)
+        if ends:
+            assert (out["ok"], ft.now >= T + 600 * 60) == (True, True), name
+        else:
+            assert (out["ok"], ft.now, LW.STOP_ROUNDS_ANSWERED) == (False, T + 3600 + 59 * 60, 60), name
+
+
 def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):
     """A job too short for five rounds whose every read GMGN refused says so: no read could work."""
     refusal = refused(401, "AUTH_KEY_INVALID", "api key not found")
