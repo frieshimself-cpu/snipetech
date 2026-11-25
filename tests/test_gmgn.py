@@ -580,6 +580,24 @@ def test_a_ban_given_in_milliseconds_or_far_ahead_blocks_the_client_ten_minutes_
     assert len(g.kol_feed()) == 4 and len(seen) == 4
 
 
+def test_a_ban_whose_end_no_whole_number_holds_reads_as_none_named():
+    """Fourth review of 25 Nov: a reset_at of 1e999 (JSON's infinity) raised OverflowError in the client: no block was
+    set, every gmgn command showed a traceback, and the watch wrote the coins due off. It reads as no reset named: the
+    client stays away a minute. So does such a reset in the x-ratelimit-reset or the retry-after header."""
+    headers = ({"x-ratelimit-reset": "1e999"}, {"retry-after": "1e999"})
+    cases = [("1e999", {}), ("-1e999", {}), *(("null", h) for h in headers)]
+    for reset, given in cases:
+        body = ('{"code": 429, "error": "RATE_LIMIT_BANNED", "message": "banned", "reset_at": ' + reset + "}").encode()
+
+        def handler(req, body=body, given=given):
+            return httpx.Response(429, content=body, headers={"content-type": "application/json", **given})
+
+        g = Gmgn(KEY, transport=httpx.MockTransport(handler), sleep=lambda s: None, clock=lambda: NOW)
+        with pytest.raises(GmgnError) as exc:
+            g.kol_feed()
+        assert (exc.value.reset_at, g._blocked_until) == (int(NOW) + 60, NOW + 60), reset
+
+
 def test_a_ban_whose_end_is_not_ahead_holds_the_client_a_minute():
     """Fourth review of 25 Nov: a 429 whose reset is not ahead of now (reset_at -1, or 300 meant as seconds from now)
     held the client no time at all: it asked again at once, and every ask made GMGN's ban longer. A reset not ahead of

@@ -323,10 +323,14 @@ class Gmgn:
             code = _text(str(answer.get("error") or ""), 60)
             said = _text(str(answer.get("message") or ""), 200) or "no message"
             # a time, whether GMGN wrote it in seconds or in milliseconds (third review of 25 Nov: milliseconds read
-            # as seconds blocked the client for the rest of a run)
-            reset = _ts(answer.get("reset_at")) or _ts(r.headers.get("x-ratelimit-reset"))
-            if not reset and r.headers.get("retry-after"):
-                reset = int(self.clock()) + _int(r.headers["retry-after"])
+            # as seconds blocked the client for the rest of a run); one no whole number holds (1e999) is none named
+            # (fourth review: it raised OverflowError, and no block was set)
+            try:
+                reset = _ts(answer.get("reset_at")) or _ts(r.headers.get("x-ratelimit-reset"))
+                if not reset and r.headers.get("retry-after"):
+                    reset = int(self.clock()) + _int(r.headers["retry-after"])
+            except OverflowError:
+                reset = 0
             text = f"{where}: HTTP {r.status_code} {code or 'error'}: {said}"
             if r.status_code == 429:
                 if reset <= self.clock():  # no time given, or none ahead (-1; seconds from now): stay away a minute
