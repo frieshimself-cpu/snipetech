@@ -545,6 +545,30 @@ def test_a_line_cut_short_by_a_killed_job_is_written_again_on_a_line_of_its_own(
     assert out["resumed"] == {"seen": 3, "waiting": 1} and seen == []
 
 
+def test_a_line_cut_right_after_a_closing_brace_still_names_no_coin(tmp_path):
+    """Second review of 25 Nov: a line ends with the security answer and then the pool's, and answers hold dicts in
+    dicts, so a line cut by a killed job can end with "}": its head was trusted and the coin never read again. Every
+    line now ends with a last key, "end": 1, and only a line that ends with it is read by its head."""
+    folder = tmp_path / "history" / "gmgn_launches"
+    folder.mkdir(parents=True)
+    row = {"mint": A, "platform": "clanker", "created_ts": T - 1000, "first_seen": T - 990, "chain": "base"}
+    (folder / "base.jsonl").write_text(json.dumps(row) + "\n")
+    line = {"mint": A, "chain": "base", "start": T - 1000, "platform": "clanker", "fetched_at": T - 100,
+            "candles": [[T - 1000, 1, 1, 1, 1, 5]], "last_candle_ts": T - 1000,
+            "security": dict(NO_TAX, lock_summary={"is_locked": False}), "pool": HEALTHY_POOL, "end": 1}  # fmt: skip
+    whole = json.dumps(line, separators=(",", ":"))
+    (folder / "base_scored.jsonl").write_text(whole[: whole.index(',"pool"')])  # killed right after the security
+    seen: list = []
+    routes = {"/v1/market/token_kline": kline({A: [(T - 1000, 1.0, 1, 1, 1, 5)]}), "/v1/token/security": security({})}
+    out = watch(tmp_path, FakeTime(T), routes, seen, minutes=0)
+    assert out["resumed"] == {"seen": 1, "waiting": 1} and len(asked(seen, "/v1/market/token_kline")) == 1
+    lines = (folder / "base_scored.jsonl").read_text().splitlines()
+    assert len(lines) == 2 and lines[1].endswith(',"end":1}') and json.loads(lines[1])["mint"] == A
+    seen = []  # the next job reads A as done
+    out = watch(tmp_path, FakeTime(T + 100), routes, seen, minutes=0)
+    assert out["resumed"] == {"seen": 1, "waiting": 0} and seen == []
+
+
 # -- the score: what an early buyer would have made ---------------------------------------------------------------------
 
 

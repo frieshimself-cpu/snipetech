@@ -87,6 +87,9 @@ SAFETY_FIELDS = frozenset((*CANNOT_SELL, *TAXES))  # what the score reads of a s
 # buy_tax and sell_tax (0 on pump.fun coins) and no honeypot flag (tests/fixtures/gmgn/real/trenches.json).
 FIRST_SIGHT = (*CANNOT_SELL, *TAXES)
 SCORED_HEAD = '{"mint":"'  # how every line of a scored file begins (written compact, the coin first)
+# how every whole line of a scored file ends: a last key written after everything else, so a line cut by a killed job
+# never ends with it (second review of 25 Nov: a cut line can end with "}", the answers holding dicts in dicts)
+SCORED_TAIL = ',"end":1}'
 # what a delay means on each chain, printed with the report (CLAUDE.md: a paper result names its landing)
 LANDING = {
     "sol": "Solana's slots are 0.4 s: every delay here is several slots after the launch (our own launch snipes land "
@@ -284,16 +287,16 @@ def _whole_mint(line: str) -> str | None:
 
 
 def _done(path: Path) -> set[str]:
-    """The coins a scored file holds. A line's head is trusted only when the line is whole: it ends with "}" before its
-    newline. Any other line is read whole, so a line cut by a killed job names no coin and its coin is read again.
-    The cut line is not always the last: the next job heals the file and writes on (review of 25 Nov: at a second
-    restart a cut line's head counted its coin as done, and the coin was never read)."""
+    """The coins a scored file holds. A line's head is trusted only when the line is whole: it ends with SCORED_TAIL
+    before its newline. Any other line is read whole, so a line cut by a killed job names no coin and its coin is read
+    again. The cut line is not always the last: the next job heals the file and writes on (review of 25 Nov: at a
+    second restart a cut line's head counted its coin as done, and the coin was never read)."""
     done: set[str] = set()
     if not path.exists():
         return done
     with path.open(encoding="utf-8") as fh:
         for line in fh:
-            mint = _head_mint(line) if line.rstrip().endswith("}") else _whole_mint(line)
+            mint = _head_mint(line) if line.rstrip().endswith(SCORED_TAIL) else _whole_mint(line)
             if mint:
                 done.add(_key(mint))
     return done
@@ -484,6 +487,7 @@ class LaunchWatch:
             else:
                 rec["pool"] = {"error": pool[1]}
                 self.refused["pool"] += 1
+        rec["end"] = 1  # last: a line that does not end with it was cut (SCORED_TAIL)
         _append(self.scored, rec)
         self.counts["scored"] += 1
 
