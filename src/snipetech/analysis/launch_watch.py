@@ -197,7 +197,10 @@ CAVEATS = (
         "first saw the coin, half of it on each side: a launchpad's bonding curve, or a pool that grew or shrank "
         "before the entry, can make it larger or smaller."
     ),
-    "The swap fee is one flat number per chain (fee_pct), not each pool's own fee.",
+    (
+        "The swap fee is one flat number per chain (fee_pct), not each pool's own fee: some Base launchpads take a "
+        "launch fee above the flat 1 percent, which is not charged unless --fee-pct says so."
+    ),
     (
         "A launch's own taxes and flags are read when the watch first sees the coin, usually after the entries (2 to "
         "30 s after the start): a tax changed before then is not seen."
@@ -206,6 +209,14 @@ CAVEATS = (
         "No real answer from Base, BNB Chain or Ethereum is in the tests yet, so the field names and units on those "
         "chains are unchecked until the first real run; no real pool answer is in them for any chain either, so the "
         "pool's liquidity is read by the name GMGN's documents give it."
+    ),
+    (
+        "On Base, BNB Chain and Ethereum a coin's contract can tax or block only the buyers of its first blocks; the "
+        "security read, made 900 s after the start, does not see it, and such a coin is scored as any other."
+    ),
+    (
+        "On Base, BNB Chain and Ethereum a sale may need an approval transaction first: a third gas charge, not "
+        "counted (gas is counted twice, for the buy and the sale)."
     ),
 )
 SIGHTING_READING = (

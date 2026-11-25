@@ -1265,13 +1265,16 @@ def test_a_field_is_given_only_when_it_reads_as_a_tax_or_as_a_yes_or_no(tmp_path
 
 
 def test_the_report_says_in_plain_words_what_it_does_not_count(tmp_path):
-    """Second review of 25 Nov: what the score leaves out, printed with every report: our own buy's price impact, each
-    pool's own fee, the taxes at the moment of an entry, and every answer of a chain no real answer has been read of."""
+    """Reviews of 25 Nov: what the score leaves out, printed with every report: how its own price impact is counted,
+    each pool's own fee (some Base launchpads take more than 1 percent at launch), the taxes at the moment of an
+    entry, every answer of a chain no real answer has been read of, an EVM contract that taxes or blocks only the
+    buyers of its first blocks (the security read comes 900 s later), and an EVM sale's approval, a third gas charge."""
     write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])
     caveats = " ".join(LW.score(tmp_path, "base")["caveats"])
     for words in ("price impact is counted", "one flat number per chain", "first sees the coin",
                   "usually after the entries", "Base, BNB Chain or Ethereum", "unchecked until the first real run",
-                  "pool"):  # fmt: skip
+                  "pool", "above the flat 1 percent", "only the buyers of its first blocks", "900 s after the start",
+                  "approval", "a third gas charge"):  # fmt: skip
         assert words in caveats, words
 
 
