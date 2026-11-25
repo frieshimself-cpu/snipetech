@@ -1270,6 +1270,18 @@ def test_a_remote_launch_watch_job_gets_the_time_limit_its_minutes_need(monkeypa
         assert cli._job_limit(argv, None) is None, argv
 
 
+def test_a_profiled_remote_job_gets_the_limit_of_the_job_it_profiles():
+    """Review of 25 Nov: a leading --profile (the command line's flag that leaves where a job's time went) hid the job
+    from the limit: `remote run --profile gmgn launch-watch --minutes 1440` got the server's 6 h, and so did a profiled
+    `oktech guard`. The words after it are the job, as ops.holds_deploy reads them."""
+    from snipetech import cli
+
+    watch = ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440"]
+    guard = ["oktech", "guard", "--id", "a", "--address", "W", "--floor", "5", "--max-minutes", "1440"]
+    for argv in (watch, guard):
+        assert cli._job_limit(["--profile", *argv], None) == cli._job_limit(argv, None) is not None, argv
+
+
 def test_every_answer_and_every_redaction_hides_every_secret(env, monkeypatch, tmp_path):
     """22 Nov audit: the endpoint scrubbed its answers of 7 secrets only, read from its own environment. The wallet key
     (SNIPER_SECRET), the Telegram token and any key put in /etc/snipetech/env later went out as they were, and so did

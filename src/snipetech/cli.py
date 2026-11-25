@@ -2759,9 +2759,11 @@ def _job_limit(rest: list[str], minutes: float | None) -> int | None:
     runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); for `oktech guard`, its minutes,
     the watch at its end and 10 over (killed, its floor watch ends early: 22 Nov audit); for `gmgn launch-watch`, its
     minutes and 30 over (the server's 6 h would end a day's watch at hour 6: review of 25 Nov); else None, the server's
-    default."""
+    default. A leading --profile is read past, as ops.holds_deploy does: the job is the one it profiles."""
     if minutes is not None:
         return int(float(minutes) * 60)
+    if rest[:1] == ["--profile"]:
+        rest = rest[1:]
     if rest[:1] == ["gmgn"] and "launch-watch" in rest:
         import math
 
