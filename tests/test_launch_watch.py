@@ -289,28 +289,22 @@ def test_a_settled_launch_gets_its_candles_and_security_once(tmp_path):
     assert seen2 == [] and out2["resumed"] == {"seen": 2, "waiting": 0} and len(scored(tmp_path)) == 2
 
 
-def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_path):
+def test_the_pool_of_every_coin_a_copy_bought_is_read_once_when_it_settles(tmp_path):
     """Reviews of 25 Nov: a sale after a coin's last trade is priced at that trade, and a pool its creator emptied
-    leaves no trade and no candle. A coin that a copy would sell at its last trade in its 500 s has its pool read once,
-    when it settles; one that traded again near the price of every sale keeps its price, a later trade showing its pool
-    was still there. A trade ten times or more away from a sale's price may be one into an emptied pool (third review
-    of 25 Nov): its coin's pool is read too (F), whatever dollars it moved, the copy's worth being the score's to
-    know. Every line keeps the coin's last candle time."""
+    leaves no trade and no candle. Only a later sale of the copy's worth shows the pool was still there (fourth review),
+    and the watch cannot judge that without the copy's size: it reads the pool of every coin a copy bought (one that
+    traded before the last entry, 30 s), once, when it settles, as it reads the others; a coin no copy bought (its
+    first trade after 30 s) has none read. Every line keeps the coin's last candle time."""
     s = T - 1000
     bars = {
         A: [(s, 1.0, 1.0, 1.0, 1.0, 5.0), (s + 10, 3.0, 3.0, 3.0, 3.0, 5.0)],  # its last trade 10 s in
         B: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (*range(0, 500, 40), 499)],  # a trade every 40 s, to the end
         C: [(s, 1.0, 1.0, 1.0, 1.0, 5.0)],  # its only trade at its start, and GMGN has no pool of it
-        D: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (0, 10, 300, 499)],  # quiet from 10 to 300 s, then trading
-        # its last trade at 470 s: the sales at 482 to 492 s are 12 to 22 s after it, and priced from it
-        E: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (*range(0, 450, 40), 470)],
-        # a trade at 300 s after its sales at 3.0: two cents at a hundred-thousandth of it, into an emptied pool
-        F: [(s, 1.0, 1.0, 1.0, 1.0, 5.0), (s + 10, 3.0, 3.0, 3.0, 3.0, 5.0), (s + 300, 3.0, 3.0, 1e-5, 1e-5, 0.02)]
-        + [(s + 499, 1e-5, 1e-5, 1e-5, 1e-5, 0.02)],
+        D: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (40, 100, 499)],  # its first trade 40 s in: no copy bought it
     }
     gone = dict(HEALTHY_POOL, liquidity="0.02", base_reserve="0", quote_reserve="0")
     routes = {
-        "/v1/trenches": polls([trench(m, s) for m in (A, B, C, D, E, F)]),
+        "/v1/trenches": polls([trench(m, s) for m in (A, B, C, D)]),
         "/v1/market/token_kline": kline(bars),
         "/v1/token/security": security({}),
         "/v1/token/pool_info": pools({A: gone, C: refused(404, "NOT_FOUND", "no pool")}),
@@ -318,12 +312,12 @@ def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_
     seen: list = []
     out = watch(tmp_path, FakeTime(T), routes, seen, minutes=3)
     # once each; C's, refused with a 404, asked again in two later rounds as every read is (third review of 25 Nov)
-    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C, E, F, C, C]
+    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, B, C, C, C]
     by = {line["mint"]: line for line in scored(tmp_path)}
     assert (by[A]["last_candle_ts"], by[A]["pool"]) == (s + 10, gone)
-    assert (by[B]["last_candle_ts"], "pool" in by[B], "pool" in by[D]) == (s + 499, False, False)
+    assert (by[B]["last_candle_ts"], by[B]["pool"], "pool" in by[D]) == (s + 499, HEALTHY_POOL, False)
     assert by[C]["last_candle_ts"] == s and "HTTP 404" in by[C]["pool"]["error"] and by[C]["fetched_at"] == T + 120
-    assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (4, 1, 6)
+    assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (3, 1, 4)
 
 
 def test_a_pool_read_that_fails_on_the_way_is_asked_again_a_round_later(tmp_path):
@@ -791,11 +785,14 @@ def test_a_line_cut_right_after_a_closing_brace_still_names_no_coin(tmp_path):
 # -- the score: what an early buyer would have made ---------------------------------------------------------------------
 
 
-def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=None, pool=None, liquidity=1e12):
+DEEP_POOL = {"liquidity": "1e12"}  # a pool read at settle that pays a stale sale what the same sale shown would get
+
+
+def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=None, pool=DEEP_POOL, liquidity=1e12):
     """A line of <chain>_scored.jsonl as the watch writes it: a coin started at S, the dollars of its pool and the taxes
     and flags of its row when first seen (`liquidity`: so deep by default that a copy moves no price; `first`), its
-    candles as [ts, open, high, low, close, dollars], its security as GMGN sent it and, when given, its pool as read at
-    settle."""
+    candles as [ts, open, high, low, close, dollars], its security as GMGN sent it, and its pool as read at settle
+    (`pool`: a deep one by default, so a sale no later sale shows is paid as if one did; None: not read)."""
     return {
         "mint": mint,
         "chain": "base",
@@ -819,10 +816,11 @@ def flat(price, at=0):
 
 
 def to_the_end(candles):
-    """A coin's candles and one more at 499 s at the last close: it traded on to the end of its 500 s, so no sale of a
-    copy is priced from its last trade (a stale sale, which only a pool read at settle can price)."""
-    close = candles[-1][4]
-    return [*candles, (S + 499, close, close, close, close, 1.0)]
+    """A coin's candles and one more at 499 s: a sale of a trillion dollars a hair below the last close. The coin traded
+    on to the end of its 500 s, and a copy's sale just before that trade is shown by it (a later sale of at least the
+    copy's worth): not stale, the pool read at settle has no say in it."""
+    close = candles[-1][4] * (1 - 1e-9)
+    return [*candles, (S + 499, close, close, close, close, 1e12)]
 
 
 def write_scored(tmp_path, coins, chain="base", extra=""):
@@ -1195,29 +1193,30 @@ def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_
     """Reviews of 25 Nov: a sale after a coin's last trade was priced at that trade, so a pool its creator emptied (no
     trade, no candle) scored as a win, and as no rug. Then only a sale priced from a candle over 60 s old counted, so
     no 30 s hold ever did: coins pumped to 3.0 by 25 s and emptied showed +2.00 at 2/30, the best pair. A sale priced
-    from the coin's last trade in its 500 s is now lost unless the pool read at settle still held the copy's size; a
-    later trade shows the pool was there, so a quiet stretch keeps its price. Those sales alone are beside the main
-    table."""
+    from the coin's last trade in its 500 s is paid by the pool read at settle, and lost when it gave none. Only a later
+    sale of the copy's worth shows the pool was there (fourth review): D's and E's sales, which no such sale follows,
+    are stale too, paid by their pools at settle as their own proven sales would be. Those sales alone are beside the
+    main table."""
     stops = [flat(1.0), flat(3.0, 10)]  # its last trade 10 s in
     lines = [
         coin(A, stops, pool={"liquidity": "0.02"}),  # emptied
         coin(B, stops, pool={"liquidity": "25000"}),  # still there: the last price stands
         coin(C, stops, pool={"error": "gmgn GET /v1/token/pool_info: HTTP 404 NOT_FOUND: no pool"}),  # not known
         coin(D, [flat(1.0), *(flat(1.5, t) for t in range(60, 500, 50)), flat(1.5, 499)]),  # trades to the end
-        coin(E, [flat(1.0), flat(3.0, 10), flat(3.0, 200), flat(3.0, 499)]),  # quiet from 10 to 200 s: no pool read
+        coin(E, [flat(1.0), flat(3.0, 10), flat(3.0, 200), flat(3.0, 499)]),  # quiet from 10 to 200 s
     ]
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     # A's two cents pay 3 x 0.01 / 300.01 of the price, B's 25,000 dollars 3 x 12,500 / 12,800; C's pool is not known
     a, b = 3 * 0.01 / 300.01 - 1, 3 * 12_500 / 12_800 - 1
     early = pair(out, 2, 30)  # out at 32 s: A, B and C at their last trade, 10 s in; D at its first, E at 10 s's
-    assert (early["coins"], early["stale_exits"], early["mean"]) == (5, 3, pytest.approx((a + b + 1) / 5, abs=1e-4))
-    late = pair(out, 2, 120)  # out at 122 s: E at its trade of 10 s, 112 s old, which a trade at 200 s follows
-    assert (late["coins"], late["stale_exits"], late["mean"]) == (5, 3, pytest.approx((a + b + 1.5) / 5, abs=1e-4))
+    assert (early["coins"], early["stale_exits"], early["mean"]) == (5, 5, pytest.approx((a + b + 1) / 5, abs=1e-4))
+    late = pair(out, 2, 120)  # out at 122 s: E at its trade of 10 s, a buy of a dollar after it at 200 s
+    assert (late["coins"], late["stale_exits"], late["mean"]) == (5, 5, pytest.approx((a + b + 1.5) / 5, abs=1e-4))
     assert late["rug_share"] == pytest.approx(1 / 5)  # A's pool was emptied: a rug
-    stale = pair({"table": out["stale_sales"]}, 2, 120)  # A's, B's and C's, alone: C's was lost, its pool unknown
-    assert (stale["coins"], stale["mean"], stale["lost"]) == (3, pytest.approx((a + b - 1) / 3, abs=1e-4), 1)
-    assert out["pools"] == {"coins_with_a_stale_exit": 3, "there": 1, "gone": 1, "unknown": 1}
+    stale = pair({"table": out["stale_sales"]}, 2, 120)  # every one alone: C's was lost, its pool unknown
+    assert (stale["coins"], stale["mean"], stale["lost"]) == (5, pytest.approx((a + b + 1.5) / 5, abs=1e-4), 1)
+    assert out["pools"] == {"coins_with_a_stale_exit": 5, "there": 3, "gone": 1, "unknown": 1}
     # gone is less than the copy's own size: 25,000 dollars is gone for a copy of 50,000
     assert LW.score(tmp_path, "base", size_usd=50_000, gas_usd=0.0, fee_pct=0.0)["pools"]["gone"] == 2
     # the review's coins: pumped to 3.0 by 25 s, then their pool emptied
@@ -1244,14 +1243,14 @@ def test_the_stale_sales_are_shown_alone_not_a_table_of_the_coins_that_lived(tmp
 
 def test_a_trade_into_an_emptied_pool_shows_no_pool(tmp_path):
     """Third review of 25 Nov: a later trade made every sale before it fresh, even a two-cent sale into an emptied pool
-    at a hundred-thousandth of the price, and a one-cent spike in it read +299,900 percent. A later trade shows the pool
-    only when it closes within ten times the sale's price either way, or moves at least the copy's worth in dollars
-    (the creator's sale of 40,000 dollars into it: the pool was there until then)."""
+    at a hundred-thousandth of the price, and a one-cent spike in it read +299,900 percent. Only a later sale of at
+    least the copy's worth shows the pool (fourth review): the creator's sale of 40,000 dollars into it says the pool
+    was there until then."""
 
     def score_of(candles, liquidity):
         write_scored(tmp_path, [coin(A, candles, pool={"liquidity": liquidity})])
         out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-        assert "within ten times the sale's price" in out["reading"] and "moved at least" in out["reading"]
+        assert "only when it is a sale (its close below the sale's price)" in out["reading"]
         return [pair(out, 2, h)["mean"] for h in (30, 120, 300)]
 
     pumped = [flat(1.0), flat(3.0, 10)]
@@ -1261,6 +1260,32 @@ def test_a_trade_into_an_emptied_pool_shows_no_pool(tmp_path):
     assert score_of(pulled, "0.01") == pytest.approx([-1.0, -1.0, -1.0], abs=1e-4)  # a cent pays nothing
     assert score_of(spiked, "0.01") == pytest.approx([-1.0, -1.0, -1.0], abs=1e-4)
     assert score_of(sold_off, "5") == [2.0, 2.0, pytest.approx(-0.999)]  # sold before it; the last sale at 1e-3
+
+
+def test_only_a_later_sale_of_the_copys_worth_shows_the_pool(tmp_path):
+    """Fourth review of 25 Nov: a later trade showed the pool by its dollars or by trading near the sale's price, but
+    a buy puts cash in: a buy of 1,000 dollars into an emptied pool read +200 percent where all was lost, and one more
+    cent's trade near a spike's price kept the spike's price. A later trade shows the pool only when it is a sale (its
+    close below the sale's) of at least the copy's worth in dollars, near the price or not. Any other sale is paid by
+    the pool read at settle, and never more than the same sale shown would get: a pool grown by settle pays nothing
+    more."""
+    pumped = [flat(1.0), flat(3.0, 10)]
+    bought = [*pumped, (S + 300, 3.0, 30_000.0, 3.0, 30_000.0, 1000.0)]  # a buy of 1,000 dollars into the emptied pool
+    spiked = [*pumped, (S + 120, 3.0, 3000.0, 3.0, 3000.0, 0.01), (S + 130, 3000.0, 3000.0, 2900.0, 2900.0, 0.01)]
+    dumped = [*pumped, (S + 300, 3.0, 3.0, 1e-3, 1e-3, 40_000.0)]  # the creator's sale of 40,000 dollars
+    for candles, want in ((bought, -1.0), (spiked, -1.0), (dumped, 2.0)):
+        write_scored(tmp_path, [coin(A, candles, pool={"liquidity": "0"})])
+        out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+        assert [pair(out, 2, h)["mean"] for h in (30, 120)] == pytest.approx([want, want], abs=1e-4)
+    # a pool of 3,000 dollars when first seen: q 1,500, worth 3 x 100 x 1,500 / 1,600 at the sale's price of 3.0;
+    # 25,000 dollars read at settle pay a sale no later sale shows no more than a pool grown from 1,500 to 1,500 x √3
+    q, kept = 1500.0, 1500.0 / 1600.0
+    side, worth = q * 3**0.5, 300.0 * kept
+    shown = 3 * kept * side / (side + worth) - 1
+    for candles in (dumped, pumped):  # shown by the creator's sale; no trade after 10 s
+        write_scored(tmp_path, [coin(A, candles, liquidity=3000.0, pool={"liquidity": "25000"})])
+        out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+        assert pair(out, 2, 30)["mean"] == pytest.approx(shown, abs=1e-4)
 
 
 def test_a_stale_sale_is_paid_by_the_pool_read_at_settle_as_a_constant_product_pool_pays(tmp_path):
@@ -1276,7 +1301,7 @@ def test_a_stale_sale_is_paid_by_the_pool_read_at_settle_as_a_constant_product_p
         write_scored(tmp_path, [coin(A, stops, pool={"liquidity": liquidity})])
         out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
         assert (pair(out, 2, 120)["mean"], out["pools"]["there"]) == (pytest.approx(ret, abs=1e-4), there), liquidity
-    assert "qs / (qs + worth)" in out["reading"]
+    assert "side / (side + worth)" in out["reading"]
     refusal = {"error": "gmgn GET /v1/token/pool_info: HTTP 404 NOT_FOUND: no pool"}
     write_scored(tmp_path, [coin(A, stops, pool=refusal)])
     assert pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 120)["mean"] == -1.0  # not known: lost

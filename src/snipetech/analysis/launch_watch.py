@@ -9,8 +9,8 @@ launchpad of the chain, 80 coins at most) and writes each coin it has not seen t
 beside the database: the row the client makes of it with the taxes and honeypot flags GMGN gave on it, when it was
 first seen, and the chain. Once a coin is `settle_secs` past its start (900 s by default, so its 500 s of candles are
 over), it asks once for the coin's 1-second candles over the 500 s after its start and for its security numbers, and
-for its pool when a copy could sell it at a stale price (at its last trade in its 500 s, or at one whose next trade
-came ten times away from it), and writes them to <chain>_scored.jsonl with the time of its last candle. A coin's start is its open time (a pool can open after its coin was made), else its
+for its pool when a copy bought it (only a later sale of the copy's worth shows a sale's price could be paid, and
+the watch does not know the copy's size), and writes them to <chain>_scored.jsonl with the time of its last candle. A coin's start is its open time (a pool can open after its coin was made), else its
 creation, else when the watch first saw it.
 
 A read GMGN refuses is written into that coin's line and the job goes on. A rate limit is waited out and the read asked
@@ -170,13 +170,13 @@ SCORE_READING = (
     "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
     "is not scored (unsettled). A sale priced from the coin's last trade in its 500 s (no trade came after it) is "
     "stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. "
-    "The next trade after the sale shows the pool was still there when it closes within ten times the sale's price "
-    "either way, or moved at least what the copy was worth then in dollars (its candle's dollars): a quiet stretch "
-    "keeps its price, a trade of cents into an emptied pool far from it does not, and the sale is stale. The watch "
-    "reads a coin's pool once, when it settles, if a copy of any size would sell it stale; a stale sale is paid by "
-    "that read, a constant-product pool holding the liquidity it gave, half of it on each side (qs): it gets "
-    "qs / (qs + worth) of the price, and is lost (-1 and its gas) when the read gave no liquidity (not read, refused, "
-    "none in the answer) or zero. pools "
+    "The next trade after the sale shows the pool was still there only when it is a sale (its close below the sale's "
+    "price) of at least what the copy was worth then, in dollars (its candle's dollars); a buy puts cash in and shows "
+    "nothing. Every other sale is stale too. The watch, which does not know a copy's size, reads the pool of every coin "
+    "a copy bought, once, when it settles; a stale sale is paid by that read, a constant-product pool holding the "
+    "liquidity it gave, half of it on each side, and never more than the same sale shown would get: its side is the "
+    "smaller of that half and qx, and it gets side / (side + worth) of the price. It is lost (-1 and its gas) when the "
+    "read gave no liquidity (not read, refused, none in the answer) or zero. pools "
     "counts those coins by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
     "unknown (not read, refused or without a liquidity). stale_exits says how many of a row's sales were stale; "
     "stale_sales shows those copies alone, each pair's: how many, their mean, and how many were lost."
@@ -612,7 +612,8 @@ class LaunchWatch:
 
     def settle(self, until: float) -> None:
         """Every waiting coin past its settle time, in the order recorded: its candles and its security, read once and
-        written, and its pool when a copy would sell it at a stale price (stale_exit), read as the others are.
+        written, and its pool when a copy bought it (stale_exit: with no size, any sale may be stale), read as the
+        others are.
         It stops at `until` (the next look at new coins, or the job's end), and when a rate limit holds past it: the
         coins not reached wait for the next round, which counts as no failed round of theirs. A read that fails waits
         for a later round as `_wait` says."""
@@ -641,7 +642,7 @@ class LaunchWatch:
                 candles = ("ok", _bars(candles[1]))
             prices = _path(candles[1] if candles[0] == "ok" else [], start)
             ts, pool = prices.ts, None
-            # a pool emptied after the last trade leaves no candle, or a trade into it far from the last price
+            # only a later sale of the copy's worth shows its pool, and the copy's size is the score's to know
             if ts and stale_exit(prices, start, int(asked_at), BLOCK_SECS[self.chain]):
                 pool = self._ask(functools.partial(self.client.token_pool, mint), until, "pool")
                 if pool[0] in LEAVE_ROUND:
@@ -966,18 +967,17 @@ def _fill(ts: list[int], moment: int, block: int) -> int:
 
 
 def _stale(p: Prices, end: int, block: int, worth: float | None) -> bool:
-    """Whether a sale at `end` gets a price nobody may have paid: no trade came after the one it fills at (a pool its
-    creator emptied leaves no trade and no candle), or the next trade shows no pool. That trade shows the pool was
-    still there when it closes within ten times the sale's price either way (RUG_LEFT), or moved at least the copy's
-    `worth` in dollars (its candle's dollars): a quiet stretch keeps its price. `worth` None: the dollars show nothing,
-    as in the watch, which does not know a copy's size. (Reviews of 25 Nov: such a sale scored at the last price, as a
-    win; then only one more than 60 s after its candle was stale, and no 30 s hold ever was; then a trade of two cents
-    into an emptied pool, at a hundred-thousandth of the price, made every sale before it fresh.)"""
+    """Whether a sale at `end` gets a price no later trade shows the pool could pay (a pool its creator emptied leaves
+    no trade and no candle). Only a later sale shows it: the trade after the one the sale fills at, when its close is
+    below that one's (a sale takes cash out of the pool; a buy puts it in) and it moved at least the copy's `worth` in
+    dollars (its candle's dollars), near the price or not. `worth` None: no trade shows it, as in the watch, which does
+    not know a copy's size. Reviews of 25 Nov: a sale after the last trade scored at the last price; a two-cent trade
+    into an emptied pool made every sale before it fresh; then a buy of 1,000 dollars into one did, and a cent's trade
+    near a spike's price kept the spike's."""
     j = _fill(p.ts, end, block)
-    if j == len(p.ts) - 1:
+    if worth is None or j == len(p.ts) - 1:
         return True
-    near = RUG_LEFT * p.closes[j] < p.closes[j + 1] < p.closes[j] / RUG_LEFT
-    return not near and (worth is None or p.dollars[j + 1] < worth)
+    return not (p.closes[j + 1] < p.closes[j] and p.dollars[j + 1] >= worth)
 
 
 def stale_exit(p: Prices, start: int, fetched: int, block: int, size: float | None = None) -> bool:
@@ -1241,13 +1241,16 @@ class _Score:
         """A copy's return, a share of its size: the sale's price over the entry's (`ratio`) x what the buy's impact
         left (`entry_keep`) x what the sale's leaves x what the swap fees and the taxes leave (`keep`), less the two
         transactions' gas. The sale meets the pool's cash side at its price: `q` at the entry candle's close, grown by
-        the square root of `moved` (the sale's price over that close); a stale sale meets the pool read at settle,
-        half of it on each side. A coin with no pool size pays no impact (it is scored apart)."""
+        the square root of `moved` (the sale's price over that close). A stale sale meets the pool read at settle, half
+        of it on each side, never one bigger than that: a pool grown by settle pays it nothing more than the same sale
+        shown would get (fourth review of 25 Nov). A coin with no pool size pays no impact (it is scored apart)."""
         worth = self.size * entry_keep * ratio  # what the copy holds at the sale's price
-        if stale:
-            side = (liquidity or 0.0) / 2
-        elif q:
+        if q:
             side = q * math.sqrt(moved)
+            if stale:
+                side = min(side, (liquidity or 0.0) / 2)
+        elif stale:
+            side = (liquidity or 0.0) / 2
         else:
             return ratio * entry_keep * self.kept * keep - 1.0 - self.share
         exit_keep = side / (side + worth) if side + worth > 0 else 0.0
