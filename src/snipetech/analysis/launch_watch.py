@@ -261,6 +261,12 @@ CAVEATS = (
         "candle's high and out at its low, holds whatever the close is; the coins each candle moved are kept in the "
         "file for the first real run to check."
     ),
+    (
+        "A creator who cut part of its pool between the watch's first sight of the coin and a sale leaves no candle: "
+        "the sale is charged at the pool the model gives at its price (a stale one at that or the pool read at "
+        "settle, the smaller), which such a cut leaves smaller; when the cut came cannot be known from the candles "
+        "(a pool cut to a hundredth, then a trade of 5 dollars near the old price)."
+    ),
 )
 SIGHTING_READING = (
     "The coins with no open or creation time GMGN gave: the watch timed them from when it first saw them, up to a look "

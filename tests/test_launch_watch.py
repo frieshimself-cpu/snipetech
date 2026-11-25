@@ -1409,7 +1409,8 @@ def test_the_report_says_in_plain_words_what_it_does_not_count(tmp_path):
     for words in ("price impact is counted", "one flat number per chain", "first sees the coin",
                   "usually after the entries", "Base, BNB Chain or Ethereum", "unchecked until the first real run",
                   "pool", "above the flat 1 percent", "only the buyers of its first blocks", "900 s after the start",
-                  "approval", "a third gas charge", "its last trade's price", "pessimistic bound beside each number"):  # fmt: skip
+                  "approval", "a third gas charge", "its last trade's price", "pessimistic bound beside each number",
+                  "cut part of its pool", "cannot be known from the candles"):  # fmt: skip
         assert words in caveats, words
 
 
