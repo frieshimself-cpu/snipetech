@@ -2743,16 +2743,28 @@ def _ops_serve(args, cfg: Config) -> int:
 
 UPDATE_RETRY_SECS = 15
 UPDATE_WAIT_MINUTES = 20.0
+LAUNCH_WATCH_OVER_MINUTES = 30  # a launch watch's job limit past its --minutes (it ends a minute after them at most)
 
 
 def _job_limit(rest: list[str], minutes: float | None) -> int | None:
     """The time limit (seconds) to ask for a remote job: `--timeout` minutes when given; for `oktech cycle`, what its own
     flags need (its wait for SOL, its minutes, the watch after its end, and 10 minutes over: killed at its limit a
     runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); for `oktech guard`, its minutes,
-    the watch at its end and 10 over (killed, its floor watch ends early: 22 Nov audit); else None, the server's
+    the watch at its end and 10 over (killed, its floor watch ends early: 22 Nov audit); for `gmgn launch-watch`, its
+    minutes and 30 over (the server's 6 h would end a day's watch at hour 6: review of 25 Nov); else None, the server's
     default."""
     if minutes is not None:
         return int(float(minutes) * 60)
+    if rest[:1] == ["gmgn"] and "launch-watch" in rest:
+        import math
+
+        try:
+            a = build_parser().parse_args(rest)
+        except SystemExit:  # not a command this version reads: the server says why
+            return None
+        if a.action != "launch-watch" or a.minutes is None or not (math.isfinite(a.minutes) and a.minutes >= 0):
+            return None  # a look-up, or a watch without minutes it takes: that job ends at once
+        return int((float(a.minutes) + LAUNCH_WATCH_OVER_MINUTES) * 60)
     if rest[:2] not in (["oktech", "cycle"], ["oktech", "guard"]):
         return None
     from .service import END_WATCH_SECS

@@ -1251,6 +1251,25 @@ def test_a_remote_guard_job_gets_the_time_limit_its_minutes_need(monkeypatch):
     assert cli._job_limit(guard[:-2], None) == 60 * 60 + 600 + 900  # its default minutes
 
 
+def test_a_remote_launch_watch_job_gets_the_time_limit_its_minutes_need(monkeypatch):
+    """Review of 25 Nov: `remote run gmgn launch-watch --minutes 1440` got the server's 6 h and would be killed at hour
+    6, the day's launches after it never written. A watch ends at its minutes and its last reads a minute after (the
+    slack of analysis/launch_watch.py): its limit is its minutes and 30 over."""
+    from snipetech import cli
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    watch = ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440"]
+    assert cli._job_limit(watch, None) == (1440 + 30) * 60
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "run", *watch]) == 0
+    assert seen[-1][1]["op_args"] == {"timeout": (1440 + 30) * 60}
+    assert cli._job_limit(["gmgn", "--chain", "eth", "launch-watch", "--minutes=90"], None) == (90 + 30) * 60
+    assert cli._job_limit(watch, 120.0) == 120 * 60  # --timeout is the job's limit whenever it is given
+    # no minutes, or minutes it refuses: the job ends at once; and a look-up of a name is no watch
+    for argv in (watch[:-2], [*watch[:-1], "nan"], [*watch[:-1], "-5"], ["gmgn", "who", "launch-watch"]):
+        assert cli._job_limit(argv, None) is None, argv
+
+
 def test_every_answer_and_every_redaction_hides_every_secret(env, monkeypatch, tmp_path):
     """22 Nov audit: the endpoint scrubbed its answers of 7 secrets only, read from its own environment. The wallet key
     (SNIPER_SECRET), the Telegram token and any key put in /etc/snipetech/env later went out as they were, and so did
