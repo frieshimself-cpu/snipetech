@@ -542,6 +542,32 @@ def test_a_coin_whose_reads_keep_failing_goes_to_the_back_and_is_written_in_the_
     assert LW.OUTAGE_ROUNDS == 30 and a["fetched_at"] == T + 90 * 60 and "HTTP 503" in a["pool"]["error"]
 
 
+def test_a_rate_limit_whose_end_is_not_ahead_reads_as_none_named(tmp_path):
+    """Fourth review of 25 Nov: a 429 whose reset is not ahead of now (reset_at -1, or 300 meant as seconds from now)
+    made the watch wait a second and ask again, which kept GMGN's ban alive: 1,952 requests in a ban of five minutes,
+    the ban outliving the job, and ok true. A reset not ahead of now counts as none named, in the client and in the
+    watch: a minute away. Against a GMGN that makes its ban 5 s longer at every ask during it, a handful of asks."""
+    for given in ("-1", "300"):
+        ft, during, until = FakeTime(T), [], [T + 300]
+
+        def gate(ok, ft=ft, during=during, until=until, given=given):
+            def route(req):
+                if ft.now < until[0]:
+                    during.append(ft.now)
+                    until[0] = min(until[0] + 5, ft.now + 300)  # every ask during a ban makes it longer
+                    body = f'{{"code": 429, "error": "RATE_LIMIT_BANNED", "message": "banned", "reset_at": {given}}}'
+                    return httpx.Response(429, content=body.encode(), headers={"content-type": "application/json"})
+                return ok(req)
+
+            return route
+
+        folder = tmp_path / given
+        recorded(folder, [A, B, C])
+        reads = {"/v1/trenches": polls([]), "/v1/market/token_kline": kline({}), "/v1/token/security": security({})}
+        out = watch(folder, ft, {path: gate(ok) for path, ok in reads.items()}, minutes=30)
+        assert (len(during) <= 10, until[0] < T + 600, out["scored"]) == (True, True, 3), (given, len(during))
+
+
 def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):
     ft, calls = FakeTime(T), []
 

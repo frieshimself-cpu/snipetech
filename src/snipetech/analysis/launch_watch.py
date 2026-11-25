@@ -594,7 +594,10 @@ class LaunchWatch:
                     return ("later" if later else "refused"), str(exc)
                 if waits >= RATE_WAITS:
                     return "later", str(exc)
-                wait = RATE_WAIT_UNNAMED if not exc.reset_at else exc.reset_at - self.clock() + 1.0
+                # a reset not ahead of now is none named (fourth review of 25 Nov: -1, or seconds from now, made it
+                # ask again every second, and every ask made GMGN's ban longer)
+                named = exc.reset_at and exc.reset_at > self.clock()
+                wait = exc.reset_at - self.clock() + 1.0 if named else RATE_WAIT_UNNAMED
                 wait = min(RATE_WAIT_MAX, max(1.0, wait))
                 if self.clock() + wait > until:
                     self.counts["rate_limit_left"] += 1

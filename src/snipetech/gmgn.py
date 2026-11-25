@@ -329,7 +329,8 @@ class Gmgn:
                 reset = int(self.clock()) + _int(r.headers["retry-after"])
             text = f"{where}: HTTP {r.status_code} {code or 'error'}: {said}"
             if r.status_code == 429:
-                reset = reset or int(self.clock()) + 60  # no time given: stay away a minute
+                if reset <= self.clock():  # no time given, or none ahead (-1; seconds from now): stay away a minute
+                    reset = int(self.clock()) + 60
                 reset = min(reset, int(self.clock()) + MAX_BAN_SECS)  # never longer than any ban GMGN documents
                 self._blocked_until = float(reset)
                 wait = max(0.0, reset - self.clock())
