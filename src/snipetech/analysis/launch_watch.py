@@ -119,9 +119,10 @@ SCORE_READING = (
     "stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. "
     "A trade after the sale shows the pool was still there, so a quiet stretch keeps its price. The watch reads a "
     "coin's pool once, when it settles, if a copy would sell it stale; a stale sale is lost (-1 and its gas) unless "
-    "that read showed liquidity of the copy's size or more (pools: there, gone, or unknown when not read, refused or "
-    "without a liquidity), and a coin whose pool was gone counts as rugged. stale_exits says how many of a row's sales "
-    "were stale; table_without_stale_exits is the same table without those copies."
+    "that read showed liquidity of at least what the copy was worth at that price (its size x exit / entry). pools "
+    "counts those coins by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
+    "unknown (not read, refused or without a liquidity). stale_exits says how many of a row's sales were stale; "
+    "table_without_stale_exits is the same table without those copies."
 )
 SECURITY_READING = (
     "Each coin is read twice: its row on GMGN's list of new coins when the watch first saw it (first_sight: the "
@@ -706,12 +707,19 @@ def stale_exit(ts: list[int], start: int, fetched: int) -> bool:
     return False
 
 
-def pool_state(pool: Any, size: float) -> str:
-    """What the settle read of a coin's pool says of a stale sale: "there" (liquidity of the copy's size or more, so
-    the last price could be had), "gone" (less), "unknown" (not read, refused, or no liquidity in the answer)."""
+def pool_liquidity(pool: Any) -> float | None:
+    """The dollars a coin's pool held at settle, as its pool read gave them; None when it was not read, was refused,
+    or gave no liquidity."""
     if not isinstance(pool, dict) or set(pool) == {"error"}:
-        return "unknown"
-    liquidity = _amount(pool.get("liquidity"))
+        return None
+    return _amount(pool.get("liquidity"))
+
+
+def pool_state(pool: Any, size: float) -> str:
+    """What the settle read of a coin's pool says of the coin: "there" (liquidity of a copy's size or more), "gone"
+    (less: a rug), "unknown" (not read, refused, or no liquidity in the answer). A stale sale keeps its price only when
+    the pool held what the copy was worth at that price (`_Score.add`)."""
+    liquidity = pool_liquidity(pool)
     if liquidity is None:
         return "unknown"
     return "there" if liquidity >= size else "gone"
@@ -843,7 +851,7 @@ class _Score:
         fetched = _int(rec.get("fetched_at"))
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
         # a sale after the coin's last trade (stale) gets its price only from a pool still holding money at settle
-        pool = pool_state(rec.get("pool"), self.size)
+        pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
         if stale_exit(ts, start, fetched):
             self.pools["coins_with_a_stale_exit"] += 1
             self.pools[pool] += 1
@@ -862,11 +870,14 @@ class _Score:
                     for pairs in tables:
                         pairs[(d, h)].unsettled += 1
                     continue
-                stale = _stale(ts, end)
-                if honeypot or (stale and pool != "there"):
+                stale, ratio = _stale(ts, end), closes[_at(ts, end)] / closes[i]
+                # a stale sale keeps its price only when the pool held, at settle, what the copy was worth at that
+                # price: its size x exit / entry (second review of 25 Nov: 120 dollars sold a copy worth 300)
+                lost = stale and (liquidity is None or liquidity < self.size * ratio)
+                if honeypot or lost:
                     ret = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
                 else:
-                    ret = closes[_at(ts, end)] / closes[i] * self.kept * keep - 1.0 - self.share
+                    ret = ratio * self.kept * keep - 1.0 - self.share
                 for pairs in tables:
                     pairs[(d, h)].add(ret, plat, rug, honeypot, stale, unknown)
 

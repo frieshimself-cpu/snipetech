@@ -920,6 +920,17 @@ def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_
     assert [pair(out, d, 30)["mean"] for d in LW.DELAYS] == [-1.0] * 4 and pair(out, 2, 30)["rug_share"] == 1.0
 
 
+def test_a_stale_sale_keeps_its_price_only_when_the_pool_holds_what_the_copy_is_worth_then(tmp_path):
+    """Second review of 25 Nov: a stale sale kept its price when the pool held the copy's size, whatever the copy was
+    worth at that price: with 120 dollars in the pool, a copy of 100 worth 300 at the last price sold at it. The pool
+    must hold the copy's size x exit / entry. (The coin's own pool, at 120, still counts as there, not as a rug.)"""
+    stops = [flat(1.0), flat(3.0, 10)]  # its last trade 10 s in, at three times the entry
+    for liquidity, ret in (("120", -1.0), ("299.9", -1.0), ("300", 2.0)):
+        write_scored(tmp_path, [coin(A, stops, pool={"liquidity": liquidity})])
+        out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+        assert (pair(out, 2, 120)["mean"], out["pools"]["there"]) == (pytest.approx(ret), 1), liquidity
+
+
 def test_a_field_is_given_only_when_it_reads_as_a_tax_or_as_a_yes_or_no(tmp_path):
     """Second review of 25 Nov: a field of -1 counted as given, so an answer of -1 everywhere read as known, sellable
     and untaxed. A tax is given when it reads as a number of 0 or more; a flag when it reads as 0 or 1 (true, false,
