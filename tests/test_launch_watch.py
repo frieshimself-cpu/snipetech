@@ -45,6 +45,11 @@ def answer(data):
     return httpx.Response(200, json={"code": 0, "message": "ok", "data": data}, headers=PRO)
 
 
+def raw_answer(text):
+    """GMGN's answer as text, for a number JSON reads as no finite float (1e999 is infinity)."""
+    return httpx.Response(200, content=text.encode(), headers={**PRO, "content-type": "application/json"})
+
+
 def trench(mint, created, *, opened=0, platform="clanker", symbol="TKN"):
     """One of GMGN's newest coins as its trenches answer gives it (the fields of a real row; the values made up)."""
     return {
@@ -449,6 +454,29 @@ def test_the_last_reads_stop_at_the_end_and_a_short_slack(tmp_path):
     # A at T, B at T + 25, C at T + 50; at T + 75 the minute after the end is over: D and E are the next job's
     assert [s["mint"] for s in scored(tmp_path)] == [A, B, C] and (out["scored"], out["waiting"]) == (3, 2)
     assert ft.now == T + 75
+
+
+def test_a_number_the_client_cannot_convert_leaves_the_coin_for_later_and_the_job_goes_on(tmp_path):
+    """Second review of 25 Nov: GMGN's 1e999 (read as infinity) in a row's holder count or a candle's time raised
+    OverflowError in the client's conversion: the job ended, the coin stayed waiting and every later job ended on it.
+    A row the client cannot convert is left out and counted; a read that fails in any way but GMGN's refusals is asked
+    again a round later, three rounds at most, then written as refused."""
+    rows = json.dumps({"code": 0, "data": {"new_creation": [trench(A, T - 1000), trench(B, T - 1000)]}})
+    rows = rows.replace('"holder_count": 3', '"holder_count": 1e999', 1)  # A's row
+    candles = json.dumps({"code": 0, "data": {"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]}})
+    candles = candles.replace(f'"time": {(T - 1000) * 1000}', '"time": 1e999')
+    routes = {
+        "/v1/trenches": lambda req: raw_answer(rows),
+        "/v1/market/token_kline": lambda req: raw_answer(candles),
+        "/v1/token/security": security({}),
+    }
+    out = watch(tmp_path, FakeTime(T), routes, minutes=3)
+    assert out["ok"] is True and [r["mint"] for r in launches(tmp_path)] == [B]
+    assert (out["polls"], out["bad_rows"], out["read_errors"], out["tried_again_later"]) == (3, 3, 3, 2)
+    (b,) = scored(tmp_path)  # B's candles, asked in three rounds, written as refused in the third
+    assert b["candles"] == [] and "OverflowError" in b["candles_error"] and b["fetched_at"] == T + 120
+    out = watch(tmp_path, FakeTime(T + 300), routes, minutes=1)  # the next job does not end on it either
+    assert out["ok"] is True and out["resumed"] == {"seen": 1, "waiting": 0} and out["bad_rows"] == 1
 
 
 def test_a_refused_key_ends_the_job_and_leaves_the_coin_for_the_next_one(tmp_path):

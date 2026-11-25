@@ -198,17 +198,22 @@ def _price(v: Any) -> float | None:
     return x if math.isfinite(x) and x > 0 else None
 
 
-def _new_rows(data: Any) -> list[dict]:
+def _new_rows(data: Any) -> tuple[list[dict], int]:
     """GMGN's newest coins as its trenches answer sends them (`new_pairs` with raw): each row as the client converts it
     (Gmgn._coin_row), with the fields of FIRST_SIGHT GMGN gave on it kept as given; POLL_LIMIT rows at most, as the
-    client cuts them."""
+    client cuts them. Each row is converted on its own: one the client cannot convert (GMGN's 1e999 is infinity, which
+    no whole number holds) is left out and counted, the second number given."""
     raw = data.get("new_creation") if isinstance(data, dict) else None
-    rows = []
+    rows, bad = [], 0
     for given in raw if isinstance(raw, list) else []:
-        row = Gmgn._coin_row(given) if isinstance(given, dict) else None
+        try:
+            row = Gmgn._coin_row(given) if isinstance(given, dict) else None
+        except Exception:  # noqa: BLE001 - whatever the conversion raises, this row is left out and counted
+            bad += 1
+            continue
         if row is not None:
             rows.append(row | {k: given[k] for k in FIRST_SIGHT if k in given})
-    return rows[:POLL_LIMIT]
+    return rows[:POLL_LIMIT], bad
 
 
 def _bars(candles: Any) -> list[list]:
@@ -329,8 +334,9 @@ class LaunchWatch:
         self.pending: dict[str, dict] = {}  # each coin waiting for its candles: its row, in the order recorded
         self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
         self.resumed = {"seen": 0, "waiting": 0}
-        self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "scored", "pools_read", "rate_limit_waits",
-                                     "rate_limit_left", "tried_again_later"), 0)  # fmt: skip
+        self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "bad_rows", "scored", "pools_read",
+                                     "rate_limit_waits", "rate_limit_left", "read_errors", "tried_again_later"),
+                                    0)  # fmt: skip
         self.refused = {"poll": 0, "candles": 0, "security": 0, "pool": 0}
 
     def resume(self) -> None:
@@ -358,7 +364,9 @@ class LaunchWatch:
         GMGN's words): a rate limit that holds past `until`, the time this read has (the next look at new coins, or the
         job's end). A rate limit is waited out (until the time GMGN names, and a second) only when it ends before
         `until`; the read is not asked again while it holds, since every ask makes it longer. A key GMGN refuses raises
-        WatchStopped."""
+        WatchStopped. A read that fails in any other way (the client cannot convert an answer: GMGN's 1e999 is
+        infinity) is "later" too, counted in read_errors: tried a round later, three rounds at most, never the job's
+        end (second review of 25 Nov)."""
         waits = 0
         while True:
             try:
@@ -382,6 +390,11 @@ class LaunchWatch:
                 self.counts["rate_limit_waits"] += 1
                 self.log(f"gmgn launch-watch {self.chain}: rate limit, waiting {wait:.0f} s")
                 self.sleep(wait)
+            except Exception as exc:  # noqa: BLE001 - any other failure of one read is that read's, never the job's
+                self.counts["read_errors"] += 1
+                said = f"{type(exc).__name__}: {exc}"
+                self.log(f"gmgn launch-watch {self.chain}: a read failed, tried again later: {said}")
+                return "later", said
 
     def poll(self, first: bool, until: float) -> None:
         """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down,
@@ -400,7 +413,10 @@ class LaunchWatch:
             self.refused["poll"] += 1
             self.log(f"gmgn launch-watch {self.chain}: the look at the newest coins failed: {got}")
             return
-        rows = _new_rows(got)
+        rows, bad = _new_rows(got)
+        if bad:
+            self.counts["bad_rows"] += bad
+            self.log(f"gmgn launch-watch {self.chain}: {bad} rows of the newest coins could not be read, left out")
         now = int(self.clock())
         fresh = 0
         for row in rows:
@@ -533,12 +549,14 @@ class LaunchWatch:
             "polls": c["polls"],
             "polls_all_new": c["polls_all_new"],
             "recorded": c["recorded"],
+            "bad_rows": c["bad_rows"],  # rows of the newest coins the client could not convert: left out
             "scored": c["scored"],
             "pools_read": c["pools_read"],  # coins a copy would sell after their last trade: their pool, read once
             "waiting": len(self.pending),
             "refused": dict(self.refused),
             "rate_limit_waits": c["rate_limit_waits"],
             "rate_limit_left": c["rate_limit_left"],  # reads a rate limit held past the time they had: left for later
+            "read_errors": c["read_errors"],  # reads that failed in a way that is not GMGN's: asked again later
             "tried_again_later": c["tried_again_later"],
             "files": {"launches": str(self.launches), "scored": str(self.scored)},
         }
