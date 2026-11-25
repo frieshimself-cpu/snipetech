@@ -147,3 +147,35 @@ def test_two_trades_of_one_transaction_are_not_counted_as_out_of_order():
     out = pfd.order_report(rows, {"a": (10, 3, 0), "b": (10, 5, 0)})
     assert out["same_tx_pairs"] == 1
     assert out["same_slot_pairs"] == 1 and out["same_slot_in_order"] == 1  # a then b: in order, and the only pair
+
+
+def test_a_files_schema_names_each_column_its_type_a_few_rows_and_the_event_kinds():
+    """25 Nov: the PumpSwap files (pump_amm) were never read here, and a study of them needs their columns. `describe`
+    says what one file holds without a credit or a call: each column and its type, a few rows, the event kinds."""
+    out = pfd.describe(SAMPLE, rows=2)
+    assert out["file"] == "sample.parquet" and out["rows"] == 500
+    cols = dict(out["columns"])
+    assert list(cols)[:3] == ["event_type", "token_mint", "slot_number"] and cols["slot_number"] == "int64"
+    assert len(out["sample"]) == 2 and set(out["sample"][0]) == set(cols)
+    assert sum(out["event_types"].values()) == 500 and "swap" in out["event_types"]
+
+
+def test_history_schema_reads_a_file_on_disk_without_the_key_or_a_credit(tmp_path, monkeypatch, capsys):
+    import json
+    import shutil
+
+    from snipetech import cli
+
+    monkeypatch.delenv(pfd.KEY_ENV, raising=False)
+    db = tmp_path / "data" / "snipetech.db"
+    dest = db.parent / "history" / "pumpfundata" / "pump_amm"
+    dest.mkdir(parents=True)
+    shutil.copy(SAMPLE, dest / pfd.file_name("pump_amm", "2026-11-23", 20))
+    shutil.copy(SAMPLE, dest / pfd.file_name("pump_amm", "2026-11-22", 5))
+    assert cli.main(["--db", str(db), "history", "schema", "--exchange", "pump_amm"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["file"] == "pump_amm_2026-11-23_20.parquet" and out["files_on_disk"] == 2  # the newest one
+    args = ["--db", str(db), "history", "schema", "--exchange", "pump_amm", "--date", "2026-11-22", "--hour", "5"]
+    assert cli.main(args) == 0 and json.loads(capsys.readouterr().out)["file"] == "pump_amm_2026-11-22_05.parquet"
+    assert cli.main(["--db", str(db), "history", "schema", "--exchange", "pump_fun"]) == 2  # nothing on disk
+    assert "no file" in capsys.readouterr().err

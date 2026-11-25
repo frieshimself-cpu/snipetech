@@ -102,6 +102,23 @@ async def fetch(client, dest: Path, exchange: str, hours: list[tuple[str, int]],
     return out
 
 
+def describe(path: Path, rows: int = 3) -> dict[str, Any]:
+    """What one hourly file holds, without a credit or a call (`history schema`): each column with its type, the first
+    `rows` rows (text cut to 60 characters) and how many rows of each event kind. 25 Nov: the PumpSwap files had never
+    been read here, and a study of them starts from their columns."""
+    from collections import Counter
+
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path)
+    sample = [
+        {k: (v[:60] if isinstance(v, str) else v) for k, v in r.items()} for r in table.slice(0, rows).to_pylist()
+    ]
+    kinds = Counter(table.column("event_type").to_pylist()) if "event_type" in table.column_names else Counter()
+    return {"file": path.name, "rows": table.num_rows, "columns": [[f.name, str(f.type)] for f in table.schema],
+            "sample": sample, "event_types": dict(kinds.most_common())}  # fmt: skip
+
+
 def read_rows(path: Path, columns: list[str] | None = None) -> list[dict[str, Any]]:
     """One hourly file as rows (`columns`: only these, for a cheaper read)."""
     import pyarrow.parquet as pq

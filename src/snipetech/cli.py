@@ -1508,7 +1508,8 @@ def build_parser() -> argparse.ArgumentParser:
         "the key is PUMPFUNDATA_API_KEY in the server's env file. amm-backfill (another source, the RPC): the "
         "PumpSwap trades around big wallets' buys in older coins, from Helius into the tape, so a lab can score them",
     )
-    sp.add_argument("action", choices=["range", "fetch", "check", "order", "scan", "table", "follow", "amm-backfill"])
+    sp.add_argument("action", choices=["range", "fetch", "check", "order", "scan", "table", "follow", "amm-backfill",
+                                       "schema"])  # fmt: skip
     sp.add_argument("--wallet", action="append", default=[], help="amm-backfill: a wallet whose PumpSwap buys are "
                     "backfilled (repeat for several)")  # fmt: skip
     sp.add_argument("--group", help="amm-backfill: every wallet of this label group as well (big, kol, wallet, "
@@ -2954,6 +2955,18 @@ def _history(args, cfg: Config) -> int:
         args.min_sol = 1.0 if args.action == "amm-backfill" else 0.5
     if args.action == "amm-backfill":  # another source (the RPC): no bought file and none of their key
         return _amm_backfill(args, cfg)
+    if args.action == "schema":  # no call to the vendor and no credit: one file on disk, its columns and a few rows
+        here = Path(cfg.storage.db_path).resolve().parent / "history" / "pumpfundata" / args.exchange
+        files = sorted(here.glob("*.parquet")) if here.is_dir() else []
+        path = (
+            here / pfd.file_name(args.exchange, args.date, args.hour) if args.date and args.hour is not None else None
+        )
+        path = path if path is not None else (files[-1] if files else None)
+        if path is None or not path.exists():
+            print(f"history schema: no file of {args.exchange} on disk to read", file=sys.stderr)
+            return 2
+        print(json.dumps(pfd.describe(path) | {"files_on_disk": len(files)}, indent=1, default=str))
+        return 0
     key = os.environ.get(pfd.KEY_ENV, "")
     if not key:
         print(f"{pfd.KEY_ENV} is not set (the server's env file holds it)", file=sys.stderr)
