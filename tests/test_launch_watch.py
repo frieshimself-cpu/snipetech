@@ -969,6 +969,27 @@ def test_no_hold_runs_past_the_500_seconds_of_candles(tmp_path):
     assert pair(out, 12, 480)["mean"] == pytest.approx(3.0)
 
 
+def test_beside_every_number_a_pessimistic_bound_buys_at_the_high_and_sells_at_the_low(tmp_path):
+    """Fourth review of 25 Nov: each round found a new way the fill at a candle's close reads kind (a close is probably
+    its last trade's price, not the pool's after it). Beside every number filled at the close behind the landing
+    block's trades is a pessimistic bound: the entry at the high of the landing block's candle, each sale at the low
+    of the exit block's candle, price impact and every charge as for the number beside it. The reading leads with it."""
+    # Solana, a second a block: in at 2 s's candle (close 1.1, high 1.3), out at 32 s's (close 1.5, low 1.2)
+    candles = to_the_end([flat(1.0), (S + 2, 1.0, 1.3, 0.9, 1.1, 5.0), (S + 32, 1.5, 1.6, 1.2, 1.5, 5.0)])
+    honeypot = coin(B, candles, {"is_honeypot": 1})
+    write_scored(tmp_path, [coin(A, candles), honeypot], chain="sol")
+    out = LW.score(tmp_path, "sol", gas_usd=0.0, fee_pct=0.0)
+    row = pair(out, 2, 30)
+    central, bound = 1.5 / 1.1 - 1, 1.2 / 1.3 - 1  # the honeypot is all lost either way
+    assert row["mean"] == pytest.approx((central - 1) / 2, abs=1e-4)
+    assert row["pessimistic"]["mean"] == pytest.approx((bound - 1) / 2, abs=1e-4)
+    assert set(row["pessimistic"]) == {"mean", "mean_se", "median", "share_above_0", "mean_without_best5"}
+    stale = pair({"table": out["stale_sales"]}, 2, 30)
+    assert set(stale["pessimistic"]) == {"mean", "mean_se"}
+    assert out["reading"].startswith("Every number has a pessimistic bound beside it")
+    assert "if only the central number pays, a live test at the stated bid decides" in out["reading"]
+
+
 def test_a_trade_fills_behind_every_trade_of_the_second_or_block_it_lands_in(tmp_path):
     """Third review of 25 Nov: every buy and sale filled at the last close before its moment, as the first trade of
     the second or block it lands in, a place the default gas does not buy (CLAUDE.md rule 2: a result names its

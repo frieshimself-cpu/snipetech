@@ -51,7 +51,7 @@ import time
 from array import array
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..gmgn import CHAINS, Gmgn, GmgnError
 
@@ -129,6 +129,10 @@ LANDING = {
     "sent 2 or 5 s after the start lands behind the trades of the first block after it, never in the launch's own.",
 }
 SCORE_READING = (
+    "Every number has a pessimistic bound beside it (pessimistic): the entry at the high of the landing block's candle "
+    "and each sale at the low of the exit block's candle, price impact and every charge as for the number beside it. "
+    "If the bound pays, the landing does not matter; if only the central number pays, a live test at the stated bid "
+    "decides. The central number is what follows. "
     "A copy buys D seconds after the coin's start (its open time, else its creation; a coin timed from when the watch "
     "first saw it is scored apart, timed_from_sighting), if the coin traded before then, behind every trade of the "
     "second, or the block, it lands in (block_secs: Solana and BNB Chain 1 s, Base 2 s, Ethereum 12 s): at the close "
@@ -631,10 +635,10 @@ class LaunchWatch:
                 continue
             if candles[0] == "ok":
                 candles = ("ok", _bars(candles[1]))
-            ts, closes, dollars, _, _ = _path(candles[1] if candles[0] == "ok" else [], start)
-            pool = None
+            prices = _path(candles[1] if candles[0] == "ok" else [], start)
+            ts, pool = prices.ts, None
             # a pool emptied after the last trade leaves no candle, or a trade into it far from the last price
-            if ts and stale_exit(ts, closes, dollars, start, int(asked_at), BLOCK_SECS[self.chain]):
+            if ts and stale_exit(prices, start, int(asked_at), BLOCK_SECS[self.chain]):
                 pool = self._ask(functools.partial(self.client.token_pool, mint), until, "pool")
                 if pool[0] in LEAVE_ROUND:
                     return
@@ -895,11 +899,24 @@ def read_security(sec: Any, unit: str = "value") -> dict:
     }
 
 
-def _path(candles: Any, start: int) -> tuple[list[int], list[float], list[float], bool, int]:
-    """A coin's candles inside its 500 s whose close can be divided by, oldest first: their times, their closes and
-    the dollars they moved (0 when not given); whether the coin rugged (a price of a tenth of its first candle's open
-    or less); and how many candles were left out for a close that is missing or zero."""
-    kept: list[tuple[int, float, float | None, float | None, float]] = []
+class Prices(NamedTuple):
+    """A coin's candles inside its window whose close can be divided by, oldest first (_path): their times, closes,
+    highs and lows (a high never below its close, a low never above it; the close when not given), and the dollars
+    they moved (0 when not given); whether the coin rugged; how many candles were left out for a missing close."""
+
+    ts: list[int]
+    closes: list[float]
+    highs: list[float]
+    lows: list[float]
+    dollars: list[float]
+    rug: bool
+    bad: int
+
+
+def _path(candles: Any, start: int) -> Prices:
+    """A coin's candles inside its 500 s (Prices). It rugged when a price fell to a tenth of its first candle's open,
+    or below; a candle whose close is missing or zero is left out and counted."""
+    kept: list[tuple[int, float, float | None, float, float, float]] = []
     bad = 0
     for c in candles if isinstance(candles, list) else []:
         if not isinstance(c, list) or len(c) < 5:
@@ -912,13 +929,14 @@ def _path(candles: Any, start: int) -> tuple[list[int], list[float], list[float]
         if close is None:
             bad += 1
             continue
-        kept.append((ts, close, _price(c[1]), _price(c[3]), (_amount(c[5]) if len(c) > 5 else None) or 0.0))
+        high, low = max(_price(c[2]) or close, close), min(_price(c[3]) or close, close)
+        kept.append((ts, close, _price(c[1]), high, low, (_amount(c[5]) if len(c) > 5 else None) or 0.0))
     if not kept:
-        return [], [], [], False, bad
+        return Prices([], [], [], [], [], False, bad)
     kept.sort(key=lambda k: k[0])
     first = kept[0][2] or kept[0][1]  # its first candle's open, else that candle's close
-    lowest = min(min(close, low or close) for _, close, _, low, _ in kept)
-    return [k[0] for k in kept], [k[1] for k in kept], [k[4] for k in kept], lowest <= RUG_LEFT * first, bad
+    ts, closes, _, highs, lows, dollars = (list(col) for col in zip(*kept, strict=True))
+    return Prices(ts, closes, highs, lows, dollars, min(lows) <= RUG_LEFT * first, bad)
 
 
 def _traded_before(ts: list[int], moment: int) -> bool:
@@ -937,7 +955,7 @@ def _fill(ts: list[int], moment: int, block: int) -> int:
     return k if k < len(ts) and ts[k] < moment + block else k - 1
 
 
-def _stale(ts: list[int], closes: list[float], dollars: list[float], end: int, block: int, worth: float | None) -> bool:
+def _stale(p: Prices, end: int, block: int, worth: float | None) -> bool:
     """Whether a sale at `end` gets a price nobody may have paid: no trade came after the one it fills at (a pool its
     creator emptied leaves no trade and no candle), or the next trade shows no pool. That trade shows the pool was
     still there when it closes within ten times the sale's price either way (RUG_LEFT), or moved at least the copy's
@@ -945,28 +963,25 @@ def _stale(ts: list[int], closes: list[float], dollars: list[float], end: int, b
     as in the watch, which does not know a copy's size. (Reviews of 25 Nov: such a sale scored at the last price, as a
     win; then only one more than 60 s after its candle was stale, and no 30 s hold ever was; then a trade of two cents
     into an emptied pool, at a hundred-thousandth of the price, made every sale before it fresh.)"""
-    j = _fill(ts, end, block)
-    if j == len(ts) - 1:
+    j = _fill(p.ts, end, block)
+    if j == len(p.ts) - 1:
         return True
-    near = RUG_LEFT * closes[j] < closes[j + 1] < closes[j] / RUG_LEFT
-    return not near and (worth is None or dollars[j + 1] < worth)
+    near = RUG_LEFT * p.closes[j] < p.closes[j + 1] < p.closes[j] / RUG_LEFT
+    return not near and (worth is None or p.dollars[j + 1] < worth)
 
 
-def stale_exit(
-    ts: list[int], closes: list[float], dollars: list[float], start: int, fetched: int, block: int,
-    size: float | None = None,
-) -> bool:  # fmt: skip
+def stale_exit(p: Prices, start: int, fetched: int, block: int, size: float | None = None) -> bool:
     """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price (_stale).
-    `ts`, `closes`, `dollars`: its priced candles (_path); `fetched`: when its candles were read (a hold not over by
-    then is not scored); `block`: the chain's (BLOCK_SECS); `size`: a copy's in dollars, worth its size x exit / entry
-    at the sale. The watch, which reads a coin's pool for it, knows no size: it reads the pool of every coin a copy of
-    any size could sell stale."""
+    `p`: its priced candles (_path); `fetched`: when its candles were read (a hold not over by then is not scored);
+    `block`: the chain's (BLOCK_SECS); `size`: a copy's in dollars, worth its size x exit / entry at the sale. The
+    watch, which reads a coin's pool for it, knows no size: it reads the pool of every coin a copy of any size could
+    sell stale."""
     for d, h in PAIRS:
         end = start + d + h
-        if not _traded_before(ts, start + d) or (fetched and fetched < end):
+        if not _traded_before(p.ts, start + d) or (fetched and fetched < end):
             continue
-        worth = None if size is None else size * closes[_fill(ts, end, block)] / closes[_fill(ts, start + d, block)]
-        if _stale(ts, closes, dollars, end, block, worth):
+        entry, sale = p.closes[_fill(p.ts, start + d, block)], p.closes[_fill(p.ts, end, block)]
+        if _stale(p, end, block, None if size is None else size * sale / entry):
             return True
     return False
 
@@ -1002,40 +1017,54 @@ def _se(xs: Any) -> float | None:
     return _r(statistics.stdev(xs) / math.sqrt(len(xs)))
 
 
-def _stats(rets: Any, rugs: Any) -> dict:
-    """The numbers of a set of copies: how many, the mean and its standard error, the median, the share above 0, the
-    mean once the five best are taken out (None when that leaves none), and the share of their coins that rugged."""
+CENTRAL = ("mean", "mean_se", "median", "share_above_0", "mean_without_best5")
+
+
+def _central(rets: Any) -> dict:
+    """The numbers of a set of returns (CENTRAL): the mean and its standard error, the median, the share above 0, and
+    the mean once the five best are taken out (None when that leaves none); all None for no returns."""
     n = len(rets)
     if not n:
-        keys = ("mean", "mean_se", "median", "share_above_0", "mean_without_best5", "rug_share")
-        return {"coins": 0, **dict.fromkeys(keys)}
+        return dict.fromkeys(CENTRAL)
     xs = sorted(rets)
     return {
-        "coins": n,
         "mean": _r(statistics.fmean(xs)),
         "mean_se": _se(xs),
         "median": _r(statistics.median(xs)),
         "share_above_0": _r(sum(1 for x in xs if x > 0) / n),
         "mean_without_best5": _r(statistics.fmean(xs[:-BEST_LEFT_OUT])) if n > BEST_LEFT_OUT else None,
-        "rug_share": _r(sum(rugs) / n),
+    }
+
+
+def _stats(rets: Any, rugs: Any, bounds: Any) -> dict:
+    """The numbers of a set of copies: how many, their pessimistic bound's numbers (`bounds`: each copy in at the high
+    of its landing candle and out at the low of its exit candle), the central numbers (_central), and the share of
+    their coins that rugged."""
+    n = len(rets)
+    return {
+        "coins": n,
+        "pessimistic": _central(bounds),
+        **_central(rets),
+        "rug_share": _r(sum(rugs) / n) if n else None,
     }
 
 
 class _Pair:
-    """The copies of one entry delay and hold, side by side: returns, launchpads (by number), halves (half_of), and
-    rug, honeypot, stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
+    """The copies of one entry delay and hold, side by side: returns and their pessimistic bounds, launchpads (by
+    number), halves (half_of), and rug, honeypot, stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
 
-    __slots__ = ("big", "half", "honeypot", "lost", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
+    __slots__ = ("big", "bounds", "half", "honeypot", "lost", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
 
     def __init__(self) -> None:
-        self.rets, self.plats = array("d"), array("I")
+        self.rets, self.bounds, self.plats = array("d"), array("d"), array("I")
         self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
         self.lost, self.big, self.half = bytearray(), bytearray(), bytearray()
         self.unsettled = 0
 
-    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool, lost: bool, unknown: bool,
-            big: bool, half: int) -> None:  # fmt: skip
+    def add(self, ret: float, bound: float, plat: int, rug: bool, honeypot: bool, stale: bool, lost: bool,
+            unknown: bool, big: bool, half: int) -> None:  # fmt: skip
         self.rets.append(ret)
+        self.bounds.append(bound)
         self.plats.append(plat)
         self.rugs.append(rug)
         self.honeypot.append(honeypot)
@@ -1049,23 +1078,23 @@ class _Pair:
         """The pair's numbers (_stats), its honeypots, its holds not over when read, its copies whose security is not
         known, its copies above 5 percent of their pool and its stale sales; with `half`, those of its copies of that
         half of the coins (half_of), without the holds not over."""
-        marks = (self.rugs, self.honeypot, self.unknown, self.big, self.stale)
-        rets: Any = self.rets
+        cols: Any = (self.rets, self.bounds, self.rugs, self.honeypot, self.unknown, self.big, self.stale)
         if half is not None:
             keep = [k for k, h in enumerate(self.half) if h == half]
-            rets, marks = [rets[k] for k in keep], tuple([m[k] for k in keep] for m in marks)
-        rugs, honeypot, unknown, big, stale = marks
-        out = {**_stats(rets, rugs), "honeypots": sum(honeypot)}
+            cols = tuple([col[k] for k in keep] for col in cols)
+        rets, bounds, rugs, honeypot, unknown, big, stale = cols
+        out = {**_stats(rets, rugs, bounds), "honeypots": sum(honeypot)}
         if half is None:
             out["unsettled"] = self.unsettled
         return out | {"security_unknown": sum(unknown), "over_5pct_of_pool": sum(big), "stale_exits": sum(stale)}
 
     def stale_row(self) -> dict:
-        """The pair's stale sales alone: how many, their mean, and how many were lost (no liquidity read at settle).
-        Third review of 25 Nov: the table without them was a table of the coins that lived."""
-        rets = [r for r, stale in zip(self.rets, self.stale, strict=True) if stale]
-        mean = _r(statistics.fmean(rets)) if rets else None
-        return {"coins": len(rets), "mean": mean, "mean_se": _se(rets), "lost": sum(self.lost)}
+        """The pair's stale sales alone: how many, their mean and its bound's, and how many were lost (no liquidity
+        read at settle). Third review of 25 Nov: the table without them was a table of the coins that lived."""
+        picked = [k for k, stale in enumerate(self.stale) if stale]
+        rets, bounds = ([col[k] for k in picked] for col in (self.rets, self.bounds))
+        pessimistic, central = ({k: _central(xs)[k] for k in ("mean", "mean_se")} for xs in (bounds, rets))
+        return {"coins": len(rets), "pessimistic": pessimistic, **central, "lost": sum(self.lost)}
 
 
 class _Score:
@@ -1149,8 +1178,9 @@ class _Score:
         half = half_of(rec["mint"])
         self.by_half[half] += main
         start = _int(rec.get("start"))
-        ts, closes, dollars, rug, bad = _path(rec.get("candles"), start)
-        self.n["bad_prices"] += bad
+        p = _path(rec.get("candles"), start)
+        ts, closes, rug = p.ts, p.closes, p.rug
+        self.n["bad_prices"] += p.bad
         self.n["without_a_price"] += not ts
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
         fetched = _int(rec.get("fetched_at"))
@@ -1160,7 +1190,7 @@ class _Score:
         big = bool(depth) and self.size > BIG_FOR_POOL * depth
         # a sale after the coin's last trade (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
-        if stale_exit(ts, closes, dollars, start, fetched, self.block, self.size * entry_keep):
+        if stale_exit(p, start, fetched, self.block, self.size * entry_keep):
             self.pools["coins_with_a_stale_exit"] += 1
             self.pools[pool] += 1
             rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
@@ -1178,20 +1208,40 @@ class _Score:
                     for pairs in tables:
                         pairs[(d, h)].unsettled += 1
                     continue
-                ratio = closes[_fill(ts, end, self.block)] / closes[i]
-                worth = self.size * entry_keep * ratio  # what the copy holds at the sale's price
-                stale = _stale(ts, closes, dollars, end, self.block, worth)
+                j = _fill(ts, end, self.block)
+                ratio = closes[j] / closes[i]
+                stale = _stale(p, end, self.block, self.size * entry_keep * ratio)  # worth: what the copy holds then
                 # a stale sale is paid by the pool read at settle, half of it on each side, and lost when that read
                 # gave no liquidity or none (reviews of 25 Nov: it kept its whole price from the copy's worth up)
                 lost = stale and not liquidity
-                qx = (liquidity or 0.0) / 2 if stale else q * math.sqrt(ratio)  # the pool's side at the sale's price
-                exit_keep = qx / (qx + worth) if q or stale else 1.0
                 if honeypot or lost:
-                    ret = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
+                    ret = bound = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
                 else:
-                    ret = ratio * entry_keep * exit_keep * self.kept * keep - 1.0 - self.share
+                    # the number: in at the landing candle's close, out at the exit candle's; its bound: in at the
+                    # landing candle's high, out at the exit candle's low
+                    ret, bound = (
+                        self._paid(sold / paid, sold / closes[i], entry_keep, q, stale, liquidity, keep)
+                        for paid, sold in ((closes[i], closes[j]), (p.highs[i], p.lows[j]))
+                    )
                 for pairs in tables:
-                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, lost, unknown, big, half)
+                    pairs[(d, h)].add(ret, bound, plat, rug, honeypot, stale, lost, unknown, big, half)
+
+    def _paid(self, ratio: float, moved: float, entry_keep: float, q: float, stale: bool, liquidity: float | None,
+              keep: float) -> float:  # fmt: skip
+        """A copy's return, a share of its size: the sale's price over the entry's (`ratio`) x what the buy's impact
+        left (`entry_keep`) x what the sale's leaves x what the swap fees and the taxes leave (`keep`), less the two
+        transactions' gas. The sale meets the pool's cash side at its price: `q` at the entry candle's close, grown by
+        the square root of `moved` (the sale's price over that close); a stale sale meets the pool read at settle,
+        half of it on each side. A coin with no pool size pays no impact (it is scored apart)."""
+        worth = self.size * entry_keep * ratio  # what the copy holds at the sale's price
+        if stale:
+            side = (liquidity or 0.0) / 2
+        elif q:
+            side = q * math.sqrt(moved)
+        else:
+            return ratio * entry_keep * self.kept * keep - 1.0 - self.share
+        exit_keep = side / (side + worth) if side + worth > 0 else 0.0
+        return ratio * entry_keep * exit_keep * self.kept * keep - 1.0 - self.share
 
     @staticmethod
     def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:
@@ -1285,11 +1335,12 @@ class _Score:
         """One pair's copies split by launchpad: those with MIN_COINS or more in each half in their order on half 0
         by mean_without_best5 (rank), with half 1's numbers; then the others, too few coins, the busiest first."""
         names = list(self.platforms)  # numbered in the order first met
-        groups: dict[int, tuple[tuple[list[float], list[int]], ...]] = {}
-        for ret, plat, rug, half in zip(pair.rets, pair.plats, pair.rugs, pair.half, strict=True):
-            rets, rugs = groups.setdefault(plat, (([], []), ([], [])))[half]
+        groups: dict[int, tuple[tuple[list[float], list[int], list[float]], ...]] = {}
+        for ret, bound, plat, rug, half in zip(pair.rets, pair.bounds, pair.plats, pair.rugs, pair.half, strict=True):
+            rets, rugs, bounds = groups.setdefault(plat, (([], [], []), ([], [], [])))[half]
             rets.append(ret)
             rugs.append(rug)
+            bounds.append(bound)
         ranked, few = [], []
         for k, (on, off) in groups.items():
             if min(len(on[0]), len(off[0])) >= MIN_COINS:
