@@ -640,14 +640,14 @@ def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_two_swap_fees_and_t
     # in at the close of the last candle at or before start + 1 (1.0), out at or before start + 31 (2.0):
     # 2.0 / 1.0 x 0.99 x 0.99 x 0.95 x 0.90 - 1 - 2 x 0.05 / 100: Base's swap fee of 1 percent on each leg.
     kept = 0.99**2 * 0.95 * 0.9
-    # the same taxes said as shares of 1, then as percents: a file is read in its own unit
-    for sec, unit in (({"buy_tax": "0.05", "sell_tax": "0.1"}, "share"), ({"buy_tax": 5, "sell_tax": "10"}, "percent")):
-        write_scored(tmp_path, [coin(A, candles, sec), coin(B, candles, sec)])
-        out = LW.score(tmp_path, "base", size_usd=100.0, gas_usd=0.05)
-        assert out["security"]["taxes_unit"] == unit and pair(out, 2, 30)["coins"] == 2
-        assert pair(out, 2, 30)["mean"] == pytest.approx(2 * kept - 1.001, abs=1e-4)
-        assert pair(out, 2, 120)["mean"] == pytest.approx(1.5 * kept - 1.001, abs=1e-4)  # out at start + 40: 1.5
-        assert pair(out, 12, 30)["mean"] == pytest.approx(0.75 * kept - 1.001, abs=1e-4)  # in at start + 10: 2.0
+    # the same taxes said as shares of 1 (A) and as percents (B): each value is read on its own
+    write_scored(tmp_path, [coin(A, candles, {"buy_tax": "0.05", "sell_tax": "0.1"}),
+                            coin(B, candles, {"buy_tax": 5, "sell_tax": "10"})])  # fmt: skip
+    out = LW.score(tmp_path, "base", size_usd=100.0, gas_usd=0.05)
+    assert pair(out, 2, 30)["coins"] == 2 and pair(out, 2, 30)["mean"] == pytest.approx(2 * kept - 1.001, abs=1e-4)
+    assert pair(out, 2, 120)["mean"] == pytest.approx(1.5 * kept - 1.001, abs=1e-4)  # out at start + 40: 1.5
+    assert pair(out, 12, 30)["mean"] == pytest.approx(0.75 * kept - 1.001, abs=1e-4)  # in at start + 10: 2.0
+    assert (out["security"]["ambiguous_coins"], out["security"]["coins_with_a_tax_above_1"]) == (1, 1)
     assert (out["size_usd"], out["gas_usd"], out["fee_pct"]) == (100.0, 0.05, 1.0)
     write_scored(tmp_path, [coin(A, candles, {"buy_tax": "0.05", "sell_tax": "0.1"})], chain="eth")
     eth = LW.score(tmp_path, "eth")  # Ethereum's gas when none is given: 3 dollars a transaction
@@ -715,23 +715,22 @@ def test_each_leg_pays_the_higher_of_the_launchs_tax_and_the_settled_one(tmp_pat
     assert sec["first_sight"]["fields"]["sell_tax"] == {"given": 4, "above_0": 3}
 
 
-def test_the_tax_unit_is_decided_once_for_the_whole_file(tmp_path):
-    """Review of 25 Nov: whether a coin's taxes were percents or shares was guessed coin by coin (percents when one of
-    its own was above 1), so in one file 0.6 was 60 percent on one coin and 0.6 percent on the next. The unit is now
-    decided once for the file: percents when any coin's tax, in either read, is above 1; shares otherwise."""
+def test_each_tax_is_read_on_its_own_and_no_coin_changes_how_another_is_read(tmp_path):
+    """Reviews of 25 Nov: first the unit of a coin's taxes was guessed coin by coin, then one value above 1 anywhere
+    in the file made every tax of it a percent: five sell taxes of 0.6 (60 percent, no sale) read as 0.6 percent once
+    a sixth coin's launch row said a buy tax of 3. Each value is read on its own now: 1 or less is a share of 1, above
+    1 a percent. A value of 1 or less is so read as the higher of the two taxes it could be."""
     up = [flat(1.0), flat(2.0, 10)]
-    write_scored(tmp_path, [coin(A, up, dict(NO_TAX, sell_tax="0.6")), coin(B, up, dict(NO_TAX, buy_tax="0.05"))])
-    sec = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)["security"]
-    assert (sec["taxes_unit"], sec["honeypots"], sec["ambiguous_coins"]) == ("share", 1, 2)  # A's 0.6 is 60 percent
-    assert (sec["honeypots_if_shares"], sec["honeypots_if_percents"]) == (1, 0)
-    # one coin with a tax above 1, settled or seen first, makes every tax of the file a percent: A's 0.6 is 0.6 percent
-    for b in (coin(B, up, dict(NO_TAX, buy_tax="5")), coin(B, up, first={"buy_tax": 5})):
-        write_scored(tmp_path, [coin(A, up, dict(NO_TAX, sell_tax="0.6")), b])
+    sixty = [coin(m, up, dict(NO_TAX, sell_tax="0.6")) for m in (A, B, C, D, E)]
+    for lines in (sixty, [*sixty, coin(F, up, first={"buy_tax": 3})]):
+        write_scored(tmp_path, lines)
         out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-        sec = out["security"]
-        assert (sec["taxes_unit"], sec["honeypots"], sec["ambiguous_coins"]) == ("percent", 0, 1)
-        assert (sec["honeypots_if_shares"], sec["honeypots_if_percents"]) == (1, 0)
-        assert pair(out, 2, 30)["mean"] == pytest.approx((2 * 0.994 - 1 + 2 * 0.95 - 1) / 2)
+        sec, row = out["security"], pair(out, 2, 30)
+        assert (sec["honeypots"], sec["ambiguous_coins"], row["honeypots"]) == (5, 5, 5)
+        assert sec["coins_with_a_tax_above_1"] == len(lines) - 5  # F's 3 is 3 percent
+        assert row["mean"] == pytest.approx((-5 + (2 * 0.97 - 1) * (len(lines) - 5)) / len(lines), abs=1e-4)
+        # what every tax read one way would give, for information only
+        assert (sec["honeypots_if_shares"], sec["honeypots_if_percents"]) == (5, 0)
 
 
 def test_a_copy_that_cannot_be_sold_still_pays_its_gas(tmp_path):
@@ -842,7 +841,7 @@ def test_the_report_counts_the_security_fields_gmgn_gave(tmp_path):
         ],
     )
     sec = LW.score(tmp_path, "base")["security"]
-    assert (sec["refused"], sec["without_fields"], sec["honeypots"], sec["taxes_unit"]) == (1, 1, 1, "share")
+    assert (sec["refused"], sec["without_fields"], sec["honeypots"], sec["ambiguous_coins"]) == (1, 1, 1, 1)
     assert sec["fields"] == {
         "is_honeypot": {"given": 1, "yes": 1},
         "honeypot": {"given": 1, "yes": 0},
