@@ -230,10 +230,11 @@ def _int(v: Any) -> int:
 
 
 def _price(v: Any) -> float | None:
-    """A price that can be divided by: a finite number above 0. Anything else is None."""
+    """A price that can be divided by: a finite number above 0. Anything else is None (an integer too big for a float
+    too: third review of 25 Nov, it raised OverflowError)."""
     try:
         x = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return x if math.isfinite(x) and x > 0 else None
 
@@ -787,10 +788,11 @@ def _yes(v: Any) -> bool:
 
 
 def _amount(v: Any) -> float | None:
-    """A tax or a sum of dollars: a finite number of 0 or more. Anything else is None."""
+    """A tax or a sum of dollars: a finite number of 0 or more. Anything else is None, an integer too big for a float
+    too."""
     try:
         x = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return x if math.isfinite(x) and x >= 0 else None
 

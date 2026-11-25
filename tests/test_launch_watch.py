@@ -1133,6 +1133,18 @@ def test_a_coin_timed_from_its_first_sighting_is_scored_apart(tmp_path):
     assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (2, 2, pytest.approx(1.0))
 
 
+def test_a_number_too_big_for_a_float_reads_as_nothing_and_the_score_goes_on(tmp_path):
+    """Third review of 25 Nov: an integer too big for a float (a 401-digit tax or liquidity, written as GMGN sent it)
+    raised OverflowError in launch-score, and every later score of the chain failed on it."""
+    big = 10**400
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
+    write_scored(tmp_path, [coin(A, up, dict(NO_TAX, buy_tax=big)), coin(B, up, first={"sell_tax": big}),
+                            coin(C, [flat(1.0), flat(2.0, 10)], pool={"liquidity": big}),
+                            coin(D, [*up, (S + 20, big, big, big, big, big)])])  # fmt: skip
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert (out["ok"], out["coins"], out["candles"]["bad_prices_skipped"], out["pools"]["unknown"]) == (True, 4, 1, 1)
+
+
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], fetched_at=S + 100)])  # read 100 s after its start
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
