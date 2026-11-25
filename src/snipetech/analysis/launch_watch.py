@@ -124,9 +124,11 @@ LANDING = {
     "sol": "Solana: slots are 0.4 s, so a copy lands in the second it is sent, several slots after the launch (our "
     "own launch snipes land a slot after the create).",
     "bsc": "BNB Chain: blocks are under a second, so a copy lands in the second it is sent.",
-    "base": "Base: blocks are 2 s, so a copy's delay rounds up to the next block's candle, up to 2 s later.",
+    "base": "Base: blocks are 2 s, so a copy's delay rounds up to the next block's candle, up to 2 s later; one sent at "
+    "a block's own stamp lands in the block after it, that one being sealed.",
     "eth": "Ethereum: blocks are 12 s, so a copy's delay rounds up to the next block's candle, up to 12 s later: a buy "
-    "sent 2 or 5 s after the start lands behind the trades of the first block after it, never in the launch's own.",
+    "sent 2, 5 or 12 s after the start lands behind the trades of the first block stamped after its moment, never in "
+    "the launch's own or in one stamped at the moment.",
 }
 SCORE_READING = (
     "Every number has a pessimistic bound beside it (pessimistic): the entry at the high of the landing block's candle "
@@ -135,9 +137,11 @@ SCORE_READING = (
     "decides. The central number is what follows. "
     "A copy buys D seconds after the coin's start (its open time, else its creation; a coin timed from when the watch "
     "first saw it is scored apart, timed_from_sighting), if the coin traded before then, behind every trade of the "
-    "second, or the block, it lands in (block_secs: Solana and BNB Chain 1 s, Base 2 s, Ethereum 12 s): at the close "
-    "of the first 1 s candle at or after that moment if it opened within a block of it, else at the last close before "
-    "it, nobody else trading in its block; it sells H seconds later the same way. Its return is exit / entry x buy "
+    "second, or the block, it lands in (block_secs: Solana and BNB Chain 1 s, Base 2 s, Ethereum 12 s): on a chain of "
+    "1 s at the close of the second it is sent in; on Base and Ethereum at the close of the first block stamped after "
+    "that moment, a block later at most (a block stamped with the moment was sealed before the copy was sent); with "
+    "nobody else trading in its block, at the last close at or before the moment. It sells H seconds later the same "
+    "way. Its return is exit / entry x buy "
     "impact x sale impact x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
     "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
     "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
@@ -947,10 +951,16 @@ def _traded_before(ts: list[int], moment: int) -> bool:
 
 def _fill(ts: list[int], moment: int, block: int) -> int:
     """The candle a trade sent at `moment` fills at, by its place in `ts` (oldest first): behind every trade of the
-    second, or the block, it lands in (BLOCK_SECS), at the close of the first candle at or after the moment when that
-    candle opened within a block of it; else nobody else traded in its block, and it fills at the last close before
-    the moment; -1 when there is none. Third review of 25 Nov: every fill was the last close before the moment, the
-    place of the first trade of the block, which the default gas does not buy."""
+    second, or the block, it lands in (BLOCK_SECS); -1 when there is none. On a chain of 1 s, it lands in the second it
+    is sent: at the close of that second's candle, if anybody traded in it. On a chain of longer blocks, a block stamped
+    with the moment itself was sealed before the trade was sent (Base builds a block from what reaches it in the two
+    seconds before its stamp): it lands in the first block stamped after the moment, a block later at most, at the
+    close of its candle. When nobody else traded in its block, it fills at the last close at or before the moment.
+    Reviews of 25 Nov: every fill was the last close before the moment, the place of the first trade of the block,
+    which the default gas does not buy; then a trade sent at a block's own stamp filled in that sealed block."""
+    if block > 1:
+        k = bisect.bisect_right(ts, moment)
+        return k if k < len(ts) and ts[k] <= moment + block else k - 1
     k = bisect.bisect_left(ts, moment)
     return k if k < len(ts) and ts[k] < moment + block else k - 1
 

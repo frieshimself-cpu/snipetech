@@ -1006,11 +1006,28 @@ def test_a_trade_fills_behind_every_trade_of_the_second_or_block_it_lands_in(tmp
     assert by_delay == {2: (0, 1), 5: (1, 0), 12: (1, 0), 30: (1, 0)}
 
 
+def test_a_copy_sent_at_a_blocks_own_time_lands_in_the_next_block(tmp_path):
+    """Fourth review of 25 Nov: on a chain of blocks longer than a second, a copy sent at a block's own timestamp
+    filled in that block, which was sealed before it was sent (Base builds a block from what reaches it in the two
+    seconds before its stamp). It lands in the first block stamped after its moment, a block later at most: sent at
+    2 s it buys behind the trades of the block of 4 s, and sold at 32 s, behind those of 34 s."""
+    stamped = to_the_end([flat(1.0), flat(3.0, 2), flat(4.0, 4), flat(8.0, 32), flat(6.0, 34)])
+    write_scored(tmp_path, [coin(A, stamped)])
+    assert pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 30)["mean"] == pytest.approx(6.0 / 4.0 - 1)
+    # with nobody trading in the block after it, the block stamped at the moment gives the pool's price: its close
+    write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(3.0, 2), flat(9.0, 32)]))])
+    assert pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 30)["mean"] == pytest.approx(2.0)
+    # Solana's and BNB Chain's second: a trade of the second it is sent in is a trade of its own block
+    write_scored(tmp_path, [coin(A, stamped)], chain="sol")
+    assert pair(LW.score(tmp_path, "sol", gas_usd=0.0, fee_pct=0.0), 2, 30)["mean"] == pytest.approx(5 / 3, abs=1e-4)
+
+
 def test_the_landing_is_behind_the_trades_of_the_block_and_named_in_the_report(tmp_path):
     """Third review of 25 Nov (the reviewer's coins): on Ethereum, blocks of 12 s, a buy sent 2 s after the start was
     priced at the launch block's close, first in the next block for 3 dollars of gas: +60.6 percent at 2/30 where a
     copy behind that block's trades got -14.1. On Base, +46.9 against -2.1. A delay shorter than a block rounds up to
-    the next block's candle, and the report says where a copy lands, at which bid."""
+    the next block's candle, and the report says where a copy lands, at which bid. Fourth review of 25 Nov: a copy sent
+    at a block's own time (Base 2 s, Ethereum 12 s) lands in the next block, -8.2 and -25.3 percent."""
 
     def blocks(every, closes):  # a candle a block, the last close to the end of the window
         out, prev = [], closes[0]
@@ -1021,8 +1038,8 @@ def test_the_landing_is_behind_the_trades_of_the_block_and_named_in_the_report(t
         return out
 
     for chain, every, closes, want in (
-        ("eth", 12, [1.0, 1.6, 1.7, 1.5, 1.4], {2: -0.1412, 5: -0.1412, 12: -0.2024}),
-        ("base", 2, [1.0, 1.5, 1.6, 1.55, 1.5], {2: -0.0209, 5: -0.0525, 12: -0.0209}),
+        ("eth", 12, [1.0, 1.6, 1.7, 1.5, 1.4], {2: -0.1412, 5: -0.1412, 12: -0.2529}),
+        ("base", 2, [1.0, 1.5, 1.6, 1.55, 1.5], {2: -0.0822, 5: -0.0525, 12: -0.0209}),
     ):
         write_scored(tmp_path, [coin(A, blocks(every, closes))], chain=chain)
         out = LW.score(tmp_path, chain, fee_pct=1.0)
