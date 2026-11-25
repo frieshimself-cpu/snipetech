@@ -106,7 +106,8 @@ SCORE_READING = (
     "before that. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
     "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
     "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
-    "cannot be sold is -1. It fills at the candle's close: its own price impact is not counted. A coin with no candle "
+    "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. It fills at the candle's "
+    "close: its own price impact is not counted. A coin with no candle "
     "that opened before D - 1 or at it is no trade at D (one with no priced candle at all is no trade at any delay: "
     "candles.without_a_price); a candle whose close is missing or zero is "
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
@@ -116,7 +117,8 @@ SCORE_READING = (
     "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
     "is not scored (unsettled). A sale priced from a candle that opened more than 60 s before it (the coin had not "
     "traded since) is stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody "
-    "could sell at. The watch reads such a coin's pool once, when it settles; a stale sale is -1 unless that read "
+    "could sell at. The watch reads such a coin's pool once, when it settles; a stale sale is lost (-1 and its gas) "
+    "unless that read "
     "showed liquidity of the copy's size or more (pools: there, gone, or unknown when not read, refused or without a "
     "liquidity), and a coin whose pool was gone counts as rugged. stale_exits says how many of a row's sales were "
     "stale; table_without_stale_exits is the same table without those copies."
@@ -862,7 +864,7 @@ class _Score:
                     continue
                 stale = _stale(ts, end)
                 if honeypot or (stale and pool != "there"):
-                    ret = -1.0
+                    ret = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
                 else:
                     ret = closes[_at(ts, end)] / closes[i] * self.kept * keep - 1.0 - self.share
                 pair.add(ret, plat, rug, honeypot, stale)

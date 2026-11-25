@@ -734,6 +734,17 @@ def test_the_tax_unit_is_decided_once_for_the_whole_file(tmp_path):
         assert pair(out, 2, 30)["mean"] == pytest.approx((2 * 0.994 - 1 + 2 * 0.95 - 1) / 2)
 
 
+def test_a_copy_that_cannot_be_sold_still_pays_its_gas(tmp_path):
+    """Second review of 25 Nov: a honeypot, or a sale lost to an emptied pool, scored -1 flat, while a coin that went
+    to zero on Ethereum scored -1.06: each pays the two transactions' gas, as every other copy does."""
+    write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], {"is_honeypot": 1}),
+                            coin(B, [flat(1.0), flat(1e-12, 10)])], chain="eth")  # fmt: skip
+    out = LW.score(tmp_path, "eth", fee_pct=0.0)  # 3 dollars a transaction: 0.06 of a copy of 100
+    assert (out["gas_share"], pair(out, 2, 30)["mean"]) == (0.06, pytest.approx(-1.06))
+    write_scored(tmp_path, [coin(C, [flat(1.0), flat(3.0, 10)], pool={"liquidity": "0"})], chain="eth")
+    assert pair(LW.score(tmp_path, "eth", fee_pct=0.0), 2, 120)["mean"] == pytest.approx(-1.06)  # sold after its pull
+
+
 def test_the_table_says_how_the_coins_did_without_the_five_best_and_how_many_rugged(tmp_path):
     ends = {A: (10.0, 10.0), B: (5.0, 5.0), C: (2.0, 2.0), D: (1.5, 1.5), E: (1.2, 1.2), F: (0.5, 0.05), G: (0.1, 0.1)}
     coins = [coin(m, [flat(1.0), (S + 10, 1.0, max(1.0, c), lo, c, 1.0)]) for m, (c, lo) in ends.items()]
