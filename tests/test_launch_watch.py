@@ -888,6 +888,26 @@ def test_a_sale_after_the_coins_last_trade_is_all_lost_unless_its_pool_still_hol
     assert LW.score(tmp_path, "base", size_usd=50_000, gas_usd=0.0, fee_pct=0.0)["pools"]["gone"] == 2
 
 
+def test_a_field_is_given_only_when_it_reads_as_a_tax_or_as_a_yes_or_no(tmp_path):
+    """Second review of 25 Nov: a field of -1 counted as given, so an answer of -1 everywhere read as known, sellable
+    and untaxed. A tax is given when it reads as a number of 0 or more; a flag when it reads as 0 or 1 (true, false,
+    yes, no)."""
+    up = [flat(1.0), flat(2.0, 10)]
+    minus = dict.fromkeys(("is_honeypot", "honeypot", "can_not_sell", "can_sell", "buy_tax", "sell_tax"), -1)
+    some = {"is_honeypot": 2, "honeypot": "no", "can_not_sell": False, "buy_tax": "x", "sell_tax": "0"}
+    write_scored(tmp_path, [coin(A, up, minus), coin(B, up, some)])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert (out["security"]["without_fields"], out["security_unknown"]["coins"]) == (1, 1)  # A gave nothing
+    assert out["security"]["fields"] == {
+        "is_honeypot": {"given": 0, "yes": 0},
+        "honeypot": {"given": 1, "yes": 0},
+        "can_not_sell": {"given": 1, "yes": 0},
+        "can_sell": {"given": 0, "yes": 0},
+        "buy_tax": {"given": 0, "above_0": 0},
+        "sell_tax": {"given": 1, "above_0": 0},
+    }
+
+
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], fetched_at=S + 100)])  # read 100 s after its start
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)

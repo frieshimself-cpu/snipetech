@@ -133,8 +133,9 @@ SECURITY_READING = (
     "coin's tax, in either read, is above 1; else as shares of 1 (0.05 is 5 percent), as GMGN's coin rows give theirs. "
     "A tax above 0 and at most 1 could mean either: ambiguous_coins counts the coins with one, and "
     "honeypots_if_shares and honeypots_if_percents give the coins that cannot be sold under each reading (honeypots is "
-    "the file's own unit's). A field that is missing, null or empty says nothing: no "
-    "tax, not a honeypot. `fields` says on how many coins GMGN gave each field. A coin whose security answer GMGN "
+    "the file's own unit's). A field says something only when it reads as a tax of 0 or more, or a flag as 0 or 1 "
+    "(true, false, yes, no); anything else (missing, null, empty, -1) says nothing: no tax, not a honeypot. `fields` "
+    "says on how many coins GMGN gave each field. A coin whose security answer GMGN "
     "refused (refused), or that gave none of is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax "
     "(without_fields), is not known to be sellable: it is scored apart (security_unknown), never in the table."
 )
@@ -587,9 +588,14 @@ def watch(
 # -- the score ---------------------------------------------------------------------------------------------------------
 
 
-def _given(v: Any) -> bool:
-    """Whether GMGN said anything in a field: missing, null and empty say nothing."""
-    return v is not None and not (isinstance(v, str) and not v.strip())
+def _flag_given(v: Any) -> bool:
+    """Whether GMGN answered a flag: 0 or 1, true or false, yes or no. Anything else (missing, null, empty, -1, 2) says
+    nothing (second review of 25 Nov: -1 everywhere read as an answer that the coin was sellable and untaxed)."""
+    if isinstance(v, bool):
+        return True
+    if isinstance(v, (int, float)):
+        return v in (0, 1)
+    return isinstance(v, str) and v.strip().lower() in ("0", "1", "true", "false", "yes", "no")
 
 
 def _yes(v: Any) -> bool:
@@ -626,7 +632,8 @@ def read_security(sec: Any, percent: bool = False) -> dict:
         "buy_tax": shares["buy_tax"],
         "sell_tax": shares["sell_tax"],
         "refused": False,
-        "given": {k for k in (*FLAGS, *TAXES) if _given(sec.get(k))},
+        # a tax is given when it reads as a number of 0 or more, a flag when it reads as 0 or 1
+        "given": {k for k in FLAGS if _flag_given(sec.get(k))} | {k for k, t in taxes.items() if t is not None},
         "yes": yes,
         "taxed": {k for k in TAXES if shares[k] > 0},
         "numbers": [t for t in taxes.values() if t is not None],
