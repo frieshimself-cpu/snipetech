@@ -413,7 +413,8 @@ def _gmgn_launch_score(args, cfg) -> int:
     from the watch's file beside the database: no key, no database, nothing asked of GMGN."""
     from .analysis import launch_watch
 
-    given = {k: v for k, v in (("size_usd", args.size_usd), ("gas_usd", args.gas_usd)) if v is not None}
+    given = {k: v for k, v in (("size_usd", args.size_usd), ("gas_usd", args.gas_usd), ("fee_pct", args.fee_pct))
+             if v is not None}  # fmt: skip
     try:
         out, code = launch_watch.score(Path(cfg.storage.db_path).resolve().parent, args.chain, **given), 0
     except ValueError as exc:
@@ -1851,6 +1852,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--gas-usd",
         type=float,
         help="launch-score: the dollars one transaction costs (unless given: eth 3, base 0.05, bsc 0.05, sol 0.5)",
+    )
+    sp.add_argument(
+        "--fee-pct",
+        type=float,
+        help="launch-score: the pool's swap fee on the buy and again on the sale, in percent (unless given: sol 1.25, "
+        "bsc, base and eth 1)",
     )
 
     sp = cmd("remote", "operate snipetech on your server through its ops endpoint", json_flag=False)

@@ -470,7 +470,7 @@ def pair(out, delay, hold):
     return next(r for r in out["table"] if (r["delay"], r["hold"]) == (delay, hold))
 
 
-def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_and_two_gas_fees(tmp_path):
+def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_two_swap_fees_and_two_gas_fees(tmp_path):
     candles = [flat(1.0), flat(2.0, 10), flat(1.5, 40)]
     write_scored(
         tmp_path,
@@ -478,14 +478,35 @@ def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_and_two_gas_fees(tm
     )
     out = LW.score(tmp_path, "base", size_usd=100.0, gas_usd=0.05)
     # in at the close of the last candle at or before start + 2 (1.0), out at or before start + 32 (2.0):
-    # 2.0 / 1.0 x 0.95 x 0.90 - 1 - 2 x 0.05 / 100. B's taxes are the same, said in percents.
-    assert pair(out, 2, 30)["coins"] == 2 and pair(out, 2, 30)["mean"] == pytest.approx(0.709, abs=1e-4)
-    assert pair(out, 2, 120)["mean"] == pytest.approx(0.2815, abs=1e-4)  # out at start + 40: 1.5
-    assert pair(out, 12, 30)["mean"] == pytest.approx(-0.35975, abs=1e-4)  # in at start + 10: 2.0
-    assert (out["size_usd"], out["gas_usd"], out["security"]["taxes_read_as_percent"]) == (100.0, 0.05, 1)
+    # 2.0 / 1.0 x 0.99 x 0.99 x 0.95 x 0.90 - 1 - 2 x 0.05 / 100: Base's swap fee of 1 percent on each leg.
+    # B's taxes are the same, said in percents.
+    kept = 0.99**2 * 0.95 * 0.9
+    assert pair(out, 2, 30)["coins"] == 2 and pair(out, 2, 30)["mean"] == pytest.approx(2 * kept - 1.001, abs=1e-4)
+    assert pair(out, 2, 120)["mean"] == pytest.approx(1.5 * kept - 1.001, abs=1e-4)  # out at start + 40: 1.5
+    assert pair(out, 12, 30)["mean"] == pytest.approx(0.75 * kept - 1.001, abs=1e-4)  # in at start + 10: 2.0
+    assert (out["size_usd"], out["gas_usd"], out["fee_pct"]) == (100.0, 0.05, 1.0)
+    assert out["security"]["taxes_read_as_percent"] == 1
     write_scored(tmp_path, [coin(A, candles, {"buy_tax": "0.05", "sell_tax": "0.1"})], chain="eth")
     eth = LW.score(tmp_path, "eth")  # Ethereum's gas when none is given: 3 dollars a transaction
-    assert eth["gas_usd"] == 3.0 and pair(eth, 2, 30)["mean"] == pytest.approx(0.65, abs=1e-4)
+    assert eth["gas_usd"] == 3.0 and pair(eth, 2, 30)["mean"] == pytest.approx(2 * kept - 1.06, abs=1e-4)
+
+
+def test_each_leg_pays_the_swap_fee_of_its_chain(tmp_path):
+    """Review of 25 Nov: no swap fee was charged. A launchpad's pool takes its fee on the buy and again on the sale:
+    pump.fun's 1.25 percent on Solana (GMGN's rows of 12 Nov: 0.0125 a side), 1 percent on BNB Chain, Base and
+    Ethereum unless --fee-pct says otherwise."""
+    up = [flat(1.0), flat(2.0, 10)]
+    for chain, fee in (("base", 1.0), ("bsc", 1.0), ("eth", 1.0), ("sol", 1.25)):
+        write_scored(tmp_path, [coin(A, up)], chain=chain)
+        out = LW.score(tmp_path, chain, gas_usd=0.0)
+        assert out["fee_pct"] == fee, chain
+        assert pair(out, 2, 30)["mean"] == pytest.approx(2.0 * (1 - fee / 100) ** 2 - 1, abs=1e-4), chain
+    out = LW.score(tmp_path, "sol", gas_usd=0.0, fee_pct=3)
+    assert out["fee_pct"] == 3.0 and pair(out, 2, 30)["mean"] == pytest.approx(2.0 * 0.97**2 - 1, abs=1e-4)
+    assert "(1 - fee)^2" in out["reading"] and "1.25 percent" in out["reading"]
+    for bad in (-1, 100, "nan"):
+        with pytest.raises(ValueError, match="--fee-pct"):
+            LW.score(tmp_path, "sol", fee_pct=bad)
 
 
 def test_a_coin_that_cannot_be_sold_is_all_lost(tmp_path):
@@ -502,7 +523,7 @@ def test_a_coin_that_cannot_be_sold_is_all_lost(tmp_path):
             coin(E, up, dict(NO_TAX, sell_tax="0.49")),
         ],
     )
-    out = LW.score(tmp_path, "base", gas_usd=0.0)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     row = pair(out, 2, 30)
     assert row["coins"] == 6 and row["honeypots"] == 5
     assert row["mean"] == pytest.approx((5 * -1.0 + (3.0 * 0.51 - 1)) / 6, abs=1e-4)
@@ -513,7 +534,7 @@ def test_the_table_says_how_the_coins_did_without_the_five_best_and_how_many_rug
     ends = {A: (10.0, 10.0), B: (5.0, 5.0), C: (2.0, 2.0), D: (1.5, 1.5), E: (1.2, 1.2), F: (0.5, 0.05), G: (0.1, 0.1)}
     coins = [coin(m, [flat(1.0), (S + 10, 1.0, max(1.0, c), lo, c, 1.0)]) for m, (c, lo) in ends.items()]
     write_scored(tmp_path, coins)
-    row = pair(LW.score(tmp_path, "base", gas_usd=0.0), 2, 30)  # returns 9, 4, 1, 0.5, 0.2, -0.5 and -0.9
+    row = pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 30)  # returns 9, 4, 1, 0.5, 0.2, -0.5 and -0.9
     assert row["coins"] == 7
     assert row["mean"] == pytest.approx(1.9, abs=1e-4) and row["median"] == pytest.approx(0.5, abs=1e-4)
     assert row["share_above_0"] == pytest.approx(5 / 7, abs=1e-4)
@@ -523,7 +544,7 @@ def test_the_table_says_how_the_coins_did_without_the_five_best_and_how_many_rug
 
 def test_no_hold_runs_past_the_500_seconds_of_candles(tmp_path):
     write_scored(tmp_path, [coin(A, [flat(0.5), flat(1.0, 12), flat(2.0, 492), flat(4.0, 499)])])
-    out = LW.score(tmp_path, "base", gas_usd=0.0)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     pairs = {(r["delay"], r["hold"]) for r in out["table"]}
     assert len(pairs) == 15 and (30, 480) not in pairs  # 30 + 480 = 510 s: past the candles
     assert [(n["delay"], n["hold"]) for n in out["not_scored"]] == [(30, 480)]
@@ -542,7 +563,7 @@ def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):
             coin(C, [flat(5.0, -5), flat(1.0, 8), flat(2.0, 20)]),
         ],
     )
-    out = LW.score(tmp_path, "base", gas_usd=0.0)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert pair(out, 2, 30)["coins"] == 1 and pair(out, 2, 30)["mean"] == pytest.approx(2.0)  # A: in at 1.0, out 3.0
     assert pair(out, 12, 30)["coins"] == 2 and pair(out, 12, 30)["mean"] == pytest.approx(1.5)  # A 2.0, C 1.0
     by_delay = {d["delay"]: (d["with_entry"], d["no_trade_yet"]) for d in out["by_delay"]}
@@ -555,7 +576,7 @@ def test_the_best_pair_is_chosen_without_its_five_best_coins(tmp_path):
     lines = [coin(m, [flat(1.0), flat(1.1, 3), flat(x, 10), flat(1.2, 100), flat(1.1, 250)])
              for m, x in zip((A, B, C, D, E, F), (101.0, 1.0, 1.0, 1.0, 1.0, 1.0), strict=True)]  # fmt: skip
     write_scored(tmp_path, lines)
-    out = LW.score(tmp_path, "base", gas_usd=0.0)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert pair(out, 2, 30)["mean"] == pytest.approx(100 / 6, abs=1e-3) and pair(out, 2, 30)["mean_without_best5"] == 0
     assert (out["best"]["delay"], out["best"]["hold"]) == (2, 120)  # every coin +20 percent
     assert [(p["platform"], p["coins"]) for p in out["by_platform"]] == [("clanker", 6)]
@@ -572,7 +593,7 @@ def test_the_best_pair_is_split_by_launchpad(tmp_path):
             coin(E, [flat(1.0), flat(1.5, 10)], platform=None),
         ],
     )
-    out = LW.score(tmp_path, "base", gas_usd=0.0)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert out["best"]["delay"] in (2, 5)  # five coins: too few to take five out, the median chooses
     got = {p["platform"]: (p["coins"], p["mean"]) for p in out["by_platform"]}
     assert got == {
@@ -607,7 +628,7 @@ def test_the_report_counts_the_security_fields_gmgn_gave(tmp_path):
 
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], fetched_at=S + 100)])  # read 100 s after its start
-    out = LW.score(tmp_path, "base", gas_usd=0.0)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert pair(out, 2, 30)["coins"] == 1  # over by start + 32
     assert (pair(out, 2, 120)["coins"], pair(out, 2, 120)["unsettled"]) == (0, 1)  # start + 122: not yet when read
 
@@ -615,7 +636,7 @@ def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
 def test_a_broken_line_and_a_coin_written_twice_are_counted_not_scored(tmp_path):
     line = coin(A, [flat(1.0), flat(2.0, 10)])
     write_scored(tmp_path, [line, line], extra='{"mint": "0xcut", "candles": [[1, 2\n')
-    out = LW.score(tmp_path, "base", gas_usd=0.0)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert (out["coins"], out["duplicates"], out["unreadable_lines"]) == (1, 1, 1)
     assert pair(out, 2, 30)["coins"] == 1
 
@@ -677,10 +698,11 @@ def test_launch_watch_wants_its_minutes_and_sane_numbers(snipetech):
 def test_launch_score_reads_the_watched_file_and_needs_no_key(snipetech, tmp_path, monkeypatch):
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)])])
     monkeypatch.delenv("GMGN_API_KEY")
-    code, out, seen = snipetech("launch-score", "--chain", "base", "--size-usd", "50", "--gas-usd", "1", "--json")
+    argv = ("launch-score", "--chain", "base", "--size-usd", "50", "--gas-usd", "1", "--fee-pct", "0.5", "--json")
+    code, out, seen = snipetech(*argv)
     assert code == 0 and out["ok"] is True and not seen
-    assert (out["chain"], out["size_usd"], out["gas_usd"]) == ("base", 50.0, 1.0)
-    assert pair(out, 2, 30)["mean"] == pytest.approx(2.0 / 1.0 - 1 - 2 * 1.0 / 50, abs=1e-4)
+    assert (out["chain"], out["size_usd"], out["gas_usd"], out["fee_pct"]) == ("base", 50.0, 1.0, 0.5)
+    assert pair(out, 2, 30)["mean"] == pytest.approx(2.0 / 1.0 * 0.995**2 - 1 - 2 * 1.0 / 50, abs=1e-4)
     code, out, _ = snipetech("launch-score", "--chain", "eth", "--json")  # nothing watched on Ethereum yet
     assert code == 1 and out["ok"] is False and "launch-watch" in out["error"]
     code, out, _ = snipetech("launch-score", "--chain", "base", "--size-usd", "0", "--json")

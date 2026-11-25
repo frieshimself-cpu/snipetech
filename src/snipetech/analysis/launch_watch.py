@@ -50,6 +50,9 @@ SETTLE_SECS = 900.0  # a coin's candles and security are read this long after it
 POLL_LIMIT = 80  # the most coins GMGN gives of a stage
 SIZE_USD = 100.0
 GAS_USD = {"eth": 3.0, "base": 0.05, "bsc": 0.05, "sol": 0.5}  # one transaction, in dollars, when none is given
+# the pool's swap fee on each leg, in percent, when none is given: pump.fun's 1.25 on Solana (GMGN's coin rows of
+# 12 Nov: 0.0125 a side), 1 on BNB Chain, Base and Ethereum (review of 25 Nov: no fee was charged)
+FEE_PCT = {"sol": 1.25, "bsc": 1.0, "base": 1.0, "eth": 1.0}
 RUG_LEFT = 0.1  # a rug: the price fell to this share of its first candle's or below within the window
 HONEYPOT_SELL_TAX = 0.5  # a sell tax this high counts as a coin that cannot be sold
 BEST_LEFT_OUT = 5
@@ -79,9 +82,10 @@ LANDING = {
 SCORE_READING = (
     "A copy buys D seconds after the coin's start (its open time, else its creation, else when the watch first saw it) "
     "at the close of the last 1 s candle at or before then, and sells H seconds later at the close of the last candle "
-    "at or before that. Its return is exit / entry x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / size, a share of "
-    "the size (0.1 is +10 percent; -1 is all of it). A coin that cannot be sold is -1. It fills at the candle's close: "
-    "its own price impact is not counted. A coin with no candle at or before D is no trade at D (one with no priced "
+    "at or before that. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
+    "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
+    "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
+    "cannot be sold is -1. It fills at the candle's close: its own price impact is not counted. A coin with no candle at or before D is no trade at D (one with no priced "
     "candle at all is no trade at any delay: candles.without_a_price); a candle whose close is missing or zero is "
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
     "inside the 500 s are read. mean_without_best5 is the mean once the five best copies are "
@@ -591,8 +595,9 @@ class _Pair:
 class _Score:
     """What `score` adds up, one coin at a time; only the copies' numbers are kept, never a coin's candles."""
 
-    def __init__(self, share: float):
+    def __init__(self, share: float, fee: float):
         self.share = share  # the two transactions' gas, as a share of the size
+        self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
         self.pairs = {(d, h): _Pair() for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS}
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
@@ -633,7 +638,7 @@ class _Score:
                     pair.unsettled += 1
                     continue
                 out = closes[bisect.bisect_right(ts, end) - 1]
-                ret = -1.0 if sec["honeypot"] else out / closes[i] * keep - 1.0 - self.share
+                ret = -1.0 if sec["honeypot"] else out / closes[i] * self.kept * keep - 1.0 - self.share
                 pair.add(ret, plat, rug, sec["honeypot"])
 
     def report(self) -> dict:
@@ -700,7 +705,14 @@ def _scored_line(line: str) -> dict | None:
     return rec
 
 
-def score(data_dir: str | Path, chain: str, *, size_usd: float = SIZE_USD, gas_usd: float | None = None) -> dict:
+def score(
+    data_dir: str | Path,
+    chain: str,
+    *,
+    size_usd: float = SIZE_USD,
+    gas_usd: float | None = None,
+    fee_pct: float | None = None,
+) -> dict:
     """`snipetech gmgn launch-score`: what a copy of each coin in <chain>_scored.jsonl made at each entry delay and
     hold, the file read one line at a time (a line holds 500 candles). A coin written twice is scored once. A wrong
     number is a ValueError; a chain never watched is {"ok": false} with what to run."""
@@ -708,11 +720,14 @@ def score(data_dir: str | Path, chain: str, *, size_usd: float = SIZE_USD, gas_u
         raise ValueError(f"gmgn launch-score: chain {chain!r} is not one of {', '.join(CHAINS)}")
     size = _number("gmgn launch-score: --size-usd", size_usd, 0.0, above=True)
     gas = GAS_USD[chain] if gas_usd is None else _number("gmgn launch-score: --gas-usd", gas_usd, 0.0)
+    fee = FEE_PCT[chain] if fee_pct is None else _number("gmgn launch-score: --fee-pct", fee_pct, 0.0)
+    if fee >= 100.0:
+        raise ValueError(f"gmgn launch-score: --fee-pct must be under 100: a fee of all of it (got {fee_pct!r})")
     path = files(data_dir, chain)[1]
     if not path.exists():
         return {"ok": False, "chain": chain, "error": f"no launch on {chain} has been read yet: {path} does not exist "
                 f"(snipetech gmgn launch-watch --chain {chain} writes it)"}  # fmt: skip
-    tally, done = _Score(2.0 * gas / size), set()
+    tally, done = _Score(2.0 * gas / size, fee / 100.0), set()
     with path.open(encoding="utf-8") as fh:
         for line in fh:
             rec = _scored_line(line)
@@ -730,6 +745,7 @@ def score(data_dir: str | Path, chain: str, *, size_usd: float = SIZE_USD, gas_u
         "size_usd": size,
         "gas_usd": gas,
         "gas_share": round(2.0 * gas / size, 6),
+        "fee_pct": fee,  # the pool's swap fee on each leg
         "landing": LANDING[chain],
         "reading": SCORE_READING,
         **tally.report(),
