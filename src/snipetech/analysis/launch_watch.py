@@ -225,17 +225,19 @@ def _new_rows(data: Any) -> tuple[list[dict], int]:
     """GMGN's newest coins as its trenches answer sends them (`new_pairs` with raw): each row as the client converts it
     (Gmgn._coin_row), with the fields of FIRST_SIGHT GMGN gave on it kept as given; POLL_LIMIT rows at most, as the
     client cuts them. Each row is converted on its own: one the client cannot convert (GMGN's 1e999 is infinity, which
-    no whole number holds) is left out and counted, the second number given."""
+    no whole number holds), or converts to nothing (no address it can read: third review of 25 Nov, such rows read as
+    a chain where nothing launched), is left out and counted, the second number given."""
     raw = data.get("new_creation") if isinstance(data, dict) else None
     rows, bad = [], 0
     for given in raw if isinstance(raw, list) else []:
         try:
             row = Gmgn._coin_row(given) if isinstance(given, dict) else None
         except Exception:  # noqa: BLE001 - whatever the conversion raises, this row is left out and counted
+            row = None
+        if row is None:
             bad += 1
             continue
-        if row is not None:
-            rows.append(row | {k: given[k] for k in FIRST_SIGHT if k in given})
+        rows.append(row | {k: given[k] for k in FIRST_SIGHT if k in given})
     return rows[:POLL_LIMIT], bad
 
 

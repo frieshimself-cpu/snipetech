@@ -484,6 +484,17 @@ def test_a_number_the_client_cannot_convert_leaves_the_coin_for_later_and_the_jo
     assert out["ok"] is True and out["resumed"] == {"seen": 1, "waiting": 0} and out["bad_rows"] == 1
 
 
+def test_a_row_the_client_reads_as_nothing_is_counted(tmp_path):
+    """Third review of 25 Nov: a row the client converts to nothing (its address under another name, as on a chain no
+    real answer was read of) was dropped without a count: 90 of them read as a chain where nothing launched."""
+    unnamed = {k: v for k, v in trench(A, T).items() if k != "address"} | {"token_address": A}
+    routes = {"/v1/trenches": polls([unnamed, trench(B, T), "not a row"])}
+    out = watch(tmp_path, FakeTime(T), routes, minutes=3)
+    assert (out["polls"], out["recorded"], out["bad_rows"]) == (3, 1, 6)  # two of its three rows, in each look
+    quiet = watch(tmp_path / "quiet", FakeTime(T), {"/v1/trenches": polls([])}, minutes=3)
+    assert (quiet["recorded"], quiet["bad_rows"]) == (0, 0)
+
+
 def test_a_refused_key_ends_the_job_and_leaves_the_coin_for_the_next_one(tmp_path):
     ft = FakeTime(T)
     routes = {
