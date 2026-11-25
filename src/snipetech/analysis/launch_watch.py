@@ -995,8 +995,11 @@ def _r(x: float) -> float:
 
 def _se(xs: Any) -> float | None:
     """The standard error of a mean of copies: their standard deviation over the square root of their number; None
-    for fewer than two."""
-    return _r(statistics.stdev(xs) / math.sqrt(len(xs))) if len(xs) > 1 else None
+    for fewer than two, or when one is not a finite number (a price of 1e300 after one of 1e-300: the standard
+    deviation raises on it)."""
+    if len(xs) < 2 or not all(math.isfinite(x) for x in xs):
+        return None
+    return _r(statistics.stdev(xs) / math.sqrt(len(xs)))
 
 
 def _stats(rets: Any, rugs: Any) -> dict:

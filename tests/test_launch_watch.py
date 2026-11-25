@@ -1338,6 +1338,15 @@ def test_a_number_too_big_for_a_float_reads_as_nothing_and_the_score_goes_on(tmp
     assert (out["ok"], out["coins"], out["candles"]["bad_prices_skipped"], out["pools"]["unknown"]) == (True, 4, 1, 1)
 
 
+def test_a_return_too_big_for_a_float_leaves_its_standard_error_unsaid_and_the_score_goes_on(tmp_path):
+    """A price of 1e300 after one of 1e-300 is a return no float holds: the standard error, which a number that is not
+    finite stops, is left unsaid, and the score goes on (the standard deviation raised, and ended the score)."""
+    lines = [coin(A, to_the_end([flat(1e-300), flat(1e300, 10)])), coin(B, to_the_end([flat(1.0), flat(2.0, 10)]))]
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert (out["ok"], pair(out, 2, 30)["coins"], pair(out, 2, 30)["mean_se"]) == (True, 2, None)
+
+
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], fetched_at=S + 100)])  # read 100 s after its start
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
