@@ -39,6 +39,7 @@ import bisect
 import contextlib
 import fcntl
 import functools
+import hashlib
 import json
 import math
 import os
@@ -145,9 +146,15 @@ SCORE_READING = (
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
     "inside the 500 s are read. mean_se is the mean's standard error (the copies' standard deviation over the square "
     "root of their number): a mean less than two of them from 0 is not told apart from 0. mean_without_best5 is the "
-    "mean once the five best copies are taken out; the best pair is the one with the highest among the pairs of 30 "
-    "coins or more (min_coins); with none, no pair is best (no_best says why). by_platform splits the best pair by "
-    "launchpad, the busiest first; a launchpad with fewer than 30 coins gets no numbers (too_few_coins). "
+    "mean once the five best copies are taken out. The coins are split in two halves by a hash of their address "
+    "(half_of: SHA-256, the same on every run; coins_by_half counts the coins scored for the table in each): the best "
+    "pair is the "
+    "one with the highest mean_without_best5 on half 0, among the pairs with 30 coins or more in each half "
+    "(min_coins), and best prints its numbers on half 1, coins it was not chosen on (a pair chosen and judged on the "
+    "same coins looks better than it is); with none, no pair is best (no_best says why). by_platform splits the best "
+    "pair by launchpad: those with 30 coins or more in each half in their order on half 0 by the same number (rank), "
+    "with half 1's numbers; the others get no numbers (too_few_coins). The table holds every coin of both halves: a "
+    "pair picked from it by eye is chosen and judged on the same coins. "
     "rug_share is the share of coins whose price fell to a tenth of their first candle's or below within the 500 s "
     "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
     "is not scored (unsettled). A sale priced from the coin's last trade in its 500 s (no trade came after it) is "
@@ -312,6 +319,14 @@ def first_sight(rec: dict) -> dict:
 def _key(mint: str) -> str:
     """The coin a mint names: an EVM address in another case is the same coin."""
     return mint.lower() if mint.startswith("0x") else mint
+
+
+def half_of(mint: str) -> int:
+    """The half of the coins a mint is in, 0 or 1, by the SHA-256 of its coin (_key): the same on every run. The best
+    pair and the launchpads' order are chosen on half 0 and their numbers read on half 1 (third review of 25 Nov: chosen
+    and judged on the same coins, a market with no edge showed a best pair and a top launchpad better than new coins
+    gave)."""
+    return hashlib.sha256(_key(mint).encode()).digest()[0] & 1
 
 
 START_FROM = (("open_ts", "open"), ("created_ts", "created"), ("first_seen", "sighting"))
@@ -990,19 +1005,19 @@ def _stats(rets: Any, rugs: Any) -> dict:
 
 
 class _Pair:
-    """The copies of one entry delay and hold, side by side: returns, launchpads (by number), and rug, honeypot,
-    stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
+    """The copies of one entry delay and hold, side by side: returns, launchpads (by number), halves (half_of), and
+    rug, honeypot, stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
 
-    __slots__ = ("big", "honeypot", "lost", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
+    __slots__ = ("big", "half", "honeypot", "lost", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
 
     def __init__(self) -> None:
         self.rets, self.plats = array("d"), array("I")
         self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
-        self.lost, self.big = bytearray(), bytearray()
+        self.lost, self.big, self.half = bytearray(), bytearray(), bytearray()
         self.unsettled = 0
 
     def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool, lost: bool, unknown: bool,
-            big: bool) -> None:  # fmt: skip
+            big: bool, half: int) -> None:  # fmt: skip
         self.rets.append(ret)
         self.plats.append(plat)
         self.rugs.append(rug)
@@ -1011,18 +1026,22 @@ class _Pair:
         self.lost.append(lost)
         self.unknown.append(unknown)
         self.big.append(big)
+        self.half.append(half)
 
-    def row(self) -> dict:
+    def row(self, half: int | None = None) -> dict:
         """The pair's numbers (_stats), its honeypots, its holds not over when read, its copies whose security is not
-        known, its copies above 5 percent of their pool and its stale sales."""
-        return {
-            **_stats(self.rets, self.rugs),
-            "honeypots": sum(self.honeypot),
-            "unsettled": self.unsettled,
-            "security_unknown": sum(self.unknown),
-            "over_5pct_of_pool": sum(self.big),
-            "stale_exits": sum(self.stale),
-        }
+        known, its copies above 5 percent of their pool and its stale sales; with `half`, those of its copies of that
+        half of the coins (half_of), without the holds not over."""
+        marks = (self.rugs, self.honeypot, self.unknown, self.big, self.stale)
+        rets: Any = self.rets
+        if half is not None:
+            keep = [k for k, h in enumerate(self.half) if h == half]
+            rets, marks = [rets[k] for k in keep], tuple([m[k] for k in keep] for m in marks)
+        rugs, honeypot, unknown, big, stale = marks
+        out = {**_stats(rets, rugs), "honeypots": sum(honeypot)}
+        if half is None:
+            out["unsettled"] = self.unsettled
+        return out | {"security_unknown": sum(unknown), "over_5pct_of_pool": sum(big), "stale_exits": sum(stale)}
 
     def stale_row(self) -> dict:
         """The pair's stale sales alone: how many, their mean, and how many were lost (no liquidity read at settle).
@@ -1044,6 +1063,7 @@ class _Score:
         self.apart = {pair: _Pair() for pair in PAIRS}  # those whose security is not known, alone (security_unknown)
         self.sighted = {pair: _Pair() for pair in PAIRS}  # the coins timed from a sighting, apart (timed_from_sighting)
         self.unsized = {pair: _Pair() for pair in PAIRS}  # the coins with no pool size, apart (without_pool_size)
+        self.by_half = [0, 0]  # the table's coins in each half (half_of)
         self.pools = dict.fromkeys(("coins_with_a_stale_exit", "there", "gone", "unknown"), 0)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
@@ -1109,6 +1129,8 @@ class _Score:
         if "candles_error" in rec:
             self.n["candles_refused"] += 1
             return
+        half = half_of(rec["mint"])
+        self.by_half[half] += main
         start = _int(rec.get("start"))
         ts, closes, dollars, rug, bad = _path(rec.get("candles"), start)
         self.n["bad_prices"] += bad
@@ -1152,7 +1174,7 @@ class _Score:
                 else:
                     ret = ratio * entry_keep * exit_keep * self.kept * keep - 1.0 - self.share
                 for pairs in tables:
-                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, lost, unknown, big)
+                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, lost, unknown, big, half)
 
     @staticmethod
     def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:
@@ -1160,10 +1182,12 @@ class _Score:
 
     def report(self) -> dict:
         table = self._table(self.pairs)
-        # the highest mean without the five best coins, among the pairs with coins enough to say something
-        enough = [row for row in table if row["coins"] >= MIN_COINS]
-        most = max((row["coins"] for row in table), default=0)
-        best = max(enough, key=lambda row: row["mean_without_best5"], default=None)
+        # the highest mean without the five best coins on half 0, among the pairs with coins enough in each half to
+        # say something; its numbers are half 1's, coins it was not chosen on
+        on, off = ({k: p.row(half) for k, p in self.pairs.items()} for half in (0, 1))
+        fewer = {k: min(on[k]["coins"], off[k]["coins"]) for k in self.pairs}
+        enough = [k for k in self.pairs if fewer[k] >= MIN_COINS]
+        best = max(enough, key=lambda k: on[k]["mean_without_best5"], default=None)
         return {
             "coins": self.n["coins"],
             "duplicates": self.n["duplicates"],
@@ -1212,11 +1236,26 @@ class _Score:
                 if d + h > WINDOW_SECS
             ],
             "min_coins": MIN_COINS,
+            "coins_by_half": list(self.by_half),
             "best": None
             if best is None
-            else {"delay": best["delay"], "hold": best["hold"], "chosen_by": "mean_without_best5"},
-            **({} if best else {"no_best": f"too few coins: no pair has {MIN_COINS}, the most is {most}"}),
-            "by_platform": [] if best is None else self._by_platform(self.pairs[(best["delay"], best["hold"])]),
+            else {
+                "delay": best[0],
+                "hold": best[1],
+                "chosen_by": "mean_without_best5",
+                "chosen_on": {"half": 0, "coins": on[best]["coins"]},
+                "numbers_from": {"half": 1},
+                **off[best],
+            },
+            **(
+                {}
+                if best
+                else {
+                    "no_best": f"too few coins: no pair has {MIN_COINS} in each half, the most is "
+                    f"{max(fewer.values(), default=0)}"
+                }
+            ),
+            "by_platform": [] if best is None else self._by_platform(self.pairs[best]),
         }
 
     def _fields(self, read: str, flags: tuple[str, ...]) -> dict:
@@ -1226,20 +1265,23 @@ class _Score:
         }
 
     def _by_platform(self, pair: _Pair) -> list[dict]:
-        """One pair's copies split by launchpad, the busiest first."""
+        """One pair's copies split by launchpad: those with MIN_COINS or more in each half in their order on half 0
+        by mean_without_best5 (rank), with half 1's numbers; then the others, too few coins, the busiest first."""
         names = list(self.platforms)  # numbered in the order first met
-        groups: dict[int, tuple[list[float], list[int]]] = {}
-        for ret, plat, rug in zip(pair.rets, pair.plats, pair.rugs, strict=True):
-            rets, rugs = groups.setdefault(plat, ([], []))
+        groups: dict[int, tuple[tuple[list[float], list[int]], ...]] = {}
+        for ret, plat, rug, half in zip(pair.rets, pair.plats, pair.rugs, pair.half, strict=True):
+            rets, rugs = groups.setdefault(plat, (([], []), ([], [])))[half]
             rets.append(ret)
             rugs.append(rug)
-        rows = [
-            {"platform": names[k], **_stats(rets, rugs)}
-            if len(rets) >= MIN_COINS
-            else {"platform": names[k], "coins": len(rets), "too_few_coins": True}
-            for k, (rets, rugs) in groups.items()
-        ]
-        return sorted(rows, key=lambda row: (-row["coins"], row["platform"]))
+        ranked, few = [], []
+        for k, (on, off) in groups.items():
+            if min(len(on[0]), len(off[0])) >= MIN_COINS:
+                ranked.append((_stats(*on)["mean_without_best5"], names[k], _stats(*off)))
+            else:
+                few.append({"platform": names[k], "coins": len(on[0]) + len(off[0]), "too_few_coins": True})
+        ranked.sort(key=lambda r: (-r[0], r[1]))
+        rows = [{"platform": name, "rank": n, **numbers} for n, (_, name, numbers) in enumerate(ranked, 1)]
+        return rows + sorted(few, key=lambda row: (-row["coins"], row["platform"]))
 
 
 def _scored_line(line: str) -> dict | None:

@@ -6,6 +6,7 @@ The watch runs on a fake clock (sleeping moves it; nothing waits) against the st
 are made up; their rows have the fields of a real trenches row (tests/fixtures/gmgn/real/trenches.json) and their
 security the fields of a real answer (tests/fixtures/gmgn/real/token_security.json)."""
 
+import itertools
 import json
 
 import httpx
@@ -29,6 +30,25 @@ NO_TAX = {"is_honeypot": None, "honeypot": 0, "can_sell": 0, "can_not_sell": 0, 
 def mints(n, first=0):
     """`n` more coins on Base, numbered from `first` + 1: as many as a score's floor of coins wants."""
     return ["0x" + f"{k:040x}" for k in range(first + 1, first + n + 1)]
+
+
+def halves(n, tag=1):
+    """`n` coins on Base in each half the score splits its coins in (LW.half_of): the first list in half 0, which the
+    best pair and the launchpads' order are chosen on, the second in half 1, whose numbers they print. Coins of two
+    tags never meet."""
+    split: tuple[list, list] = ([], [])
+    for k in itertools.count(1):
+        m = f"0x{tag:08x}{k:032x}"
+        if len(split[LW.half_of(m)]) < n:
+            split[LW.half_of(m)].append(m)
+        if len(split[0]) == len(split[1]) == n:
+            return split
+
+
+def both_halves(n, tag=1):
+    """`n` coins of each half (halves), in one list."""
+    first, second = halves(n, tag)
+    return [*first, *second]
 
 
 class FakeTime:
@@ -1011,21 +1031,22 @@ def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):
 
 
 def test_the_best_pair_is_chosen_without_its_five_best_coins(tmp_path):
-    # one coin of thirty goes x101 at 10 s: alone it makes a hold to 30 s look best on the mean. The sale of 50,000
-    # dollars that takes it back to 1.2 at 100 s shows its pool held a copy's worth until then (a trade of cents would
-    # show nothing)
+    # one coin of the thirty of half 0 goes x101 at 10 s: alone it makes a hold to 30 s look best on the mean. The
+    # sale of 50,000 dollars that takes it back to 1.2 at 100 s shows its pool held a copy's worth until then (a trade
+    # of cents would show nothing)
+    chosen_on, judged_on = halves(30)
     lines = [coin(m, [flat(1.0), flat(x, 10), (S + 100, 1.2, 1.2, 1.2, 1.2, 50_000.0), flat(1.1, 250)])
-             for m, x in zip(mints(30), (101.0, *[1.0] * 29), strict=True)]  # fmt: skip
+             for m, x in zip([*chosen_on, *judged_on], (101.0, *[1.0] * 59), strict=True)]  # fmt: skip
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert pair(out, 2, 30)["mean"] == pytest.approx(100 / 30, abs=1e-3) and pair(out, 2, 30)["mean_without_best5"] == 0
+    assert pair(out, 2, 30)["mean"] == pytest.approx(100 / 60, abs=1e-3) and pair(out, 2, 30)["mean_without_best5"] == 0
     assert (out["best"]["delay"], out["best"]["hold"]) == (2, 120)  # every coin +20 percent
-    assert [(p["platform"], p["coins"]) for p in out["by_platform"]] == [("clanker", 30)]
+    assert [(p["platform"], p["coins"]) for p in out["by_platform"]] == [("clanker", 30)]  # half 1's
 
 
 def test_the_best_pair_is_split_by_launchpad(tmp_path):
-    lines = [coin(m, to_the_end([flat(1.0), flat(2.0, 10)]), platform="clanker") for m in mints(30)]
-    lines += [coin(m, to_the_end([flat(1.0), flat(0.5, 10)]), platform="zora") for m in mints(30, 30)]
+    lines = [coin(m, to_the_end([flat(1.0), flat(2.0, 10)]), platform="clanker") for m in both_halves(30, 1)]
+    lines += [coin(m, to_the_end([flat(1.0), flat(0.5, 10)]), platform="zora") for m in both_halves(30, 2)]
     lines.append(coin(A, to_the_end([flat(1.0), flat(1.5, 10)]), platform=None))
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
@@ -1036,6 +1057,29 @@ def test_the_best_pair_is_split_by_launchpad(tmp_path):
         "zora": (30, pytest.approx(-0.5), None),
         "unknown": (1, None, True),  # one coin: no numbers
     }
+
+
+def test_the_best_pair_and_the_launchpads_are_chosen_on_one_half_and_judged_on_the_other(tmp_path):
+    """Third review of 25 Nov: the best pair and the launchpads' order were chosen on the coins they were then judged
+    on. In a market with no edge the best pair showed a mean without its five best of -1.0 percent where new coins gave
+    -3.6, and the top launchpad -2.0 where they gave -10.7. The coins are split in two by a hash of their address: the
+    best pair and the launchpads' order are chosen on half 0, their numbers are half 1's."""
+    clanker, zora = halves(30, 1), halves(30, 2)
+    rise = {("clanker", 0): 2.0, ("zora", 0): 1.5, ("clanker", 1): 0.5, ("zora", 1): 1.2}  # at 10 s, back at 100 s
+    lines = [coin(m, to_the_end([flat(1.0), flat(rise[(name, half)], 10), flat(1.0, 100)]), platform=name)
+             for name, split in (("clanker", clanker), ("zora", zora)) for half in (0, 1) for m in split[half]]  # fmt: skip
+    newpad = next(m for m in mints(50) if LW.half_of(m) == 0)
+    write_scored(tmp_path, [*lines, coin(newpad, to_the_end([flat(1.0), flat(9.0, 10)]), platform="newpad")])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    best = out["best"]
+    # chosen on half 0, where 2/30 made +100 and +50 percent; its numbers half 1's: -50 and +20 percent
+    assert (best["delay"], best["hold"], best["coins"], best["mean"]) == (2, 30, 60, pytest.approx(-0.15))
+    assert best["chosen_on"] == {"half": 0, "coins": 61} and best["numbers_from"] == {"half": 1}
+    # the launchpads in their order on half 0, with half 1's numbers: clanker first at -50 percent
+    rows = [(p["platform"], p.get("rank"), p["coins"], p.get("mean")) for p in out["by_platform"]]
+    assert rows == [("clanker", 1, 30, -0.5), ("zora", 2, 30, 0.2), ("newpad", None, 1, None)]
+    assert out["coins_by_half"] == [61, 60] and "half_of" in out["reading"]
+    assert LW.half_of(A.upper().replace("0X", "0x")) == LW.half_of(A)  # an address in capitals is the same coin
 
 
 def test_too_few_coins_name_no_best_pair_and_give_a_launchpad_no_numbers(tmp_path):
@@ -1049,7 +1093,7 @@ def test_too_few_coins_name_no_best_pair_and_give_a_launchpad_no_numbers(tmp_pat
     assert (pair(out, 2, 30)["coins"], pair(out, 2, 30)["mean_se"]) == (1, None)  # one copy: no spread to read
     assert "mean_se" in out["reading"] and "30 coins" in out["reading"]
     lines = [coin(m, to_the_end([flat(1.0), flat(1.1 if k % 2 else 1.3, 20)]), platform="clanker")
-             for k, m in enumerate(mints(40))]  # fmt: skip
+             for half in halves(40) for k, m in enumerate(half)]  # fmt: skip
     write_scored(tmp_path, [*lines, coin(A, to_the_end([flat(1.0), flat(2.0, 20)]), platform="newpad")])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert out["best"] is not None and "no_best" not in out
@@ -1057,6 +1101,10 @@ def test_too_few_coins_name_no_best_pair_and_give_a_launchpad_no_numbers(tmp_pat
     assert newpad == {"platform": "newpad", "coins": 1, "too_few_coins": True}
     # twenty copies at +10 and twenty at +30 percent: a standard deviation of 0.1013, over the square root of 40
     assert (clanker["coins"], clanker["mean"], clanker["mean_se"]) == (40, 0.2, pytest.approx(0.016, abs=1e-4))
+    # thirty coins, not thirty in each half: no best pair
+    write_scored(tmp_path, [coin(m, to_the_end([flat(1.0), flat(1.2, 20)])) for m in halves(15)[0] + halves(15)[1]])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert out["best"] is None and "in each half" in out["no_best"]
 
 
 def test_the_report_counts_the_security_fields_gmgn_gave(tmp_path):
@@ -1092,17 +1140,17 @@ def test_a_coin_whose_safety_is_not_known_stays_in_the_table_marked_and_counted(
     crashed = [flat(1.0), (S + 10, 1.0, 1.0, 0.1, 0.1, 1.0), flat(0.1, 499)]
     refusal = {"error": "gmgn GET /v1/token/security: HTTP 404 NOT_FOUND: no such token"}
     fieldless = {"address": "0x" + "ee" * 20, "renounced_mint": 1, "top_10_holder_rate": 0.4}  # none of those read
-    unknown = (refusal, {}, fieldless) * 5
-    many = mints(30)
-    lines = [coin(m, rose) for m in many[:15]] + [coin(m, crashed, u) for m, u in zip(many[15:], unknown, strict=True)]
+    unknown = (refusal, {}, fieldless) * 10
+    known, notknown = (both_halves(15, tag) for tag in (1, 2))  # fifteen of each in each half
+    lines = [coin(m, rose) for m in known] + [coin(m, crashed, u) for m, u in zip(notknown, unknown, strict=True)]
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     row = pair(out, 2, 30)
-    assert (row["coins"], row["security_unknown"], row["mean"]) == (30, 15, pytest.approx(-0.4))
+    assert (row["coins"], row["security_unknown"], row["mean"]) == (60, 30, pytest.approx(-0.4))
     apart = out["security_unknown"]
-    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (15, 15, pytest.approx(-0.9))
-    assert (out["security"]["refused"], out["security"]["without_fields"]) == (5, 10)
-    assert [p["coins"] for p in out["by_platform"]] == [30]  # the best pair split by launchpad: every coin bought
+    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (30, 30, pytest.approx(-0.9))
+    assert (out["security"]["refused"], out["security"]["without_fields"]) == (10, 20)
+    assert [p["coins"] for p in out["by_platform"]] == [30]  # the best pair split by launchpad: every coin of half 1
 
 
 def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_money(tmp_path):
@@ -1252,10 +1300,10 @@ def test_a_coin_without_a_pool_size_is_scored_apart(tmp_path):
     up = to_the_end([flat(1.0), flat(2.0, 10)])
     missing = {k: v for k, v in coin(B, up).items() if k != "liquidity_usd"}
     unsized = [coin(m, up, liquidity=v) for m, v in zip((C, D, E, F, G), (None, 0, "x", -5, 10**400), strict=True)]
-    write_scored(tmp_path, [*(coin(m, up) for m in mints(30)), missing, *unsized])
+    write_scored(tmp_path, [*(coin(m, up) for m in both_halves(30)), missing, *unsized])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert pair(out, 2, 30)["coins"] == 30 and {d["with_entry"] for d in out["by_delay"]} == {30}
-    assert [p["coins"] for p in out["by_platform"]] == [30]
+    assert pair(out, 2, 30)["coins"] == 60 and {d["with_entry"] for d in out["by_delay"]} == {60}
+    assert [p["coins"] for p in out["by_platform"]] == [30]  # half 1's
     apart = out["without_pool_size"]
     assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (6, 6, pytest.approx(1.0))
     assert "price impact" in apart["why"]
