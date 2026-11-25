@@ -15,7 +15,8 @@ A read GMGN refuses is written into that coin's line and the job goes on. A rate
 again, never past the time the read has: --minutes is the job's end. Each round's reads stop when the next look at new
 coins is due, and the one pass after the end stops a minute later at most (FINAL_SLACK_SECS); a read left by then, or
 held by a rate limit past it, waits for a later round or the next job. A read that fails on the way (no answer, a
-server error) is tried again a round later, three rounds at most, then written as refused. A key GMGN refuses ends the
+server error) or that GMGN refuses with a 404 or a 403 (a coin it has not read yet; a request that left over the wrong
+route) is tried again a round later, three rounds at most, then written as refused. A key GMGN refuses ends the
 job and writes nothing more: no read could work. A restarted job reads both files and goes on where the last one
 stopped; one job at a time watches a chain. It keeps the coins it has seen and the coins waiting for their candles,
 nothing else. Like every GMGN call it only reads.
@@ -58,6 +59,9 @@ RUG_LEFT = 0.1  # a rug: the price fell to this share of its first candle's or b
 HONEYPOT_SELL_TAX = 0.5  # a sell tax this high counts as a coin that cannot be sold
 BEST_LEFT_OUT = 5
 LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way, before they are written as refused
+# refusals that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
+# yet, and a 403 (a request that left over the wrong route; a plan's refusal). Review of 25 Nov: both were final.
+LATER_STATUSES = (403, 404)
 RATE_WAITS = 10  # waits for one read's rate limit; after them the read is tried again a round later
 RATE_WAIT_MAX = 900.0  # the longest single wait
 RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
@@ -70,6 +74,7 @@ STOP_ERRORS = frozenset(
 CANNOT_SELL = ("is_honeypot", "honeypot", "can_not_sell")  # a yes in one of them: the coin cannot be sold
 TAXES = ("buy_tax", "sell_tax")
 FLAGS = (*CANNOT_SELL, "can_sell")
+SAFETY_FIELDS = frozenset((*CANNOT_SELL, *TAXES))  # what the score reads of a security answer (can_sell is not read)
 SCORED_HEAD = '{"mint":"'  # how every line of a scored file begins (written compact, the coin first)
 # what a delay means on each chain, printed with the report (CLAUDE.md: a paper result names its landing)
 LANDING = {
@@ -103,7 +108,14 @@ SECURITY_READING = (
     "can_not_sell 0 of a coin that traded. A sell tax of 50 percent or more counts as a coin that cannot be sold. "
     "buy_tax and sell_tax are shares of 1 (0.05 is 5 percent), as GMGN's coin rows give theirs; when either is above 1 "
     "the answer's taxes are read as percents (5 is 5 percent). A field that is missing, null or empty says nothing: no "
-    "tax, not a honeypot. `fields` says on how many coins GMGN gave each field."
+    "tax, not a honeypot. `fields` says on how many coins GMGN gave each field. A coin whose security answer GMGN "
+    "refused (refused), or that gave none of is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax "
+    "(without_fields), is not known to be sellable: it is scored apart (security_unknown), never in the table."
+)
+UNKNOWN_READING = (
+    "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
+    "security.without_fields): whether they could be sold, and their taxes, are not known. They are scored here as if "
+    "they could be sold and paid no tax, and are left out of `table`, `best` and `by_platform`."
 )
 
 
@@ -300,7 +312,8 @@ class LaunchWatch:
                 if exc.status == 401 or exc.error in STOP_ERRORS:
                     raise WatchStopped(str(exc)) from None
                 if exc.status != 429:
-                    return ("later" if exc.status is None or exc.status >= 500 else "refused"), str(exc)
+                    later = exc.status is None or exc.status >= 500 or exc.status in LATER_STATUSES
+                    return ("later" if later else "refused"), str(exc)
                 if waits >= RATE_WAITS:
                     return "later", str(exc)
                 wait = RATE_WAIT_UNNAMED if not exc.reset_at else exc.reset_at - self.clock() + 1.0
@@ -609,10 +622,12 @@ class _Score:
         self.share = share  # the two transactions' gas, as a share of the size
         self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
         self.pairs = {(d, h): _Pair() for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS}
+        self.apart = {pair: _Pair() for pair in self.pairs}  # the coins whose security is not known (security_unknown)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
-                                "bad_prices", "security_refused", "honeypots", "percent"), 0)  # fmt: skip
+                                "bad_prices", "security_refused", "security_without_fields", "honeypots",
+                                "percent"), 0)  # fmt: skip
         self.given = dict.fromkeys((*FLAGS, *TAXES), 0)
         self.yes, self.taxed = dict.fromkeys(FLAGS, 0), dict.fromkeys(TAXES, 0)
 
@@ -624,6 +639,10 @@ class _Score:
         for counts, part in ((self.given, "given"), (self.yes, "yes"), (self.taxed, "taxed")):
             for k in sec[part]:
                 counts[k] += 1
+        # refused, or an answer without one field read here: whether the coin can be sold, and its taxes, are unknown
+        without_fields = not sec["refused"] and not sec["given"] & SAFETY_FIELDS
+        self.n["security_without_fields"] += without_fields
+        pairs = self.apart if sec["refused"] or without_fields else self.pairs
         if "candles_error" in rec:
             self.n["candles_refused"] += 1
             return
@@ -641,7 +660,7 @@ class _Score:
                 continue
             self.entries[d] += 1
             for h in HOLDS:
-                pair, end = self.pairs.get((d, h)), start + d + h
+                pair, end = pairs.get((d, h)), start + d + h
                 if pair is None:
                     continue
                 if fetched and fetched < end:  # the hold was not over when the candles were read
@@ -651,11 +670,15 @@ class _Score:
                 ret = -1.0 if sec["honeypot"] else out / closes[i] * self.kept * keep - 1.0 - self.share
                 pair.add(ret, plat, rug, sec["honeypot"])
 
-    def report(self) -> dict:
-        table = [
+    @staticmethod
+    def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:
+        return [
             {"delay": d, "hold": h, **_stats(p.rets, p.rugs), "honeypots": p.honeypots, "unsettled": p.unsettled}
-            for (d, h), p in self.pairs.items()
+            for (d, h), p in pairs.items()
         ]
+
+    def report(self) -> dict:
+        table = self._table(self.pairs)
         best = max((row for row in table if row["coins"]), key=_rank, default=None)
         return {
             "coins": self.n["coins"],
@@ -668,6 +691,7 @@ class _Score:
             },
             "security": {
                 "refused": self.n["security_refused"],
+                "without_fields": self.n["security_without_fields"],
                 "honeypots": self.n["honeypots"],
                 "taxes_read_as_percent": self.n["percent"],
                 "fields": {k: {"given": self.given[k], "yes": self.yes[k]} for k in FLAGS}
@@ -676,6 +700,11 @@ class _Score:
             },
             "by_delay": [{"delay": d, "with_entry": self.entries[d], "no_trade_yet": self.no_trade[d]} for d in DELAYS],
             "table": table,
+            "security_unknown": {
+                "coins": self.n["security_refused"] + self.n["security_without_fields"],
+                "why": UNKNOWN_READING,
+                "table": self._table(self.apart),
+            },
             "not_scored": [
                 {"delay": d, "hold": h, "why": f"{d} + {h} s runs past the {WINDOW_SECS} s of candles"}
                 for d in DELAYS

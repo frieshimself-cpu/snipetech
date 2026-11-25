@@ -240,22 +240,57 @@ def test_a_refused_read_is_written_into_the_coins_line_and_the_job_goes_on(tmp_p
 
     def candles(req):
         if req.url.params["address"] == B:
-            return refused(403, "PLAN_UPGRADE_REQUIRED", "1s candles need the Pro plan")
+            return refused(400, "BAD_REQUEST", "invalid address")
         return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
 
     routes = {
         "/v1/trenches": trenches,
         "/v1/market/token_kline": candles,
-        "/v1/token/security": security({A: refused(404, "NOT_FOUND", "no such token")}),
+        "/v1/token/security": security({A: refused(422, "UNPROCESSABLE", "unsupported token")}),
     }
     out = watch(tmp_path, FakeTime(T), routes, minutes=2)
     by = {s["mint"]: s for s in scored(tmp_path)}
     assert set(by) == {A, B, C}
-    assert "HTTP 404" in by[A]["security"]["error"] and by[A]["candles"]  # the coin's other read is kept
-    assert by[B]["candles"] == [] and "PLAN_UPGRADE_REQUIRED" in by[B]["candles_error"]
+    assert "HTTP 422" in by[A]["security"]["error"] and by[A]["candles"]  # the coin's other read is kept
+    assert by[B]["candles"] == [] and "BAD_REQUEST" in by[B]["candles_error"]
     assert by[B]["security"] == REAL_SECURITY
     assert "candles_error" not in by[C] and by[C]["security"] == REAL_SECURITY
     assert out["ok"] is True and out["polls"] == 2 and out["refused"] == {"poll": 1, "candles": 1, "security": 1}
+
+
+def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_as_refused(tmp_path):
+    """Review of 25 Nov: GMGN's 404 for a coin it has not read yet, and a 403 (a plan's refusal, or a request that left
+    over the wrong route), were written as refused at once, and such a coin was then scored as safe. They are asked
+    again two rounds later, as a server error is."""
+    ft = FakeTime(T)
+    asks: dict = {"candles": [], "security": []}
+
+    def candles(req):
+        asks["candles"].append((req.url.params["address"], ft.now))
+        if req.url.params["address"] == B:
+            return refused(403, "PLAN_UPGRADE_REQUIRED", "1s candles need the Pro plan")
+        return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
+
+    def sec(req):
+        mint = req.url.params["address"]
+        asks["security"].append((mint, ft.now))
+        if mint == A or (mint == C and len([m for m, _ in asks["security"] if m == C]) == 1):  # C's comes the 2nd time
+            return refused(404, "NOT_FOUND", "no such token")
+        return answer(REAL_SECURITY)
+
+    routes = {
+        "/v1/trenches": polls([trench(m, T - 1000) for m in (A, B, C)]),
+        "/v1/market/token_kline": candles,
+        "/v1/token/security": sec,
+    }
+    out = watch(tmp_path, ft, routes, minutes=3)
+    by = {s["mint"]: s for s in scored(tmp_path)}
+    rounds = [T, T + 60, T + 120]
+    assert [t for m, t in asks["security"] if m == A] == rounds and "HTTP 404" in by[A]["security"]["error"]
+    assert [t for m, t in asks["candles"] if m == B] == rounds and "PLAN_UPGRADE_REQUIRED" in by[B]["candles_error"]
+    assert (by[A]["fetched_at"], by[B]["fetched_at"]) == (T + 120, T + 120)  # written in the third round
+    assert by[C]["security"] == REAL_SECURITY and by[C]["fetched_at"] == T + 60  # its second ask had it
+    assert out["tried_again_later"] == 5 and out["refused"] == {"poll": 0, "candles": 1, "security": 1}
 
 
 def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):
@@ -627,7 +662,7 @@ def test_the_report_counts_the_security_fields_gmgn_gave(tmp_path):
         ],
     )
     sec = LW.score(tmp_path, "base")["security"]
-    assert (sec["refused"], sec["honeypots"], sec["taxes_read_as_percent"]) == (1, 1, 0)
+    assert (sec["refused"], sec["without_fields"], sec["honeypots"], sec["taxes_read_as_percent"]) == (1, 1, 1, 0)
     assert sec["fields"] == {
         "is_honeypot": {"given": 1, "yes": 1},
         "honeypot": {"given": 1, "yes": 0},
@@ -636,6 +671,27 @@ def test_the_report_counts_the_security_fields_gmgn_gave(tmp_path):
         "buy_tax": {"given": 1, "above_0": 0},
         "sell_tax": {"given": 1, "above_0": 1},
     }
+
+
+def test_a_coin_whose_safety_is_not_known_is_scored_apart(tmp_path):
+    """Review of 25 Nov: a coin whose security GMGN refused, or answered without one of the fields read here, was
+    scored as a coin that can be sold and pays no tax. It is left out of the table and of the best pair, counted, and
+    scored in a table of its own."""
+    up = [flat(1.0), flat(2.0, 10)]
+    lines = [
+        coin(A, up),
+        coin(B, up, {"error": "gmgn GET /v1/token/security: HTTP 404 NOT_FOUND: no such token"}),
+        coin(C, up, {}),
+        coin(D, up, {"address": D, "renounced_mint": 1, "top_10_holder_rate": 0.4}),  # none of the fields read
+        coin(E, [flat(1.0), flat(0.5, 10)], {"is_honeypot": "1"}),  # known: it cannot be sold
+    ]
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert pair(out, 2, 30)["coins"] == 2 and pair(out, 2, 30)["mean"] == pytest.approx(0.0)  # A +100 %, E all lost
+    apart = out["security_unknown"]
+    assert apart["coins"] == 3 and pair(apart, 2, 30)["coins"] == 3 and pair(apart, 2, 30)["mean"] == pytest.approx(1.0)
+    assert (out["security"]["refused"], out["security"]["without_fields"], out["coins"]) == (1, 2, 5)
+    assert [p["coins"] for p in out["by_platform"]] == [2]  # the best pair split by launchpad: the known coins only
 
 
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
