@@ -114,8 +114,11 @@ SECURITY_READING = (
     "A coin cannot be sold when GMGN says so in is_honeypot, honeypot or can_not_sell (1, true or "
     "yes). can_sell is counted and not read: the one real answer we hold (a Solana coin, 12 Nov) said can_sell 0 and "
     "can_not_sell 0 of a coin that traded. A sell tax of 50 percent or more counts as a coin that cannot be sold. "
-    "buy_tax and sell_tax are shares of 1 (0.05 is 5 percent), as GMGN's coin rows give theirs; when either is above 1 "
-    "the answer's taxes are read as percents (5 is 5 percent). A field that is missing, null or empty says nothing: no "
+    "buy_tax and sell_tax are read in one unit for the whole file (taxes_unit): as percents (5 is 5 percent) when any "
+    "coin's tax, in either read, is above 1; else as shares of 1 (0.05 is 5 percent), as GMGN's coin rows give theirs. "
+    "A tax above 0 and at most 1 could mean either: ambiguous_coins counts the coins with one, and "
+    "honeypots_if_shares and honeypots_if_percents give the coins that cannot be sold under each reading (honeypots is "
+    "the file's own unit's). A field that is missing, null or empty says nothing: no "
     "tax, not a honeypot. `fields` says on how many coins GMGN gave each field. A coin whose security answer GMGN "
     "refused (refused), or that gave none of is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax "
     "(without_fields), is not known to be sellable: it is scored apart (security_unknown), never in the table."
@@ -544,15 +547,15 @@ def _tax(v: Any) -> float | None:
     return x if math.isfinite(x) and x >= 0 else None
 
 
-def read_security(sec: Any) -> dict:
-    """A coin's security answer, read as SECURITY_READING says: `honeypot`; `buy_tax` and `sell_tax` as shares of 1;
-    `refused` (the watch wrote GMGN's refusal in its place); `percent` (its taxes were said in percents); `given` (the
-    fields it gave), `yes` (the flags it said yes to) and `taxed` (the taxes above 0)."""
+def read_security(sec: Any, percent: bool = False) -> dict:
+    """A coin's security answer, or the fields of its row when first seen, read as SECURITY_READING says: `honeypot`;
+    `buy_tax` and `sell_tax` as shares of 1, the numbers given read as percents when `percent` (decided once for a
+    file: `tax_unit`); `refused` (the watch wrote GMGN's refusal in its place); `given` (the fields it gave), `yes`
+    (the flags it said yes to), `taxed` (the taxes above 0) and `numbers` (the taxes it gave, as given)."""
     if not isinstance(sec, dict) or set(sec) == {"error"}:
         return {"honeypot": False, "buy_tax": 0.0, "sell_tax": 0.0, "refused": isinstance(sec, dict),
-                "percent": False, "given": set(), "yes": set(), "taxed": set()}  # fmt: skip
+                "given": set(), "yes": set(), "taxed": set(), "numbers": []}  # fmt: skip
     taxes = {k: _tax(sec.get(k)) for k in TAXES}
-    percent = any(t is not None and t > 1 for t in taxes.values())
     shares = {k: min(1.0, (t or 0.0) / (100.0 if percent else 1.0)) for k, t in taxes.items()}
     yes = {k for k in FLAGS if _yes(sec.get(k))}
     return {
@@ -560,10 +563,38 @@ def read_security(sec: Any) -> dict:
         "buy_tax": shares["buy_tax"],
         "sell_tax": shares["sell_tax"],
         "refused": False,
-        "percent": percent,
         "given": {k for k in (*FLAGS, *TAXES) if _given(sec.get(k))},
         "yes": yes,
         "taxed": {k for k in TAXES if shares[k] > 0},
+        "numbers": [t for t in taxes.values() if t is not None],
+    }
+
+
+def tax_unit(path: Path) -> dict:
+    """How the taxes of a scored file are read, decided once for the whole file (review of 25 Nov: it was guessed coin
+    by coin, so 0.6 was 60 percent on one coin and 0.6 percent on the next): as percents when any coin's tax, in either
+    read, is above 1; as shares of 1 otherwise. `ambiguous_coins`: the coins with a tax above 0 and at most 1, which
+    either unit could mean; `honeypots_if_shares` and `honeypots_if_percents`: the coins that cannot be sold under each
+    reading. A first pass over the file, a line at a time."""
+    seen: set[str] = set()
+    above_1, ambiguous, honeypots = False, 0, {"share": 0, "percent": 0}
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            rec = _scored_line(line)
+            if rec is None or _key(rec["mint"]) in seen:
+                continue
+            seen.add(_key(rec["mint"]))
+            reads = (rec.get("security"), first_sight(rec))
+            numbers = [t for said in reads for t in read_security(said)["numbers"]]
+            above_1 = above_1 or any(t > 1 for t in numbers)
+            ambiguous += any(0 < t <= 1 for t in numbers)
+            for unit in honeypots:
+                honeypots[unit] += any(read_security(said, unit == "percent")["honeypot"] for said in reads)
+    return {
+        "taxes_unit": "percent" if above_1 else "share",
+        "ambiguous_coins": ambiguous,
+        "honeypots_if_shares": honeypots["share"],
+        "honeypots_if_percents": honeypots["percent"],
     }
 
 
@@ -647,16 +678,18 @@ class _Pair:
 class _Score:
     """What `score` adds up, one coin at a time; only the copies' numbers are kept, never a coin's candles."""
 
-    def __init__(self, share: float, fee: float):
+    def __init__(self, share: float, fee: float, unit: dict):
         self.share = share  # the two transactions' gas, as a share of the size
         self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
+        self.unit = unit  # how the file's taxes are read (tax_unit)
+        self.percent = unit["taxes_unit"] == "percent"
         self.pairs = {(d, h): _Pair() for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS}
         self.apart = {pair: _Pair() for pair in self.pairs}  # the coins whose security is not known (security_unknown)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
-                                "first_sight_honeypots", "taxes_changed", "percent"), 0)  # fmt: skip
+                                "first_sight_honeypots", "taxes_changed"), 0)  # fmt: skip
         # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
         # settle ("settle") and of the coin's row when first seen ("first")
         self.given = {read: dict.fromkeys((*FLAGS, *TAXES), 0) for read in ("settle", "first")}
@@ -665,7 +698,7 @@ class _Score:
 
     def add(self, rec: dict) -> None:
         self.n["coins"] += 1
-        sec, first = read_security(rec.get("security")), read_security(first_sight(rec))
+        sec, first = (read_security(said, self.percent) for said in (rec.get("security"), first_sight(rec)))
         for read, said in (("settle", sec), ("first", first)):
             for counts, part in ((self.given, "given"), (self.yes, "yes"), (self.taxed, "taxed")):
                 for k in said[part]:
@@ -679,7 +712,6 @@ class _Score:
             ("honeypots", honeypot),
             ("taxes_changed", changed),
             ("first_sight_honeypots", first["honeypot"]),
-            ("percent", sec["percent"] or first["percent"]),
         ):
             self.n[name] += value
         # refused, or an answer without one field read here: whether the coin can be sold, and its taxes, are unknown
@@ -737,7 +769,7 @@ class _Score:
                 "without_fields": self.n["security_without_fields"],
                 "honeypots": self.n["honeypots"],
                 "taxes_changed": self.n["taxes_changed"],
-                "taxes_read_as_percent": self.n["percent"],
+                **self.unit,
                 "fields": self._fields("settle", FLAGS),
                 "first_sight": {
                     "honeypots": self.n["first_sight_honeypots"],
@@ -806,8 +838,9 @@ def score(
     fee_pct: float | None = None,
 ) -> dict:
     """`snipetech gmgn launch-score`: what a copy of each coin in <chain>_scored.jsonl made at each entry delay and
-    hold, the file read one line at a time (a line holds 500 candles). A coin written twice is scored once. A wrong
-    number is a ValueError; a chain never watched is {"ok": false} with what to run."""
+    hold, the file read one line at a time (a line holds 500 candles), twice: once for the unit of its taxes
+    (tax_unit), once to score. A coin written twice is scored once. A wrong number is a ValueError; a chain never
+    watched is {"ok": false} with what to run."""
     if chain not in CHAINS:
         raise ValueError(f"gmgn launch-score: chain {chain!r} is not one of {', '.join(CHAINS)}")
     size = _number("gmgn launch-score: --size-usd", size_usd, 0.0, above=True)
@@ -819,7 +852,7 @@ def score(
     if not path.exists():
         return {"ok": False, "chain": chain, "error": f"no launch on {chain} has been read yet: {path} does not exist "
                 f"(snipetech gmgn launch-watch --chain {chain} writes it)"}  # fmt: skip
-    tally, done = _Score(2.0 * gas / size, fee / 100.0), set()
+    tally, done = _Score(2.0 * gas / size, fee / 100.0, tax_unit(path)), set()
     with path.open(encoding="utf-8") as fh:
         for line in fh:
             rec = _scored_line(line)
