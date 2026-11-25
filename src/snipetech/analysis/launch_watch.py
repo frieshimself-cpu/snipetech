@@ -26,8 +26,9 @@ nothing else. Like every GMGN call it only reads.
 `score` (`snipetech gmgn launch-score`) reads <chain>_scored.jsonl and says what a copy made for each entry delay and
 hold: the mean, the median, the share that made money, the mean once the five best coins are taken out (one big winner
 must not carry it) and the share of coins that rugged, then the best pair split by launchpad. Beside that table: the
-same without the sales made after a coin's last trade, and the coins whose security is unknown, scored apart. What it
-assumes is printed with every report (SCORE_READING, SECURITY_READING, and the chain's LANDING)."""
+same without the sales made after a coin's last trade, and the coins whose security is unknown alone (they are in the
+table too, counted in each row). What it assumes is printed with every report (SCORE_READING, SECURITY_READING, and
+the chain's LANDING)."""
 
 from __future__ import annotations
 
@@ -142,13 +143,15 @@ SECURITY_READING = (
     "(true, false, yes, no); anything else (missing, null, empty, -1) says nothing: no tax, not a honeypot. `fields` "
     "says on how many coins GMGN gave each field. A coin whose security answer GMGN "
     "refused (refused), or that gave none of is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax "
-    "(without_fields), is not known to be sellable: it is scored apart (security_unknown), never in the table."
+    "(without_fields), is not known to be sellable: it stays in the table at its price, counted in each row "
+    "(security_unknown), and is scored alone in security_unknown as well."
 )
 UNKNOWN_READING = (
     "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
-    "security.without_fields): whether they could be sold, and their taxes, are not known. They are scored here on what "
-    "their row said when first seen (its taxes and flags, often none), as if the answer had said nothing, and are left "
-    "out of `table`, `best` and `by_platform`."
+    "security.without_fields): whether they could be sold, and their taxes, are not known. A buyer at the launch could "
+    "not know it either (the read comes 900 s after the start), so they stay in `table`, `best` and `by_platform`, "
+    "each row counting them (security_unknown). They are scored on their price and on what their row said when first "
+    "seen (its taxes and flags, often none), as if the answer had said nothing; this table holds them alone."
 )
 
 
@@ -743,31 +746,33 @@ def _rank(row: dict) -> tuple[int, float]:
 
 
 class _Pair:
-    """The copies of one entry delay and hold, side by side: returns, launchpads (by number), and rug, honeypot and
-    stale-sale marks."""
+    """The copies of one entry delay and hold, side by side: returns, launchpads (by number), and rug, honeypot,
+    stale-sale and unknown-security marks."""
 
-    __slots__ = ("honeypot", "plats", "rets", "rugs", "stale", "unsettled")
+    __slots__ = ("honeypot", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
 
     def __init__(self) -> None:
         self.rets, self.plats = array("d"), array("I")
-        self.rugs, self.honeypot, self.stale = bytearray(), bytearray(), bytearray()
+        self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
         self.unsettled = 0
 
-    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool) -> None:
+    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool, unknown: bool) -> None:
         self.rets.append(ret)
         self.plats.append(plat)
         self.rugs.append(rug)
         self.honeypot.append(honeypot)
         self.stale.append(stale)
+        self.unknown.append(unknown)
 
     def row(self, fresh_only: bool = False) -> dict:
-        """The pair's numbers (_stats), its honeypots, its holds not over when read and its stale sales; with
-        `fresh_only`, those of the copies whose sale was not stale."""
+        """The pair's numbers (_stats), its honeypots, its holds not over when read, its copies whose security is not
+        known and its stale sales; with `fresh_only`, those of the copies whose sale was not stale."""
         keep = [k for k in range(len(self.rets)) if not (fresh_only and self.stale[k])]
         out = {
             **_stats([self.rets[k] for k in keep], [self.rugs[k] for k in keep]),
             "honeypots": sum(self.honeypot[k] for k in keep),
             "unsettled": self.unsettled,
+            "security_unknown": sum(self.unknown[k] for k in keep),
         }
         return out if fresh_only else out | {"stale_exits": sum(self.stale)}
 
@@ -779,8 +784,8 @@ class _Score:
         self.share = share  # the two transactions' gas, as a share of the size
         self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
         self.size = size  # a pool that held less at settle could not give a stale sale its price (pool_state)
-        self.pairs = {pair: _Pair() for pair in PAIRS}
-        self.apart = {pair: _Pair() for pair in PAIRS}  # the coins whose security is not known (security_unknown)
+        self.pairs = {pair: _Pair() for pair in PAIRS}  # every coin a copy bought
+        self.apart = {pair: _Pair() for pair in PAIRS}  # those whose security is not known, alone (security_unknown)
         self.pools = dict.fromkeys(("coins_with_a_stale_exit", "there", "gone", "unknown"), 0)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
@@ -820,10 +825,13 @@ class _Score:
             ("first_sight_honeypots", first["honeypot"]),
         ):
             self.n[name] += value
-        # refused, or an answer without one field read here: whether the coin can be sold, and its taxes, are unknown
+        # refused, or an answer without one field read here: whether the coin can be sold, and its taxes, are unknown.
+        # It stays in the table at its price, marked (second review of 25 Nov: a buyer at 2 s cannot leave out a coin
+        # on a read made 900 s later), and is scored alone beside it as well.
         without_fields = not sec["refused"] and not sec["given"] & SAFETY_FIELDS
         self.n["security_without_fields"] += without_fields
-        pairs = self.apart if sec["refused"] or without_fields else self.pairs
+        unknown = sec["refused"] or without_fields
+        tables = (self.pairs, self.apart) if unknown else (self.pairs,)
         if "candles_error" in rec:
             self.n["candles_refused"] += 1
             return
@@ -847,18 +855,20 @@ class _Score:
                 continue
             self.entries[d] += 1
             for h in HOLDS:
-                pair, end = pairs.get((d, h)), start + d + h
-                if pair is None:
+                end = start + d + h
+                if (d, h) not in self.pairs:
                     continue
                 if fetched and fetched < end:  # the hold was not over when the candles were read
-                    pair.unsettled += 1
+                    for pairs in tables:
+                        pairs[(d, h)].unsettled += 1
                     continue
                 stale = _stale(ts, end)
                 if honeypot or (stale and pool != "there"):
                     ret = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
                 else:
                     ret = closes[_at(ts, end)] / closes[i] * self.kept * keep - 1.0 - self.share
-                pair.add(ret, plat, rug, honeypot, stale)
+                for pairs in tables:
+                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, unknown)
 
     @staticmethod
     def _table(pairs: dict[tuple[int, int], _Pair], fresh_only: bool = False) -> list[dict]:

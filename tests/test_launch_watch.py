@@ -19,6 +19,7 @@ from tests.gmgn_fake import KEY, PRO, fake_gmgn, fixture, refused
 T = 1_794_600_000  # the fake clock's start, unix seconds
 S = 1_794_500_000  # the start of a coin in a hand-made scored file
 A, B, C, D, E, F, G = ("0x" + two * 20 for two in ("a1", "b2", "c3", "d4", "e5", "f6", "97"))  # coins on Base
+MANY = tuple("0x" + f"{k:02x}" * 20 for k in range(16, 40))  # more coins on Base, for a score of many
 CREATOR = "0x" + "77" * 20
 WETH = "0x4200000000000000000000000000000000000006"
 REAL_SECURITY = fixture("real/token_security.json")["data"]
@@ -852,25 +853,26 @@ def test_the_report_counts_the_security_fields_gmgn_gave(tmp_path):
     }
 
 
-def test_a_coin_whose_safety_is_not_known_is_scored_apart(tmp_path):
-    """Review of 25 Nov: a coin whose security GMGN refused, or answered without one of the fields read here, was
-    scored as a coin that can be sold and pays no tax. It is left out of the table and of the best pair, counted, and
-    scored in a table of its own."""
-    up = [flat(1.0), flat(2.0, 10)]
-    lines = [
-        coin(A, up),
-        coin(B, up, {"error": "gmgn GET /v1/token/security: HTTP 404 NOT_FOUND: no such token"}),
-        coin(C, up, {}),
-        coin(D, up, {"address": D, "renounced_mint": 1, "top_10_holder_rate": 0.4}),  # none of the fields read
-        coin(E, [flat(1.0), flat(0.5, 10)], {"is_honeypot": "1"}),  # known: it cannot be sold
-    ]
+def test_a_coin_whose_safety_is_not_known_stays_in_the_table_marked_and_counted(tmp_path):
+    """Reviews of 25 Nov: a coin whose security GMGN refused, or answered without one of the fields read here, was
+    first scored as a coin that can be sold and pays no tax, then left out of the table, which a buyer at 2 s cannot
+    do: the security read comes 900 s after the start. Six known coins at +10 percent and six such coins that crashed
+    to -90 percent showed +0.10 where a sniper got -0.40. Such a coin stays in the table at its price, each row counts
+    it (security_unknown), and the same coins alone are scored beside the table."""
+    rose = [flat(1.0), flat(1.1, 10), flat(1.1, 499)]
+    crashed = [flat(1.0), (S + 10, 1.0, 1.0, 0.1, 0.1, 1.0), flat(0.1, 499)]
+    refusal = {"error": "gmgn GET /v1/token/security: HTTP 404 NOT_FOUND: no such token"}
+    fieldless = {"address": "0x" + "ee" * 20, "renounced_mint": 1, "top_10_holder_rate": 0.4}  # none of those read
+    unknown = (refusal, refusal, {}, {}, fieldless, fieldless)
+    lines = [coin(m, rose) for m in MANY[:6]] + [coin(m, crashed, u) for m, u in zip(MANY[6:12], unknown, strict=True)]
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert pair(out, 2, 30)["coins"] == 2 and pair(out, 2, 30)["mean"] == pytest.approx(0.0)  # A +100 %, E all lost
+    row = pair(out, 2, 30)
+    assert (row["coins"], row["security_unknown"], row["mean"]) == (12, 6, pytest.approx(-0.4))
     apart = out["security_unknown"]
-    assert apart["coins"] == 3 and pair(apart, 2, 30)["coins"] == 3 and pair(apart, 2, 30)["mean"] == pytest.approx(1.0)
-    assert (out["security"]["refused"], out["security"]["without_fields"], out["coins"]) == (1, 2, 5)
-    assert [p["coins"] for p in out["by_platform"]] == [2]  # the best pair split by launchpad: the known coins only
+    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (6, 6, pytest.approx(-0.9))
+    assert (out["security"]["refused"], out["security"]["without_fields"]) == (2, 4)
+    assert [p["coins"] for p in out["by_platform"]] == [12]  # the best pair split by launchpad: every coin bought
 
 
 def test_a_sale_after_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_money(tmp_path):
