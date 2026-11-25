@@ -68,6 +68,9 @@ RUG_LEFT = 0.1  # a rug: the price fell to this share of its first candle's or b
 HONEYPOT_SELL_TAX = 0.5  # a sell tax this high counts as a coin that cannot be sold
 BIG_FOR_POOL = 0.05  # a copy above this share of its pool's liquidity when first seen is counted (over_5pct_of_pool)
 BEST_LEFT_OUT = 5
+# the fewest coins a pair needs to be called best, and a launchpad to get its numbers: a mean of fewer says little
+# (third review of 25 Nov: one coin that tripled was the best pair at +200 percent)
+MIN_COINS = 30
 LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way, before they are written as refused
 # refusals that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
 # yet, and a 403 (a request that left over the wrong route; a plan's refusal). Review of 25 Nov: both were final.
@@ -140,8 +143,11 @@ SCORE_READING = (
     "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
     "is missing or zero is "
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
-    "inside the 500 s are read. mean_without_best5 is the mean once the five best copies are "
-    "taken out; the best pair is the one with the highest, or, where too few coins leave none, the highest median. "
+    "inside the 500 s are read. mean_se is the mean's standard error (the copies' standard deviation over the square "
+    "root of their number): a mean less than two of them from 0 is not told apart from 0. mean_without_best5 is the "
+    "mean once the five best copies are taken out; the best pair is the one with the highest among the pairs of 30 "
+    "coins or more (min_coins); with none, no pair is best (no_best says why). by_platform splits the best pair by "
+    "launchpad, the busiest first; a launchpad with fewer than 30 coins gets no numbers (too_few_coins). "
     "rug_share is the share of coins whose price fell to a tenth of their first candle's or below within the 500 s "
     "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
     "is not scored (unsettled). A sale priced from the coin's last trade in its 500 s (no trade came after it) is "
@@ -958,28 +964,29 @@ def _r(x: float) -> float:
     return round(x, 4)
 
 
+def _se(xs: Any) -> float | None:
+    """The standard error of a mean of copies: their standard deviation over the square root of their number; None
+    for fewer than two."""
+    return _r(statistics.stdev(xs) / math.sqrt(len(xs))) if len(xs) > 1 else None
+
+
 def _stats(rets: Any, rugs: Any) -> dict:
-    """The numbers of a set of copies: how many, the mean, the median, the share above 0, the mean once the five best
-    are taken out (None when that leaves none), and the share of their coins that rugged."""
+    """The numbers of a set of copies: how many, the mean and its standard error, the median, the share above 0, the
+    mean once the five best are taken out (None when that leaves none), and the share of their coins that rugged."""
     n = len(rets)
     if not n:
-        return {"coins": 0, **dict.fromkeys(("mean", "median", "share_above_0", "mean_without_best5", "rug_share"))}
+        keys = ("mean", "mean_se", "median", "share_above_0", "mean_without_best5", "rug_share")
+        return {"coins": 0, **dict.fromkeys(keys)}
     xs = sorted(rets)
     return {
         "coins": n,
         "mean": _r(statistics.fmean(xs)),
+        "mean_se": _se(xs),
         "median": _r(statistics.median(xs)),
         "share_above_0": _r(sum(1 for x in xs if x > 0) / n),
         "mean_without_best5": _r(statistics.fmean(xs[:-BEST_LEFT_OUT])) if n > BEST_LEFT_OUT else None,
         "rug_share": _r(sum(rugs) / n),
     }
-
-
-def _rank(row: dict) -> tuple[int, float]:
-    """The best pair: the highest mean without the five best coins; where too few coins leave none, the highest median,
-    after every pair that has one."""
-    trimmed = row["mean_without_best5"]
-    return (1, trimmed) if trimmed is not None else (0, row["median"])
 
 
 class _Pair:
@@ -1021,7 +1028,8 @@ class _Pair:
         """The pair's stale sales alone: how many, their mean, and how many were lost (no liquidity read at settle).
         Third review of 25 Nov: the table without them was a table of the coins that lived."""
         rets = [r for r, stale in zip(self.rets, self.stale, strict=True) if stale]
-        return {"coins": len(rets), "mean": _r(statistics.fmean(rets)) if rets else None, "lost": sum(self.lost)}
+        mean = _r(statistics.fmean(rets)) if rets else None
+        return {"coins": len(rets), "mean": mean, "mean_se": _se(rets), "lost": sum(self.lost)}
 
 
 class _Score:
@@ -1152,7 +1160,10 @@ class _Score:
 
     def report(self) -> dict:
         table = self._table(self.pairs)
-        best = max((row for row in table if row["coins"]), key=_rank, default=None)
+        # the highest mean without the five best coins, among the pairs with coins enough to say something
+        enough = [row for row in table if row["coins"] >= MIN_COINS]
+        most = max((row["coins"] for row in table), default=0)
+        best = max(enough, key=lambda row: row["mean_without_best5"], default=None)
         return {
             "coins": self.n["coins"],
             "duplicates": self.n["duplicates"],
@@ -1200,13 +1211,11 @@ class _Score:
                 for h in HOLDS
                 if d + h > WINDOW_SECS
             ],
+            "min_coins": MIN_COINS,
             "best": None
             if best is None
-            else {
-                "delay": best["delay"],
-                "hold": best["hold"],
-                "chosen_by": "mean_without_best5" if best["mean_without_best5"] is not None else "median",
-            },
+            else {"delay": best["delay"], "hold": best["hold"], "chosen_by": "mean_without_best5"},
+            **({} if best else {"no_best": f"too few coins: no pair has {MIN_COINS}, the most is {most}"}),
             "by_platform": [] if best is None else self._by_platform(self.pairs[(best["delay"], best["hold"])]),
         }
 
@@ -1224,7 +1233,12 @@ class _Score:
             rets, rugs = groups.setdefault(plat, ([], []))
             rets.append(ret)
             rugs.append(rug)
-        rows = [{"platform": names[k], **_stats(rets, rugs)} for k, (rets, rugs) in groups.items()]
+        rows = [
+            {"platform": names[k], **_stats(rets, rugs)}
+            if len(rets) >= MIN_COINS
+            else {"platform": names[k], "coins": len(rets), "too_few_coins": True}
+            for k, (rets, rugs) in groups.items()
+        ]
         return sorted(rows, key=lambda row: (-row["coins"], row["platform"]))
 
 

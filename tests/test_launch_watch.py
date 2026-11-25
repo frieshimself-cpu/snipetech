@@ -26,6 +26,11 @@ REAL_SECURITY = fixture("real/token_security.json")["data"]
 NO_TAX = {"is_honeypot": None, "honeypot": 0, "can_sell": 0, "can_not_sell": 0, "buy_tax": "0", "sell_tax": "0"}
 
 
+def mints(n, first=0):
+    """`n` more coins on Base, numbered from `first` + 1: as many as a score's floor of coins wants."""
+    return ["0x" + f"{k:040x}" for k in range(first + 1, first + n + 1)]
+
+
 class FakeTime:
     """The watch's clock and sleep: sleeping moves the clock, nothing waits."""
 
@@ -1006,36 +1011,52 @@ def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):
 
 
 def test_the_best_pair_is_chosen_without_its_five_best_coins(tmp_path):
-    # one coin goes x101 at 10 s: alone it makes a hold to 30 s look best on the mean. The sale of 50,000 dollars that
-    # takes it back to 1.2 at 100 s shows its pool held a copy's worth until then (a trade of cents would show nothing)
+    # one coin of thirty goes x101 at 10 s: alone it makes a hold to 30 s look best on the mean. The sale of 50,000
+    # dollars that takes it back to 1.2 at 100 s shows its pool held a copy's worth until then (a trade of cents would
+    # show nothing)
     lines = [coin(m, [flat(1.0), flat(x, 10), (S + 100, 1.2, 1.2, 1.2, 1.2, 50_000.0), flat(1.1, 250)])
-             for m, x in zip((A, B, C, D, E, F), (101.0, 1.0, 1.0, 1.0, 1.0, 1.0), strict=True)]  # fmt: skip
+             for m, x in zip(mints(30), (101.0, *[1.0] * 29), strict=True)]  # fmt: skip
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert pair(out, 2, 30)["mean"] == pytest.approx(100 / 6, abs=1e-3) and pair(out, 2, 30)["mean_without_best5"] == 0
+    assert pair(out, 2, 30)["mean"] == pytest.approx(100 / 30, abs=1e-3) and pair(out, 2, 30)["mean_without_best5"] == 0
     assert (out["best"]["delay"], out["best"]["hold"]) == (2, 120)  # every coin +20 percent
-    assert [(p["platform"], p["coins"]) for p in out["by_platform"]] == [("clanker", 6)]
+    assert [(p["platform"], p["coins"]) for p in out["by_platform"]] == [("clanker", 30)]
 
 
 def test_the_best_pair_is_split_by_launchpad(tmp_path):
-    write_scored(
-        tmp_path,
-        [
-            coin(A, to_the_end([flat(1.0), flat(2.0, 10)]), platform="clanker"),
-            coin(B, to_the_end([flat(1.0), flat(2.0, 10)]), platform="clanker"),
-            coin(C, to_the_end([flat(1.0), flat(0.5, 10)]), platform="zora"),
-            coin(D, to_the_end([flat(1.0), flat(0.5, 10)]), platform="zora"),
-            coin(E, to_the_end([flat(1.0), flat(1.5, 10)]), platform=None),
-        ],
-    )
+    lines = [coin(m, to_the_end([flat(1.0), flat(2.0, 10)]), platform="clanker") for m in mints(30)]
+    lines += [coin(m, to_the_end([flat(1.0), flat(0.5, 10)]), platform="zora") for m in mints(30, 30)]
+    lines.append(coin(A, to_the_end([flat(1.0), flat(1.5, 10)]), platform=None))
+    write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert out["best"]["delay"] in (2, 5)  # five coins: too few to take five out, the median chooses
-    got = {p["platform"]: (p["coins"], p["mean"]) for p in out["by_platform"]}
+    assert (out["best"]["delay"], out["best"]["hold"]) == (2, 30)
+    got = {p["platform"]: (p["coins"], p.get("mean"), p.get("too_few_coins")) for p in out["by_platform"]}
     assert got == {
-        "clanker": (2, pytest.approx(1.0)),
-        "zora": (2, pytest.approx(-0.5)),
-        "unknown": (1, pytest.approx(0.5)),
+        "clanker": (30, pytest.approx(1.0), None),
+        "zora": (30, pytest.approx(-0.5), None),
+        "unknown": (1, None, True),  # one coin: no numbers
     }
+
+
+def test_too_few_coins_name_no_best_pair_and_give_a_launchpad_no_numbers(tmp_path):
+    """Third review of 25 Nov: the report named a best pair, and split it by launchpad, on any number of coins: one
+    coin that tripled was the best pair at +200 percent, and a launchpad of one coin got a mean and a median; nothing
+    said how sure a number was. A pair needs 30 coins to be called best, a launchpad 30 to get numbers (too few
+    coins), and every mean has its standard error beside it."""
+    write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(3.0, 25), flat(1.2, 100)]))])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert (out["best"], out["by_platform"]) == (None, []) and "too few coins" in out["no_best"]
+    assert (pair(out, 2, 30)["coins"], pair(out, 2, 30)["mean_se"]) == (1, None)  # one copy: no spread to read
+    assert "mean_se" in out["reading"] and "30 coins" in out["reading"]
+    lines = [coin(m, to_the_end([flat(1.0), flat(1.1 if k % 2 else 1.3, 20)]), platform="clanker")
+             for k, m in enumerate(mints(40))]  # fmt: skip
+    write_scored(tmp_path, [*lines, coin(A, to_the_end([flat(1.0), flat(2.0, 20)]), platform="newpad")])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert out["best"] is not None and "no_best" not in out
+    clanker, newpad = out["by_platform"]
+    assert newpad == {"platform": "newpad", "coins": 1, "too_few_coins": True}
+    # twenty copies at +10 and twenty at +30 percent: a standard deviation of 0.1013, over the square root of 40
+    assert (clanker["coins"], clanker["mean"], clanker["mean_se"]) == (40, 0.2, pytest.approx(0.016, abs=1e-4))
 
 
 def test_the_report_counts_the_security_fields_gmgn_gave(tmp_path):
@@ -1071,16 +1092,17 @@ def test_a_coin_whose_safety_is_not_known_stays_in_the_table_marked_and_counted(
     crashed = [flat(1.0), (S + 10, 1.0, 1.0, 0.1, 0.1, 1.0), flat(0.1, 499)]
     refusal = {"error": "gmgn GET /v1/token/security: HTTP 404 NOT_FOUND: no such token"}
     fieldless = {"address": "0x" + "ee" * 20, "renounced_mint": 1, "top_10_holder_rate": 0.4}  # none of those read
-    unknown = (refusal, refusal, {}, {}, fieldless, fieldless)
-    lines = [coin(m, rose) for m in MANY[:6]] + [coin(m, crashed, u) for m, u in zip(MANY[6:12], unknown, strict=True)]
+    unknown = (refusal, {}, fieldless) * 5
+    many = mints(30)
+    lines = [coin(m, rose) for m in many[:15]] + [coin(m, crashed, u) for m, u in zip(many[15:], unknown, strict=True)]
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     row = pair(out, 2, 30)
-    assert (row["coins"], row["security_unknown"], row["mean"]) == (12, 6, pytest.approx(-0.4))
+    assert (row["coins"], row["security_unknown"], row["mean"]) == (30, 15, pytest.approx(-0.4))
     apart = out["security_unknown"]
-    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (6, 6, pytest.approx(-0.9))
-    assert (out["security"]["refused"], out["security"]["without_fields"]) == (2, 4)
-    assert [p["coins"] for p in out["by_platform"]] == [12]  # the best pair split by launchpad: every coin bought
+    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (15, 15, pytest.approx(-0.9))
+    assert (out["security"]["refused"], out["security"]["without_fields"]) == (5, 10)
+    assert [p["coins"] for p in out["by_platform"]] == [30]  # the best pair split by launchpad: every coin bought
 
 
 def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_money(tmp_path):
@@ -1230,10 +1252,10 @@ def test_a_coin_without_a_pool_size_is_scored_apart(tmp_path):
     up = to_the_end([flat(1.0), flat(2.0, 10)])
     missing = {k: v for k, v in coin(B, up).items() if k != "liquidity_usd"}
     unsized = [coin(m, up, liquidity=v) for m, v in zip((C, D, E, F, G), (None, 0, "x", -5, 10**400), strict=True)]
-    write_scored(tmp_path, [coin(A, up), missing, *unsized])
+    write_scored(tmp_path, [*(coin(m, up) for m in mints(30)), missing, *unsized])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert pair(out, 2, 30)["coins"] == 1 and {d["with_entry"] for d in out["by_delay"]} == {1}
-    assert [p["coins"] for p in out["by_platform"]] == [1]
+    assert pair(out, 2, 30)["coins"] == 30 and {d["with_entry"] for d in out["by_delay"]} == {30}
+    assert [p["coins"] for p in out["by_platform"]] == [30]
     apart = out["without_pool_size"]
     assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (6, 6, pytest.approx(1.0))
     assert "price impact" in apart["why"]
