@@ -110,7 +110,10 @@ TAX_COUNTS = ("ambiguous_coins", "coins_with_a_tax_above_1", "honeypots_if_share
 # what the watch keeps of GMGN's own row of a new coin, as GMGN gave it, beside the client's conversion of the row: its
 # taxes and its flags when the coin was first seen (review of 25 Nov: they were dropped). The real rows of 12 Nov give
 # buy_tax and sell_tax (0 on pump.fun coins) and no honeypot flag (tests/fixtures/gmgn/real/trenches.json).
-FIRST_SIGHT = (*CANNOT_SELL, *TAXES)
+# Each coin's own fee on each leg, as GMGN's real rows of new coins give it (fourth review of 25 Nov: pump.fun's 1.25
+# percent, 1.95 on the coin SU), and the launchpad's parameters it comes from, kept with the coin's row too.
+OWN_FEES = {"buy_tax": "total_buy_tax", "sell_tax": "total_sell_tax"}
+FIRST_SIGHT = (*CANNOT_SELL, *TAXES, *OWN_FEES.values(), "fee_params")
 SCORED_HEAD = '{"mint":"'  # how every line of a scored file begins (written compact, the coin first)
 # how every whole line of a scored file ends: a last key written after everything else, so a line cut by a killed job
 # never ends with it (second review of 25 Nov: a cut line can end with "}", the answers holding dicts in dicts)
@@ -148,7 +151,9 @@ SCORE_READING = (
     "way. Its return is exit / entry x buy "
     "impact x sale impact x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
     "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
-    "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
+    "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum), or the coin's "
+    "own where GMGN's row of it gave a higher one (total_buy_tax, total_sell_tax, read as a tax is); its tax is charged "
+    "on top, so should GMGN's total hold the tax, it is charged twice, on the safe side. A coin that "
     "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. Each leg pays its own price "
     "impact in a constant-product pool holding the liquidity GMGN gave when the watch first saw the coin "
     "(liquidity_usd), half of it on each side, taken back to the entry's price along the pool's curve: q = that half x "
@@ -1175,7 +1180,7 @@ class _Score:
     def __init__(self, share: float, fee: float, size: float, block: int = 1, fallback: float | None = None):
         self.share = share  # the two transactions' gas, as a share of the size
         self.block = block  # the chain's block, in seconds: where a copy lands (_fill)
-        self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
+        self.fee = fee  # the pool's swap fee on each leg, unless the coin's own is higher
         self.size = size  # a pool that held less at settle could not give a stale sale its price (pool_state)
         # the cash side a coin with no pool size of its own is charged at: one a tenth of the chain's coins were smaller
         # than when first seen (`score` reads it off the file first); None: no coin gave one
@@ -1266,7 +1271,11 @@ class _Score:
         self.n["without_a_price"] += not ts
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
         fetched = _int(rec.get("fetched_at"))
-        keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
+        # each leg pays the higher of the flat fee and the coin's own (OWN_FEES, read as a tax is), and its tax on top
+        keep = 1.0
+        for leg, field in OWN_FEES.items():
+            own = _amount(rec.get(field))
+            keep *= (1 - max(self.fee, 0.0 if own is None else _share(own, "value"))) * (1 - taxes[leg])
         # a pool's cash side is worth no more than every coin there is, about the market cap on the same row (fourth
         # review of 25 Nov: GMGN's rows give a liquidity of up to eleven times it)
         self.n["capped_at_market_cap"] += capped and main
@@ -1328,7 +1337,7 @@ class _Score:
     def _paid(self, ratio: float, moved: float, entry_keep: float, q: float, stale: bool, liquidity: float | None,
               keep: float) -> float:  # fmt: skip
         """A copy's return, a share of its size: the sale's price over the entry's (`ratio`) x what the buy's impact
-        left (`entry_keep`) x what the sale's leaves x what the swap fees and the taxes leave (`keep`), less the two
+        left (`entry_keep`) x what the sale's leaves x what the fees and the taxes leave (`keep`), less the two
         transactions' gas. The sale meets the pool's cash side at its price: `q` at the entry candle's close, grown by
         the square root of `moved` (the sale's price over that close). A stale sale meets the pool read at settle, half
         of it on each side, never one bigger than that: a pool grown by settle pays it nothing more than the same sale
@@ -1341,9 +1350,9 @@ class _Score:
         elif stale:
             side = (liquidity or 0.0) / 2
         else:
-            return ratio * entry_keep * self.kept * keep - 1.0 - self.share
+            return ratio * entry_keep * keep - 1.0 - self.share
         exit_keep = side / (side + worth) if side + worth > 0 else 0.0
-        return ratio * entry_keep * exit_keep * self.kept * keep - 1.0 - self.share
+        return ratio * entry_keep * exit_keep * keep - 1.0 - self.share
 
     @staticmethod
     def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:

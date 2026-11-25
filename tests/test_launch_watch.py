@@ -895,6 +895,28 @@ def test_a_coin_that_cannot_be_sold_is_all_lost(tmp_path):
     assert out["security"]["honeypots"] == 5
 
 
+def test_each_leg_pays_the_higher_of_the_flat_fee_and_the_coins_own(tmp_path):
+    """Fourth review of 25 Nov: GMGN's real rows of new coins give each coin's own fee (total_buy_tax, total_sell_tax
+    and fee_params: pump.fun's 1.25 percent, 1.95 on the coin SU), and the watch threw them away, so a day watched could
+    never be scored at its coins' own fees. The watch keeps them with the coin's row, and each leg pays the higher of
+    the chain's flat fee and the coin's own (its tax on top: should GMGN's total hold the tax, it is charged twice, on
+    the safe side)."""
+    rows, _ = LW._new_rows(fixture("real/trenches.json")["data"])
+    su = next(r for r in rows if r["symbol"] == "SU")
+    assert (su["total_buy_tax"], su["total_sell_tax"]) == (0.0195, 0.0195)
+    assert su["fee_params"] == ["2", "0", "19500000", "19500000", "0"]
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
+    own = {k: su[k] for k in ("total_buy_tax", "total_sell_tax", "fee_params")}
+    low = {"total_buy_tax": 0.005, "total_sell_tax": "1.1"}  # both under the flat fee: half a percent, 1.1 percent
+    write_scored(tmp_path, [coin(A, up, first=own)], chain="sol")
+    out = LW.score(tmp_path, "sol", gas_usd=0.0)
+    assert pair(out, 2, 30)["mean"] == pytest.approx(2.0 * (1 - 0.0195) ** 2 - 1, abs=1e-4)
+    write_scored(tmp_path, [coin(A, up, first=low)], chain="sol")
+    out = LW.score(tmp_path, "sol", gas_usd=0.0)
+    assert pair(out, 2, 30)["mean"] == pytest.approx(2.0 * (1 - 0.0125) ** 2 - 1, abs=1e-4)
+    assert "total_buy_tax" in out["reading"]
+
+
 def test_each_leg_pays_the_higher_of_the_launchs_tax_and_the_settled_one(tmp_path):
     """Review of 25 Nov: the taxes on a launch's row when the watch first met it were thrown away, so a tax lowered
     by the time of the settle read was charged at its low. Each leg pays the higher of the two reads, and a coin
