@@ -105,6 +105,9 @@ STOP_ERRORS = frozenset(
      "AUTH_TIMESTAMP_SKEW", "PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"}
 )  # fmt: skip
 STOP_ROUNDS = 5  # rounds in a row one kind of read meets the same such refusal, none answered between, before the end
+# looks at the newest coins refused in a row with a 4xx (an outage counts none) that end the job: GMGN no longer takes
+# the look (fourth review of 25 Nov: 120 of 120 looks refused, no coin, ok true)
+POLL_REFUSALS = 30
 # a plan's refusals: they stop the job only on the candles read, without which nothing can be scored; a plan that lacks
 # the pool or the security route writes those reads refused (fourth review of 25 Nov: one ended a day's watch in four
 # minutes with nothing scored, though candles and security answered)
@@ -308,7 +311,8 @@ class WatchBusy(RuntimeError):
 
 
 class WatchStopped(RuntimeError):
-    """GMGN refused the key or this machine: the job ends, and nothing more is written."""
+    """GMGN refused the key or this machine, or every look at the newest coins: the job ends, and nothing more is
+    written."""
 
 
 def folder(data_dir: str | Path) -> Path:
@@ -544,6 +548,8 @@ class LaunchWatch:
         self.streaks: dict[str, tuple[str, int, int]] = {}
         self.answered_any = False  # GMGN answered a read of this job (anything but a refusal of the key)
         self.last_refusal = ""
+        self.last_status: int | None = None  # the HTTP status of the last read GMGN refused, or None
+        self.looks_refused = 0  # looks at the newest coins refused in a row with a 4xx (POLL_REFUSALS)
 
     def resume(self) -> None:
         """What the jobs before wrote: every coin seen, and the ones still waiting for their candles."""
@@ -582,6 +588,7 @@ class LaunchWatch:
             try:
                 got = read()
             except GmgnError as exc:
+                self.last_status = exc.status
                 if exc.error in PLAN_ERRORS and kind != "candles":  # the plan lacks this route: the read is refused
                     self._answered(kind)
                     return "refused", str(exc)
@@ -638,7 +645,8 @@ class LaunchWatch:
         rounds = was[1] + (was[2] != self.round) if was and was[0] == code else 1
         self.streaks[kind] = (code, rounds, self.round)
         if rounds >= STOP_ROUNDS:
-            raise WatchStopped(f"{rounds} rounds in a row, no {kind} read answered in between: {exc}")
+            raise WatchStopped(f"GMGN refused the key or this machine, so no read can work: {rounds} rounds in a row, "
+                               f"no {kind} read answered in between: {exc}")  # fmt: skip
         self.halted = True
         self.log(f"gmgn launch-watch {self.chain}: GMGN refused the key or this machine ({code}, {rounds} round"
                  f"{'s' if rounds > 1 else ''} in a row): this round's reads wait for the next")  # fmt: skip
@@ -647,7 +655,8 @@ class LaunchWatch:
     def poll(self, first: bool, until: float) -> None:
         """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down,
         its row as the client converts it and the taxes and flags GMGN gave on it (FIRST_SIGHT). A rate limit that
-        holds past `until` (the job's end) leaves it unasked."""
+        holds past `until` (the job's end) leaves it unasked; POLL_REFUSALS looks in a row refused with a 4xx end the
+        job (WatchStopped)."""
         kind, got = self._ask(
             functools.partial(
                 self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT, raw=True
@@ -661,7 +670,13 @@ class LaunchWatch:
         if kind != "ok":
             self.refused["poll"] += 1
             self.log(f"gmgn launch-watch {self.chain}: the look at the newest coins failed: {got}")
+            if self.last_status is not None and 400 <= self.last_status < 500:  # GMGN's refusal; an outage is not
+                self.looks_refused += 1
+                if self.looks_refused >= POLL_REFUSALS:
+                    raise WatchStopped(f"GMGN refused {self.looks_refused} looks at the newest coins in a row, so no "
+                                       f"new coin can be seen: {got}")  # fmt: skip
             return
+        self.looks_refused = 0
         rows, bad = _new_rows(got)
         if bad:
             self.counts["bad_rows"] += bad
@@ -838,8 +853,7 @@ class LaunchWatch:
             return {"ok": False, "chain": self.chain, "error": str(exc)}
         except WatchStopped as exc:
             self._flush()
-            return self.summary(minutes) | {"ok": False, "error": f"GMGN refused the key or this machine, so no read "
-                                                                  f"can work: {exc}"}  # fmt: skip
+            return self.summary(minutes) | {"ok": False, "error": str(exc)}
         self._flush()
         if self.counts["stop_refusals"] and not self.answered_any:
             return self.summary(minutes) | {"ok": False, "error": f"GMGN refused every read of the job, so no read "

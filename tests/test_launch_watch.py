@@ -740,6 +740,29 @@ def test_a_plan_without_the_pool_or_the_security_route_writes_those_reads_refuse
         assert (out["ok"], ft.now >= T + 600, a["fetched_at"], code in said) == (True, True, T, True), code
 
 
+def test_looks_refused_for_good_end_the_job_not_ok(tmp_path):
+    """Fourth review of 25 Nov: a look at the newest coins GMGN refuses for good (a 400 once it no longer takes the
+    body the client sends, a 404 once the route moved) never ended the job: 120 of 120 looks refused, no coin, ok true,
+    exit 0. POLL_REFUSALS looks in a row refused with a 4xx end it, not ok; an outage (a 5xx, no answer) counts none,
+    and an answered look starts the count again."""
+    for name, refusal in (("400", refused(400, "BAD_REQUEST", "invalid parameter: version")),
+                          ("404", refused(404, "NOT_FOUND", "no such route"))):  # fmt: skip
+        ft = FakeTime(T)
+        out = watch(tmp_path / name, ft, {"/v1/trenches": refusal}, minutes=120)
+        assert (out["ok"], out["polls"], ft.now) == (False, LW.POLL_REFUSALS, T + 29 * 60), name
+        assert "looks at the newest coins" in out["error"] and LW.POLL_REFUSALS == 30
+    ft = FakeTime(T)
+
+    def now_and_then(req):  # every 30th look answered
+        return answer({"new_creation": []}) if (ft.now - T) // 60 % 30 == 29 else refused(400, "BAD_REQUEST", "x")
+
+    out = watch(tmp_path / "answered", ft, {"/v1/trenches": now_and_then}, minutes=120)
+    assert (out["ok"], out["polls"]) == (True, 120)
+    outage = httpx.Response(503, text="upstream unavailable")
+    out = watch(tmp_path / "outage", FakeTime(T), {"/v1/trenches": outage}, minutes=120)
+    assert (out["ok"], out["polls"]) == (True, 120)
+
+
 def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):
     """A job too short for five rounds whose every read GMGN refused says so: no read could work."""
     refusal = refused(401, "AUTH_KEY_INVALID", "api key not found")
