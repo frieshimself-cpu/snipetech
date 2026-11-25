@@ -1511,10 +1511,12 @@ def build_parser() -> argparse.ArgumentParser:
         "schema: what a file on disk holds. amm-follow: every wallet's first buy of a PumpSwap pool in the bought "
         "files (pump_amm) copied late and held minutes to hours, kept once; amm-table: those copies' wallets (or "
         "--groups of buys, or --summary of every landing, size and exit) picked on the first --split-days and judged "
-        "on the days after",
+        "on the days after. amm-peaks: when each coin's market cap first passed about 100k, 500k, 1M and 5M USD "
+        "(1,250 to 62,500 SOL) in the bought PumpSwap files, and its peak, the coins past --min-sol (default 1,250) "
+        "kept as JSON lines (the big-deployer study's labels, with no hindsight)",
     )
     sp.add_argument("action", choices=["range", "fetch", "check", "order", "scan", "table", "follow", "amm-backfill",
-                                       "schema", "amm-follow", "amm-table"])  # fmt: skip
+                                       "schema", "amm-follow", "amm-table", "amm-peaks"])  # fmt: skip
     sp.add_argument("--key", default="copy_1_600", help="amm-table: landing_size_exit of the copy scored (copy|slow, "
                     "0.2|1|5 SOL, 60|600|3600|21600 s held or sell: behind the wallet's first sale)")  # fmt: skip
     sp.add_argument("--split-days", type=int, default=21, help="amm-table: the first days (UTC) picked on; the rest "
@@ -3001,6 +3003,32 @@ def _amm_history(args, cfg: Config) -> int:
     return 0
 
 
+def _amm_peaks(args, cfg: Config) -> int:
+    """`history amm-peaks`: when each coin's market cap first passed each bar in the bought PumpSwap files (pump_amm,
+    --from/--to), and its peak (analysis/amm_peaks.py), holding a lab slot while it reads; the coins whose peak
+    reached --min-sol (the first bar, about 100k USD, by default) kept as JSON lines beside the files."""
+    from .analysis import amm_peaks as ap
+    from .analysis.lab_lock import lab_lock
+
+    data = Path(cfg.storage.db_path).resolve().parent
+    here = data / "history" / "pumpfundata" / "pump_amm"
+    lo, hi = args.from_day or "0000", args.to_day or args.from_day or "9999"
+    paths = [p for p in sorted(here.glob("*.parquet")) if lo <= p.name.split("_")[-2] <= hi]
+    if not paths:
+        print(f"history amm-peaks: no PumpSwap files on disk for {lo}..{hi}", file=sys.stderr)
+        return 2
+    min_sol = args.min_sol if args.min_sol is not None else ap.BARS_SOL[0]
+    kept = here / "peaks" / f"amm_peaks_{lo}_{hi}.jsonl"
+    stats: dict = {}
+    with lab_lock(data):
+        peaks = ap.scan_peaks(paths, stats=stats)
+    written = ap.write_peaks(peaks, kept, min_sol=min_sol)
+    bars = {f"{b:g}": sum(c[ap.bar_keys(b)[0]] is not None for c in peaks.values()) for b in ap.BARS_SOL}
+    print(json.dumps({"path": str(kept), "from": paths[0].name, "to": paths[-1].name, "coins": len(peaks),
+                      "written": written, "min_sol": min_sol, "bars": bars, **stats}, indent=1))  # fmt: skip
+    return 0
+
+
 def _history(args, cfg: Config) -> int:
     """`snipetech history range | fetch | check`: the bought hourly files, kept under <data>/history/pumpfundata/.
     `history amm-backfill` is another source and its own function (`_amm_backfill`)."""
@@ -3011,6 +3039,8 @@ def _history(args, cfg: Config) -> int:
     from . import pumpfundata as pfd
     from .store import Store
 
+    if args.action == "amm-peaks":  # no call to the vendor: the PumpSwap files on disk; its own --min-sol default
+        return _amm_peaks(args, cfg)
     if args.min_sol is None:
         args.min_sol = 1.0 if args.action == "amm-backfill" else 0.5
     if args.action == "amm-backfill":  # another source (the RPC): no bought file and none of their key
