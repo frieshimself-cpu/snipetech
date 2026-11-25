@@ -801,6 +801,8 @@ def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=
         "symbol": "TKN",
         "created_ts": S,
         "liquidity_usd": liquidity,
+        # its price on that row: its first priced candle's close
+        "price_usd": next((c[4] for c in candles if isinstance(c[4], int | float) and c[4] > 0), 1.0),
         "first_seen": S + 3,
         **(first or {}),
         "fetched_at": S + 900 if fetched_at is None else fetched_at,
@@ -1377,6 +1379,23 @@ def test_a_copy_pays_its_own_price_impact_in_a_constant_product_pool(tmp_path):
         assert row["over_5pct_of_pool"] == (0 if size <= 150 else 20), size
     out = LW.score(tmp_path, "eth")
     assert "constant-product" in out["reading"] and "constant-product" in " ".join(out["caveats"])
+
+
+def test_the_pool_seen_after_the_entry_is_taken_back_to_the_entrys_price(tmp_path):
+    """Fourth review of 25 Nov: the pool's size is GMGN's liquidity when the watch first saw the coin, up to a look
+    after its launch, but it was charged as the pool at the entry: a winner that rose between its entry and its sighting
+    paid too little impact, 2/30 reading +610.5 percent where the same pool taken back to the entry gives +400.0. In
+    the score's own constant-product pool the cash side at a price P is the side seen times the square root of P over
+    the price on the same row (price_usd)."""
+    candles = [flat(1.0), flat(1.0, 2), *(flat(9.0, t) for t in range(30, 500, 10))]  # x9 by 30 s; seen at 9.0
+    write_scored(tmp_path, [coin(A, candles, liquidity=30_000.0, first={"price_usd": 9.0})])
+    out = LW.score(tmp_path, "base", size_usd=1000.0, gas_usd=0.0, fee_pct=0.0)
+    assert pair(out, 2, 30)["mean"] == pytest.approx(4.0, abs=1e-4)  # q 15,000 x √(1 / 9) = 5,000 at the entry
+    assert "square root of the price" in " ".join(out["caveats"])
+    # a row that gave no price cannot be taken back to the entry: the coin has no pool size there
+    write_scored(tmp_path, [coin(A, candles, liquidity=30_000.0, first={"price_usd": None})])
+    out = LW.score(tmp_path, "base", size_usd=1000.0, gas_usd=0.0, fee_pct=0.0)
+    assert (pair(out, 2, 30)["coins"], out["without_pool_size"]["coins"]) == (0, 1)
 
 
 def test_a_coin_without_a_pool_size_is_scored_apart(tmp_path):

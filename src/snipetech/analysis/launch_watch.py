@@ -148,10 +148,11 @@ SCORE_READING = (
     "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
     "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. Each leg pays its own price "
     "impact in a constant-product pool holding the liquidity GMGN gave when the watch first saw the coin "
-    "(liquidity_usd), half of it on each side (q): the buy gets q / (q + size) of its price, the sale qx / (qx + "
+    "(liquidity_usd), half of it on each side, taken back to the entry's price along the pool's curve: q = that half x "
+    "sqrt(entry / price_usd), the price on the same row. The buy gets q / (q + size) of its price, the sale qx / (qx + "
     "worth), where qx = q x sqrt(exit / entry) is that side at the exit and worth = size x exit / entry x the buy's "
-    "impact is what the copy holds at that price. over_5pct_of_pool counts the copies above 5 percent of that "
-    "liquidity. A coin without it is scored apart (without_pool_size). A coin with no candle that opened before D - 1 "
+    "impact is what the copy holds at that price. over_5pct_of_pool counts the copies above 5 percent of that pool at "
+    "their entry (2 x q). A coin without a liquidity or a price on that row is scored apart (without_pool_size). A coin with no candle that opened before D - 1 "
     "or at it is no trade "
     "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
     "is missing or zero is "
@@ -207,8 +208,10 @@ SECURITY_READING = (
 CAVEATS = (
     (
         "Our own price impact is counted with a constant-product pool holding the liquidity GMGN gave when the watch "
-        "first saw the coin, half of it on each side: a launchpad's bonding curve, or a pool that grew or shrank "
-        "before the entry, can make it larger or smaller."
+        "first saw the coin, half of it on each side, taken back to each entry's price along that pool's own curve "
+        "(its cash side grows with the square root of the price, from the price GMGN gave on the same row): a "
+        "launchpad's bonding curve, or liquidity added or taken out between the entry and that sighting, can make it "
+        "larger or smaller."
     ),
     (
         "The swap fee is one flat number per chain (fee_pct), not each pool's own fee: some Base launchpads take a "
@@ -1184,10 +1187,11 @@ class _Score:
         # and left out of the table and the delays (third review of 25 Nov)
         sighted = (rec.get("start_from") or start_source(rec)) == "sighting"
         self.n["timed_from_sighting"] += sighted
-        # the pool's dollars when the watch first saw the coin, half of them on each side: what its own price impact is
-        # paid in (third review of 25 Nov: none was). A coin without them is scored apart, never at no impact.
-        depth = _amount(rec.get("liquidity_usd")) or 0.0
-        unsized = not sighted and not depth
+        # the pool's dollars when the watch first saw the coin, half of them on each side, at the price on the same
+        # row: what its own price impact is paid in, taken back to each entry's price (third review of 25 Nov: none
+        # was paid; fourth: the pool seen was charged as the pool at the entry). A coin without them is scored apart.
+        depth, seen_at = _amount(rec.get("liquidity_usd")) or 0.0, _price(rec.get("price_usd"))
+        unsized = not sighted and not (depth and seen_at)
         self.n["without_pool_size"] += unsized
         if sighted:
             tables = (self.sighted,)
@@ -1207,28 +1211,26 @@ class _Score:
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
         fetched = _int(rec.get("fetched_at"))
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
-        q = depth / 2
-        entry_keep = q / (q + self.size) if q else 1.0  # what the buy's own impact leaves of its price
-        big = bool(depth) and self.size > BIG_FOR_POOL * depth
-        # a sale after the coin's last trade (stale) gets its price only from a pool still holding money at settle
+        q_seen = depth / 2 if depth and seen_at else 0.0
+        # a sale no later sale shows (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
-        if stale_exit(p, start, fetched, self.block, self.size * entry_keep):
-            self.pools["coins_with_a_stale_exit"] += 1
-            self.pools[pool] += 1
-            rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
+        copies, unsettled = [], []
         for d in DELAYS:
             if not _traded_before(ts, start + d):
                 self.no_trade[d] += main
                 continue
             self.entries[d] += main
             i = _fill(ts, start + d, self.block)
+            # the pool's cash side at the entry: the side seen, along its own curve, at the entry's price
+            q = q_seen * math.sqrt(closes[i] / seen_at) if q_seen and seen_at else 0.0
+            entry_keep = q / (q + self.size) if q else 1.0  # what the buy's own impact leaves of its price
+            big = bool(q) and self.size > BIG_FOR_POOL * 2 * q
             for h in HOLDS:
                 end = start + d + h
                 if (d, h) not in self.pairs:
                     continue
                 if fetched and fetched < end:  # the hold was not over when the candles were read
-                    for pairs in tables:
-                        pairs[(d, h)].unsettled += 1
+                    unsettled.append((d, h))
                     continue
                 j = _fill(ts, end, self.block)
                 ratio = closes[j] / closes[i]
@@ -1245,8 +1247,16 @@ class _Score:
                         self._paid(sold / paid, sold / closes[i], entry_keep, q, stale, liquidity, keep)
                         for paid, sold in ((closes[i], closes[j]), (p.highs[i], p.lows[j]))
                     )
-                for pairs in tables:
-                    pairs[(d, h)].add(ret, bound, plat, rug, honeypot, stale, lost, unknown, big, half)
+                copies.append(((d, h), ret, bound, stale, lost, big))
+        if any(copy[3] for copy in copies):
+            self.pools["coins_with_a_stale_exit"] += 1
+            self.pools[pool] += 1
+            rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
+        for pairs in tables:
+            for key in unsettled:
+                pairs[key].unsettled += 1
+            for key, ret, bound, stale, lost, big in copies:
+                pairs[key].add(ret, bound, plat, rug, honeypot, stale, lost, unknown, big, half)
 
     def _paid(self, ratio: float, moved: float, entry_keep: float, q: float, stale: bool, liquidity: float | None,
               keep: float) -> float:  # fmt: skip
