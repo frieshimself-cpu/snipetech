@@ -676,7 +676,9 @@ class OperatorJobs:
                     raise PermissionError(f"every lab slot is held ({who}, and a lab that is no job of the agents': "
                                           "qualify's, the search's or a freeze): read that lab's result when it "
                                           "ends, or do the part of the idea that needs no lab")  # fmt: skip
-        research = [m for m in running if loop_stage(m.get("argv")) is None]  # the round's own stages do not count
+        # the round's own stages do not count, nor the owner's own actions (a day-long launch watch: third review of
+        # 25 Nov, three of them left the analyst refused all day)
+        research = [m for m in running if loop_stage(m.get("argv")) is None and not _owner_action(m.get("argv") or [])]
         if len(research) >= self.max_jobs:
             raise PermissionError(f"{len(research)} jobs running, the limit is {self.max_jobs}")
         try:

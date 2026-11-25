@@ -3,6 +3,8 @@ runs for its --minutes, a day on the server, and asks GMGN every minute. Review 
 gmgn action through (start read only the first word), and so did the wallet scout's role, which names a command by its
 first word (roles.command_of)."""
 
+import json
+import os
 import sys
 
 import pytest
@@ -48,3 +50,14 @@ def test_no_agent_starts_a_launch_watch(jobs):
     # look up is no action
     assert jobs.start(["gmgn", "launch-score", "--chain", "base", "--json"])["id"]
     assert jobs.start(["gmgn", "who", "launch-watch", "--json"], role="scout", idea=idea)["id"]
+
+
+def test_the_owners_watches_hold_no_research_job_slot(jobs):
+    """Third review of 25 Nov: every running job that was no stage of the round counted against the agents' max_jobs,
+    the owner's day-long launch watches too: three of them left the analyst refused all day."""
+    for k, chain in enumerate(("base", "eth", "bsc")):  # the owner's `remote run gmgn launch-watch` jobs, running
+        meta = {"id": f"w{k}", "argv": ["gmgn", "launch-watch", "--chain", chain, "--minutes", "1440"],
+                "started": 1, "ended": None, "exit_code": None, "running": True, "pid": os.getpid()}  # fmt: skip
+        (jobs.ops.data / "jobs" / f"w{k}.json").write_text(json.dumps(meta))
+    assert len(jobs.running()) == 3 and jobs.max_jobs == 3
+    assert jobs.start(["winners", "--hours", "72", "--json"])["id"]
