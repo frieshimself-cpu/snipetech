@@ -784,6 +784,29 @@ def test_a_refusal_of_a_key_that_answered_in_this_job_ends_it_only_after_an_hour
             assert (out["ok"], ft.now, LW.STOP_ROUNDS_ANSWERED) == (False, T + 3600 + 59 * 60, 60), name
 
 
+def test_the_stop_and_retry_rules_count_minutes_not_rounds(tmp_path):
+    """Fourth review of 25 Nov: the stop and the retry rules counted rounds, and a round is --every seconds: with
+    --every 10 a refusal of 60 s ended a two-hour job at minute 10.7, and a coin's security GMGN had not read in its
+    first 40 s was written off. A round counts for either rule at most once a minute of the clock."""
+    ft = FakeTime(T)
+    auth = refused(401, "AUTH_KEY_INVALID", "api key not found")
+    reads = {"/v1/trenches": polls([trench(A, T - 1000)]), "/v1/market/token_kline": kline({}),
+             "/v1/token/security": security({})}  # fmt: skip
+    gated = {path: (lambda req, ok=ok: auth if ft.now < T + 60 else ok(req)) for path, ok in reads.items()}
+    out = watch(tmp_path / "stop", ft, gated, minutes=10, every=10)
+    assert (out["ok"], ft.now >= T + 600, out["scored"]) == (True, True, 1)
+    ft = FakeTime(T)
+    recorded(tmp_path / "retry", MANY[:5])
+
+    def sec(req):  # GMGN has not read these coins' security for their first 40 s
+        return refused(404, "NOT_FOUND", "token not found") if ft.now < T + 40 else answer(REAL_SECURITY)
+
+    routes = {"/v1/trenches": polls([]), "/v1/market/token_kline": kline({}), "/v1/token/security": sec}
+    out = watch(tmp_path / "retry", ft, routes, minutes=5, every=10)
+    lines = scored(tmp_path / "retry")
+    assert (len(lines), [x["mint"] for x in lines if "error" in x["security"]]) == (5, [])
+
+
 def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):
     """A job too short for five rounds whose every read GMGN refused says so: no read could work."""
     refusal = refused(401, "AUTH_KEY_INVALID", "api key not found")

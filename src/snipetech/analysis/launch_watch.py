@@ -84,6 +84,9 @@ LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way
 # rounds of an outage of a coin's read (no read of its kind answered in them) that count as one failed round of it: a
 # coin failing alone is written in the end (fourth review of 25 Nov: one never was, and two held the queue for good)
 OUTAGE_ROUNDS = 30
+# the stop and retry rules count a round at most once in this many seconds of the clock, whatever --every is (fourth
+# review of 25 Nov: with --every 10 a refusal of 60 s ended a two-hour job)
+ROUND_SECS = 60.0
 # a refusal that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
 # yet (review of 25 Nov: it was final). A 403 or a 401 is a refusal of the key or of this machine (STOP_STATUSES).
 LATER_STATUSES = (404,)
@@ -535,19 +538,23 @@ class LaunchWatch:
         self.pending: dict[str, dict] = {}  # each coin waiting for its candles: its row, in the order recorded
         self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
         self.outages: dict[str, int] = {}  # rounds of an outage a waiting coin's read failed in, not yet counted
+        # when each waiting coin's failed round, and its outage round, were last counted (ROUND_SECS apart at least)
+        self.tried_at: dict[str, float] = {}
+        self.outage_at: dict[str, float] = {}
         self.resumed = {"seen": 0, "waiting": 0}
         self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "bad_rows", "scored", "pools_read",
                                      "rate_limit_waits", "rate_limit_left", "read_errors", "tried_again_later",
                                      "outage_waits", "stop_refusals"), 0)  # fmt: skip
         self.refused = {"poll": 0, "candles": 0, "security": 0, "pool": 0}
         self.round = 0  # the round under way: a look at new coins and the reads after it (the last pass is one too)
+        self.round_at = 0.0  # when it began
         self.halted = False  # a refusal of the key or of this machine came in this round: its other reads wait
         self.answered_kinds: set[str] = set()  # the kinds of read GMGN answered in this round (`_answered`)
         # (coin, kind) of reads that failed on the way before GMGN answered any read of their kind in this round: a
         # failed round of their coin only if one answers later in it (`_close_round`)
         self.unanswered: list[tuple[str, str]] = []
         # each kind of read's run of rounds that met the same refusal of the key or of this machine: (its code, rounds
-        # in a row, the last round counted); an answer of its kind ends the run
+        # in a row, when the last one counted began); an answer of its kind ends the run
         self.streaks: dict[str, tuple[str, int, int]] = {}
         self.answered_any = False  # GMGN answered a read of this job (anything but a refusal of the key)
         self.ever_answered: set[str] = set()  # the kinds of read GMGN answered in this job
@@ -648,8 +655,12 @@ class LaunchWatch:
         self.counts["stop_refusals"] += 1
         self.last_refusal = str(exc)
         was = self.streaks.get(kind)
-        rounds = was[1] + (was[2] != self.round) if was and was[0] == code else 1
-        self.streaks[kind] = (code, rounds, self.round)
+        if was and was[0] == code:  # one round more, if a minute has passed since the last one counted
+            counted = self.round_at - was[2] >= ROUND_SECS
+            rounds, at = (was[1] + 1, self.round_at) if counted else (was[1], was[2])
+        else:
+            rounds, at = 1, self.round_at
+        self.streaks[kind] = (code, rounds, at)
         if rounds >= (STOP_ROUNDS_ANSWERED if kind in self.ever_answered else STOP_ROUNDS):
             raise WatchStopped(f"GMGN refused the key or this machine, so no read can work: {rounds} rounds in a row, "
                                f"no {kind} read answered in between: {exc}")  # fmt: skip
@@ -748,8 +759,8 @@ class LaunchWatch:
                     continue
             self._write(row, start, asked_at, candles, sec, pool, ts[-1] if ts else None)
             del self.pending[key]
-            self.tries.pop(key, None)
-            self.outages.pop(key, None)
+            for kept in (self.tries, self.outages, self.tried_at, self.outage_at):
+                kept.pop(key, None)
 
     def _wait(self, key: str, kind: str) -> bool:
         """Whether a coin whose read of `kind` failed ("later") waits for a later round (True), or is written now with
@@ -763,16 +774,24 @@ class LaunchWatch:
         if tries >= LATER_ROUNDS:
             return False
         if kind in self.answered_kinds:
-            if tries + 1 >= LATER_ROUNDS:
+            if self._counts(key, self.tried_at) and tries + 1 >= LATER_ROUNDS:
                 return False
             self._later(key)
         else:
             self.unanswered.append((key, kind))
         return True
 
+    def _counts(self, key: str, last: dict[str, float]) -> bool:
+        """Whether this round counts for a coin's rule whose last counted round began at `last[key]`: ROUND_SECS of
+        the clock have passed since."""
+        return self.round_at - last.get(key, -math.inf) >= ROUND_SECS
+
     def _later(self, key: str) -> None:
-        self.tries[key] = self.tries.get(key, 0) + 1
-        self.counts["tried_again_later"] += 1
+        """A failed round of a coin's reads, counted at most once a minute (ROUND_SECS)."""
+        if self._counts(key, self.tried_at):
+            self.tried_at[key] = self.round_at
+            self.tries[key] = self.tries.get(key, 0) + 1
+            self.counts["tried_again_later"] += 1
 
     def _close_round(self) -> None:
         """The round's end: a coin whose read failed on the way before any read of its kind was answered in the round
@@ -783,8 +802,10 @@ class LaunchWatch:
                 self._later(key)
                 continue
             self.counts["outage_waits"] += 1
-            self.outages[key] = self.outages.get(key, 0) + 1
-            if self.outages[key] >= OUTAGE_ROUNDS:
+            if self._counts(key, self.outage_at):  # an outage's rounds count at most once a minute too
+                self.outage_at[key] = self.round_at
+                self.outages[key] = self.outages.get(key, 0) + 1
+            if self.outages.get(key, 0) >= OUTAGE_ROUNDS:
                 self.outages[key] = 0
                 self._later(key)
         self.unanswered.clear()
@@ -877,6 +898,7 @@ class LaunchWatch:
 
     def _open_round(self) -> None:
         self.round += 1
+        self.round_at = self.clock()
         self.halted = False
 
     def summary(self, minutes: float) -> dict:
