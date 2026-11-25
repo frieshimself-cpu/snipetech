@@ -190,7 +190,7 @@ SCORE_READING = (
     "liquidity it gave, half of it on each side, and never more than the same sale shown would get: its side is the "
     "smaller of that half and qx, and it gets side / (side + worth) of the price. It is lost (-1 and its gas) when the "
     "read gave no liquidity (not read, refused, none in the answer) or zero. pools "
-    "counts those coins by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
+    "counts the table's coins with a stale sale by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
     "unknown (not read, refused or without a liquidity). stale_exits says how many of a row's sales were stale; "
     "stale_sales shows those copies alone, each pair's: how many, their mean, and how many were lost."
 )
@@ -1172,7 +1172,8 @@ class _Score:
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
                                 "first_sight_honeypots", "taxes_changed", "timed_from_sighting",
-                                "without_pool_size", "capped_at_market_cap", "returns_left_out", *TAX_COUNTS),
+                                "without_pool_size", "capped_at_market_cap", "returns_left_out",
+                                "held_security_unknown", *TAX_COUNTS),
                                0)  # fmt: skip
         # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
         # settle ("settle") and of the coin's row when first seen ("first")
@@ -1217,7 +1218,6 @@ class _Score:
         # timed from when the watch first saw it, not from its launch: its delays say nothing, so it is scored apart
         # and left out of the table and the delays (third review of 25 Nov)
         sighted = (rec.get("start_from") or start_source(rec)) == "sighting"
-        self.n["timed_from_sighting"] += sighted
         # the pool's dollars when the watch first saw the coin, half of them on each side, at the price on the same
         # row: what its own price impact is paid in, taken back to each entry's price (third review of 25 Nov: none
         # was paid; fourth: the pool seen was charged as the pool at the entry). A coin without them stays in the
@@ -1249,7 +1249,10 @@ class _Score:
         # a pool's cash side is worth no more than every coin there is, about the market cap on the same row (fourth
         # review of 25 Nov: GMGN's rows give a liquidity of up to eleven times it)
         self.n["capped_at_market_cap"] += capped and main
+        # the coins each table apart holds: a coin whose candles GMGN refused is in none (fourth review of 25 Nov)
         self.n["without_pool_size"] += unsized
+        self.n["timed_from_sighting"] += sighted
+        self.n["held_security_unknown"] += unknown and main
         # a sale no later sale shows (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
         copies, unsettled = [], []
@@ -1291,7 +1294,7 @@ class _Score:
                     self.n["returns_left_out"] += 1
                     continue
                 copies.append(((d, h), ret, bound, stale, lost, big))
-        if any(copy[3] for copy in copies):
+        if main and any(copy[3] for copy in copies):  # the table's coins only (fourth review of 25 Nov)
             self.pools["coins_with_a_stale_exit"] += 1
             self.pools[pool] += 1
             rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
@@ -1366,7 +1369,7 @@ class _Score:
                 "fallback_cash_side": None if self.fallback is None else _r(self.fallback),
             },
             "security_unknown": {
-                "coins": self.n["security_refused"] + self.n["security_without_fields"],
+                "coins": self.n["held_security_unknown"],
                 "why": UNKNOWN_READING,
                 "table": self._table(self.apart),
             },

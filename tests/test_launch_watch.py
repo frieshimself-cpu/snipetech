@@ -1472,6 +1472,30 @@ def test_a_liquidity_too_small_to_hold_a_cent_is_no_pool_size(tmp_path):
     assert pair(out["without_pool_size"], 2, 30)["mean"] == pytest.approx(-1.0, abs=1e-4)
 
 
+def test_each_table_apart_counts_the_coins_it_holds(tmp_path):
+    """Fourth review of 25 Nov: security_unknown.coins counted every coin whose security was unknown, 3 where its table
+    held 1: a coin timed from a sighting, or whose candles GMGN refused, is scored in no row of it. pools counted the
+    coins of the tables apart too. Each count is of the coins its table holds; pools, of the table's."""
+    up, stops = to_the_end([flat(1.0), flat(2.0, 10)]), [flat(1.0), flat(3.0, 10)]  # stops: every sale stale
+    refusal = {"error": "gmgn GET /v1/token/security: HTTP 404 NOT_FOUND: no such token"}
+    sighted, cut = {"start_from": "sighting"}, {"candles": [], "candles_error": "gmgn GET kline: HTTP 404 NOT_FOUND"}
+    lines = [
+        coin(A, up, refusal),  # in the table, its security unknown
+        coin(B, up, refusal) | sighted,  # timed from a sighting
+        coin(C, up, refusal) | cut,  # its candles refused: scored nowhere
+        coin(D, stops) | sighted,  # timed from a sighting, every sale stale
+        coin(E, stops),  # in the table, every sale stale
+        coin(F, up) | sighted | cut,
+    ]
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    unknown, apart = out["security_unknown"], out["timed_from_sighting"]
+    assert (unknown["coins"], pair(unknown, 2, 30)["coins"]) == (1, 1)
+    assert (apart["coins"], pair(apart, 2, 30)["coins"]) == (2, 2)
+    assert out["pools"]["coins_with_a_stale_exit"] == 1  # E's; D's in the table apart
+    assert (out["security"]["refused"], out["candles"]["refused"]) == (3, 2)  # the reads themselves, every coin's
+
+
 def test_a_coin_timed_from_its_first_sighting_is_scored_apart(tmp_path):
     """Third review of 25 Nov: a coin with no usable open or creation time was timed from when the watch first saw it,
     up to a look after its launch, and nothing said so: its first seconds were never read, and a "2 s" entry priced a
