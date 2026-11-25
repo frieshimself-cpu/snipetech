@@ -1833,8 +1833,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--minutes",
         type=float,
-        help="launch-watch: how long it watches, in minutes: its end, with a minute after it for its last reads (0: it "
-        "only reads, for a minute at most, the coins that settled since the last job)",
+        help="launch-watch: how long it watches, in minutes: its end, its last reads starting within a minute after "
+        "it (0: it only reads the coins that settled since the last job, starting none after that minute)",
     )
     sp.add_argument("--every", type=float, help="launch-watch: seconds between two looks at GMGN's newest coins (60)")
     sp.add_argument(

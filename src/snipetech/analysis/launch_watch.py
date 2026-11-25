@@ -15,8 +15,9 @@ creation, else when the watch first saw it.
 
 A read GMGN refuses is written into that coin's line and the job goes on. A rate limit is waited out and the read asked
 again, never past the time the read has: --minutes is the job's end. Each round's reads stop when the next look at new
-coins is due, and the one pass after the end stops a minute later at most (FINAL_SLACK_SECS); a read left by then, or
-held by a rate limit past it, waits for a later round or the next job. A read that fails on the way (no answer, a
+coins is due, and the one pass after the end starts no read more than a minute after it (FINAL_SLACK_SECS; a read
+under way then finishes, a minute more at most when GMGN does not answer); a coin left by then, or held by a rate limit
+past it, waits for a later round or the next job. A read that fails on the way (no answer, a
 server error) or that GMGN refuses with a 404 or a 403 (a coin it has not read yet; a request that left over the wrong
 route) is tried again a round later, three rounds at most, then written as refused. A key GMGN refuses ends the
 job and writes nothing more: no read could work. A restarted job reads both files and goes on where the last one
@@ -70,7 +71,7 @@ LATER_STATUSES = (403, 404)
 RATE_WAITS = 10  # waits for one read's rate limit; after them the read is tried again a round later
 RATE_WAIT_MAX = 900.0  # the longest single wait
 RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
-FINAL_SLACK_SECS = 60.0  # the last reads after a watch's minutes: they stop this long after its end at the latest
+FINAL_SLACK_SECS = 60.0  # the last reads after a watch's minutes: none starts later than this after its end
 STATUS_SECS = 900.0  # a line in the job's log this often
 # GMGN's refusals of the key or of this machine: waiting does not end them, and no read can work while they hold
 STOP_ERRORS = frozenset(
@@ -531,8 +532,8 @@ class LaunchWatch:
     def run(self, minutes: float) -> dict:
         """Watch for `minutes` (0: only read what has settled), then read in one pass what has settled by the end. The
         minutes are the job's end (review of 25 Nov: rate-limit waits and the last reads ran past them): each round's
-        reads stop when the next look is due, no wait runs past the end, and the last pass stops FINAL_SLACK_SECS
-        after it; what is left waits for the next job."""
+        reads stop when the next look is due, no wait runs past the end, and the last pass starts no read later than
+        FINAL_SLACK_SECS after it (one under way finishes); what is left waits for the next job."""
         try:
             with chain_lock(self.data_dir, self.chain):
                 self.resume()
