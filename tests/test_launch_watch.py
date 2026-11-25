@@ -1163,6 +1163,9 @@ def test_the_best_pair_and_the_launchpads_are_chosen_on_one_half_and_judged_on_t
     rows = [(p["platform"], p.get("rank"), p["coins"], p.get("mean")) for p in out["by_platform"]]
     assert rows == [("clanker", 1, 30, -0.5), ("zora", 2, 30, 0.2), ("newpad", None, 1, None)]
     assert out["coins_by_half"] == [61, 60] and "half_of" in out["reading"]
+    # fourth review of 25 Nov: a launchpad picked by these numbers, not by its rank, is chosen and judged on them
+    picked = "picked by its printed numbers rather than by its rank is chosen and judged on the same coins"
+    assert picked in out["reading"]
     assert LW.half_of(A.upper().replace("0X", "0x")) == LW.half_of(A)  # an address in capitals is the same coin
 
 
