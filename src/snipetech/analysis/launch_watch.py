@@ -9,8 +9,8 @@ launchpad of the chain, 80 coins at most) and writes each coin it has not seen t
 beside the database: the row the client makes of it with the taxes and honeypot flags GMGN gave on it, when it was
 first seen, and the chain. Once a coin is `settle_secs` past its start (900 s by default, so its 500 s of candles are
 over), it asks once for the coin's 1-second candles over the 500 s after its start and for its security numbers, and
-for its pool when a copy would sell it at its last trade in its 500 s, and writes them to <chain>_scored.jsonl
-with the time of its last candle. A coin's start is its open time (a pool can open after its coin was made), else its
+for its pool when a copy could sell it at a stale price (at its last trade in its 500 s, or at one whose next trade
+came ten times away from it), and writes them to <chain>_scored.jsonl with the time of its last candle. A coin's start is its open time (a pool can open after its coin was made), else its
 creation, else when the watch first saw it.
 
 A read GMGN refuses is written into that coin's line and the job goes on. A rate limit is waited out and the read asked
@@ -27,11 +27,14 @@ stopped; one job at a time watches a chain. It keeps the coins it has seen and t
 nothing else. Like every GMGN call it only reads.
 
 `score` (`snipetech gmgn launch-score`) reads <chain>_scored.jsonl and says what a copy made for each entry delay and
-hold: the mean, the median, the share that made money, the mean once the five best coins are taken out (one big winner
-must not carry it) and the share of coins that rugged, then the best pair split by launchpad. Beside that table: the
-same without the sales made after a coin's last trade, and the coins whose security is unknown alone (they are in the
-table too, counted in each row). What it assumes is printed with every report (SCORE_READING, SECURITY_READING, the
-chain's LANDING), and so is what it leaves out (CAVEATS)."""
+hold, landing behind the trades of its block and paying its own price impact in a constant-product pool of the coin's
+first-seen liquidity: the mean and its standard error, the median, the share that made money, the mean once the five
+best coins are taken out (one big winner must not carry it) and the share of coins that rugged. The best pair is chosen
+on one half of the coins (a hash of their address) and its numbers, split by launchpad, are the other half's; a pair
+needs 30 coins in each half, a launchpad too. Beside that table: the stale sales alone, the coins whose security is
+unknown alone (they are in the table too, counted in each row), and apart from it the coins timed from a sighting and
+those without a pool size. What it assumes is printed with every report (SCORE_READING, SECURITY_READING, the chain's
+LANDING), and so is what it leaves out (CAVEATS)."""
 
 from __future__ import annotations
 

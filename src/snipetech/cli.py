@@ -1850,7 +1850,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--size-usd",
         type=float,
-        help="launch-score: the dollars a copy buys (100); the gas of its buy and its sale is counted against them",
+        help="launch-score: the dollars a copy buys (100); the gas of its buy and its sale, and its own price impact "
+        "in the coin's pool, are counted against them",
     )
     sp.add_argument(
         "--gas-usd",

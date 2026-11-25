@@ -1437,6 +1437,15 @@ def test_a_wrong_number_is_exit_2_with_no_key_set_too(snipetech, monkeypatch):
     assert code == 1 and "GMGN_API_KEY" in out["error"]  # good numbers and no key: the key's own refusal
 
 
+def test_the_size_help_says_a_copy_pays_its_own_price_impact(capsys):
+    """Third review of 25 Nov: --size-usd said only a copy's gas was counted against its size; its own price impact in
+    its coin's pool is too."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["gmgn", "--help"])
+    said = " ".join(capsys.readouterr().out.split())
+    assert "its own price impact in the coin's pool, are counted against them" in said
+
+
 def test_launch_score_reads_the_watched_file_and_needs_no_key(snipetech, tmp_path, monkeypatch):
     write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])
     monkeypatch.delenv("GMGN_API_KEY")
