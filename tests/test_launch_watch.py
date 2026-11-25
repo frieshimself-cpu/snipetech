@@ -109,15 +109,31 @@ def security(by_mint):
     return route
 
 
+HEALTHY_POOL = {"address": "0x" + "88" * 20, "exchange": "uniswap_v4", "liquidity": "25000.5", "base_reserve": "4.1e9",
+                "quote_reserve": "5.2"}  # fmt: skip
+
+
+def pools(by_mint):
+    """GMGN's pool of each coin asked (an answer, or a ready response); one that still holds money for any other."""
+
+    def route(req):
+        got = by_mint.get(req.url.params["address"], HEALTHY_POOL)
+        return got if isinstance(got, httpx.Response) else answer(got)
+
+    return route
+
+
 def client(ft, seen, routes, chain="base"):
     return Gmgn(KEY, transport=fake_gmgn(seen, routes), clock=ft.time, sleep=ft.sleep, rate=50, chain=chain)
 
 
 def watch(tmp_path, ft, routes, seen=None, chain="base", **kw):
-    """One launch-watch job on the fake clock; gives its summary."""
+    """One launch-watch job on the fake clock (every pool GMGN is asked for still holds money, unless `routes` say
+    otherwise); gives its summary."""
     kw.setdefault("every", 60)
     kw.setdefault("settle_secs", 900)
     got = [] if seen is None else seen
+    routes = {"/v1/token/pool_info": pools({}), **routes}
     return LW.watch(client(ft, got, routes, chain), tmp_path, clock=ft.time, sleep=ft.sleep, **kw)
 
 
@@ -242,6 +258,33 @@ def test_a_settled_launch_gets_its_candles_and_security_once(tmp_path):
     assert seen2 == [] and out2["resumed"] == {"seen": 2, "waiting": 0} and len(scored(tmp_path)) == 2
 
 
+def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_path):
+    """Review of 25 Nov: a sale after a coin's last trade is priced at that trade, and a pool its creator emptied
+    leaves no trade and no candle. A coin that a copy would sell more than 60 s after its last trade has its pool read
+    once, when it settles; every line keeps the coin's last candle time."""
+    s = T - 1000
+    bars = {
+        A: [(s, 1.0, 1.0, 1.0, 1.0, 5.0), (s + 10, 3.0, 3.0, 3.0, 3.0, 5.0)],  # its last trade 10 s in
+        B: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in range(0, 500, 40)],  # a trade every 40 s, to the end
+        C: [(s, 1.0, 1.0, 1.0, 1.0, 5.0)],  # its only trade at its start, and GMGN has no pool of it
+    }
+    gone = dict(HEALTHY_POOL, liquidity="0.02", base_reserve="0", quote_reserve="0")
+    routes = {
+        "/v1/trenches": polls([trench(m, s) for m in (A, B, C)]),
+        "/v1/market/token_kline": kline(bars),
+        "/v1/token/security": security({}),
+        "/v1/token/pool_info": pools({A: gone, C: refused(404, "NOT_FOUND", "no pool")}),
+    }
+    seen: list = []
+    out = watch(tmp_path, FakeTime(T), routes, seen, minutes=3)
+    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C]  # once each; B never
+    by = {line["mint"]: line for line in scored(tmp_path)}
+    assert (by[A]["last_candle_ts"], by[A]["pool"]) == (s + 10, gone)
+    assert (by[B]["last_candle_ts"], "pool" in by[B]) == (s + 480, False)
+    assert by[C]["last_candle_ts"] == s and "HTTP 404" in by[C]["pool"]["error"]  # written as it came, asked once
+    assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (2, 1, 3)
+
+
 def test_the_window_starts_at_the_open_else_the_creation_else_the_first_sighting(tmp_path):
     rows = [trench(A, T - 5000, opened=T - 100), trench(B, T - 200), trench(C, 0)]
     routes = {"/v1/trenches": polls(rows), "/v1/market/token_kline": kline({}), "/v1/token/security": security({})}
@@ -286,7 +329,8 @@ def test_a_refused_read_is_written_into_the_coins_line_and_the_job_goes_on(tmp_p
     assert by[B]["candles"] == [] and "BAD_REQUEST" in by[B]["candles_error"]
     assert by[B]["security"] == REAL_SECURITY
     assert "candles_error" not in by[C] and by[C]["security"] == REAL_SECURITY
-    assert out["ok"] is True and out["polls"] == 2 and out["refused"] == {"poll": 1, "candles": 1, "security": 1}
+    assert out["ok"] is True and out["polls"] == 2
+    assert out["refused"] == {"poll": 1, "candles": 1, "security": 1, "pool": 0}
 
 
 def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_as_refused(tmp_path):
@@ -321,7 +365,7 @@ def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_
     assert [t for m, t in asks["candles"] if m == B] == rounds and "PLAN_UPGRADE_REQUIRED" in by[B]["candles_error"]
     assert (by[A]["fetched_at"], by[B]["fetched_at"]) == (T + 120, T + 120)  # written in the third round
     assert by[C]["security"] == REAL_SECURITY and by[C]["fetched_at"] == T + 60  # its second ask had it
-    assert out["tried_again_later"] == 5 and out["refused"] == {"poll": 0, "candles": 1, "security": 1}
+    assert out["tried_again_later"] == 5 and out["refused"] == {"poll": 0, "candles": 1, "security": 1, "pool": 0}
 
 
 def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):
@@ -345,7 +389,7 @@ def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):
     assert scored(tmp_path)[0]["security"] == REAL_SECURITY
     # the limit outlasted the first round's minute: the read was left for a later round, and the next look waited
     assert (out["rate_limit_left"], out["rate_limit_waits"]) == (1, 1)
-    assert out["refused"] == {"poll": 0, "candles": 0, "security": 0}
+    assert out["refused"] == {"poll": 0, "candles": 0, "security": 0, "pool": 0}
 
 
 def test_minutes_is_the_jobs_end_and_a_rate_limit_past_it_is_left_to_the_next_job(tmp_path):
@@ -504,9 +548,10 @@ def test_a_line_cut_short_by_a_killed_job_is_written_again_on_a_line_of_its_own(
 # -- the score: what an early buyer would have made ---------------------------------------------------------------------
 
 
-def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=None):
+def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=None, pool=None):
     """A line of <chain>_scored.jsonl as the watch writes it: a coin started at S, the taxes and flags of its row when
-    first seen (`first`), its candles as [ts, open, high, low, close, dollars] and its security as GMGN sent it."""
+    first seen (`first`), its candles as [ts, open, high, low, close, dollars], its security as GMGN sent it and, when
+    given, its pool as read at settle."""
     return {
         "mint": mint,
         "chain": "base",
@@ -518,6 +563,7 @@ def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=
         "fetched_at": S + 900 if fetched_at is None else fetched_at,
         "candles": [list(c) for c in candles],
         "security": dict(NO_TAX) if sec is None else sec,
+        **({} if pool is None else {"pool": pool}),
     }
 
 
@@ -538,7 +584,7 @@ def pair(out, delay, hold):
 
 
 def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_two_swap_fees_and_two_gas_fees(tmp_path):
-    candles = [flat(1.0), flat(2.0, 10), flat(1.5, 40)]
+    candles = [flat(1.0), flat(2.0, 10), flat(1.5, 40), flat(1.5, 100)]
     # in at the close of the last candle at or before start + 1 (1.0), out at or before start + 31 (2.0):
     # 2.0 / 1.0 x 0.99 x 0.99 x 0.95 x 0.90 - 1 - 2 x 0.05 / 100: Base's swap fee of 1 percent on each leg.
     kept = 0.99**2 * 0.95 * 0.9
@@ -763,6 +809,31 @@ def test_a_coin_whose_safety_is_not_known_is_scored_apart(tmp_path):
     assert apart["coins"] == 3 and pair(apart, 2, 30)["coins"] == 3 and pair(apart, 2, 30)["mean"] == pytest.approx(1.0)
     assert (out["security"]["refused"], out["security"]["without_fields"], out["coins"]) == (1, 2, 5)
     assert [p["coins"] for p in out["by_platform"]] == [2]  # the best pair split by launchpad: the known coins only
+
+
+def test_a_sale_after_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_money(tmp_path):
+    """Review of 25 Nov: a sale after a coin's last trade was priced at that trade, so a pool its creator emptied (no
+    trade, no candle) scored as a win, and as no rug. A sale priced from a candle more than 60 s old is lost unless
+    the pool read at settle still held the copy's size; the table without those sales is given beside the main one."""
+    stops = [flat(1.0), flat(3.0, 10)]  # its last trade 10 s in
+    lines = [
+        coin(A, stops, pool={"liquidity": "0.02"}),  # emptied
+        coin(B, stops, pool={"liquidity": "25000"}),  # still there: the last price stands
+        coin(C, stops, pool={"error": "gmgn GET /v1/token/pool_info: HTTP 404 NOT_FOUND: no pool"}),  # not known
+        coin(D, [flat(1.0)] + [flat(1.5, t) for t in range(60, 500, 50)]),  # trades to the end: no stale sale
+    ]
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    early = pair(out, 2, 30)  # out at 32 s: A, B and C at their trade of 10 s (22 s old), D at its first
+    assert (early["coins"], early["stale_exits"]) == (4, 0) and early["mean"] == pytest.approx((2 + 2 + 2 + 0) / 4)
+    late = pair(out, 2, 120)  # out at 122 s: A, B and C at a trade 112 s old
+    assert (late["coins"], late["stale_exits"]) == (4, 3) and late["mean"] == pytest.approx((-1 + 2 - 1 + 0.5) / 4)
+    assert late["rug_share"] == pytest.approx(1 / 4)  # A's pool was emptied: a rug
+    fresh = pair({"table": out["table_without_stale_exits"]}, 2, 120)
+    assert (fresh["coins"], fresh["mean"]) == (1, pytest.approx(0.5))
+    assert out["pools"] == {"coins_with_a_stale_exit": 3, "there": 1, "gone": 1, "unknown": 1}
+    # gone is less than the copy's own size: 25,000 dollars is gone for a copy of 50,000
+    assert LW.score(tmp_path, "base", size_usd=50_000, gas_usd=0.0, fee_pct=0.0)["pools"]["gone"] == 2
 
 
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):

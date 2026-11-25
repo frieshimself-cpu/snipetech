@@ -6,10 +6,12 @@ there pays is asked of GMGN's data first: a day of real launches, then what an e
 
 `watch` (`snipetech gmgn launch-watch`) asks GMGN every minute for the newest coins of one chain (its trenches: every
 launchpad of the chain, 80 coins at most) and writes each coin it has not seen to history/gmgn_launches/<chain>.jsonl
-beside the database: the row the client makes of it, when it was first seen, and the chain. Once a coin is
-`settle_secs` past its start (900 s by default, so its 500 s of candles are over), it asks once for the coin's 1-second
-candles over the 500 s after its start and for its security numbers, and writes both to <chain>_scored.jsonl. A coin's
-start is its open time (a pool can open after its coin was made), else its creation, else when the watch first saw it.
+beside the database: the row the client makes of it with the taxes and honeypot flags GMGN gave on it, when it was
+first seen, and the chain. Once a coin is `settle_secs` past its start (900 s by default, so its 500 s of candles are
+over), it asks once for the coin's 1-second candles over the 500 s after its start and for its security numbers, and
+for its pool when a copy would sell it more than 60 s after its last trade, and writes them to <chain>_scored.jsonl
+with the time of its last candle. A coin's start is its open time (a pool can open after its coin was made), else its
+creation, else when the watch first saw it.
 
 A read GMGN refuses is written into that coin's line and the job goes on. A rate limit is waited out and the read asked
 again, never past the time the read has: --minutes is the job's end. Each round's reads stop when the next look at new
@@ -23,8 +25,9 @@ nothing else. Like every GMGN call it only reads.
 
 `score` (`snipetech gmgn launch-score`) reads <chain>_scored.jsonl and says what a copy made for each entry delay and
 hold: the mean, the median, the share that made money, the mean once the five best coins are taken out (one big winner
-must not carry it) and the share of coins that rugged, then the best pair split by launchpad. What it assumes is printed
-with every report (SCORE_READING, SECURITY_READING, and the chain's LANDING)."""
+must not carry it) and the share of coins that rugged, then the best pair split by launchpad. Beside that table: the
+same without the sales made after a coin's last trade, and the coins whose security is unknown, scored apart. What it
+assumes is printed with every report (SCORE_READING, SECURITY_READING, and the chain's LANDING)."""
 
 from __future__ import annotations
 
@@ -47,6 +50,10 @@ from ..gmgn import CHAINS, Gmgn, GmgnError
 DELAYS = (2, 5, 12, 30)  # seconds after a coin's start a copy buys
 HOLDS = (30, 120, 300, 480)  # seconds it holds
 WINDOW_SECS = 500  # the 1 s candles read of a coin, from its start: GMGN gives 500 in one request
+PAIRS = tuple((d, h) for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS)  # what the score reads: inside the 500 s
+# A sale priced from a candle that opened longer ago than this is stale: the coin had not traded since, and a pool its
+# creator emptied leaves no trade and no candle (review of 25 Nov: such a sale scored at the last price, as a win)
+STALE_SECS = 60
 EVERY_SECS = 60.0  # between two looks at GMGN's newest coins
 SETTLE_SECS = 900.0  # a coin's candles and security are read this long after its start
 POLL_LIMIT = 80  # the most coins GMGN gives of a stage
@@ -104,7 +111,12 @@ SCORE_READING = (
     "taken out; the best pair is the one with the highest, or, where too few coins leave none, the highest median. "
     "rug_share is the share of coins whose price fell to a tenth of their first candle's or below within the 500 s "
     "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
-    "is not scored (unsettled)."
+    "is not scored (unsettled). A sale priced from a candle that opened more than 60 s before it (the coin had not "
+    "traded since) is stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody "
+    "could sell at. The watch reads such a coin's pool once, when it settles; a stale sale is -1 unless that read "
+    "showed liquidity of the copy's size or more (pools: there, gone, or unknown when not read, refused or without a "
+    "liquidity), and a coin whose pool was gone counts as rugged. stale_exits says how many of a row's sales were "
+    "stale; table_without_stale_exits is the same table without those copies."
 )
 SECURITY_READING = (
     "Each coin is read twice: its row on GMGN's list of new coins when the watch first saw it (first_sight: the "
@@ -125,8 +137,9 @@ SECURITY_READING = (
 )
 UNKNOWN_READING = (
     "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
-    "security.without_fields): whether they could be sold, and their taxes, are not known. They are scored here as if "
-    "they could be sold and paid no tax, and are left out of `table`, `best` and `by_platform`."
+    "security.without_fields): whether they could be sold, and their taxes, are not known. They are scored here on what "
+    "their row said when first seen (its taxes and flags, often none), as if the answer had said nothing, and are left "
+    "out of `table`, `best` and `by_platform`."
 )
 
 
@@ -193,6 +206,16 @@ def _new_rows(data: Any) -> list[dict]:
         if row is not None:
             rows.append(row | {k: given[k] for k in FIRST_SIGHT if k in given})
     return rows[:POLL_LIMIT]
+
+
+def _bars(candles: Any) -> list[list]:
+    """A coin's candles as its line holds them, [ts, open, high, low, close, dollars], from the client's rows."""
+    rows = candles if isinstance(candles, list) else []
+    return [
+        [c.get("ts"), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume_usd")]
+        for c in rows
+        if isinstance(c, dict)
+    ]
 
 
 def first_sight(rec: dict) -> dict:
@@ -303,9 +326,9 @@ class LaunchWatch:
         self.pending: dict[str, dict] = {}  # each coin waiting for its candles: its row, in the order recorded
         self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
         self.resumed = {"seen": 0, "waiting": 0}
-        self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "scored", "rate_limit_waits",
+        self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "scored", "pools_read", "rate_limit_waits",
                                      "rate_limit_left", "tried_again_later"), 0)  # fmt: skip
-        self.refused = {"poll": 0, "candles": 0, "security": 0}
+        self.refused = {"poll": 0, "candles": 0, "security": 0, "pool": 0}
 
     def resume(self) -> None:
         """What the jobs before wrote: every coin seen, and the ones still waiting for their candles."""
@@ -392,8 +415,9 @@ class LaunchWatch:
 
     def settle(self, until: float) -> None:
         """Every waiting coin past its settle time, in the order recorded: its candles and its security, read once and
-        written. It stops at `until` (the next look at new coins, or the job's end), and when a rate limit holds past
-        it: the coins not reached wait for the next round, which counts as no failed round of theirs."""
+        written, and its pool when a copy would sell it at a stale price (stale_exit): asked once, written as it came.
+        It stops at `until` (the next look at new coins, or the job's end), and when a rate limit holds past it: the
+        coins not reached wait for the next round, which counts as no failed round of theirs."""
         for key, row in list(self.pending.items()):
             start, asked_at = start_of(row), self.clock()
             if asked_at >= until:
@@ -416,7 +440,15 @@ class LaunchWatch:
             if sec[0] == "later" and not last_round:
                 self._later(key)
                 continue
-            self._write(row, start, asked_at, candles, sec)
+            if candles[0] == "ok":
+                candles = ("ok", _bars(candles[1]))
+            ts = _path(candles[1], start)[0] if candles[0] == "ok" else []
+            pool = None
+            if ts and stale_exit(ts, start, int(asked_at)):  # a pool emptied after the last trade leaves no candle
+                pool = self._ask(functools.partial(self.client.token_pool, mint), until)
+                if pool[0] == "unasked":
+                    return
+            self._write(row, start, asked_at, candles, sec, pool, ts[-1] if ts else None)
             del self.pending[key]
             self.tries.pop(key, None)
 
@@ -424,27 +456,34 @@ class LaunchWatch:
         self.tries[key] = self.tries.get(key, 0) + 1
         self.counts["tried_again_later"] += 1
 
-    def _write(self, row: dict, start: int, asked_at: float, candles: tuple, sec: tuple) -> None:
+    def _write(
+        self, row: dict, start: int, asked_at: float, candles: tuple, sec: tuple, pool: tuple | None, last: int | None
+    ) -> None:
         """A coin's line in the scored file: its row, its start, when its candles were asked for (`fetched_at`), its
-        candles as [ts, open, high, low, close, dollars], and its security as GMGN sent it; a refused read's words in
-        place of what it would have given."""
+        candles as [ts, open, high, low, close, dollars], the time of its last priced candle in its 500 s
+        (`last_candle_ts`), its security as GMGN sent it and, when it was read, its pool as GMGN sent it; a refused
+        read's words in place of what it would have given."""
         rec = {"mint": row["mint"], "chain": self.chain, "start": start, "platform": row.get("platform")}
         rec.update((k, v) for k, v in row.items() if k not in rec)
         rec["fetched_at"] = int(asked_at)
         if candles[0] == "ok":
-            rec["candles"] = [
-                [c.get("ts"), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume_usd")]
-                for c in candles[1]
-                if isinstance(c, dict)
-            ]
+            rec["candles"] = candles[1]
         else:
             rec["candles"], rec["candles_error"] = [], candles[1]
             self.refused["candles"] += 1
+        rec["last_candle_ts"] = last
         if sec[0] == "ok":
             rec["security"] = sec[1] if isinstance(sec[1], dict) else {"answer": sec[1]}
         else:
             rec["security"] = {"error": sec[1]}
             self.refused["security"] += 1
+        if pool is not None:
+            self.counts["pools_read"] += 1
+            if pool[0] == "ok":
+                rec["pool"] = pool[1] if isinstance(pool[1], dict) else {"answer": pool[1]}
+            else:
+                rec["pool"] = {"error": pool[1]}
+                self.refused["pool"] += 1
         _append(self.scored, rec)
         self.counts["scored"] += 1
 
@@ -491,6 +530,7 @@ class LaunchWatch:
             "polls_all_new": c["polls_all_new"],
             "recorded": c["recorded"],
             "scored": c["scored"],
+            "pools_read": c["pools_read"],  # coins a copy would sell after their last trade: their pool, read once
             "waiting": len(self.pending),
             "refused": dict(self.refused),
             "rate_limit_waits": c["rate_limit_waits"],
@@ -539,7 +579,8 @@ def _yes(v: Any) -> bool:
     return isinstance(v, str) and v.strip().lower() in ("1", "true", "yes")
 
 
-def _tax(v: Any) -> float | None:
+def _amount(v: Any) -> float | None:
+    """A tax or a sum of dollars: a finite number of 0 or more. Anything else is None."""
     try:
         x = float(v)
     except (TypeError, ValueError):
@@ -555,7 +596,7 @@ def read_security(sec: Any, percent: bool = False) -> dict:
     if not isinstance(sec, dict) or set(sec) == {"error"}:
         return {"honeypot": False, "buy_tax": 0.0, "sell_tax": 0.0, "refused": isinstance(sec, dict),
                 "given": set(), "yes": set(), "taxed": set(), "numbers": []}  # fmt: skip
-    taxes = {k: _tax(sec.get(k)) for k in TAXES}
+    taxes = {k: _amount(sec.get(k)) for k in TAXES}
     shares = {k: min(1.0, (t or 0.0) / (100.0 if percent else 1.0)) for k, t in taxes.items()}
     yes = {k for k in FLAGS if _yes(sec.get(k))}
     return {
@@ -631,6 +672,33 @@ def _at(ts: list[int], moment: int) -> int:
     return bisect.bisect_right(ts, moment - 1) - 1
 
 
+def _stale(ts: list[int], end: int) -> bool:
+    """Whether a sale at `end` is priced from a candle that opened more than STALE_SECS before it."""
+    return end - ts[_at(ts, end)] > STALE_SECS
+
+
+def stale_exit(ts: list[int], start: int, fetched: int) -> bool:
+    """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price: after the
+    coin's last trade by more than STALE_SECS. `ts`: its priced candles' times (_path); `fetched`: when its candles
+    were read (a hold not over by then is not scored). What the watch reads a coin's pool for."""
+    for d, h in PAIRS:
+        end = start + d + h
+        if _at(ts, start + d) >= 0 and not (fetched and fetched < end) and _stale(ts, end):
+            return True
+    return False
+
+
+def pool_state(pool: Any, size: float) -> str:
+    """What the settle read of a coin's pool says of a stale sale: "there" (liquidity of the copy's size or more, so
+    the last price could be had), "gone" (less), "unknown" (not read, refused, or no liquidity in the answer)."""
+    if not isinstance(pool, dict) or set(pool) == {"error"}:
+        return "unknown"
+    liquidity = _amount(pool.get("liquidity"))
+    if liquidity is None:
+        return "unknown"
+    return "there" if liquidity >= size else "gone"
+
+
 def _r(x: float) -> float:
     return round(x, 4)
 
@@ -660,31 +728,47 @@ def _rank(row: dict) -> tuple[int, float]:
 
 
 class _Pair:
-    """The copies of one entry delay and hold, side by side: returns, launchpads (by number) and rug marks."""
+    """The copies of one entry delay and hold, side by side: returns, launchpads (by number), and rug, honeypot and
+    stale-sale marks."""
 
-    __slots__ = ("honeypots", "plats", "rets", "rugs", "unsettled")
+    __slots__ = ("honeypot", "plats", "rets", "rugs", "stale", "unsettled")
 
     def __init__(self) -> None:
-        self.rets, self.plats, self.rugs = array("d"), array("I"), bytearray()
-        self.honeypots = self.unsettled = 0
+        self.rets, self.plats = array("d"), array("I")
+        self.rugs, self.honeypot, self.stale = bytearray(), bytearray(), bytearray()
+        self.unsettled = 0
 
-    def add(self, ret: float, plat: int, rug: bool, honeypot: bool) -> None:
+    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool) -> None:
         self.rets.append(ret)
         self.plats.append(plat)
         self.rugs.append(rug)
-        self.honeypots += honeypot
+        self.honeypot.append(honeypot)
+        self.stale.append(stale)
+
+    def row(self, fresh_only: bool = False) -> dict:
+        """The pair's numbers (_stats), its honeypots, its holds not over when read and its stale sales; with
+        `fresh_only`, those of the copies whose sale was not stale."""
+        keep = [k for k in range(len(self.rets)) if not (fresh_only and self.stale[k])]
+        out = {
+            **_stats([self.rets[k] for k in keep], [self.rugs[k] for k in keep]),
+            "honeypots": sum(self.honeypot[k] for k in keep),
+            "unsettled": self.unsettled,
+        }
+        return out if fresh_only else out | {"stale_exits": sum(self.stale)}
 
 
 class _Score:
     """What `score` adds up, one coin at a time; only the copies' numbers are kept, never a coin's candles."""
 
-    def __init__(self, share: float, fee: float, unit: dict):
+    def __init__(self, share: float, fee: float, unit: dict, size: float):
         self.share = share  # the two transactions' gas, as a share of the size
         self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
         self.unit = unit  # how the file's taxes are read (tax_unit)
         self.percent = unit["taxes_unit"] == "percent"
-        self.pairs = {(d, h): _Pair() for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS}
-        self.apart = {pair: _Pair() for pair in self.pairs}  # the coins whose security is not known (security_unknown)
+        self.size = size  # a pool that held less at settle could not give a stale sale its price (pool_state)
+        self.pairs = {pair: _Pair() for pair in PAIRS}
+        self.apart = {pair: _Pair() for pair in PAIRS}  # the coins whose security is not known (security_unknown)
+        self.pools = dict.fromkeys(("coins_with_a_stale_exit", "there", "gone", "unknown"), 0)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
@@ -728,6 +812,12 @@ class _Score:
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
         fetched = _int(rec.get("fetched_at"))
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
+        # a sale after the coin's last trade (stale) gets its price only from a pool still holding money at settle
+        pool = pool_state(rec.get("pool"), self.size)
+        if stale_exit(ts, start, fetched):
+            self.pools["coins_with_a_stale_exit"] += 1
+            self.pools[pool] += 1
+            rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
         for d in DELAYS:
             i = _at(ts, start + d)
             if i < 0:
@@ -741,16 +831,16 @@ class _Score:
                 if fetched and fetched < end:  # the hold was not over when the candles were read
                     pair.unsettled += 1
                     continue
-                out = closes[_at(ts, end)]
-                ret = -1.0 if honeypot else out / closes[i] * self.kept * keep - 1.0 - self.share
-                pair.add(ret, plat, rug, honeypot)
+                stale = _stale(ts, end)
+                if honeypot or (stale and pool != "there"):
+                    ret = -1.0
+                else:
+                    ret = closes[_at(ts, end)] / closes[i] * self.kept * keep - 1.0 - self.share
+                pair.add(ret, plat, rug, honeypot, stale)
 
     @staticmethod
-    def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:
-        return [
-            {"delay": d, "hold": h, **_stats(p.rets, p.rugs), "honeypots": p.honeypots, "unsettled": p.unsettled}
-            for (d, h), p in pairs.items()
-        ]
+    def _table(pairs: dict[tuple[int, int], _Pair], fresh_only: bool = False) -> list[dict]:
+        return [{"delay": d, "hold": h, **p.row(fresh_only)} for (d, h), p in pairs.items()]
 
     def report(self) -> dict:
         table = self._table(self.pairs)
@@ -779,6 +869,8 @@ class _Score:
             },
             "by_delay": [{"delay": d, "with_entry": self.entries[d], "no_trade_yet": self.no_trade[d]} for d in DELAYS],
             "table": table,
+            "table_without_stale_exits": self._table(self.pairs, fresh_only=True),
+            "pools": dict(self.pools),
             "security_unknown": {
                 "coins": self.n["security_refused"] + self.n["security_without_fields"],
                 "why": UNKNOWN_READING,
@@ -852,7 +944,7 @@ def score(
     if not path.exists():
         return {"ok": False, "chain": chain, "error": f"no launch on {chain} has been read yet: {path} does not exist "
                 f"(snipetech gmgn launch-watch --chain {chain} writes it)"}  # fmt: skip
-    tally, done = _Score(2.0 * gas / size, fee / 100.0, tax_unit(path)), set()
+    tally, done = _Score(2.0 * gas / size, fee / 100.0, tax_unit(path), size), set()
     with path.open(encoding="utf-8") as fh:
         for line in fh:
             rec = _scored_line(line)
