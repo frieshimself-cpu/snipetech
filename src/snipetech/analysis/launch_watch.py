@@ -72,6 +72,9 @@ FEE_PCT = {"sol": 1.25, "bsc": 1.0, "base": 1.0, "eth": 1.0}
 RUG_LEFT = 0.1  # a rug: the price fell to this share of its first candle's or below within the window
 HONEYPOT_SELL_TAX = 0.5  # a sell tax this high counts as a coin that cannot be sold
 BIG_FOR_POOL = 0.05  # a copy above this share of its pool's liquidity when first seen is counted (over_5pct_of_pool)
+# the least liquidity that is a pool size: a millionth of a dollar (fourth review of 25 Nov: 1e-320 dollars and a price
+# that fell far gave a pool side and a worth that both rounded to 0, and ZeroDivisionError)
+MIN_POOL_USD = 1e-6
 BEST_LEFT_OUT = 5
 # the fewest coins a pair needs to be called best, and a launchpad to get its numbers: a mean of fewer says little
 # (third review of 25 Nov: one coin that tripled was the best pair at +200 percent)
@@ -1137,9 +1140,9 @@ class _Pair:
 def _first_side(rec: dict) -> tuple[float | None, bool]:
     """A coin's pool when the watch first saw it, as the cash side of a constant-product pool: half the liquidity on its
     row, at most the market cap on that row, and whether that cap bit; None when the row gives no liquidity or no price
-    (price_usd: the side is taken back to an entry's price from it)."""
+    (price_usd: the side is taken back to an entry's price from it); a liquidity under MIN_POOL_USD is none."""
     depth, seen_at = _amount(rec.get("liquidity_usd")) or 0.0, _price(rec.get("price_usd"))
-    if not (depth and seen_at):
+    if not (depth >= MIN_POOL_USD and seen_at):
         return None, False
     cap = _price(rec.get("market_cap_usd"))
     return (cap, True) if cap and depth / 2 > cap else (depth / 2, False)

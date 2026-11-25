@@ -1458,6 +1458,20 @@ def test_a_coin_without_a_pool_size_stays_in_the_table_at_a_small_pool(tmp_path)
     )
 
 
+def test_a_liquidity_too_small_to_hold_a_cent_is_no_pool_size(tmp_path):
+    """Fourth review of 25 Nov: a liquidity of 1e-320 dollars (a number read as finite and above 0) and a price that
+    fell far after the entry gave a pool side and a worth that both round to 0: ZeroDivisionError, and every later
+    score of the chain failed on that line. A liquidity under a millionth of a dollar is no pool size: such a coin is
+    charged at the chain's fallback pool, as a coin that gave none."""
+    lines = [coin(m, to_the_end([flat(1.0), flat(2.0, 10)]), liquidity=3000.0) for m in mints(10)]
+    tiny = ((1e-320, 1e-9), (1e-300, 1e-300), (1e-12, 1e-30), (5e-7, 1e-9))
+    lines += [coin(m, to_the_end([flat(1.0), flat(low, 10)]), liquidity=x) for m, (x, low) in zip(mints(4, 100), tiny)]
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert (out["ok"], out["pool_sizes"]["without_one"], out["pool_sizes"]["fallback_cash_side"]) == (True, 4, 1500.0)
+    assert pair(out["without_pool_size"], 2, 30)["mean"] == pytest.approx(-1.0, abs=1e-4)
+
+
 def test_a_coin_timed_from_its_first_sighting_is_scored_apart(tmp_path):
     """Third review of 25 Nov: a coin with no usable open or creation time was timed from when the watch first saw it,
     up to a look after its launch, and nothing said so: its first seconds were never read, and a "2 s" entry priced a
