@@ -369,16 +369,16 @@ def test_no_read_starts_once_its_time_is_over(tmp_path):
 
 
 def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_as_refused(tmp_path):
-    """Review of 25 Nov: GMGN's 404 for a coin it has not read yet, and a 403 (a plan's refusal, or a request that left
-    over the wrong route), were written as refused at once, and such a coin was then scored as safe. They are asked
-    again two rounds later, as a server error is."""
+    """Review of 25 Nov: GMGN's 404 for a coin it has not read yet, and a 403 of its own, were written as refused at
+    once, and such a coin was then scored as safe. They are asked again two rounds later, as a server error is. (A 403
+    that refuses the key or its plan is the key's: test_a_plan_that_lost_its_one_second_candles_...)"""
     ft = FakeTime(T)
     asks: dict = {"candles": [], "security": []}
 
     def candles(req):
         asks["candles"].append((req.url.params["address"], ft.now))
         if req.url.params["address"] == B:
-            return refused(403, "PLAN_UPGRADE_REQUIRED", "1s candles need the Pro plan")
+            return refused(403, "FORBIDDEN", "this coin's candles are not open")
         return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
 
     def sec(req):
@@ -397,7 +397,7 @@ def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_
     by = {s["mint"]: s for s in scored(tmp_path)}
     rounds = [T, T + 60, T + 120]
     assert [t for m, t in asks["security"] if m == A] == rounds and "HTTP 404" in by[A]["security"]["error"]
-    assert [t for m, t in asks["candles"] if m == B] == rounds and "PLAN_UPGRADE_REQUIRED" in by[B]["candles_error"]
+    assert [t for m, t in asks["candles"] if m == B] == rounds and "FORBIDDEN" in by[B]["candles_error"]
     assert (by[A]["fetched_at"], by[B]["fetched_at"]) == (T + 120, T + 120)  # written in the third round
     assert by[C]["security"] == REAL_SECURITY and by[C]["fetched_at"] == T + 60  # its second ask had it
     assert out["tried_again_later"] == 5 and out["refused"] == {"poll": 0, "candles": 1, "security": 1, "pool": 0}
@@ -538,6 +538,25 @@ def test_a_refused_key_ends_the_job_after_five_rounds_and_leaves_the_coin_for_th
     routes["/v1/market/token_kline"] = kline({})
     out2 = watch(tmp_path, FakeTime(T + 300), routes, minutes=0)
     assert out2["resumed"] == {"seen": 1, "waiting": 1} and out2["scored"] == 1
+
+
+def test_a_plan_that_lost_its_one_second_candles_writes_no_coin_off_and_ends_the_job(tmp_path):
+    """Third review of 25 Nov: when the key's plan lost 1 s candles (403 PLAN_UPGRADE_REQUIRED on every candles read),
+    each coin due was written as refused and done, 238 of 328 in two hours, and the job ended ok. A refusal of the
+    key's plan is one of the key's now: the coins wait, and five rounds of it end the job, not ok."""
+    ft = FakeTime(T)
+    plan = refused(403, "PLAN_UPGRADE_REQUIRED", "1s candles need the Pro plan")
+    routes = {
+        "/v1/trenches": polls([trench(m, T - 1000) for m in (A, B, C)]),
+        "/v1/market/token_kline": lambda req: plan,
+        "/v1/token/security": security({}),
+    }
+    out = watch(tmp_path, ft, routes, minutes=60)
+    assert out["ok"] is False and "PLAN_UPGRADE_REQUIRED" in out["error"] and ft.now == T + 240
+    assert (out["scored"], out["waiting"], out["refused"]["candles"]) == (0, 3, 0)  # no coin written off
+    routes["/v1/market/token_kline"] = kline({})  # the plan back: the next job reads them all
+    out = watch(tmp_path, FakeTime(T + 3600), routes, minutes=0)
+    assert (out["scored"], out["waiting"]) == (3, 0)
 
 
 def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):

@@ -76,12 +76,15 @@ RATE_WAIT_MAX = 900.0  # the longest single wait
 RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
 FINAL_SLACK_SECS = 60.0  # the last reads after a watch's minutes: none starts later than this after its end
 STATUS_SECS = 900.0  # a line in the job's log this often
-# GMGN's refusals of the key or of this machine: no read can work while one holds, so it leaves the round, like a rate
-# limit with no end named, and the next round asks again; some pass (a request slowed past GMGN's 5 s window, one that
-# left over the wrong route: third review of 25 Nov, one of them ended a day-long watch for good)
+# GMGN's refusals of the key, of its plan or of this machine: no read of their kind can work while one holds, so it
+# leaves the round, like a rate limit with no end named, and the next round asks again; some pass (a request slowed
+# past GMGN's 5 s window, one that left over the wrong route: third review of 25 Nov, one of them ended a day-long watch
+# for good). A plan without 1 s candles (PLAN_UPGRADE_REQUIRED; PRO_PLAN_REQUIRED, as GMGN's skills name it for them)
+# refuses every coin alike: written into each coin, it wrote them all off while the job ran on (same review).
 STOP_ERRORS = frozenset(
-    {"AUTH_KEY_INVALID", "AUTH_IP_BLOCKED", "AUTH_KEY_BLOCKED", "AUTH_TIMESTAMP_EXPIRED", "AUTH_TIMESTAMP_SKEW"}
-)
+    {"AUTH_KEY_INVALID", "AUTH_IP_BLOCKED", "AUTH_KEY_BLOCKED", "AUTH_TIMESTAMP_EXPIRED", "AUTH_TIMESTAMP_SKEW",
+     "PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"}
+)  # fmt: skip
 STOP_ROUNDS = 5  # rounds in a row one kind of read meets the same such refusal, none answered between, before the end
 # what leaves the round, its coins waiting for the next one: a rate limit past the read's time, or the time over
 # ("unasked"), and a refusal of the key or of this machine ("halted")
