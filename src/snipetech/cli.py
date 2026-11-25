@@ -333,16 +333,21 @@ def _gmgn_mark(store_of):
 def _gmgn(args, cfg) -> int:
     """`snipetech gmgn <action>`: one look-up on GMGN, printed as JSON. A refusal is printed the same way
     ({"ok": false, "status", "error"}: GMGN's own words, the key scrubbed) and ends with exit code 1; a wrong
-    argument with 2. Reading only: there is no action that trades."""
+    argument with 2. Reading only: there is no action that trades. `launch-watch` runs for its --minutes and prints
+    how it went at its end; `launch-score` reads the watch's file and asks GMGN nothing."""
     from . import gmgn
     from .store import Store
 
+    if args.action == "launch-score":
+        return _gmgn_launch_score(args, cfg)
     store = Store(cfg.storage.db_path)
     code = 0
     try:
         mark = _gmgn_mark(lambda: store)
         if args.action == "ping":
             out = gmgn.ping(rate=cfg.gmgn.weight_per_sec, counter=mark)
+        elif args.action == "launch-watch":
+            out, code = _gmgn_launch_watch(args, cfg, mark)
         else:
             try:
                 client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark, chain=args.chain)
@@ -379,6 +384,40 @@ def _gmgn(args, cfg) -> int:
                     client.close()
     finally:
         store.close()
+    print(json.dumps(out, indent=None if args.json else 1, default=str))
+    return code or (0 if out.get("ok") else 1)
+
+
+def _gmgn_launch_watch(args, cfg, mark) -> tuple[dict, int]:
+    """`gmgn launch-watch`: a chain's new launches for --minutes, then their candles and security once settled
+    (analysis/launch_watch.py), written beside the database. A wrong number ends it with exit code 2, unasked."""
+    from . import gmgn
+    from .analysis import launch_watch
+
+    try:
+        client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark, chain=args.chain)
+    except gmgn.GmgnError as exc:
+        return {"ok": False, "status": None, "error": str(exc)}, 0
+    given = {k: v for k, v in (("every", args.every), ("settle_secs", args.settle_secs)) if v is not None}
+    try:
+        data = Path(cfg.storage.db_path).resolve().parent
+        return launch_watch.watch(client, data, minutes=args.minutes, log=_progress, **given), 0
+    except ValueError as exc:
+        return {"ok": False, "status": None, "error": str(exc)}, 2
+    finally:
+        client.close()
+
+
+def _gmgn_launch_score(args, cfg) -> int:
+    """`gmgn launch-score`: what an early buyer of the watched launches would have made (analysis/launch_watch.py),
+    from the watch's file beside the database: no key, no database, nothing asked of GMGN."""
+    from .analysis import launch_watch
+
+    given = {k: v for k, v in (("size_usd", args.size_usd), ("gas_usd", args.gas_usd)) if v is not None}
+    try:
+        out, code = launch_watch.score(Path(cfg.storage.db_path).resolve().parent, args.chain, **given), 0
+    except ValueError as exc:
+        out, code = {"ok": False, "status": None, "error": str(exc)}, 2
     print(json.dumps(out, indent=None if args.json else 1, default=str))
     return code or (0 if out.get("ok") else 1)
 
@@ -1705,7 +1744,10 @@ def build_parser() -> argparse.ArgumentParser:
         "funder <address> = the wallet that funded it and the tracked wallets the same funder ties to it (proposed "
         "companions: stored, applied to nothing); created "
         "<address> = the coins it launched; token <mint> = card, risk, top holders and traders with tags; trending, "
-        "new-pairs = coins by launchpad; candles <mint>; gas = GMGN's fee presets; signals, callouts = GMGN's feeds",
+        "new-pairs = coins by launchpad; candles <mint>; gas = GMGN's fee presets; signals, callouts = GMGN's feeds; "
+        "launch-watch = write down a chain's new launches for --minutes and, once each has settled, its 1 s candles "
+        "and security (history/gmgn_launches/ beside the database); launch-score = what an early buyer of those "
+        "launches would have made, by entry delay and hold, rugs, honeypots and taxes counted",
     )
     sp.add_argument(
         "action",
@@ -1726,6 +1768,8 @@ def build_parser() -> argparse.ArgumentParser:
             "gas",
             "signals",
             "callouts",
+            "launch-watch",
+            "launch-score",
         ],
     )
     sp.add_argument(
@@ -1785,6 +1829,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--pages", type=int, default=2, help="fees: pages of 50 trades read (2)")
     sp.add_argument("--raw", action="store_true", help="print GMGN's answer as it came (to check its field names)")
+    sp.add_argument(
+        "--minutes",
+        type=float,
+        help="launch-watch: how long it watches, in minutes (0: it only reads the coins that settled since the last "
+        "job)",
+    )
+    sp.add_argument("--every", type=float, help="launch-watch: seconds between two looks at GMGN's newest coins (60)")
+    sp.add_argument(
+        "--settle-secs",
+        type=float,
+        help="launch-watch: a coin's candles and security are read once it is this many seconds past its start (900; "
+        "the candles cover the 500 s after it)",
+    )
+    sp.add_argument(
+        "--size-usd",
+        type=float,
+        help="launch-score: the dollars a copy buys (100); the gas of its buy and its sale is counted against them",
+    )
+    sp.add_argument(
+        "--gas-usd",
+        type=float,
+        help="launch-score: the dollars one transaction costs (unless given: eth 3, base 0.05, bsc 0.05, sol 0.5)",
+    )
 
     sp = cmd("remote", "operate snipetech on your server through its ops endpoint", json_flag=False)
     sp.add_argument("--url", default=os.environ.get("SNIPETECH_OPS_URL"), help="ops URL ($SNIPETECH_OPS_URL)")

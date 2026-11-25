@@ -1,0 +1,712 @@
+"""Launch snipes on Base, Ethereum and BNB Chain (and Solana), tested on data before anything is built to trade them.
+
+The owner (25 Nov 2026): "I was thinking about sniping base and eth launches, like we build a way to detect new
+projects coming out and we find a way to snipe them with oktech". OKTech holds wallets on those chains. Whether a snipe
+there pays is asked of GMGN's data first: a day of real launches, then what an early buyer of them would have made.
+
+`watch` (`snipetech gmgn launch-watch`) asks GMGN every minute for the newest coins of one chain (its trenches: every
+launchpad of the chain, 80 coins at most) and writes each coin it has not seen to history/gmgn_launches/<chain>.jsonl
+beside the database: the row the client makes of it, when it was first seen, and the chain. Once a coin is
+`settle_secs` past its start (900 s by default, so its 500 s of candles are over), it asks once for the coin's 1-second
+candles over the 500 s after its start and for its security numbers, and writes both to <chain>_scored.jsonl. A coin's
+start is its open time (a pool can open after its coin was made), else its creation, else when the watch first saw it.
+
+A read GMGN refuses is written into that coin's line and the job goes on. A rate limit is waited out and the read asked
+again. A read that fails on the way (no answer, a server error) is tried again a round later, three rounds at most,
+then written as refused. A key GMGN refuses ends the job and writes nothing more: no read could work. A restarted job
+reads both files and goes on where the last one stopped; one job at a time watches a chain. It keeps the coins it has
+seen and the coins waiting for their candles, nothing else. Like every GMGN call it only reads.
+
+`score` (`snipetech gmgn launch-score`) reads <chain>_scored.jsonl and says what a copy made for each entry delay and
+hold: the mean, the median, the share that made money, the mean once the five best coins are taken out (one big winner
+must not carry it) and the share of coins that rugged, then the best pair split by launchpad. What it assumes is printed
+with every report (SCORE_READING, SECURITY_READING, and the chain's LANDING)."""
+
+from __future__ import annotations
+
+import bisect
+import contextlib
+import fcntl
+import functools
+import json
+import math
+import os
+import statistics
+import time
+from array import array
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any
+
+from ..gmgn import CHAINS, Gmgn, GmgnError
+
+DELAYS = (2, 5, 12, 30)  # seconds after a coin's start a copy buys
+HOLDS = (30, 120, 300, 480)  # seconds it holds
+WINDOW_SECS = 500  # the 1 s candles read of a coin, from its start: GMGN gives 500 in one request
+EVERY_SECS = 60.0  # between two looks at GMGN's newest coins
+SETTLE_SECS = 900.0  # a coin's candles and security are read this long after its start
+POLL_LIMIT = 80  # the most coins GMGN gives of a stage
+SIZE_USD = 100.0
+GAS_USD = {"eth": 3.0, "base": 0.05, "bsc": 0.05, "sol": 0.5}  # one transaction, in dollars, when none is given
+RUG_LEFT = 0.1  # a rug: the price fell to this share of its first candle's or below within the window
+HONEYPOT_SELL_TAX = 0.5  # a sell tax this high counts as a coin that cannot be sold
+BEST_LEFT_OUT = 5
+LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way, before they are written as refused
+RATE_WAITS = 10  # waits for one read's rate limit; after them the read is tried again a round later
+RATE_WAIT_MAX = 900.0  # the longest single wait
+RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
+STATUS_SECS = 900.0  # a line in the job's log this often
+# GMGN's refusals of the key or of this machine: waiting does not end them, and no read can work while they hold
+STOP_ERRORS = frozenset(
+    {"AUTH_KEY_INVALID", "AUTH_IP_BLOCKED", "AUTH_KEY_BLOCKED", "AUTH_TIMESTAMP_EXPIRED", "AUTH_TIMESTAMP_SKEW"}
+)
+CANNOT_SELL = ("is_honeypot", "honeypot", "can_not_sell")  # a yes in one of them: the coin cannot be sold
+TAXES = ("buy_tax", "sell_tax")
+FLAGS = (*CANNOT_SELL, "can_sell")
+SCORED_HEAD = '{"mint":"'  # how every line of a scored file begins (written compact, the coin first)
+# what a delay means on each chain, printed with the report (CLAUDE.md: a paper result names its landing)
+LANDING = {
+    "sol": "Solana's slots are 0.4 s: every delay here is several slots after the launch (our own launch snipes land "
+    "a slot after the create).",
+    "bsc": "BNB Chain's blocks are under a second: every delay here is a block or more after the launch.",
+    "base": "Base's blocks are 2 s: a delay of 2 s is the block after the launch.",
+    "eth": "Ethereum's blocks are 12 s: delays of 2 and 5 s price the launch's own block, which only a bundle sent "
+    "behind the launch reaches; 12 s is the next block.",
+}
+SCORE_READING = (
+    "A copy buys D seconds after the coin's start (its open time, else its creation, else when the watch first saw it) "
+    "at the close of the last 1 s candle at or before then, and sells H seconds later at the close of the last candle "
+    "at or before that. Its return is exit / entry x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / size, a share of "
+    "the size (0.1 is +10 percent; -1 is all of it). A coin that cannot be sold is -1. It fills at the candle's close: "
+    "its own price impact is not counted. A coin with no candle at or before D is no trade at D (one with no priced "
+    "candle at all is no trade at any delay: candles.without_a_price); a candle whose close is missing or zero is "
+    "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
+    "inside the 500 s are read. mean_without_best5 is the mean once the five best copies are "
+    "taken out; the best pair is the one with the highest, or, where too few coins leave none, the highest median. "
+    "rug_share is the share of coins whose price fell to a tenth of their first candle's or below within the 500 s "
+    "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
+    "is not scored (unsettled)."
+)
+SECURITY_READING = (
+    "A coin cannot be sold when GMGN's security answer says so in is_honeypot, honeypot or can_not_sell (1, true or "
+    "yes). can_sell is counted and not read: the one real answer we hold (a Solana coin, 12 Nov) said can_sell 0 and "
+    "can_not_sell 0 of a coin that traded. A sell tax of 50 percent or more counts as a coin that cannot be sold. "
+    "buy_tax and sell_tax are shares of 1 (0.05 is 5 percent), as GMGN's coin rows give theirs; when either is above 1 "
+    "the answer's taxes are read as percents (5 is 5 percent). A field that is missing, null or empty says nothing: no "
+    "tax, not a honeypot. `fields` says on how many coins GMGN gave each field."
+)
+
+
+class WatchBusy(RuntimeError):
+    """Another launch-watch holds the chain."""
+
+
+class WatchStopped(RuntimeError):
+    """GMGN refused the key or this machine: the job ends, and nothing more is written."""
+
+
+def folder(data_dir: str | Path) -> Path:
+    return Path(data_dir) / "history" / "gmgn_launches"
+
+
+def files(data_dir: str | Path, chain: str) -> tuple[Path, Path]:
+    """A chain's two files: the coins seen (<chain>.jsonl) and the coins read (<chain>_scored.jsonl)."""
+    d = folder(data_dir)
+    return d / f"{chain}.jsonl", d / f"{chain}_scored.jsonl"
+
+
+@contextlib.contextmanager
+def chain_lock(data_dir: str | Path, chain: str) -> Iterator[None]:
+    """One launch-watch at a time on a chain: two would each record and read every coin, and the files would hold it
+    twice."""
+    d = folder(data_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    lock = d / f"{chain}.lock"
+    with lock.open("a+") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise WatchBusy(f"another launch-watch on {chain} is running: it holds {lock}") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _int(v: Any) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _price(v: Any) -> float | None:
+    """A price that can be divided by: a finite number above 0. Anything else is None."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) and x > 0 else None
+
+
+def _key(mint: str) -> str:
+    """The coin a mint names: an EVM address in another case is the same coin."""
+    return mint.lower() if mint.startswith("0x") else mint
+
+
+def start_of(row: dict) -> int:
+    """When a coin's 500 s begin: its open time (a pool can open after its coin was made), else its creation, else when
+    the watch first saw it."""
+    return next((t for t in (_int(row.get(k)) for k in ("open_ts", "created_ts", "first_seen")) if t > 0), 0)
+
+
+def _number(what: str, value: Any, low: float, *, above: bool = False) -> float:
+    """A number from the command line that the job can use: finite and at least `low` (above it with `above`)."""
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        x = math.nan
+    if not math.isfinite(x) or x < low or (above and x == low):
+        raise ValueError(f"{what} must be a number {'above' if above else 'of'} {low:g}{'' if above else ' or more'} "
+                         f"(got {value!r})")  # fmt: skip
+    return x
+
+
+# -- the files ---------------------------------------------------------------------------------------------------------
+
+
+def _append(path: Path, rec: dict) -> None:
+    """One line, written whole and closed at once: a job killed later loses nothing written."""
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, separators=(",", ":"), default=str) + "\n")
+
+
+def _heal(path: Path) -> None:
+    """A job killed in the middle of a line leaves it without its end: the next line then starts on a line of its own."""
+    if path.exists() and path.stat().st_size:
+        with path.open("rb+") as fh:
+            fh.seek(-1, os.SEEK_END)
+            if fh.read(1) != b"\n":
+                fh.write(b"\n")
+
+
+def _head_mint(line: str) -> str | None:
+    """The coin of a scored line, read off its head (a line holds 500 candles: parsing every one at a restart would
+    read them all), else from the whole line."""
+    if line.startswith(SCORED_HEAD):
+        end = line.find('"', len(SCORED_HEAD))
+        if end > len(SCORED_HEAD):
+            return line[len(SCORED_HEAD) : end]
+    return _whole_mint(line)
+
+
+def _whole_mint(line: str) -> str | None:
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    mint = rec.get("mint") if isinstance(rec, dict) else None
+    return mint if isinstance(mint, str) else None
+
+
+def _done(path: Path) -> set[str]:
+    """The coins a scored file holds. A line cut short can only be the last (a job appends one line at a time, and the
+    next one starts on a line of its own): that one is read whole, and a coin whose line was cut is read again."""
+    done: set[str] = set()
+    if not path.exists():
+        return done
+    last = None
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            if last is not None and (mint := _head_mint(last)):
+                done.add(_key(mint))
+            last = line
+    if last is not None and (mint := _whole_mint(last)):
+        done.add(_key(mint))
+    return done
+
+
+# -- the watch ---------------------------------------------------------------------------------------------------------
+
+
+class LaunchWatch:
+    """One chain's watch, as `watch` runs it: the coins seen, the coins waiting for their candles, and how it went."""
+
+    def __init__(
+        self,
+        client: Gmgn,
+        data_dir: str | Path,
+        *,
+        every: float = EVERY_SECS,
+        settle_secs: float = SETTLE_SECS,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
+        log: Callable[[str], None] | None = None,
+    ):
+        self.client, self.chain, self.data_dir = client, client.chain, data_dir
+        self.every, self.settle_secs = float(every), float(settle_secs)
+        self.clock = time.time if clock is None else clock
+        self.sleep = time.sleep if sleep is None else sleep
+        self.log = log or (lambda m: None)
+        self.launches, self.scored = files(data_dir, self.chain)
+        self.seen: set[str] = set()
+        self.pending: dict[str, dict] = {}  # each coin waiting for its candles: its row, in the order recorded
+        self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
+        self.resumed = {"seen": 0, "waiting": 0}
+        self.counts = dict.fromkeys(
+            ("polls", "polls_all_new", "recorded", "scored", "rate_limit_waits", "tried_again_later"), 0
+        )
+        self.refused = {"poll": 0, "candles": 0, "security": 0}
+
+    def resume(self) -> None:
+        """What the jobs before wrote: every coin seen, and the ones still waiting for their candles."""
+        for path in (self.launches, self.scored):
+            _heal(path)
+        done = _done(self.scored)
+        if self.launches.exists():
+            with self.launches.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:  # cut short by a killed job: the coin is recorded again when GMGN lists it
+                        continue
+                    mint = row.get("mint") if isinstance(row, dict) else None
+                    if not isinstance(mint, str) or _key(mint) in self.seen:
+                        continue
+                    self.seen.add(_key(mint))
+                    if _key(mint) not in done:
+                        self.pending[_key(mint)] = row
+        self.resumed = {"seen": len(self.seen), "waiting": len(self.pending)}
+
+    def _ask(self, read: Callable[[], Any]) -> tuple[str, Any]:
+        """One read: ("ok", the answer), ("refused", GMGN's words) or ("later", what failed on the way). A rate limit is
+        waited out (until the time GMGN names, and a second); a key GMGN refuses raises WatchStopped."""
+        waits = 0
+        while True:
+            try:
+                return "ok", read()
+            except GmgnError as exc:
+                if exc.status == 401 or exc.error in STOP_ERRORS:
+                    raise WatchStopped(str(exc)) from None
+                if exc.status != 429:
+                    return ("later" if exc.status is None or exc.status >= 500 else "refused"), str(exc)
+                if waits >= RATE_WAITS:
+                    return "later", str(exc)
+                waits += 1
+                wait = RATE_WAIT_UNNAMED if not exc.reset_at else exc.reset_at - self.clock() + 1.0
+                wait = min(RATE_WAIT_MAX, max(1.0, wait))
+                self.counts["rate_limit_waits"] += 1
+                self.log(f"gmgn launch-watch {self.chain}: rate limit, waiting {wait:.0f} s")
+                self.sleep(wait)
+
+    def poll(self, first: bool) -> None:
+        """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down."""
+        self.counts["polls"] += 1
+        kind, got = self._ask(
+            functools.partial(self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT)
+        )
+        if kind != "ok":
+            self.refused["poll"] += 1
+            self.log(f"gmgn launch-watch {self.chain}: the look at the newest coins failed: {got}")
+            return
+        rows = got.get("new") if isinstance(got, dict) else None
+        rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        now = int(self.clock())
+        fresh = 0
+        for row in rows:
+            mint = row.get("mint")
+            if not isinstance(mint, str) or _key(mint) in self.seen:
+                continue
+            rec = dict(row, first_seen=now, chain=self.chain)
+            _append(self.launches, rec)
+            self.seen.add(_key(mint))
+            self.pending[_key(mint)] = rec
+            fresh += 1
+        self.counts["recorded"] += fresh
+        if rows and fresh == len(rows) and not first:  # coins may have come and gone between the two looks
+            self.counts["polls_all_new"] += 1
+
+    def settle(self) -> None:
+        """Every waiting coin past its settle time: its candles and its security, read once and written."""
+        for key, row in list(self.pending.items()):
+            start, asked_at = start_of(row), self.clock()
+            if asked_at < start + self.settle_secs:
+                continue
+            last_round = self.tries.get(key, 0) + 1 >= LATER_ROUNDS
+            mint = row["mint"]
+            candles = self._ask(
+                functools.partial(self.client.candles, mint, "1s", start=start, end=start + WINDOW_SECS)
+            )
+            if candles[0] == "later" and not last_round:
+                self._later(key)
+                continue
+            sec = self._ask(functools.partial(self.client.token_security, mint))
+            if sec[0] == "later" and not last_round:
+                self._later(key)
+                continue
+            self._write(row, start, asked_at, candles, sec)
+            del self.pending[key]
+            self.tries.pop(key, None)
+
+    def _later(self, key: str) -> None:
+        self.tries[key] = self.tries.get(key, 0) + 1
+        self.counts["tried_again_later"] += 1
+
+    def _write(self, row: dict, start: int, asked_at: float, candles: tuple, sec: tuple) -> None:
+        """A coin's line in the scored file: its row, its start, when its candles were asked for (`fetched_at`), its
+        candles as [ts, open, high, low, close, dollars], and its security as GMGN sent it; a refused read's words in
+        place of what it would have given."""
+        rec = {"mint": row["mint"], "chain": self.chain, "start": start, "platform": row.get("platform")}
+        rec.update((k, v) for k, v in row.items() if k not in rec)
+        rec["fetched_at"] = int(asked_at)
+        if candles[0] == "ok":
+            rec["candles"] = [
+                [c.get("ts"), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume_usd")]
+                for c in candles[1]
+                if isinstance(c, dict)
+            ]
+        else:
+            rec["candles"], rec["candles_error"] = [], candles[1]
+            self.refused["candles"] += 1
+        if sec[0] == "ok":
+            rec["security"] = sec[1] if isinstance(sec[1], dict) else {"answer": sec[1]}
+        else:
+            rec["security"] = {"error": sec[1]}
+            self.refused["security"] += 1
+        _append(self.scored, rec)
+        self.counts["scored"] += 1
+
+    def run(self, minutes: float) -> dict:
+        """Watch for `minutes` (0: only read what has settled), then read what has settled by the end."""
+        try:
+            with chain_lock(self.data_dir, self.chain):
+                self.resume()
+                began = self.clock()
+                deadline, next_poll, next_status = began + minutes * 60.0, began, began + STATUS_SECS
+                first = True
+                while (now := self.clock()) < deadline:
+                    if now >= next_poll:
+                        self.poll(first)
+                        first, next_poll = False, now + self.every
+                    self.settle()
+                    if self.clock() >= next_status:
+                        next_status += STATUS_SECS
+                        self.log(
+                            f"gmgn launch-watch {self.chain}: {self.counts['polls']} looks, {len(self.seen)} coins "
+                            f"seen, {self.counts['scored']} read, {len(self.pending)} waiting"
+                        )
+                    self.sleep(max(0.0, min(next_poll, deadline) - self.clock()))
+                self.settle()
+        except WatchBusy as exc:
+            return {"ok": False, "chain": self.chain, "error": str(exc)}
+        except WatchStopped as exc:
+            return self.summary(minutes) | {"ok": False, "error": f"GMGN refused the key, so no read can work: {exc}"}
+        return self.summary(minutes)
+
+    def summary(self, minutes: float) -> dict:
+        c = self.counts
+        return {
+            "ok": True,
+            "chain": self.chain,
+            "minutes": float(minutes),
+            "every_secs": self.every,
+            "settle_secs": self.settle_secs,
+            "resumed": self.resumed,
+            "polls": c["polls"],
+            "polls_all_new": c["polls_all_new"],
+            "recorded": c["recorded"],
+            "scored": c["scored"],
+            "waiting": len(self.pending),
+            "refused": dict(self.refused),
+            "rate_limit_waits": c["rate_limit_waits"],
+            "tried_again_later": c["tried_again_later"],
+            "files": {"launches": str(self.launches), "scored": str(self.scored)},
+        }
+
+
+def watch(
+    client: Gmgn,
+    data_dir: str | Path,
+    *,
+    minutes: float | None,
+    every: float = EVERY_SECS,
+    settle_secs: float = SETTLE_SECS,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    log: Callable[[str], None] | None = None,
+) -> dict:
+    """`snipetech gmgn launch-watch`: watch the client's chain for `minutes` and say how it went. A wrong number is a
+    ValueError, raised before anything is asked."""
+    if minutes is None:
+        raise ValueError("gmgn launch-watch: give --minutes N, how long it watches (0: it only reads what has settled)")
+    minutes = _number("gmgn launch-watch: --minutes", minutes, 0.0)
+    every = _number("gmgn launch-watch: --every", every, 1.0)
+    settle = _number("gmgn launch-watch: --settle-secs", settle_secs, 0.0)
+    job = LaunchWatch(client, data_dir, every=every, settle_secs=settle, clock=clock, sleep=sleep, log=log)
+    return job.run(minutes)
+
+
+# -- the score ---------------------------------------------------------------------------------------------------------
+
+
+def _given(v: Any) -> bool:
+    """Whether GMGN said anything in a field: missing, null and empty say nothing."""
+    return v is not None and not (isinstance(v, str) and not v.strip())
+
+
+def _yes(v: Any) -> bool:
+    """GMGN's yes: true, 1, "1", "true" or "yes". Anything else (0, -1, 2, null) is no yes."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v == 1
+    return isinstance(v, str) and v.strip().lower() in ("1", "true", "yes")
+
+
+def _tax(v: Any) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) and x >= 0 else None
+
+
+def read_security(sec: Any) -> dict:
+    """A coin's security answer, read as SECURITY_READING says: `honeypot`; `buy_tax` and `sell_tax` as shares of 1;
+    `refused` (the watch wrote GMGN's refusal in its place); `percent` (its taxes were said in percents); `given` (the
+    fields it gave), `yes` (the flags it said yes to) and `taxed` (the taxes above 0)."""
+    if not isinstance(sec, dict) or set(sec) == {"error"}:
+        return {"honeypot": False, "buy_tax": 0.0, "sell_tax": 0.0, "refused": isinstance(sec, dict),
+                "percent": False, "given": set(), "yes": set(), "taxed": set()}  # fmt: skip
+    taxes = {k: _tax(sec.get(k)) for k in TAXES}
+    percent = any(t is not None and t > 1 for t in taxes.values())
+    shares = {k: min(1.0, (t or 0.0) / (100.0 if percent else 1.0)) for k, t in taxes.items()}
+    yes = {k for k in FLAGS if _yes(sec.get(k))}
+    return {
+        "honeypot": bool(yes & set(CANNOT_SELL)) or shares["sell_tax"] >= HONEYPOT_SELL_TAX,
+        "buy_tax": shares["buy_tax"],
+        "sell_tax": shares["sell_tax"],
+        "refused": False,
+        "percent": percent,
+        "given": {k for k in (*FLAGS, *TAXES) if _given(sec.get(k))},
+        "yes": yes,
+        "taxed": {k for k in TAXES if shares[k] > 0},
+    }
+
+
+def _path(candles: Any, start: int) -> tuple[list[int], list[float], bool, int]:
+    """A coin's candles inside its 500 s whose close can be divided by, oldest first: their times and their closes;
+    whether the coin rugged (a price of a tenth of its first candle's open or less); and how many candles were left
+    out for a close that is missing or zero."""
+    kept: list[tuple[int, float, float | None, float | None]] = []
+    bad = 0
+    for c in candles if isinstance(candles, list) else []:
+        if not isinstance(c, list) or len(c) < 5:
+            bad += 1
+            continue
+        ts = _int(c[0])
+        if not start <= ts <= start + WINDOW_SECS:
+            continue
+        close = _price(c[4])
+        if close is None:
+            bad += 1
+            continue
+        kept.append((ts, close, _price(c[1]), _price(c[3])))
+    if not kept:
+        return [], [], False, bad
+    kept.sort(key=lambda k: k[0])
+    first = kept[0][2] or kept[0][1]  # its first candle's open, else that candle's close
+    lowest = min(min(close, low or close) for _, close, _, low in kept)
+    return [k[0] for k in kept], [k[1] for k in kept], lowest <= RUG_LEFT * first, bad
+
+
+def _r(x: float) -> float:
+    return round(x, 4)
+
+
+def _stats(rets: Any, rugs: Any) -> dict:
+    """The numbers of a set of copies: how many, the mean, the median, the share above 0, the mean once the five best
+    are taken out (None when that leaves none), and the share of their coins that rugged."""
+    n = len(rets)
+    if not n:
+        return {"coins": 0, **dict.fromkeys(("mean", "median", "share_above_0", "mean_without_best5", "rug_share"))}
+    xs = sorted(rets)
+    return {
+        "coins": n,
+        "mean": _r(statistics.fmean(xs)),
+        "median": _r(statistics.median(xs)),
+        "share_above_0": _r(sum(1 for x in xs if x > 0) / n),
+        "mean_without_best5": _r(statistics.fmean(xs[:-BEST_LEFT_OUT])) if n > BEST_LEFT_OUT else None,
+        "rug_share": _r(sum(rugs) / n),
+    }
+
+
+def _rank(row: dict) -> tuple[int, float]:
+    """The best pair: the highest mean without the five best coins; where too few coins leave none, the highest median,
+    after every pair that has one."""
+    trimmed = row["mean_without_best5"]
+    return (1, trimmed) if trimmed is not None else (0, row["median"])
+
+
+class _Pair:
+    """The copies of one entry delay and hold, side by side: returns, launchpads (by number) and rug marks."""
+
+    __slots__ = ("honeypots", "plats", "rets", "rugs", "unsettled")
+
+    def __init__(self) -> None:
+        self.rets, self.plats, self.rugs = array("d"), array("I"), bytearray()
+        self.honeypots = self.unsettled = 0
+
+    def add(self, ret: float, plat: int, rug: bool, honeypot: bool) -> None:
+        self.rets.append(ret)
+        self.plats.append(plat)
+        self.rugs.append(rug)
+        self.honeypots += honeypot
+
+
+class _Score:
+    """What `score` adds up, one coin at a time; only the copies' numbers are kept, never a coin's candles."""
+
+    def __init__(self, share: float):
+        self.share = share  # the two transactions' gas, as a share of the size
+        self.pairs = {(d, h): _Pair() for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS}
+        self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
+        self.platforms: dict[str, int] = {}
+        self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
+                                "bad_prices", "security_refused", "honeypots", "percent"), 0)  # fmt: skip
+        self.given = dict.fromkeys((*FLAGS, *TAXES), 0)
+        self.yes, self.taxed = dict.fromkeys(FLAGS, 0), dict.fromkeys(TAXES, 0)
+
+    def add(self, rec: dict) -> None:
+        self.n["coins"] += 1
+        sec = read_security(rec.get("security"))
+        for name, flag in (("security_refused", "refused"), ("honeypots", "honeypot"), ("percent", "percent")):
+            self.n[name] += sec[flag]
+        for counts, part in ((self.given, "given"), (self.yes, "yes"), (self.taxed, "taxed")):
+            for k in sec[part]:
+                counts[k] += 1
+        if "candles_error" in rec:
+            self.n["candles_refused"] += 1
+            return
+        start = _int(rec.get("start"))
+        ts, closes, rug, bad = _path(rec.get("candles"), start)
+        self.n["bad_prices"] += bad
+        self.n["without_a_price"] += not ts
+        plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
+        fetched = _int(rec.get("fetched_at"))
+        keep = (1 - sec["buy_tax"]) * (1 - sec["sell_tax"])
+        for d in DELAYS:
+            i = bisect.bisect_right(ts, start + d) - 1
+            if i < 0:
+                self.no_trade[d] += 1
+                continue
+            self.entries[d] += 1
+            for h in HOLDS:
+                pair, end = self.pairs.get((d, h)), start + d + h
+                if pair is None:
+                    continue
+                if fetched and fetched < end:  # the hold was not over when the candles were read
+                    pair.unsettled += 1
+                    continue
+                out = closes[bisect.bisect_right(ts, end) - 1]
+                ret = -1.0 if sec["honeypot"] else out / closes[i] * keep - 1.0 - self.share
+                pair.add(ret, plat, rug, sec["honeypot"])
+
+    def report(self) -> dict:
+        table = [
+            {"delay": d, "hold": h, **_stats(p.rets, p.rugs), "honeypots": p.honeypots, "unsettled": p.unsettled}
+            for (d, h), p in self.pairs.items()
+        ]
+        best = max((row for row in table if row["coins"]), key=_rank, default=None)
+        return {
+            "coins": self.n["coins"],
+            "duplicates": self.n["duplicates"],
+            "unreadable_lines": self.n["unreadable"],
+            "candles": {
+                "refused": self.n["candles_refused"],
+                "without_a_price": self.n["without_a_price"],
+                "bad_prices_skipped": self.n["bad_prices"],
+            },
+            "security": {
+                "refused": self.n["security_refused"],
+                "honeypots": self.n["honeypots"],
+                "taxes_read_as_percent": self.n["percent"],
+                "fields": {k: {"given": self.given[k], "yes": self.yes[k]} for k in FLAGS}
+                | {k: {"given": self.given[k], "above_0": self.taxed[k]} for k in TAXES},
+                "reading": SECURITY_READING,
+            },
+            "by_delay": [{"delay": d, "with_entry": self.entries[d], "no_trade_yet": self.no_trade[d]} for d in DELAYS],
+            "table": table,
+            "not_scored": [
+                {"delay": d, "hold": h, "why": f"{d} + {h} s runs past the {WINDOW_SECS} s of candles"}
+                for d in DELAYS
+                for h in HOLDS
+                if d + h > WINDOW_SECS
+            ],
+            "best": None
+            if best is None
+            else {
+                "delay": best["delay"],
+                "hold": best["hold"],
+                "chosen_by": "mean_without_best5" if best["mean_without_best5"] is not None else "median",
+            },
+            "by_platform": [] if best is None else self._by_platform(self.pairs[(best["delay"], best["hold"])]),
+        }
+
+    def _by_platform(self, pair: _Pair) -> list[dict]:
+        """One pair's copies split by launchpad, the busiest first."""
+        names = list(self.platforms)  # numbered in the order first met
+        groups: dict[int, tuple[list[float], list[int]]] = {}
+        for ret, plat, rug in zip(pair.rets, pair.plats, pair.rugs, strict=True):
+            rets, rugs = groups.setdefault(plat, ([], []))
+            rets.append(ret)
+            rugs.append(rug)
+        rows = [{"platform": names[k], **_stats(rets, rugs)} for k, (rets, rugs) in groups.items()]
+        return sorted(rows, key=lambda row: (-row["coins"], row["platform"]))
+
+
+def _scored_line(line: str) -> dict | None:
+    """A line of a scored file that can be scored: a coin and its start; None for anything else."""
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(rec, dict) or not isinstance(rec.get("mint"), str) or _int(rec.get("start")) <= 0:
+        return None
+    return rec
+
+
+def score(data_dir: str | Path, chain: str, *, size_usd: float = SIZE_USD, gas_usd: float | None = None) -> dict:
+    """`snipetech gmgn launch-score`: what a copy of each coin in <chain>_scored.jsonl made at each entry delay and
+    hold, the file read one line at a time (a line holds 500 candles). A coin written twice is scored once. A wrong
+    number is a ValueError; a chain never watched is {"ok": false} with what to run."""
+    if chain not in CHAINS:
+        raise ValueError(f"gmgn launch-score: chain {chain!r} is not one of {', '.join(CHAINS)}")
+    size = _number("gmgn launch-score: --size-usd", size_usd, 0.0, above=True)
+    gas = GAS_USD[chain] if gas_usd is None else _number("gmgn launch-score: --gas-usd", gas_usd, 0.0)
+    path = files(data_dir, chain)[1]
+    if not path.exists():
+        return {"ok": False, "chain": chain, "error": f"no launch on {chain} has been read yet: {path} does not exist "
+                f"(snipetech gmgn launch-watch --chain {chain} writes it)"}  # fmt: skip
+    tally, done = _Score(2.0 * gas / size), set()
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            rec = _scored_line(line)
+            if rec is None:
+                tally.n["unreadable"] += 1
+            elif _key(rec["mint"]) in done:
+                tally.n["duplicates"] += 1
+            else:
+                done.add(_key(rec["mint"]))
+                tally.add(rec)
+    return {
+        "ok": True,
+        "chain": chain,
+        "file": str(path),
+        "size_usd": size,
+        "gas_usd": gas,
+        "gas_share": round(2.0 * gas / size, 6),
+        "landing": LANDING[chain],
+        "reading": SCORE_READING,
+        **tally.report(),
+    }
