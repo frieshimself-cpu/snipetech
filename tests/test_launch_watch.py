@@ -343,6 +343,31 @@ def test_a_refused_read_is_written_into_the_coins_line_and_the_job_goes_on(tmp_p
     assert out["refused"] == {"poll": 1, "candles": 1, "security": 1, "pool": 0}
 
 
+def test_no_read_starts_once_its_time_is_over(tmp_path):
+    """Third review of 25 Nov: the time was checked once a coin, so with --minutes 0 and reads answering in 25 s a
+    coin's security read started 75 s after the end, past the minute's slack. A read whose time is over is not
+    started: its coin waits for the next job."""
+    folder = tmp_path / "history" / "gmgn_launches"
+    folder.mkdir(parents=True)
+    rows = [{"mint": m, "platform": "clanker", "created_ts": T - 1000, "first_seen": T - 990, "chain": "base"}
+            for m in (A, B, C)]  # fmt: skip
+    (folder / "base.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    ft, starts = FakeTime(T), []
+
+    def slow(kind):
+        def route(req):
+            starts.append((kind, req.url.params["address"], ft.now - T))
+            ft.now += 25
+            return answer({"list": []} if kind == "candles" else REAL_SECURITY)
+
+        return route
+
+    routes = {"/v1/market/token_kline": slow("candles"), "/v1/token/security": slow("security")}
+    out = watch(tmp_path, ft, routes, minutes=0)
+    assert starts == [("candles", A, 0), ("security", A, 25), ("candles", B, 50)]  # nothing starts at 75 s
+    assert (out["scored"], out["waiting"]) == (1, 2)
+
+
 def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_as_refused(tmp_path):
     """Review of 25 Nov: GMGN's 404 for a coin it has not read yet, and a 403 (a plan's refusal, or a request that left
     over the wrong route), were written as refused at once, and such a coin was then scored as safe. They are asked
@@ -439,7 +464,9 @@ def test_reading_the_settled_coins_gives_way_to_the_next_look_at_new_ones(tmp_pa
     routes = {"/v1/trenches": trenches, "/v1/market/token_kline": slow, "/v1/token/security": security({})}
     out = watch(tmp_path, ft, routes, minutes=3)
     assert looks == [T, T + 60, T + 120]  # every look on time: the reads stopped when the next look was due
-    assert [s["fetched_at"] for s in scored(tmp_path)] == [T, T + 20, T + 40, T + 60, T + 80] and out["scored"] == 5
+    # C's candles came at 60 s, when the next look was due: its security read was not started, and C was read again in
+    # the next round; so was E at 120 s
+    assert [s["fetched_at"] for s in scored(tmp_path)] == [T, T + 20, T + 60, T + 80, T + 120] and out["scored"] == 5
 
 
 def test_the_last_reads_stop_at_the_end_and_a_short_slack(tmp_path):
@@ -456,8 +483,9 @@ def test_the_last_reads_stop_at_the_end_and_a_short_slack(tmp_path):
 
     out = watch(tmp_path, ft, {"/v1/market/token_kline": slow, "/v1/token/security": security({})}, minutes=0)
     assert LW.FINAL_SLACK_SECS == 60
-    # A at T, B at T + 25, C at T + 50; at T + 75 the minute after the end is over: D and E are the next job's
-    assert [s["mint"] for s in scored(tmp_path)] == [A, B, C] and (out["scored"], out["waiting"]) == (3, 2)
+    # A at T, B at T + 25; C's candles at T + 50 come at T + 75, past the minute after the end: its security read is
+    # not started, and C, D and E are the next job's
+    assert [s["mint"] for s in scored(tmp_path)] == [A, B] and (out["scored"], out["waiting"]) == (2, 3)
     assert ft.now == T + 75
 
 

@@ -391,7 +391,10 @@ class LaunchWatch:
         `until`; the read is not asked again while it holds, since every ask makes it longer. A key GMGN refuses raises
         WatchStopped. A read that fails in any other way (the client cannot convert an answer: GMGN's 1e999 is
         infinity) is "later" too, counted in read_errors: tried a round later, three rounds at most, never the job's
-        end (second review of 25 Nov)."""
+        end (second review of 25 Nov). A read whose time is already over when it comes is not started ("unasked":
+        third review of 25 Nov, a coin's later reads started past the last pass's slack)."""
+        if self.clock() >= until:
+            return "unasked", "the time this read had was over"
         waits = 0
         while True:
             try:
