@@ -951,6 +951,17 @@ def test_a_field_is_given_only_when_it_reads_as_a_tax_or_as_a_yes_or_no(tmp_path
     }
 
 
+def test_the_report_says_in_plain_words_what_it_does_not_count(tmp_path):
+    """Second review of 25 Nov: what the score leaves out, printed with every report: our own buy's price impact, each
+    pool's own fee, the taxes at the moment of an entry, and every answer of a chain no real answer has been read of."""
+    write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])
+    caveats = " ".join(LW.score(tmp_path, "base")["caveats"])
+    for words in ("price impact is not counted", "one flat number per chain", "first sees the coin",
+                  "usually after the entries", "Base, BNB Chain or Ethereum", "unchecked until the first real run",
+                  "pool"):  # fmt: skip
+        assert words in caveats, words
+
+
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], fetched_at=S + 100)])  # read 100 s after its start
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)

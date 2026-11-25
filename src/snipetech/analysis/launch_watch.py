@@ -27,8 +27,8 @@ nothing else. Like every GMGN call it only reads.
 hold: the mean, the median, the share that made money, the mean once the five best coins are taken out (one big winner
 must not carry it) and the share of coins that rugged, then the best pair split by launchpad. Beside that table: the
 same without the sales made after a coin's last trade, and the coins whose security is unknown alone (they are in the
-table too, counted in each row). What it assumes is printed with every report (SCORE_READING, SECURITY_READING, and
-the chain's LANDING)."""
+table too, counted in each row). What it assumes is printed with every report (SCORE_READING, SECURITY_READING, the
+chain's LANDING), and so is what it leaves out (CAVEATS)."""
 
 from __future__ import annotations
 
@@ -143,6 +143,20 @@ SECURITY_READING = (
     "refused (refused), or that gave none of is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax "
     "(without_fields), is not known to be sellable: it stays in the table at its price, counted in each row "
     "(security_unknown), and is scored alone in security_unknown as well."
+)
+# what the score leaves out, printed with every report in plain words (second review of 25 Nov)
+CAVEATS = (
+    "Our own buy's price impact is not counted: a copy fills at the candle's close, however much it buys.",
+    "The swap fee is one flat number per chain (fee_pct), not each pool's own fee.",
+    (
+        "A launch's own taxes and flags are read when the watch first sees the coin, usually after the entries (2 to "
+        "30 s after the start): a tax changed before then is not seen."
+    ),
+    (
+        "No real answer from Base, BNB Chain or Ethereum is in the tests yet, so the field names and units on those "
+        "chains are unchecked until the first real run; no real pool answer is in them for any chain either, so the "
+        "pool's liquidity is read by the name GMGN's documents give it."
+    ),
 )
 UNKNOWN_READING = (
     "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
@@ -1007,5 +1021,6 @@ def score(
         "fee_pct": fee,  # the pool's swap fee on each leg
         "landing": LANDING[chain],
         "reading": SCORE_READING,
+        "caveats": list(CAVEATS),
         **tally.report(),
     }
