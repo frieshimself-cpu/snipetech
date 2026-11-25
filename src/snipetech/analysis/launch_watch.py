@@ -59,6 +59,7 @@ DELAYS = (2, 5, 12, 30)  # seconds after a coin's start a copy buys
 HOLDS = (30, 120, 300, 480)  # seconds it holds
 WINDOW_SECS = 500  # the 1 s candles read of a coin, from its start: GMGN gives 500 in one request
 PAIRS = tuple((d, h) for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS)  # what the score reads: inside the 500 s
+LAST_SALE = max(d + h for d, h in PAIRS)  # the last sale of a copy, seconds after the start (492)
 EVERY_SECS = 60.0  # between two looks at GMGN's newest coins
 MAX_MINUTES = 7 * 24 * 60  # the longest watch: a week (third review of 25 Nov: 1e307 minutes gave an end at infinity)
 SETTLE_SECS = 900.0  # a coin's candles and security are read this long after its start
@@ -155,7 +156,8 @@ SCORE_READING = (
     "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
     "is missing or zero is "
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
-    "inside the 500 s are read. mean_se is the mean's standard error (the copies' standard deviation over the square "
+    "inside the 500 s are read, and on Ethereum on to 516 s: the last sale (492 s) lands a block later at most, and the "
+    "trade after it shows it. mean_se is the mean's standard error (the copies' standard deviation over the square "
     "root of their number): a mean less than two of them from 0 is not told apart from 0. mean_without_best5 is the "
     "mean once the five best copies are taken out. The coins are split in two halves by a hash of their address "
     "(half_of: SHA-256, the same on every run; coins_by_half counts the coins scored for the table in each): the best "
@@ -625,7 +627,9 @@ class LaunchWatch:
                 continue
             mint = row["mint"]
             candles = self._ask(
-                functools.partial(self.client.candles, mint, "1s", start=start, end=start + WINDOW_SECS),
+                functools.partial(
+                    self.client.candles, mint, "1s", start=start, end=start + read_secs(BLOCK_SECS[self.chain])
+                ),
                 until,
                 "candles",
             )
@@ -640,7 +644,7 @@ class LaunchWatch:
                 continue
             if candles[0] == "ok":
                 candles = ("ok", _bars(candles[1]))
-            prices = _path(candles[1] if candles[0] == "ok" else [], start)
+            prices = _path(candles[1] if candles[0] == "ok" else [], start, BLOCK_SECS[self.chain])
             ts, pool = prices.ts, None
             # only a later sale of the copy's worth shows its pool, and the copy's size is the score's to know
             if ts and stale_exit(prices, start, int(asked_at), BLOCK_SECS[self.chain]):
@@ -904,6 +908,14 @@ def read_security(sec: Any, unit: str = "value") -> dict:
     }
 
 
+def read_secs(block: int) -> int:
+    """How long after a coin's start its candles are read on a chain of `block`-second blocks: its 500 s, and on until
+    the last sale has landed (a block after its moment at most) and the trade after it is in, which shows it (fourth
+    review of 25 Nov: Ethereum's last block inside the 500 s is at +492 s, and every hold of 480 s read stale). 500 s
+    on Solana, BNB Chain and Base; 516 s on Ethereum."""
+    return max(WINDOW_SECS, LAST_SALE + 2 * block)
+
+
 class Prices(NamedTuple):
     """A coin's candles inside its window whose close can be divided by, oldest first (_path): their times, closes,
     highs and lows (a high never below its close, a low never above it; the close when not given), and the dollars
@@ -918,9 +930,9 @@ class Prices(NamedTuple):
     bad: int
 
 
-def _path(candles: Any, start: int) -> Prices:
-    """A coin's candles inside its 500 s (Prices). It rugged when a price fell to a tenth of its first candle's open,
-    or below; a candle whose close is missing or zero is left out and counted."""
+def _path(candles: Any, start: int, block: int = 1) -> Prices:
+    """A coin's candles inside its 500 s, and on to read_secs(block) (Prices). It rugged when a price fell to a tenth
+    of its first candle's open, or below; a candle whose close is missing or zero is left out and counted."""
     kept: list[tuple[int, float, float | None, float, float, float]] = []
     bad = 0
     for c in candles if isinstance(candles, list) else []:
@@ -928,7 +940,7 @@ def _path(candles: Any, start: int) -> Prices:
             bad += 1
             continue
         ts = _int(c[0])
-        if not start <= ts <= start + WINDOW_SECS:
+        if not start <= ts <= start + read_secs(block):
             continue
         close = _price(c[4])
         if close is None:
@@ -1188,7 +1200,7 @@ class _Score:
         half = half_of(rec["mint"])
         self.by_half[half] += main
         start = _int(rec.get("start"))
-        p = _path(rec.get("candles"), start)
+        p = _path(rec.get("candles"), start, self.block)
         ts, closes, rug = p.ts, p.closes, p.rug
         self.n["bad_prices"] += p.bad
         self.n["without_a_price"] += not ts

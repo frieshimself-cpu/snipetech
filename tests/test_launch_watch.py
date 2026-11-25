@@ -1004,6 +1004,26 @@ def test_a_trade_fills_behind_every_trade_of_the_second_or_block_it_lands_in(tmp
     assert by_delay == {2: (0, 1), 5: (1, 0), 12: (1, 0), 30: (1, 0)}
 
 
+def test_the_last_sales_land_and_are_shown_past_the_window_on_ethereum(tmp_path):
+    """Fourth review of 25 Nov: on Ethereum the last block inside a coin's 500 s is at +492 s, so every hold of 480 s
+    read stale (lost when the pool read failed), even on a coin that traded in every block. The candles are read on
+    until the last sale (start + 492 s) has landed and the trade after it is in: two of the chain's blocks past it."""
+    # a sale of 500 dollars each block, each a hair below the last: every sale of a copy is shown by the next one
+    blocks = [(S + t, 1.0, 1.0, 1.0, 1.0 - t * 1e-6, 500.0) for t in range(0, 517, 12)]
+    refused_pool = {"error": "gmgn GET /v1/token/pool_info: HTTP 404 NOT_FOUND: no pool"}
+    write_scored(tmp_path, [coin(A, blocks, pool=refused_pool)], chain="eth")
+    out = LW.score(tmp_path, "eth", gas_usd=0.0, fee_pct=0.0)
+    assert [pair(out, d, 480)["stale_exits"] for d in (2, 5, 12)] == [0, 0, 0]
+    assert pair(out, 12, 480)["mean"] == pytest.approx(0.0, abs=1e-3)  # in at +24 s, out at +504 s
+    # the watch asks GMGN for the candles that far: on Ethereum 516 s, on Base the 500 s they were
+    for chain, secs in (("eth", 516), ("base", 500)):
+        seen: list = []
+        watch(tmp_path / chain, FakeTime(T), {"/v1/trenches": polls([trench(A, T - 1000)])}, seen, chain=chain,
+              minutes=1)  # fmt: skip
+        (ask,) = [r.url.params for r in asked(seen, "/v1/market/token_kline")]
+        assert int(ask["to"]) - int(ask["from"]) == secs * 1000, chain
+
+
 def test_a_copy_sent_at_a_blocks_own_time_lands_in_the_next_block(tmp_path):
     """Fourth review of 25 Nov: on a chain of blocks longer than a second, a copy sent at a block's own timestamp
     filled in that block, which was sealed before it was sent (Base builds a block from what reaches it in the two
