@@ -586,7 +586,9 @@ def test_a_passing_refusal_of_the_key_or_of_this_machine_leaves_the_round_and_th
     assert (out["polls"], out["stop_refusals"], out["scored"]) == (28, 2, 1)  # two looks refused, then asked again
 
 
-def test_a_failed_connection_leaves_the_coin_for_a_later_round_and_three_failed_rounds_write_it(tmp_path):
+def test_a_coins_own_failure_on_the_way_counts_a_round_when_its_kind_answers_in_it(tmp_path):
+    """A read that fails on the way counts a failed round against its coin when GMGN answered a read of the same kind
+    in that round, before or after it; three such rounds, and the coin's next failure writes it as refused."""
     asks: list = []
 
     def candles(req):
@@ -594,21 +596,47 @@ def test_a_failed_connection_leaves_the_coin_for_a_later_round_and_three_failed_
         asks.append(mint)
         if mint == B:
             raise httpx.ConnectError("connection refused", request=req)
-        if asks.count(A) <= 3:  # the client asks three times on a server error before it gives up on a read
+        if mint == A and asks.count(A) <= 3:  # the client asks three times on a server error before it gives up
             return httpx.Response(503, text="upstream unavailable")
         return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
 
     routes = {
-        "/v1/trenches": polls([trench(A, T - 1000), trench(B, T - 1000)]),
-        "/v1/market/token_kline": candles,
-        "/v1/token/security": security({}),
+        "/v1/trenches": polls([trench(A, T - 1000), trench(B, T - 1000), trench(C, T - 1000)]),
+        "/v1/market/token_kline": candles,  # C's answers in each round, until C is written
+        "/v1/token/security": security({C: refused(404, "NOT_FOUND", "no such token")}),
     }
     out = watch(tmp_path, FakeTime(T), routes, minutes=5)
     by = {s["mint"]: s for s in scored(tmp_path)}
     assert by[A]["candles"] == [[T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0]] and by[A]["fetched_at"] == T + 60  # 2nd round
-    assert by[B]["candles"] == [] and "network" in by[B]["candles_error"] and by[B]["fetched_at"] == T + 120  # 3rd
+    assert "HTTP 404" in by[C]["security"]["error"] and by[C]["fetched_at"] == T + 120  # its third answered refusal
+    # B's connection refused in every round: counted in the three rounds C's candles answered in, written in the 4th
+    assert by[B]["candles"] == [] and "network" in by[B]["candles_error"] and by[B]["fetched_at"] == T + 180
     assert by[B]["security"] == REAL_SECURITY
-    assert out["tried_again_later"] == 3 and out["refused"]["candles"] == 1 and out["scored"] == 2
+    assert (out["tried_again_later"], out["refused"]["candles"], out["scored"]) == (6, 1, 3)
+
+
+def test_an_outage_counts_no_round_against_the_coins_due_in_it(tmp_path):
+    """Third review of 25 Nov: GMGN's candles down for three minutes (503 on every try) wrote every coin due in them
+    as refused, and no later job read them again. A round counts against a coin only when a read of its kind
+    answered in it: an outage counts none."""
+    ft = FakeTime(T)
+    coins = MANY[:10]
+
+    def candles(req):
+        if ft.now < T + 180:
+            return httpx.Response(503, text="upstream unavailable")
+        return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
+
+    routes = {
+        "/v1/trenches": polls([trench(m, T - 1000) for m in coins]),
+        "/v1/market/token_kline": candles,
+        "/v1/token/security": security({}),
+    }
+    out = watch(tmp_path, ft, routes, minutes=5)
+    lines = scored(tmp_path)
+    assert len(lines) == 10 and not [x for x in lines if "candles_error" in x]  # all read once GMGN answered again
+    assert {x["fetched_at"] for x in lines} == {T + 180}
+    assert (out["tried_again_later"], out["outage_waits"], out["refused"]["candles"]) == (0, 30, 0)
 
 
 def test_one_watch_at_a_time_on_a_chain(tmp_path):

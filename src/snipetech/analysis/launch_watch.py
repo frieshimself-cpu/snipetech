@@ -372,10 +372,14 @@ class LaunchWatch:
         self.resumed = {"seen": 0, "waiting": 0}
         self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "bad_rows", "scored", "pools_read",
                                      "rate_limit_waits", "rate_limit_left", "read_errors", "tried_again_later",
-                                     "stop_refusals"), 0)  # fmt: skip
+                                     "outage_waits", "stop_refusals"), 0)  # fmt: skip
         self.refused = {"poll": 0, "candles": 0, "security": 0, "pool": 0}
         self.round = 0  # the round under way: a look at new coins and the reads after it (the last pass is one too)
         self.halted = False  # a refusal of the key or of this machine came in this round: its other reads wait
+        self.answered_kinds: set[str] = set()  # the kinds of read GMGN answered in this round (`_answered`)
+        # (coin, kind) of reads that failed on the way before GMGN answered any read of their kind in this round: a
+        # failed round of their coin only if one answers later in it (`_close_round`)
+        self.unanswered: list[tuple[str, str]] = []
         # each kind of read's run of rounds that met the same refusal of the key or of this machine: (its code, rounds
         # in a row, the last round counted); an answer of its kind ends the run
         self.streaks: dict[str, tuple[str, int, int]] = {}
@@ -450,9 +454,10 @@ class LaunchWatch:
                 return "ok", got
 
     def _answered(self, kind: str) -> None:
-        """GMGN answered a read of `kind` (anything but a refusal of the key or of this machine): that kind's run of
-        such refusals ends."""
+        """GMGN answered a read of `kind` (anything but a refusal of the key or of this machine, a rate limit, or a
+        failure on the way): that kind's run of such refusals ends, and this round's failed reads of its kind count."""
         self.answered_any = True
+        self.answered_kinds.add(kind)
         self.streaks.pop(kind, None)
 
     def _refused_key(self, kind: str, exc: GmgnError) -> tuple[str, str]:
@@ -514,14 +519,14 @@ class LaunchWatch:
         """Every waiting coin past its settle time, in the order recorded: its candles and its security, read once and
         written, and its pool when a copy would sell it at a stale price (stale_exit): asked once, written as it came.
         It stops at `until` (the next look at new coins, or the job's end), and when a rate limit holds past it: the
-        coins not reached wait for the next round, which counts as no failed round of theirs."""
+        coins not reached wait for the next round, which counts as no failed round of theirs. A read that fails waits
+        for a later round as `_wait` says."""
         for key, row in list(self.pending.items()):
             start, asked_at = start_of(row), self.clock()
             if asked_at >= until:
                 return
             if asked_at < start + self.settle_secs:
                 continue
-            last_round = self.tries.get(key, 0) + 1 >= LATER_ROUNDS
             mint = row["mint"]
             candles = self._ask(
                 functools.partial(self.client.candles, mint, "1s", start=start, end=start + WINDOW_SECS),
@@ -530,14 +535,12 @@ class LaunchWatch:
             )
             if candles[0] in LEAVE_ROUND:
                 return
-            if candles[0] == "later" and not last_round:
-                self._later(key)
+            if candles[0] == "later" and self._wait(key, "candles"):
                 continue
             sec = self._ask(functools.partial(self.client.token_security, mint), until, "security")
             if sec[0] in LEAVE_ROUND:
                 return
-            if sec[0] == "later" and not last_round:
-                self._later(key)
+            if sec[0] == "later" and self._wait(key, "security"):
                 continue
             if candles[0] == "ok":
                 candles = ("ok", _bars(candles[1]))
@@ -551,9 +554,38 @@ class LaunchWatch:
             del self.pending[key]
             self.tries.pop(key, None)
 
+    def _wait(self, key: str, kind: str) -> bool:
+        """Whether a coin whose read of `kind` failed ("later") waits for a later round (True), or is written now with
+        that read as refused (False). A failed round counts against the coin only when GMGN answered a read of the same
+        kind in that round (this one, or another coin's): a failure on the way before any such answer is counted at the
+        round's end if one comes later in it (`_close_round`), and never in an outage (third review of 25 Nov: a
+        three-minute outage wrote every coin due in it as refused). The coin is written in its third counted round, or
+        at its next failure once three rounds were counted."""
+        tries = self.tries.get(key, 0)
+        if tries >= LATER_ROUNDS:
+            return False
+        if kind in self.answered_kinds:
+            if tries + 1 >= LATER_ROUNDS:
+                return False
+            self._later(key)
+        else:
+            self.unanswered.append((key, kind))
+        return True
+
     def _later(self, key: str) -> None:
         self.tries[key] = self.tries.get(key, 0) + 1
         self.counts["tried_again_later"] += 1
+
+    def _close_round(self) -> None:
+        """The round's end: a coin whose read failed on the way before any read of its kind was answered in the round
+        gets its failed round counted if one was answered after it; in an outage, none is."""
+        for key, kind in self.unanswered:
+            if kind in self.answered_kinds:
+                self._later(key)
+            else:
+                self.counts["outage_waits"] += 1
+        self.unanswered.clear()
+        self.answered_kinds.clear()
 
     def _write(
         self, row: dict, start: int, asked_at: float, candles: tuple, sec: tuple, pool: tuple | None, last: int | None
@@ -607,6 +639,7 @@ class LaunchWatch:
                         first, next_poll = False, now + self.every
                     if not self.halted:
                         self.settle(min(next_poll, deadline))
+                    self._close_round()
                     if self.clock() >= next_status:
                         next_status += STATUS_SECS
                         self.log(
@@ -616,6 +649,7 @@ class LaunchWatch:
                     self.sleep(max(0.0, min(next_poll, deadline) - self.clock()))
                 self._open_round()
                 self.settle(deadline + FINAL_SLACK_SECS)
+                self._close_round()
         except WatchBusy as exc:
             return {"ok": False, "chain": self.chain, "error": str(exc)}
         except WatchStopped as exc:
@@ -651,6 +685,7 @@ class LaunchWatch:
             "rate_limit_left": c["rate_limit_left"],  # reads a rate limit held past the time they had: left for later
             "read_errors": c["read_errors"],  # reads that failed in a way that is not GMGN's: asked again later
             "tried_again_later": c["tried_again_later"],
+            "outage_waits": c["outage_waits"],  # failed reads in rounds no read of their kind answered: none counted
             "stop_refusals": c["stop_refusals"],  # refusals of the key or of this machine: each left its round
             "files": {"launches": str(self.launches), "scored": str(self.scored)},
         }
