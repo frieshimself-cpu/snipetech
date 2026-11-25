@@ -766,10 +766,11 @@ def test_a_line_cut_right_after_a_closing_brace_still_names_no_coin(tmp_path):
 # -- the score: what an early buyer would have made ---------------------------------------------------------------------
 
 
-def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=None, pool=None):
-    """A line of <chain>_scored.jsonl as the watch writes it: a coin started at S, the taxes and flags of its row when
-    first seen (`first`), its candles as [ts, open, high, low, close, dollars], its security as GMGN sent it and, when
-    given, its pool as read at settle."""
+def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=None, pool=None, liquidity=1e12):
+    """A line of <chain>_scored.jsonl as the watch writes it: a coin started at S, the dollars of its pool and the taxes
+    and flags of its row when first seen (`liquidity`: so deep by default that a copy moves no price; `first`), its
+    candles as [ts, open, high, low, close, dollars], its security as GMGN sent it and, when given, its pool as read at
+    settle."""
     return {
         "mint": mint,
         "chain": "base",
@@ -777,6 +778,7 @@ def coin(mint, candles, sec=None, *, platform="clanker", fetched_at=None, first=
         "platform": platform,
         "symbol": "TKN",
         "created_ts": S,
+        "liquidity_usd": liquidity,
         "first_seen": S + 3,
         **(first or {}),
         "fetched_at": S + 900 if fetched_at is None else fetched_at,
@@ -1172,10 +1174,44 @@ def test_the_report_says_in_plain_words_what_it_does_not_count(tmp_path):
     pool's own fee, the taxes at the moment of an entry, and every answer of a chain no real answer has been read of."""
     write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])
     caveats = " ".join(LW.score(tmp_path, "base")["caveats"])
-    for words in ("price impact is not counted", "one flat number per chain", "first sees the coin",
+    for words in ("price impact is counted", "one flat number per chain", "first sees the coin",
                   "usually after the entries", "Base, BNB Chain or Ethereum", "unchecked until the first real run",
                   "pool"):  # fmt: skip
         assert words in caveats, words
+
+
+def test_a_copy_pays_its_own_price_impact_in_a_constant_product_pool(tmp_path):
+    """Third review of 25 Nov: a copy's size entered the score only through its gas, so a bigger --size-usd made every
+    row better without limit, even a copy ten times its coin's pool. Each leg now pays its own price impact in a
+    constant-product pool holding the liquidity GMGN gave when the watch first saw the coin, half of it on each side
+    (q): the buy gets q / (q + size) of its price, the sale qx / (qx + worth), qx = q x sqrt(exit / entry) the side at
+    the exit and worth what the copy holds at that price. The reviewer's twenty Ethereum coins, 3,000 dollars each, from
+    1.0 to 1.2: +16 percent at any size before, -3 to -97 percent now. A row counts its copies above 5 percent of their
+    pool."""
+    coins = [coin(m, to_the_end([flat(1.0), flat(1.2, 20)]), liquidity=3000.0) for m in MANY[:20]]
+    write_scored(tmp_path, coins, chain="eth")
+    for size, want in ((100, -0.0280), (1000, -0.5153), (3000, -0.7754), (30_000, -0.9728)):
+        row = pair(LW.score(tmp_path, "eth", size_usd=size, fee_pct=1.0), 2, 30)
+        assert row["mean"] == pytest.approx(want, abs=1e-4), size
+        assert row["over_5pct_of_pool"] == (0 if size <= 150 else 20), size
+    out = LW.score(tmp_path, "eth")
+    assert "constant-product" in out["reading"] and "constant-product" in " ".join(out["caveats"])
+
+
+def test_a_coin_without_a_pool_size_is_scored_apart(tmp_path):
+    """Third review of 25 Nov: a coin whose line gives no liquidity that reads as dollars (missing, null, zero, not a
+    number, below zero, too big for a float) has no price impact to pay: it is counted and scored apart, never at no
+    impact in the table, the best pair, the launchpads or the delays."""
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
+    missing = {k: v for k, v in coin(B, up).items() if k != "liquidity_usd"}
+    unsized = [coin(m, up, liquidity=v) for m, v in zip((C, D, E, F, G), (None, 0, "x", -5, 10**400), strict=True)]
+    write_scored(tmp_path, [coin(A, up), missing, *unsized])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert pair(out, 2, 30)["coins"] == 1 and {d["with_entry"] for d in out["by_delay"]} == {1}
+    assert [p["coins"] for p in out["by_platform"]] == [1]
+    apart = out["without_pool_size"]
+    assert (apart["coins"], pair(apart, 2, 30)["coins"], pair(apart, 2, 30)["mean"]) == (6, 6, pytest.approx(1.0))
+    assert "price impact" in apart["why"]
 
 
 def test_a_coin_timed_from_its_first_sighting_is_scored_apart(tmp_path):

@@ -66,6 +66,7 @@ GAS_USD = {"eth": 3.0, "base": 0.05, "bsc": 0.05, "sol": 0.5}  # one transaction
 FEE_PCT = {"sol": 1.25, "bsc": 1.0, "base": 1.0, "eth": 1.0}
 RUG_LEFT = 0.1  # a rug: the price fell to this share of its first candle's or below within the window
 HONEYPOT_SELL_TAX = 0.5  # a sell tax this high counts as a coin that cannot be sold
+BIG_FOR_POOL = 0.05  # a copy above this share of its pool's liquidity when first seen is counted (over_5pct_of_pool)
 BEST_LEFT_OUT = 5
 LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way, before they are written as refused
 # refusals that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
@@ -125,12 +126,17 @@ SCORE_READING = (
     "first saw it is scored apart, timed_from_sighting), if the coin traded before then, behind every trade of the "
     "second, or the block, it lands in (block_secs: Solana and BNB Chain 1 s, Base 2 s, Ethereum 12 s): at the close "
     "of the first 1 s candle at or after that moment if it opened within a block of it, else at the last close before "
-    "it, nobody else trading in its block; it sells H seconds later the same way. Its return is exit / entry x "
-    "(1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
+    "it, nobody else trading in its block; it sells H seconds later the same way. Its return is exit / entry x buy "
+    "impact x sale impact x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
     "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
     "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
-    "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. It fills at the candle's "
-    "close: its own price impact is not counted. A coin with no candle that opened before D - 1 or at it is no trade "
+    "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. Each leg pays its own price "
+    "impact in a constant-product pool holding the liquidity GMGN gave when the watch first saw the coin "
+    "(liquidity_usd), half of it on each side (q): the buy gets q / (q + size) of its price, the sale qx / (qx + "
+    "worth), where qx = q x sqrt(exit / entry) is that side at the exit and worth = size x exit / entry x the buy's "
+    "impact is what the copy holds at that price. over_5pct_of_pool counts the copies above 5 percent of that "
+    "liquidity. A coin without it is scored apart (without_pool_size). A coin with no candle that opened before D - 1 "
+    "or at it is no trade "
     "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
     "is missing or zero is "
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
@@ -172,7 +178,11 @@ SECURITY_READING = (
 )
 # what the score leaves out, printed with every report in plain words (second review of 25 Nov)
 CAVEATS = (
-    "Our own buy's price impact is not counted: a copy fills at the candle's close, however much it buys.",
+    (
+        "Our own price impact is counted with a constant-product pool holding the liquidity GMGN gave when the watch "
+        "first saw the coin, half of it on each side: a launchpad's bonding curve, or a pool that grew or shrank "
+        "before the entry, can make it larger or smaller."
+    ),
     "The swap fee is one flat number per chain (fee_pct), not each pool's own fee.",
     (
         "A launch's own taxes and flags are read when the watch first sees the coin, usually after the entries (2 to "
@@ -188,6 +198,12 @@ SIGHTING_READING = (
     "The coins with no open or creation time GMGN gave: the watch timed them from when it first saw them, up to a look "
     "(60 s) after their launch, so their first seconds were never read and their delays say nothing. They are scored "
     "here alone, and left out of `table`, `best`, `by_platform` and `by_delay`."
+)
+UNSIZED_READING = (
+    "The coins whose line gives no liquidity GMGN could be read by when the watch first saw them (missing, zero or not "
+    "a number): a copy's own price impact cannot be counted, so they are scored here alone, at the candles' prices, and "
+    "left out of `table`, `best`, `by_platform` and `by_delay`. A coin timed from a sighting is in timed_from_sighting "
+    "instead."
 )
 UNKNOWN_READING = (
     "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
@@ -967,32 +983,36 @@ def _rank(row: dict) -> tuple[int, float]:
 
 class _Pair:
     """The copies of one entry delay and hold, side by side: returns, launchpads (by number), and rug, honeypot,
-    stale-sale and unknown-security marks."""
+    stale-sale, unknown-security and big-for-its-pool marks."""
 
-    __slots__ = ("honeypot", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
+    __slots__ = ("big", "honeypot", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
 
     def __init__(self) -> None:
         self.rets, self.plats = array("d"), array("I")
         self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
+        self.big = bytearray()
         self.unsettled = 0
 
-    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool, unknown: bool) -> None:
+    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool, unknown: bool, big: bool) -> None:
         self.rets.append(ret)
         self.plats.append(plat)
         self.rugs.append(rug)
         self.honeypot.append(honeypot)
         self.stale.append(stale)
         self.unknown.append(unknown)
+        self.big.append(big)
 
     def row(self, fresh_only: bool = False) -> dict:
         """The pair's numbers (_stats), its honeypots, its holds not over when read, its copies whose security is not
-        known and its stale sales; with `fresh_only`, those of the copies whose sale was not stale."""
+        known, its copies above 5 percent of their pool and its stale sales; with `fresh_only`, those of the copies
+        whose sale was not stale."""
         keep = [k for k in range(len(self.rets)) if not (fresh_only and self.stale[k])]
         out = {
             **_stats([self.rets[k] for k in keep], [self.rugs[k] for k in keep]),
             "honeypots": sum(self.honeypot[k] for k in keep),
             "unsettled": self.unsettled,
             "security_unknown": sum(self.unknown[k] for k in keep),
+            "over_5pct_of_pool": sum(self.big[k] for k in keep),
         }
         return out if fresh_only else out | {"stale_exits": sum(self.stale)}
 
@@ -1008,12 +1028,14 @@ class _Score:
         self.pairs = {pair: _Pair() for pair in PAIRS}  # every coin a copy bought
         self.apart = {pair: _Pair() for pair in PAIRS}  # those whose security is not known, alone (security_unknown)
         self.sighted = {pair: _Pair() for pair in PAIRS}  # the coins timed from a sighting, apart (timed_from_sighting)
+        self.unsized = {pair: _Pair() for pair in PAIRS}  # the coins with no pool size, apart (without_pool_size)
         self.pools = dict.fromkeys(("coins_with_a_stale_exit", "there", "gone", "unknown"), 0)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
-                                "first_sight_honeypots", "taxes_changed", "timed_from_sighting", *TAX_COUNTS),
+                                "first_sight_honeypots", "taxes_changed", "timed_from_sighting",
+                                "without_pool_size", *TAX_COUNTS),
                                0)  # fmt: skip
         # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
         # settle ("settle") and of the coin's row when first seen ("first")
@@ -1059,8 +1081,16 @@ class _Score:
         # and left out of the table and the delays (third review of 25 Nov)
         sighted = (rec.get("start_from") or start_source(rec)) == "sighting"
         self.n["timed_from_sighting"] += sighted
+        # the pool's dollars when the watch first saw the coin, half of them on each side: what its own price impact is
+        # paid in (third review of 25 Nov: none was). A coin without them is scored apart, never at no impact.
+        depth = _amount(rec.get("liquidity_usd")) or 0.0
+        unsized = not sighted and not depth
+        self.n["without_pool_size"] += unsized
         if sighted:
             tables = (self.sighted,)
+        elif unsized:
+            tables = (self.unsized,)
+        main = not (sighted or unsized)  # in the table and the delays
         if "candles_error" in rec:
             self.n["candles_refused"] += 1
             return
@@ -1071,17 +1101,20 @@ class _Score:
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
         fetched = _int(rec.get("fetched_at"))
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
+        q = depth / 2
+        entry_keep = q / (q + self.size) if q else 1.0  # what the buy's own impact leaves of its price
+        big = bool(depth) and self.size > BIG_FOR_POOL * depth
         # a sale after the coin's last trade (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
-        if stale_exit(ts, closes, dollars, start, fetched, self.block, self.size):
+        if stale_exit(ts, closes, dollars, start, fetched, self.block, self.size * entry_keep):
             self.pools["coins_with_a_stale_exit"] += 1
             self.pools[pool] += 1
             rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
         for d in DELAYS:
             if not _traded_before(ts, start + d):
-                self.no_trade[d] += not sighted
+                self.no_trade[d] += main
                 continue
-            self.entries[d] += not sighted
+            self.entries[d] += main
             i = _fill(ts, start + d, self.block)
             for h in HOLDS:
                 end = start + d + h
@@ -1092,16 +1125,19 @@ class _Score:
                         pairs[(d, h)].unsettled += 1
                     continue
                 ratio = closes[_fill(ts, end, self.block)] / closes[i]
-                stale = _stale(ts, closes, dollars, end, self.block, self.size * ratio)
+                worth = self.size * entry_keep * ratio  # what the copy holds at the sale's price
+                stale = _stale(ts, closes, dollars, end, self.block, worth)
                 # a stale sale keeps its price only when the pool held, at settle, what the copy was worth at that
-                # price: its size x exit / entry (second review of 25 Nov: 120 dollars sold a copy worth 300)
-                lost = stale and (liquidity is None or liquidity < self.size * ratio)
+                # price (second review of 25 Nov: 120 dollars sold a copy worth 300)
+                lost = stale and (liquidity is None or liquidity < worth)
+                qx = q * math.sqrt(ratio)  # the pool's side at the sale's price
+                exit_keep = qx / (qx + worth) if q else 1.0
                 if honeypot or lost:
                     ret = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
                 else:
-                    ret = ratio * self.kept * keep - 1.0 - self.share
+                    ret = ratio * entry_keep * exit_keep * self.kept * keep - 1.0 - self.share
                 for pairs in tables:
-                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, unknown)
+                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, unknown, big)
 
     @staticmethod
     def _table(pairs: dict[tuple[int, int], _Pair], fresh_only: bool = False) -> list[dict]:
@@ -1145,6 +1181,11 @@ class _Score:
                 "coins": self.n["timed_from_sighting"],
                 "why": SIGHTING_READING,
                 "table": self._table(self.sighted),
+            },
+            "without_pool_size": {
+                "coins": self.n["without_pool_size"],
+                "why": UNSIZED_READING,
+                "table": self._table(self.unsized),
             },
             "not_scored": [
                 {"delay": d, "hold": h, "why": f"{d} + {h} s runs past the {WINDOW_SECS} s of candles"}
