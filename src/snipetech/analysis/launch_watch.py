@@ -123,7 +123,10 @@ SCORED_TAIL = ',"end":1}'
 # does not buy.
 LANDING_RULE = (
     "Every copy buys and sells behind every trade of the second (or the block) it lands in, at the default gas: a "
-    "plain bid, no priority. A price at the top of a block would need a named bid that buys that place: none is scored."
+    "plain bid, no priority. A price at the top of a block would need a named bid that buys that place: none is scored. "
+    "It fills at the close of that block's candle, which is probably its last trade's price, not the pool's after that "
+    "trade: a copy behind a big buy pays more. The pessimistic bound beside each number (in at the candle's high, out "
+    "at its low) is what answers that."
 )
 BLOCK_SECS = {"sol": 1, "bsc": 1, "base": 2, "eth": 12}  # the second, or the block, a copy lands in
 # what a delay means on each chain
@@ -251,6 +254,13 @@ CAVEATS = (
         "On Base, BNB Chain and Ethereum a sale may need an approval transaction first: a third gas charge, not "
         "counted (gas is counted twice, for the buy and the sale)."
     ),
+    (
+        "A 1 s candle's close is probably its last trade's price, not the pool's price after that trade: a copy behind "
+        "a big buy in its block pays more than the close (behind a sniper's 1,500 dollars in a pool of 5,000, the "
+        "close reads +24.7 percent where the copy gets 0.0). The pessimistic bound beside each number, in at the "
+        "candle's high and out at its low, holds whatever the close is; the coins each candle moved are kept in the "
+        "file for the first real run to check."
+    ),
 )
 SIGHTING_READING = (
     "The coins with no open or creation time GMGN gave: the watch timed them from when it first saw them, up to a look "
@@ -349,13 +359,16 @@ def _new_rows(data: Any) -> tuple[list[dict], int]:
 
 
 def _bars(candles: Any) -> list[list]:
-    """A coin's candles as its line holds them, [ts, open, high, low, close, dollars], from the client's rows."""
+    """A coin's candles as its line holds them, [ts, open, high, low, close, dollars, coins], from the client's rows.
+    The coins traded are kept for the first real run to check what a close is (fourth review of 25 Nov: on a one-trade
+    candle, its dollars over its coins, its last trade's price), and not read."""
     rows = candles if isinstance(candles, list) else []
     return [
-        [c.get("ts"), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume_usd")]
+        [c.get("ts"), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume_usd"),
+         c.get("volume_tokens")]
         for c in rows
         if isinstance(c, dict)
-    ]
+    ]  # fmt: skip
 
 
 def first_sight(rec: dict) -> dict:
@@ -724,7 +737,7 @@ class LaunchWatch:
         self, row: dict, start: int, asked_at: float, candles: tuple, sec: tuple, pool: tuple | None, last: int | None
     ) -> None:
         """A coin's line in the scored file: its row, its start, when its candles were asked for (`fetched_at`), its
-        candles as [ts, open, high, low, close, dollars], the time of its last priced candle in its 500 s
+        candles as [ts, open, high, low, close, dollars, coins], the time of its last priced candle in its 500 s
         (`last_candle_ts`), its security as GMGN sent it and, when it was read, its pool as GMGN sent it; a refused
         read's words in place of what it would have given."""
         rec = {"mint": row["mint"], "chain": self.chain, "start": start, "start_from": start_source(row),

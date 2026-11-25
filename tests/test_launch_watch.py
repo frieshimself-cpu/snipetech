@@ -271,7 +271,9 @@ def test_a_settled_launch_gets_its_candles_and_security_once(tmp_path):
         T,
         T,
     )
-    assert a["candles"] == [[T - 1000, 1.0, 1.2, 0.9, 1.1, 50.0], [T - 999, 1.1, 1.5, 1.1, 1.4, 20.5]]
+    # each candle with the coins it moved too (fourth review of 25 Nov: a close may be its last trade's price, its
+    # dollars over its coins on a one-trade candle, which the first real run can check)
+    assert a["candles"] == [[T - 1000, 1.0, 1.2, 0.9, 1.1, 50.0, 1000.0], [T - 999, 1.1, 1.5, 1.1, 1.4, 20.5, 1000.0]]
     assert a["security"] == sec_a  # as GMGN sent it
     # B started at T: it is read once it is 900 s old; GMGN had no candle of it, which is no refusal
     assert (b["start"], b["fetched_at"], b["candles"], b["symbol"]) == (T, T + 900, [], "BEE")
@@ -672,7 +674,7 @@ def test_a_coins_own_failure_on_the_way_counts_a_round_when_its_kind_answers_in_
     }
     out = watch(tmp_path, FakeTime(T), routes, minutes=5)
     by = {s["mint"]: s for s in scored(tmp_path)}
-    assert by[A]["candles"] == [[T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0]] and by[A]["fetched_at"] == T + 60  # 2nd round
+    assert by[A]["candles"] == [[T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0, 1000.0]] and by[A]["fetched_at"] == T + 60
     assert "HTTP 404" in by[C]["security"]["error"] and by[C]["fetched_at"] == T + 120  # its third answered refusal
     # B's connection refused in every round: counted in the three rounds C's candles answered in, written in the 4th
     assert by[B]["candles"] == [] and "network" in by[B]["candles_error"] and by[B]["fetched_at"] == T + 180
@@ -751,7 +753,8 @@ def test_a_line_cut_short_by_a_killed_job_is_written_again_on_a_line_of_its_own(
     assert out["resumed"] == {"seen": 3, "waiting": 2}  # A, still, and B (900 s past its start only at T + 900)
     assert [r.url.params["address"] for r in asked(seen, "/v1/market/token_kline")] == [A]
     scored_lines = (folder / "base_scored.jsonl").read_text().splitlines()
-    assert len(scored_lines) == 3 and json.loads(scored_lines[2])["candles"] == [[T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0]]
+    whole = [[T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0, 1000.0]]
+    assert len(scored_lines) == 3 and json.loads(scored_lines[2])["candles"] == whole
     assert LW.score(tmp_path, "base")["unreadable_lines"] == 1
     seen = []  # the next job reads A and C as done and B as waiting, and asks for nothing yet
     out = watch(tmp_path, FakeTime(T + 300), routes, seen, minutes=0)
@@ -1088,6 +1091,7 @@ def test_the_landing_is_behind_the_trades_of_the_block_and_named_in_the_report(t
         assert {d: pair(out, d, 30)["mean"] for d in want} == pytest.approx(want, abs=1e-4), chain
         assert out["block_secs"] == every and "behind every trade of the second (or the block)" in out["landing"]
         assert "a plain bid, no priority" in out["landing"] and "none is scored" in out["landing"]
+        assert "its last trade's price" in out["landing"]  # fourth review: the close, and the bound beside it
     assert "rounds up to the next block's candle" in out["landing"]  # Base's blocks of 2 s
 
 
@@ -1405,7 +1409,7 @@ def test_the_report_says_in_plain_words_what_it_does_not_count(tmp_path):
     for words in ("price impact is counted", "one flat number per chain", "first sees the coin",
                   "usually after the entries", "Base, BNB Chain or Ethereum", "unchecked until the first real run",
                   "pool", "above the flat 1 percent", "only the buyers of its first blocks", "900 s after the start",
-                  "approval", "a third gas charge"):  # fmt: skip
+                  "approval", "a third gas charge", "its last trade's price", "pessimistic bound beside each number"):  # fmt: skip
         assert words in caveats, words
 
 
