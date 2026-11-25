@@ -435,17 +435,18 @@ def test_no_read_starts_once_its_time_is_over(tmp_path):
     assert (out["scored"], out["waiting"]) == (1, 2)
 
 
-def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_as_refused(tmp_path):
-    """Review of 25 Nov: GMGN's 404 for a coin it has not read yet, and a 403 of its own, were written as refused at
-    once, and such a coin was then scored as safe. They are asked again two rounds later, as a server error is. (A 403
-    that refuses the key or its plan is the key's: test_a_plan_that_lost_its_one_second_candles_...)"""
+def test_a_404_is_asked_again_in_two_later_rounds_before_it_is_written_as_refused(tmp_path):
+    """Review of 25 Nov: GMGN's 404 for a coin it has not read yet was written as refused at once, and such a coin was
+    then scored as safe. It is asked again two rounds later, as a server error is. (Any 403 or 401 is a refusal of the
+    key or of this machine: test_a_403_or_a_401_of_any_kind_...; fourth review: the per-coin 403 this test gave was
+    invented, a 404 is what GMGN gives of a coin it has not read.)"""
     ft = FakeTime(T)
     asks: dict = {"candles": [], "security": []}
 
     def candles(req):
         asks["candles"].append((req.url.params["address"], ft.now))
         if req.url.params["address"] == B:
-            return refused(403, "FORBIDDEN", "this coin's candles are not open")
+            return refused(404, "NOT_FOUND", "token not found")
         return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
 
     def sec(req):
@@ -464,10 +465,49 @@ def test_a_404_or_a_403_is_asked_again_in_two_later_rounds_before_it_is_written_
     by = {s["mint"]: s for s in scored(tmp_path)}
     rounds = [T, T + 60, T + 120]
     assert [t for m, t in asks["security"] if m == A] == rounds and "HTTP 404" in by[A]["security"]["error"]
-    assert [t for m, t in asks["candles"] if m == B] == rounds and "FORBIDDEN" in by[B]["candles_error"]
+    assert [t for m, t in asks["candles"] if m == B] == rounds and "NOT_FOUND" in by[B]["candles_error"]
     assert (by[A]["fetched_at"], by[B]["fetched_at"]) == (T + 120, T + 120)  # written in the third round
     assert by[C]["security"] == REAL_SECURITY and by[C]["fetched_at"] == T + 60  # its second ask had it
     assert out["tried_again_later"] == 5 and out["refused"] == {"poll": 0, "candles": 1, "security": 1, "pool": 0}
+
+
+def recorded(tmp_path, mints, created=T - 1000):
+    """Coins an earlier job recorded (<chain>.jsonl), started at `created`: due at once."""
+    folder = tmp_path / "history" / "gmgn_launches"
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = [{"mint": m, "platform": "clanker", "created_ts": created, "first_seen": created + 10, "chain": "base"}
+            for m in mints]  # fmt: skip
+    (folder / "base.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_a_403_or_a_401_of_any_kind_is_a_refusal_of_the_key_and_writes_no_coin_off(tmp_path):
+    """Fourth review of 25 Nov: a 403 that is not GMGN's JSON (a page of the network in front of it; GMGN's skills say a
+    request that left over IPv6 gets a bare 403), or one with a code not on the list (AUTH_IP_INVALID; the one real
+    refusal on file spells its 401 AUTH_INVALID), counted as GMGN's answer: every coin due was written off, a refused
+    look never ended the job, and it said ok. Any 401 or 403 is a refusal of the key or of this machine now, under
+    the rounds rule; and a refusal counts as GMGN's answer, for the outage rule, only when it carries GMGN's own code:
+    a 404 page with none is an outage, which counts no round."""
+    page = httpx.Response(403, text="<html><title>Attention Required!</title>Sorry, you have been blocked</html>")
+    for name, refusal in (("page", page), ("unlisted", refused(403, "AUTH_IP_INVALID", "ip not in whitelist")),
+                          ("real", refused(401, "AUTH_INVALID", "missing api key or client_id"))):  # fmt: skip
+        ft, folder = FakeTime(T), tmp_path / name
+        recorded(folder, [A, B, C])
+        reads = ("/v1/trenches", "/v1/market/token_kline", "/v1/token/security")
+        out = watch(folder, ft, dict.fromkeys(reads, refusal), minutes=60)
+        assert (out["ok"], ft.now, out["waiting"], scored(folder)) == (False, T + 240, 3, []), name
+    ft, coins = FakeTime(T), MANY[:5]
+
+    def candles(req):  # a page of the network in front of GMGN for three minutes, then GMGN's answers
+        if ft.now < T + 180:
+            return httpx.Response(404, text="<html>404 Not Found</html>")
+        return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
+
+    routes = {"/v1/trenches": polls([trench(m, T - 1000) for m in coins]), "/v1/market/token_kline": candles,
+              "/v1/token/security": security({})}  # fmt: skip
+    out = watch(tmp_path / "outage", ft, routes, minutes=5)
+    lines = scored(tmp_path / "outage")
+    assert (len(lines), [x["mint"] for x in lines if "candles_error" in x]) == (5, [])
+    assert out["outage_waits"] >= 15 and out["tried_again_later"] == 0
 
 
 def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):

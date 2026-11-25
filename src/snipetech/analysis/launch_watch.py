@@ -80,9 +80,12 @@ BEST_LEFT_OUT = 5
 # (third review of 25 Nov: one coin that tripled was the best pair at +200 percent)
 MIN_COINS = 30
 LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way, before they are written as refused
-# refusals that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
-# yet, and a 403 (a request that left over the wrong route; a plan's refusal). Review of 25 Nov: both were final.
-LATER_STATUSES = (403, 404)
+# a refusal that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
+# yet (review of 25 Nov: it was final). A 403 or a 401 is a refusal of the key or of this machine (STOP_STATUSES).
+LATER_STATUSES = (404,)
+# what refuses the key or this machine, whatever it says: any 401 or 403 (fourth review of 25 Nov: a 403 that was no
+# JSON of GMGN's, a page of the network in front of it, or a code not on the list, wrote every coin due off)
+STOP_STATUSES = (401, 403)
 RATE_WAITS = 10  # waits for one read's rate limit; after them the read is tried again a round later
 RATE_WAIT_MAX = 900.0  # the longest single wait
 RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
@@ -94,8 +97,8 @@ STATUS_SECS = 900.0  # a line in the job's log this often
 # for good). A plan without 1 s candles (PLAN_UPGRADE_REQUIRED; PRO_PLAN_REQUIRED, as GMGN's skills name it for them)
 # refuses every coin alike: written into each coin, it wrote them all off while the job ran on (same review).
 STOP_ERRORS = frozenset(
-    {"AUTH_KEY_INVALID", "AUTH_IP_BLOCKED", "AUTH_KEY_BLOCKED", "AUTH_TIMESTAMP_EXPIRED", "AUTH_TIMESTAMP_SKEW",
-     "PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"}
+    {"AUTH_KEY_INVALID", "AUTH_INVALID", "AUTH_IP_BLOCKED", "AUTH_KEY_BLOCKED", "AUTH_TIMESTAMP_EXPIRED",
+     "AUTH_TIMESTAMP_SKEW", "PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"}
 )  # fmt: skip
 STOP_ROUNDS = 5  # rounds in a row one kind of read meets the same such refusal, none answered between, before the end
 # what leaves the round, its coins waiting for the next one: a rate limit past the read's time, or the time over
@@ -570,11 +573,11 @@ class LaunchWatch:
             try:
                 got = read()
             except GmgnError as exc:
-                if exc.status == 401 or exc.error in STOP_ERRORS:
+                if exc.status in STOP_STATUSES or exc.error in STOP_ERRORS:
                     return self._refused_key(kind, exc)
                 if exc.status != 429:
                     later = exc.status is None or exc.status >= 500 or exc.status in LATER_STATUSES
-                    if exc.status is not None and exc.status < 500:  # GMGN answered, with a refusal of its own
+                    if exc.error:  # GMGN answered, with a refusal of its own: its code (a page in front of it has none)
                         self._answered(kind)
                     return ("later" if later else "refused"), str(exc)
                 if waits >= RATE_WAITS:
@@ -608,10 +611,11 @@ class LaunchWatch:
         self.streaks.pop(kind, None)
 
     def _refused_key(self, kind: str, exc: GmgnError) -> tuple[str, str]:
-        """A refusal of the key or of this machine (STOP_ERRORS, or any 401): this round's reads wait ("halted") and the
-        next round asks again, as after a rate limit with no end named. The job ends (WatchStopped) once one kind of
-        read has met the same refusal in STOP_ROUNDS rounds in a row with none of its kind answered in between; a
-        refused key does so in five rounds, a passing refusal never (third review of 25 Nov)."""
+        """A refusal of the key or of this machine (STOP_ERRORS, or any 401 or 403: STOP_STATUSES): this round's reads
+        wait ("halted") and the next round asks again, as after a rate limit with no end named. The job ends
+        (WatchStopped) once one kind of read has met the same refusal in STOP_ROUNDS rounds in a row with none of its
+        kind answered in between; a refused key does so in five rounds, a passing refusal never (third review of 25
+        Nov)."""
         code = exc.error or f"HTTP {exc.status}"
         self.counts["stop_refusals"] += 1
         self.last_refusal = str(exc)
