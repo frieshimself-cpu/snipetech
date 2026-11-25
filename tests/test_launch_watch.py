@@ -820,14 +820,15 @@ def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_two_swap_fees_and_t
     assert (out["size_usd"], out["gas_usd"], out["fee_pct"]) == (100.0, 0.05, 1.0)
     write_scored(tmp_path, [coin(A, candles, {"buy_tax": "0.05", "sell_tax": "0.1"})], chain="eth")
     eth = LW.score(tmp_path, "eth")  # Ethereum's gas when none is given: 3 dollars a transaction
-    assert eth["gas_usd"] == 3.0 and pair(eth, 2, 30)["mean"] == pytest.approx(2 * kept - 1.06, abs=1e-4)
+    # and its blocks of 12 s: in behind the trades of the block at 10 s (2.0), out behind those at 40 s (1.5)
+    assert eth["gas_usd"] == 3.0 and pair(eth, 2, 30)["mean"] == pytest.approx(0.75 * kept - 1.06, abs=1e-4)
 
 
 def test_each_leg_pays_the_swap_fee_of_its_chain(tmp_path):
     """Review of 25 Nov: no swap fee was charged. A launchpad's pool takes its fee on the buy and again on the sale:
     pump.fun's 1.25 percent on Solana (GMGN's rows of 12 Nov: 0.0125 a side), 1 percent on BNB Chain, Base and
     Ethereum unless --fee-pct says otherwise."""
-    up = to_the_end([flat(1.0), flat(2.0, 10)])
+    up = to_the_end([flat(1.0), flat(2.0, 20)])  # past the block a buy at 2 s lands in, on every chain
     for chain, fee in (("base", 1.0), ("bsc", 1.0), ("eth", 1.0), ("sol", 1.25)):
         write_scored(tmp_path, [coin(A, up)], chain=chain)
         out = LW.score(tmp_path, chain, gas_usd=0.0)
@@ -906,7 +907,7 @@ def test_a_copy_that_cannot_be_sold_still_pays_its_gas(tmp_path):
     """Second review of 25 Nov: a honeypot, or a sale lost to an emptied pool, scored -1 flat, while a coin that went
     to zero on Ethereum scored -1.06: each pays the two transactions' gas, as every other copy does."""
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], {"is_honeypot": 1}),
-                            coin(B, to_the_end([flat(1.0), flat(1e-12, 10)]))], chain="eth")  # fmt: skip
+                            coin(B, to_the_end([flat(1.0), flat(1e-12, 20)]))], chain="eth")  # fmt: skip
     out = LW.score(tmp_path, "eth", fee_pct=0.0)  # 3 dollars a transaction: 0.06 of a copy of 100
     assert (out["gas_share"], pair(out, 2, 30)["mean"]) == (0.06, pytest.approx(-1.06))
     write_scored(tmp_path, [coin(C, [flat(1.0), flat(3.0, 10)], pool={"liquidity": "0"})], chain="eth")
@@ -931,20 +932,51 @@ def test_no_hold_runs_past_the_500_seconds_of_candles(tmp_path):
     pairs = {(r["delay"], r["hold"]) for r in out["table"]}
     assert len(pairs) == 15 and (30, 480) not in pairs  # 30 + 480 = 510 s: past the candles
     assert [(n["delay"], n["hold"]) for n in out["not_scored"]] == [(30, 480)]
-    # in at 12 s at the candle of 11 s (1.0), out at 492 s at the candle of 491 s (2.0): never 492's, nor 499's
-    assert pair(out, 12, 480)["mean"] == pytest.approx(1.0)
+    # in at 12 s at 11 s's close (1.0: nobody traded in its own two seconds), out at 492 s behind the trades of its own
+    # block (4.0): never at 499's
+    assert pair(out, 12, 480)["mean"] == pytest.approx(3.0)
 
 
-def test_a_trade_fills_at_the_last_candle_closed_by_its_moment_never_the_one_that_opens_then(tmp_path):
-    """Review of 25 Nov: a buy 2 s after the start filled at the close of the candle that opens at 2 s, a price made
-    in the second after the buy, and a sale likewise. A 1 s candle that opens at t closes at t + 1: a trade at t
-    fills at the last candle that opened at t - 1 or before."""
-    write_scored(tmp_path, [coin(A, [flat(1.0), flat(3.0, 2), flat(5.0, 31), flat(9.0, 32)])])
+def test_a_trade_fills_behind_every_trade_of_the_second_or_block_it_lands_in(tmp_path):
+    """Third review of 25 Nov: every buy and sale filled at the last close before its moment, as the first trade of
+    the second or block it lands in, a place the default gas does not buy (CLAUDE.md rule 2: a result names its
+    landing and the bid that buys it). A trade at t now fills behind every trade of its own second, or block: at the
+    close of the first candle at or after t that opened within a block of it (Base 2 s); with none, nobody else traded
+    in its block, and it fills at the last close before t. A copy still buys only a coin that traded before t."""
+    write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(3.0, 2), flat(5.0, 31), flat(9.0, 32)]))])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert pair(out, 2, 30)["mean"] == pytest.approx(4.0)  # in at the candle of 0 s (1.0), out at 31 s's (5.0)
+    assert pair(out, 2, 30)["mean"] == pytest.approx(2.0)  # in behind 2 s's trades (3.0), out behind 32 s's (9.0)
+    write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])  # nobody else in its blocks
+    assert pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 30)["mean"] == pytest.approx(1.0)
     write_scored(tmp_path, [coin(B, [flat(1.0, 2), flat(2.0, 20)])])  # its first trade in the second after 2 s
     by_delay = {d["delay"]: (d["with_entry"], d["no_trade_yet"]) for d in LW.score(tmp_path, "base")["by_delay"]}
     assert by_delay == {2: (0, 1), 5: (1, 0), 12: (1, 0), 30: (1, 0)}
+
+
+def test_the_landing_is_behind_the_trades_of_the_block_and_named_in_the_report(tmp_path):
+    """Third review of 25 Nov (the reviewer's coins): on Ethereum, blocks of 12 s, a buy sent 2 s after the start was
+    priced at the launch block's close, first in the next block for 3 dollars of gas: +60.6 percent at 2/30 where a
+    copy behind that block's trades got -14.1. On Base, +46.9 against -2.1. A delay shorter than a block rounds up to
+    the next block's candle, and the report says where a copy lands, at which bid."""
+
+    def blocks(every, closes):  # a candle a block, the last close to the end of the window
+        out, prev = [], closes[0]
+        for k in range(500 // every + 1):
+            c = closes[min(k, len(closes) - 1)]
+            out.append((S + k * every, prev, max(prev, c), min(prev, c), c, 50.0))
+            prev = c
+        return out
+
+    for chain, every, closes, want in (
+        ("eth", 12, [1.0, 1.6, 1.7, 1.5, 1.4], {2: -0.1412, 5: -0.1412, 12: -0.2024}),
+        ("base", 2, [1.0, 1.5, 1.6, 1.55, 1.5], {2: -0.0209, 5: -0.0525, 12: -0.0209}),
+    ):
+        write_scored(tmp_path, [coin(A, blocks(every, closes))], chain=chain)
+        out = LW.score(tmp_path, chain, fee_pct=1.0)
+        assert {d: pair(out, d, 30)["mean"] for d in want} == pytest.approx(want, abs=1e-4), chain
+        assert out["block_secs"] == every and "behind every trade of the second (or the block)" in out["landing"]
+        assert "a plain bid, no priority" in out["landing"] and "none is scored" in out["landing"]
+    assert "rounds up to the next block's candle" in out["landing"]  # Base's blocks of 2 s
 
 
 def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):
@@ -968,7 +1000,7 @@ def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):
 
 def test_the_best_pair_is_chosen_without_its_five_best_coins(tmp_path):
     # one coin goes x101 at 10 s: alone it makes a hold to 30 s look best on the mean
-    lines = [coin(m, [flat(1.0), flat(1.1, 3), flat(x, 10), flat(1.2, 100), flat(1.1, 250)])
+    lines = [coin(m, [flat(1.0), flat(x, 10), flat(1.2, 100), flat(1.1, 250)])
              for m, x in zip((A, B, C, D, E, F), (101.0, 1.0, 1.0, 1.0, 1.0, 1.0), strict=True)]  # fmt: skip
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)

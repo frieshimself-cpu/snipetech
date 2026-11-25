@@ -103,27 +103,35 @@ SCORED_HEAD = '{"mint":"'  # how every line of a scored file begins (written com
 # how every whole line of a scored file ends: a last key written after everything else, so a line cut by a killed job
 # never ends with it (second review of 25 Nov: a cut line can end with "}", the answers holding dicts in dicts)
 SCORED_TAIL = ',"end":1}'
-# what a delay means on each chain, printed with the report (CLAUDE.md: a paper result names its landing)
+# Where a copy lands, printed with every report (CLAUDE.md rule 2: a paper result names its landing and the bid that
+# buys it). Third review of 25 Nov: every fill was the first trade of its second or block, a place the default gas
+# does not buy.
+LANDING_RULE = (
+    "Every copy buys and sells behind every trade of the second (or the block) it lands in, at the default gas: a "
+    "plain bid, no priority. A price at the top of a block would need a named bid that buys that place: none is scored."
+)
+BLOCK_SECS = {"sol": 1, "bsc": 1, "base": 2, "eth": 12}  # the second, or the block, a copy lands in
+# what a delay means on each chain
 LANDING = {
-    "sol": "Solana's slots are 0.4 s: every delay here is several slots after the launch (our own launch snipes land "
-    "a slot after the create).",
-    "bsc": "BNB Chain's blocks are under a second: every delay here is a block or more after the launch.",
-    "base": "Base's blocks are 2 s: a delay of 2 s is the block after the launch.",
-    "eth": "Ethereum's blocks are 12 s: delays of 2 and 5 s price the launch's own block, which only a bundle sent "
-    "behind the launch reaches; 12 s is the next block.",
+    "sol": "Solana: slots are 0.4 s, so a copy lands in the second it is sent, several slots after the launch (our "
+    "own launch snipes land a slot after the create).",
+    "bsc": "BNB Chain: blocks are under a second, so a copy lands in the second it is sent.",
+    "base": "Base: blocks are 2 s, so a copy's delay rounds up to the next block's candle, up to 2 s later.",
+    "eth": "Ethereum: blocks are 12 s, so a copy's delay rounds up to the next block's candle, up to 12 s later: a buy "
+    "sent 2 or 5 s after the start lands behind the trades of the first block after it, never in the launch's own.",
 }
 SCORE_READING = (
     "A copy buys D seconds after the coin's start (its open time, else its creation; a coin timed from when the watch "
-    "first saw it is scored apart, timed_from_sighting) "
-    "at the close of the last 1 s candle that opened a second or more before then (the candle that opens at that "
-    "moment closes after it), and sells H seconds later at the close of the last candle that opened a second or more "
-    "before that. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
+    "first saw it is scored apart, timed_from_sighting), if the coin traded before then, behind every trade of the "
+    "second, or the block, it lands in (block_secs: Solana and BNB Chain 1 s, Base 2 s, Ethereum 12 s): at the close "
+    "of the first 1 s candle at or after that moment if it opened within a block of it, else at the last close before "
+    "it, nobody else trading in its block; it sells H seconds later the same way. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
     "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
     "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
     "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. It fills at the candle's "
-    "close: its own price impact is not counted. A coin with no candle "
-    "that opened before D - 1 or at it is no trade at D (one with no priced candle at all is no trade at any delay: "
-    "candles.without_a_price); a candle whose close is missing or zero is "
+    "close: its own price impact is not counted. A coin with no candle that opened before D - 1 or at it is no trade "
+    "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
+    "is missing or zero is "
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
     "inside the 500 s are read. mean_without_best5 is the mean once the five best copies are "
     "taken out; the best pair is the one with the highest, or, where too few coins leave none, the highest median. "
@@ -569,7 +577,8 @@ class LaunchWatch:
                 candles = ("ok", _bars(candles[1]))
             ts = _path(candles[1], start)[0] if candles[0] == "ok" else []
             pool = None
-            if ts and stale_exit(ts, start, int(asked_at)):  # a pool emptied after the last trade leaves no candle
+            # a pool emptied after the last trade leaves no candle
+            if ts and stale_exit(ts, start, int(asked_at), BLOCK_SECS[self.chain]):
                 pool = self._ask(functools.partial(self.client.token_pool, mint), until, "pool")
                 if pool[0] in LEAVE_ROUND:
                     return
@@ -856,28 +865,37 @@ def _path(candles: Any, start: int) -> tuple[list[int], list[float], bool, int]:
     return [k[0] for k in kept], [k[1] for k in kept], lowest <= RUG_LEFT * first, bad
 
 
-def _at(ts: list[int], moment: int) -> int:
-    """The candle a trade at `moment` fills at, by its place in `ts` (oldest first): the last 1 s candle that opened
-    a second or more before the moment, so it had closed by then; -1 when there is none. The candle that opens at the
-    moment closes after it (review of 25 Nov: entries and exits filled at that candle's close)."""
-    return bisect.bisect_right(ts, moment - 1) - 1
+def _traded_before(ts: list[int], moment: int) -> bool:
+    """Whether the coin traded before `moment`: a candle that opened a second or more before it. A copy buys only a
+    coin that has traded (a candle that opens at the moment closes after it)."""
+    return bisect.bisect_right(ts, moment - 1) > 0
 
 
-def _stale(ts: list[int], end: int) -> bool:
+def _fill(ts: list[int], moment: int, block: int) -> int:
+    """The candle a trade sent at `moment` fills at, by its place in `ts` (oldest first): behind every trade of the
+    second, or the block, it lands in (BLOCK_SECS), at the close of the first candle at or after the moment when that
+    candle opened within a block of it; else nobody else traded in its block, and it fills at the last close before
+    the moment; -1 when there is none. Third review of 25 Nov: every fill was the last close before the moment, the
+    place of the first trade of the block, which the default gas does not buy."""
+    k = bisect.bisect_left(ts, moment)
+    return k if k < len(ts) and ts[k] < moment + block else k - 1
+
+
+def _stale(ts: list[int], end: int, block: int) -> bool:
     """Whether a sale at `end` is priced from the coin's last trade in its 500 s: no trade came after it, and a pool
     its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. A trade after
     the sale shows the pool was still there: a quiet stretch keeps its price. (Reviews of 25 Nov: such a sale scored at
     the last price, as a win; then only one more than 60 s after its candle was stale, and no 30 s hold ever was.)"""
-    return _at(ts, end) == len(ts) - 1
+    return _fill(ts, end, block) == len(ts) - 1
 
 
-def stale_exit(ts: list[int], start: int, fetched: int) -> bool:
+def stale_exit(ts: list[int], start: int, fetched: int, block: int) -> bool:
     """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price: at the coin's
     last trade in its 500 s (_stale). `ts`: its priced candles' times (_path); `fetched`: when its candles were read (a
-    hold not over by then is not scored). What the watch reads a coin's pool for."""
+    hold not over by then is not scored); `block`: the chain's (BLOCK_SECS). What the watch reads a coin's pool for."""
     for d, h in PAIRS:
         end = start + d + h
-        if _at(ts, start + d) >= 0 and not (fetched and fetched < end) and _stale(ts, end):
+        if _traded_before(ts, start + d) and not (fetched and fetched < end) and _stale(ts, end, block):
             return True
     return False
 
@@ -963,8 +981,9 @@ class _Pair:
 class _Score:
     """What `score` adds up, one coin at a time; only the copies' numbers are kept, never a coin's candles."""
 
-    def __init__(self, share: float, fee: float, size: float):
+    def __init__(self, share: float, fee: float, size: float, block: int = 1):
         self.share = share  # the two transactions' gas, as a share of the size
+        self.block = block  # the chain's block, in seconds: where a copy lands (_fill)
         self.kept = (1.0 - fee) ** 2  # what the pool's swap fee leaves of a copy, its buy and its sale
         self.size = size  # a pool that held less at settle could not give a stale sale its price (pool_state)
         self.pairs = {pair: _Pair() for pair in PAIRS}  # every coin a copy bought
@@ -1035,16 +1054,16 @@ class _Score:
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
         # a sale after the coin's last trade (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
-        if stale_exit(ts, start, fetched):
+        if stale_exit(ts, start, fetched, self.block):
             self.pools["coins_with_a_stale_exit"] += 1
             self.pools[pool] += 1
             rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
         for d in DELAYS:
-            i = _at(ts, start + d)
-            if i < 0:
+            if not _traded_before(ts, start + d):
                 self.no_trade[d] += not sighted
                 continue
             self.entries[d] += not sighted
+            i = _fill(ts, start + d, self.block)
             for h in HOLDS:
                 end = start + d + h
                 if (d, h) not in self.pairs:
@@ -1053,7 +1072,7 @@ class _Score:
                     for pairs in tables:
                         pairs[(d, h)].unsettled += 1
                     continue
-                stale, ratio = _stale(ts, end), closes[_at(ts, end)] / closes[i]
+                stale, ratio = _stale(ts, end, self.block), closes[_fill(ts, end, self.block)] / closes[i]
                 # a stale sale keeps its price only when the pool held, at settle, what the copy was worth at that
                 # price: its size x exit / entry (second review of 25 Nov: 120 dollars sold a copy worth 300)
                 lost = stale and (liquidity is None or liquidity < self.size * ratio)
@@ -1174,7 +1193,7 @@ def score(
     if not path.exists():
         return {"ok": False, "chain": chain, "error": f"no launch on {chain} has been read yet: {path} does not exist "
                 f"(snipetech gmgn launch-watch --chain {chain} writes it)"}  # fmt: skip
-    tally, done = _Score(2.0 * gas / size, fee / 100.0, size), set()
+    tally, done = _Score(2.0 * gas / size, fee / 100.0, size, BLOCK_SECS[chain]), set()
     with path.open(encoding="utf-8") as fh:
         for line in fh:
             rec = _scored_line(line)
@@ -1193,7 +1212,8 @@ def score(
         "gas_usd": gas,
         "gas_share": round(2.0 * gas / size, 6),
         "fee_pct": fee,  # the pool's swap fee on each leg
-        "landing": LANDING[chain],
+        "landing": f"{LANDING_RULE} {LANDING[chain]}",
+        "block_secs": BLOCK_SECS[chain],
         "reading": SCORE_READING,
         "caveats": list(CAVEATS),
         **tally.report(),
