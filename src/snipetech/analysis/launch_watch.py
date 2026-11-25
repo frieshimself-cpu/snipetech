@@ -517,7 +517,7 @@ class LaunchWatch:
 
     def settle(self, until: float) -> None:
         """Every waiting coin past its settle time, in the order recorded: its candles and its security, read once and
-        written, and its pool when a copy would sell it at a stale price (stale_exit): asked once, written as it came.
+        written, and its pool when a copy would sell it at a stale price (stale_exit), read as the others are.
         It stops at `until` (the next look at new coins, or the job's end), and when a rate limit holds past it: the
         coins not reached wait for the next round, which counts as no failed round of theirs. A read that fails waits
         for a later round as `_wait` says."""
@@ -550,6 +550,8 @@ class LaunchWatch:
                 pool = self._ask(functools.partial(self.client.token_pool, mint), until, "pool")
                 if pool[0] in LEAVE_ROUND:
                     return
+                if pool[0] == "later" and self._wait(key, "pool"):  # as the other reads (third review of 25 Nov)
+                    continue
             self._write(row, start, asked_at, candles, sec, pool, ts[-1] if ts else None)
             del self.pending[key]
             self.tries.pop(key, None)

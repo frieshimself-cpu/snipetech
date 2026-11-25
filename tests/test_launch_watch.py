@@ -287,12 +287,51 @@ def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_
     }
     seen: list = []
     out = watch(tmp_path, FakeTime(T), routes, seen, minutes=3)
-    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C, E]  # once each
+    # once each; C's, refused with a 404, asked again in two later rounds as every read is (third review of 25 Nov)
+    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C, E, C, C]
     by = {line["mint"]: line for line in scored(tmp_path)}
     assert (by[A]["last_candle_ts"], by[A]["pool"]) == (s + 10, gone)
     assert (by[B]["last_candle_ts"], "pool" in by[B], "pool" in by[D]) == (s + 499, False, False)
-    assert by[C]["last_candle_ts"] == s and "HTTP 404" in by[C]["pool"]["error"]  # written as it came, asked once
+    assert by[C]["last_candle_ts"] == s and "HTTP 404" in by[C]["pool"]["error"] and by[C]["fetched_at"] == T + 120
     assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (3, 1, 5)
+
+
+def test_a_pool_read_that_fails_on_the_way_is_asked_again_a_round_later(tmp_path):
+    """Third review of 25 Nov: a pool read that failed on the way (a 503 the client's three tries all got) was written
+    at once as the coin's pool, and the score lost every stale sale of the coin where its pool held money."""
+    stops = [(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0), (T - 990, 3.0, 3.0, 3.0, 3.0, 5.0)]  # its last trade 10 s in
+    asks: list = []
+
+    def pool(req):
+        asks.append(req)
+        return httpx.Response(503, text="upstream unavailable") if len(asks) <= 3 else answer(HEALTHY_POOL)
+
+    routes = {
+        "/v1/trenches": polls([trench(A, T - 1000)]),
+        "/v1/market/token_kline": kline({A: stops}),
+        "/v1/token/security": security({}),
+        "/v1/token/pool_info": pool,
+    }
+    out = watch(tmp_path, FakeTime(T), routes, minutes=3)
+    (a,) = scored(tmp_path)
+    assert (a["pool"], a["fetched_at"], out["refused"]["pool"]) == (HEALTHY_POOL, T + 60, 0)
+
+
+@pytest.mark.parametrize("read", ["/v1/market/token_kline", "/v1/token/pool_info"])
+def test_a_read_rate_limited_past_the_jobs_end_leaves_its_coin_waiting(tmp_path, read):
+    """A rate limit on the candles or the pool read that holds past the job's end writes nothing: the coin waits for
+    the next job (the third review of 25 Nov found both returns pinned by no test)."""
+    stops = [(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0), (T - 990, 3.0, 3.0, 3.0, 3.0, 5.0)]  # its last trade 10 s in
+    limit = httpx.Response(429, json={"code": 429, "error": "RATE_LIMIT_BANNED", "message": "x", "reset_at": T + 5000})
+    routes = {
+        "/v1/trenches": polls([trench(A, T - 1000)]),
+        "/v1/market/token_kline": kline({A: stops}),
+        "/v1/token/security": security({}),
+        read: lambda req: limit,
+    }
+    out = watch(tmp_path, FakeTime(T), routes, minutes=2)
+    assert (scored(tmp_path), out["waiting"], out["refused"]) == ([], 1, dict.fromkeys(out["refused"], 0))
+    assert out["rate_limit_left"] >= 1
 
 
 def test_the_window_starts_at_the_open_else_the_creation_else_the_first_sighting(tmp_path):
