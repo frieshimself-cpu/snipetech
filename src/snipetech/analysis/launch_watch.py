@@ -125,7 +125,8 @@ SCORE_READING = (
     "first saw it is scored apart, timed_from_sighting), if the coin traded before then, behind every trade of the "
     "second, or the block, it lands in (block_secs: Solana and BNB Chain 1 s, Base 2 s, Ethereum 12 s): at the close "
     "of the first 1 s candle at or after that moment if it opened within a block of it, else at the last close before "
-    "it, nobody else trading in its block; it sells H seconds later the same way. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
+    "it, nobody else trading in its block; it sells H seconds later the same way. Its return is exit / entry x "
+    "(1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
     "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
     "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
     "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. It fills at the candle's "
@@ -139,8 +140,11 @@ SCORE_READING = (
     "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
     "is not scored (unsettled). A sale priced from the coin's last trade in its 500 s (no trade came after it) is "
     "stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. "
-    "A trade after the sale shows the pool was still there, so a quiet stretch keeps its price. The watch reads a "
-    "coin's pool once, when it settles, if a copy would sell it stale; a stale sale is lost (-1 and its gas) unless "
+    "The next trade after the sale shows the pool was still there when it closes within ten times the sale's price "
+    "either way, or moved at least what the copy was worth then in dollars (its candle's dollars): a quiet stretch "
+    "keeps its price, a trade of cents into an emptied pool far from it does not, and the sale is stale. The watch "
+    "reads a coin's pool once, when it settles, if a copy of any size would sell it stale; a stale sale is lost (-1 "
+    "and its gas) unless "
     "that read showed liquidity of at least what the copy was worth at that price (its size x exit / entry). pools "
     "counts those coins by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
     "unknown (not read, refused or without a liquidity). stale_exits says how many of a row's sales were stale; "
@@ -575,10 +579,10 @@ class LaunchWatch:
                 continue
             if candles[0] == "ok":
                 candles = ("ok", _bars(candles[1]))
-            ts = _path(candles[1], start)[0] if candles[0] == "ok" else []
+            ts, closes, dollars, _, _ = _path(candles[1] if candles[0] == "ok" else [], start)
             pool = None
-            # a pool emptied after the last trade leaves no candle
-            if ts and stale_exit(ts, start, int(asked_at), BLOCK_SECS[self.chain]):
+            # a pool emptied after the last trade leaves no candle, or a trade into it far from the last price
+            if ts and stale_exit(ts, closes, dollars, start, int(asked_at), BLOCK_SECS[self.chain]):
                 pool = self._ask(functools.partial(self.client.token_pool, mint), until, "pool")
                 if pool[0] in LEAVE_ROUND:
                     return
@@ -839,11 +843,11 @@ def read_security(sec: Any, unit: str = "value") -> dict:
     }
 
 
-def _path(candles: Any, start: int) -> tuple[list[int], list[float], bool, int]:
-    """A coin's candles inside its 500 s whose close can be divided by, oldest first: their times and their closes;
-    whether the coin rugged (a price of a tenth of its first candle's open or less); and how many candles were left
-    out for a close that is missing or zero."""
-    kept: list[tuple[int, float, float | None, float | None]] = []
+def _path(candles: Any, start: int) -> tuple[list[int], list[float], list[float], bool, int]:
+    """A coin's candles inside its 500 s whose close can be divided by, oldest first: their times, their closes and
+    the dollars they moved (0 when not given); whether the coin rugged (a price of a tenth of its first candle's open
+    or less); and how many candles were left out for a close that is missing or zero."""
+    kept: list[tuple[int, float, float | None, float | None, float]] = []
     bad = 0
     for c in candles if isinstance(candles, list) else []:
         if not isinstance(c, list) or len(c) < 5:
@@ -856,13 +860,13 @@ def _path(candles: Any, start: int) -> tuple[list[int], list[float], bool, int]:
         if close is None:
             bad += 1
             continue
-        kept.append((ts, close, _price(c[1]), _price(c[3])))
+        kept.append((ts, close, _price(c[1]), _price(c[3]), (_amount(c[5]) if len(c) > 5 else None) or 0.0))
     if not kept:
-        return [], [], False, bad
+        return [], [], [], False, bad
     kept.sort(key=lambda k: k[0])
     first = kept[0][2] or kept[0][1]  # its first candle's open, else that candle's close
-    lowest = min(min(close, low or close) for _, close, _, low in kept)
-    return [k[0] for k in kept], [k[1] for k in kept], lowest <= RUG_LEFT * first, bad
+    lowest = min(min(close, low or close) for _, close, _, low, _ in kept)
+    return [k[0] for k in kept], [k[1] for k in kept], [k[4] for k in kept], lowest <= RUG_LEFT * first, bad
 
 
 def _traded_before(ts: list[int], moment: int) -> bool:
@@ -881,21 +885,36 @@ def _fill(ts: list[int], moment: int, block: int) -> int:
     return k if k < len(ts) and ts[k] < moment + block else k - 1
 
 
-def _stale(ts: list[int], end: int, block: int) -> bool:
-    """Whether a sale at `end` is priced from the coin's last trade in its 500 s: no trade came after it, and a pool
-    its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. A trade after
-    the sale shows the pool was still there: a quiet stretch keeps its price. (Reviews of 25 Nov: such a sale scored at
-    the last price, as a win; then only one more than 60 s after its candle was stale, and no 30 s hold ever was.)"""
-    return _fill(ts, end, block) == len(ts) - 1
+def _stale(ts: list[int], closes: list[float], dollars: list[float], end: int, block: int, worth: float | None) -> bool:
+    """Whether a sale at `end` gets a price nobody may have paid: no trade came after the one it fills at (a pool its
+    creator emptied leaves no trade and no candle), or the next trade shows no pool. That trade shows the pool was
+    still there when it closes within ten times the sale's price either way (RUG_LEFT), or moved at least the copy's
+    `worth` in dollars (its candle's dollars): a quiet stretch keeps its price. `worth` None: the dollars show nothing,
+    as in the watch, which does not know a copy's size. (Reviews of 25 Nov: such a sale scored at the last price, as a
+    win; then only one more than 60 s after its candle was stale, and no 30 s hold ever was; then a trade of two cents
+    into an emptied pool, at a hundred-thousandth of the price, made every sale before it fresh.)"""
+    j = _fill(ts, end, block)
+    if j == len(ts) - 1:
+        return True
+    near = RUG_LEFT * closes[j] < closes[j + 1] < closes[j] / RUG_LEFT
+    return not near and (worth is None or dollars[j + 1] < worth)
 
 
-def stale_exit(ts: list[int], start: int, fetched: int, block: int) -> bool:
-    """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price: at the coin's
-    last trade in its 500 s (_stale). `ts`: its priced candles' times (_path); `fetched`: when its candles were read (a
-    hold not over by then is not scored); `block`: the chain's (BLOCK_SECS). What the watch reads a coin's pool for."""
+def stale_exit(
+    ts: list[int], closes: list[float], dollars: list[float], start: int, fetched: int, block: int,
+    size: float | None = None,
+) -> bool:  # fmt: skip
+    """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price (_stale).
+    `ts`, `closes`, `dollars`: its priced candles (_path); `fetched`: when its candles were read (a hold not over by
+    then is not scored); `block`: the chain's (BLOCK_SECS); `size`: a copy's in dollars, worth its size x exit / entry
+    at the sale. The watch, which reads a coin's pool for it, knows no size: it reads the pool of every coin a copy of
+    any size could sell stale."""
     for d, h in PAIRS:
         end = start + d + h
-        if _traded_before(ts, start + d) and not (fetched and fetched < end) and _stale(ts, end, block):
+        if not _traded_before(ts, start + d) or (fetched and fetched < end):
+            continue
+        worth = None if size is None else size * closes[_fill(ts, end, block)] / closes[_fill(ts, start + d, block)]
+        if _stale(ts, closes, dollars, end, block, worth):
             return True
     return False
 
@@ -1046,7 +1065,7 @@ class _Score:
             self.n["candles_refused"] += 1
             return
         start = _int(rec.get("start"))
-        ts, closes, rug, bad = _path(rec.get("candles"), start)
+        ts, closes, dollars, rug, bad = _path(rec.get("candles"), start)
         self.n["bad_prices"] += bad
         self.n["without_a_price"] += not ts
         plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
@@ -1054,7 +1073,7 @@ class _Score:
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
         # a sale after the coin's last trade (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
-        if stale_exit(ts, start, fetched, self.block):
+        if stale_exit(ts, closes, dollars, start, fetched, self.block, self.size):
             self.pools["coins_with_a_stale_exit"] += 1
             self.pools[pool] += 1
             rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
@@ -1072,7 +1091,8 @@ class _Score:
                     for pairs in tables:
                         pairs[(d, h)].unsettled += 1
                     continue
-                stale, ratio = _stale(ts, end, self.block), closes[_fill(ts, end, self.block)] / closes[i]
+                ratio = closes[_fill(ts, end, self.block)] / closes[i]
+                stale = _stale(ts, closes, dollars, end, self.block, self.size * ratio)
                 # a stale sale keeps its price only when the pool held, at settle, what the copy was worth at that
                 # price: its size x exit / entry (second review of 25 Nov: 120 dollars sold a copy worth 300)
                 lost = stale and (liquidity is None or liquidity < self.size * ratio)

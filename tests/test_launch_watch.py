@@ -267,8 +267,10 @@ def test_a_settled_launch_gets_its_candles_and_security_once(tmp_path):
 def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_path):
     """Reviews of 25 Nov: a sale after a coin's last trade is priced at that trade, and a pool its creator emptied
     leaves no trade and no candle. A coin that a copy would sell at its last trade in its 500 s has its pool read once,
-    when it settles; one that traded again after any sale keeps its price, a later trade showing its pool was still
-    there. Every line keeps the coin's last candle time."""
+    when it settles; one that traded again near the price of every sale keeps its price, a later trade showing its pool
+    was still there. A trade ten times or more away from a sale's price may be one into an emptied pool (third review
+    of 25 Nov): its coin's pool is read too (F), whatever dollars it moved, the copy's worth being the score's to
+    know. Every line keeps the coin's last candle time."""
     s = T - 1000
     bars = {
         A: [(s, 1.0, 1.0, 1.0, 1.0, 5.0), (s + 10, 3.0, 3.0, 3.0, 3.0, 5.0)],  # its last trade 10 s in
@@ -277,10 +279,13 @@ def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_
         D: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (0, 10, 300, 499)],  # quiet from 10 to 300 s, then trading
         # its last trade at 470 s: the sales at 482 to 492 s are 12 to 22 s after it, and priced from it
         E: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (*range(0, 450, 40), 470)],
+        # a trade at 300 s after its sales at 3.0: two cents at a hundred-thousandth of it, into an emptied pool
+        F: [(s, 1.0, 1.0, 1.0, 1.0, 5.0), (s + 10, 3.0, 3.0, 3.0, 3.0, 5.0), (s + 300, 3.0, 3.0, 1e-5, 1e-5, 0.02)]
+        + [(s + 499, 1e-5, 1e-5, 1e-5, 1e-5, 0.02)],
     }
     gone = dict(HEALTHY_POOL, liquidity="0.02", base_reserve="0", quote_reserve="0")
     routes = {
-        "/v1/trenches": polls([trench(m, s) for m in (A, B, C, D, E)]),
+        "/v1/trenches": polls([trench(m, s) for m in (A, B, C, D, E, F)]),
         "/v1/market/token_kline": kline(bars),
         "/v1/token/security": security({}),
         "/v1/token/pool_info": pools({A: gone, C: refused(404, "NOT_FOUND", "no pool")}),
@@ -288,12 +293,12 @@ def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_
     seen: list = []
     out = watch(tmp_path, FakeTime(T), routes, seen, minutes=3)
     # once each; C's, refused with a 404, asked again in two later rounds as every read is (third review of 25 Nov)
-    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C, E, C, C]
+    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C, E, F, C, C]
     by = {line["mint"]: line for line in scored(tmp_path)}
     assert (by[A]["last_candle_ts"], by[A]["pool"]) == (s + 10, gone)
     assert (by[B]["last_candle_ts"], "pool" in by[B], "pool" in by[D]) == (s + 499, False, False)
     assert by[C]["last_candle_ts"] == s and "HTTP 404" in by[C]["pool"]["error"] and by[C]["fetched_at"] == T + 120
-    assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (3, 1, 5)
+    assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (4, 1, 6)
 
 
 def test_a_pool_read_that_fails_on_the_way_is_asked_again_a_round_later(tmp_path):
@@ -999,8 +1004,9 @@ def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):
 
 
 def test_the_best_pair_is_chosen_without_its_five_best_coins(tmp_path):
-    # one coin goes x101 at 10 s: alone it makes a hold to 30 s look best on the mean
-    lines = [coin(m, [flat(1.0), flat(x, 10), flat(1.2, 100), flat(1.1, 250)])
+    # one coin goes x101 at 10 s: alone it makes a hold to 30 s look best on the mean. The sale of 50,000 dollars that
+    # takes it back to 1.2 at 100 s shows its pool held a copy's worth until then (a trade of cents would show nothing)
+    lines = [coin(m, [flat(1.0), flat(x, 10), (S + 100, 1.2, 1.2, 1.2, 1.2, 50_000.0), flat(1.1, 250)])
              for m, x in zip((A, B, C, D, E, F), (101.0, 1.0, 1.0, 1.0, 1.0, 1.0), strict=True)]  # fmt: skip
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
@@ -1107,6 +1113,27 @@ def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_
     write_scored(tmp_path, [coin(m, pumped, pool={"liquidity": "0"}) for m in MANY[:6]])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert [pair(out, d, 30)["mean"] for d in LW.DELAYS] == [-1.0] * 4 and pair(out, 2, 30)["rug_share"] == 1.0
+
+
+def test_a_trade_into_an_emptied_pool_shows_no_pool(tmp_path):
+    """Third review of 25 Nov: a later trade made every sale before it fresh, even a two-cent sale into an emptied pool
+    at a hundred-thousandth of the price, and a one-cent spike in it read +299,900 percent. A later trade shows the pool
+    only when it closes within ten times the sale's price either way, or moves at least the copy's worth in dollars
+    (the creator's sale of 40,000 dollars into it: the pool was there until then)."""
+
+    def score_of(candles, liquidity):
+        write_scored(tmp_path, [coin(A, candles, pool={"liquidity": liquidity})])
+        out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+        assert "within ten times the sale's price" in out["reading"] and "moved at least" in out["reading"]
+        return [pair(out, 2, h)["mean"] for h in (30, 120, 300)]
+
+    pumped = [flat(1.0), flat(3.0, 10)]
+    pulled = [*pumped, (S + 300, 3.0, 3.0, 1e-5, 1e-5, 0.02)]  # two cents at a hundred-thousandth, at 300 s
+    spiked = [*pumped, (S + 120, 3.0, 3000.0, 3.0, 3000.0, 0.01), (S + 300, 3000.0, 3000.0, 1e-5, 1e-5, 0.02)]
+    sold_off = [*pumped, (S + 300, 3.0, 3.0, 1e-3, 1e-3, 40_000.0)]  # the creator's sale: 40,000 dollars
+    assert score_of(pulled, "0.01") == [-1.0, -1.0, -1.0]
+    assert score_of(spiked, "0.01") == [-1.0, -1.0, -1.0]
+    assert score_of(sold_off, "5") == [2.0, 2.0, pytest.approx(-0.999)]  # sold before it; the last sale at 1e-3
 
 
 def test_a_stale_sale_keeps_its_price_only_when_the_pool_holds_what_the_copy_is_worth_then(tmp_path):
