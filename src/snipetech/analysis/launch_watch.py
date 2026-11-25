@@ -191,8 +191,8 @@ def _heal(path: Path) -> None:
 
 
 def _head_mint(line: str) -> str | None:
-    """The coin of a scored line, read off its head (a line holds 500 candles: parsing every one at a restart would
-    read them all), else from the whole line."""
+    """The coin of a whole scored line, read off its head (a line holds 500 candles: parsing every one at a restart
+    would read them all), else from the whole line."""
     if line.startswith(SCORED_HEAD):
         end = line.find('"', len(SCORED_HEAD))
         if end > len(SCORED_HEAD):
@@ -210,19 +210,18 @@ def _whole_mint(line: str) -> str | None:
 
 
 def _done(path: Path) -> set[str]:
-    """The coins a scored file holds. A line cut short can only be the last (a job appends one line at a time, and the
-    next one starts on a line of its own): that one is read whole, and a coin whose line was cut is read again."""
+    """The coins a scored file holds. A line's head is trusted only when the line is whole: it ends with "}" before its
+    newline. Any other line is read whole, so a line cut by a killed job names no coin and its coin is read again.
+    The cut line is not always the last: the next job heals the file and writes on (review of 25 Nov: at a second
+    restart a cut line's head counted its coin as done, and the coin was never read)."""
     done: set[str] = set()
     if not path.exists():
         return done
-    last = None
     with path.open(encoding="utf-8") as fh:
         for line in fh:
-            if last is not None and (mint := _head_mint(last)):
+            mint = _head_mint(line) if line.rstrip().endswith("}") else _whole_mint(line)
+            if mint:
                 done.add(_key(mint))
-            last = line
-    if last is not None and (mint := _whole_mint(last)):
-        done.add(_key(mint))
     return done
 
 

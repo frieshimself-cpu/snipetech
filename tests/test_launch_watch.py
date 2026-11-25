@@ -334,31 +334,44 @@ def test_one_watch_at_a_time_on_a_chain(tmp_path):
 def test_a_line_cut_short_by_a_killed_job_is_written_again_on_a_line_of_its_own(tmp_path):
     folder = tmp_path / "history" / "gmgn_launches"
     folder.mkdir(parents=True)
-    row_a = {
-        "mint": A,
-        "platform": "clanker",
-        "created_ts": T - 1000,
-        "open_ts": 0,
-        "first_seen": T - 990,
-        "chain": "base",
-    }
-    (folder / "base.jsonl").write_text(json.dumps(row_a) + "\n" + '{"mint":"' + B)  # killed while writing B's line
-    (folder / "base_scored.jsonl").write_text('{"mint":"' + A + '","chain":"base","candles":[[1')  # and A's here
+
+    def row(mint):
+        return {"mint": mint, "platform": "clanker", "created_ts": T - 1000, "open_ts": 0, "first_seen": T - 990,
+                "chain": "base"}  # fmt: skip
+
+    # killed while writing B's line, and A's line here
+    (folder / "base.jsonl").write_text(json.dumps(row(A)) + "\n" + json.dumps(row(C)) + "\n" + '{"mint":"' + B)
+    (folder / "base_scored.jsonl").write_text('{"mint":"' + A + '","chain":"base","candles":[[1')
+    down = {A}  # A's candles fail on the way while the next job runs
+
+    def candles(req):
+        if req.url.params["address"] in down:
+            return httpx.Response(503, text="upstream unavailable")
+        return answer({"list": [gmgn_candle(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]})
+
     routes = {
         "/v1/trenches": polls([trench(B, T)]),
-        "/v1/market/token_kline": kline({A: [(T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0)]}),
+        "/v1/market/token_kline": candles,
         "/v1/token/security": security({}),
     }
     out = watch(tmp_path, FakeTime(T), routes, minutes=1)
-    assert out["resumed"] == {"seen": 1, "waiting": 1}  # A, its candles' line cut; B's own line was cut too
+    assert out["resumed"] == {"seen": 2, "waiting": 2}  # A, its line cut, and C; B's own line was cut too
     seen_lines = (folder / "base.jsonl").read_text().splitlines()
-    assert len(seen_lines) == 3 and json.loads(seen_lines[2])["mint"] == B  # B again, not glued to the cut line
+    assert len(seen_lines) == 4 and json.loads(seen_lines[3])["mint"] == B  # B again, not glued to the cut line
     scored_lines = (folder / "base_scored.jsonl").read_text().splitlines()
-    assert len(scored_lines) == 2 and json.loads(scored_lines[1])["candles"] == [[T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0]]
+    assert len(scored_lines) == 2 and json.loads(scored_lines[1])["mint"] == C  # C on a line of its own; A waits
+    # Review of 25 Nov: at the second restart the cut line is no longer the last, and its head said A was done
+    down.clear()
+    seen: list = []
+    out = watch(tmp_path, FakeTime(T + 200), routes, seen, minutes=0)
+    assert out["resumed"] == {"seen": 3, "waiting": 2}  # A, still, and B (900 s past its start only at T + 900)
+    assert [r.url.params["address"] for r in asked(seen, "/v1/market/token_kline")] == [A]
+    scored_lines = (folder / "base_scored.jsonl").read_text().splitlines()
+    assert len(scored_lines) == 3 and json.loads(scored_lines[2])["candles"] == [[T - 1000, 1.0, 1.0, 1.0, 1.0, 5.0]]
     assert LW.score(tmp_path, "base")["unreadable_lines"] == 1
-    seen: list = []  # the next job reads A as done and B as waiting, and asks for nothing yet
-    out = watch(tmp_path, FakeTime(T + 100), routes, seen, minutes=0)
-    assert out["resumed"] == {"seen": 2, "waiting": 1} and seen == []
+    seen = []  # the next job reads A and C as done and B as waiting, and asks for nothing yet
+    out = watch(tmp_path, FakeTime(T + 300), routes, seen, minutes=0)
+    assert out["resumed"] == {"seen": 3, "waiting": 1} and seen == []
 
 
 # -- the score: what an early buyer would have made ---------------------------------------------------------------------
