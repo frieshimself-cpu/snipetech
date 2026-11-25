@@ -19,8 +19,10 @@ coins is due, and the one pass after the end starts no read more than a minute a
 under way then finishes, a minute more at most when GMGN does not answer); a coin left by then, or held by a rate limit
 past it, waits for a later round or the next job. A read that fails on the way (no answer, a
 server error) or that GMGN refuses with a 404 or a 403 (a coin it has not read yet; a request that left over the wrong
-route) is tried again a round later, three rounds at most, then written as refused. A key GMGN refuses ends the
-job and writes nothing more: no read could work. A restarted job reads both files and goes on where the last one
+route) is tried again a round later, three rounds at most, then written as refused. A refusal of the key or of this
+machine leaves the round, and the next round asks again; the same refusal of one kind of read in five rounds in a row,
+none answered in between, ends the job and writes nothing more: no read could work. A restarted job reads both files
+and goes on where the last one
 stopped; one job at a time watches a chain. It keeps the coins it has seen and the coins waiting for their candles,
 nothing else. Like every GMGN call it only reads.
 
@@ -74,10 +76,16 @@ RATE_WAIT_MAX = 900.0  # the longest single wait
 RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
 FINAL_SLACK_SECS = 60.0  # the last reads after a watch's minutes: none starts later than this after its end
 STATUS_SECS = 900.0  # a line in the job's log this often
-# GMGN's refusals of the key or of this machine: waiting does not end them, and no read can work while they hold
+# GMGN's refusals of the key or of this machine: no read can work while one holds, so it leaves the round, like a rate
+# limit with no end named, and the next round asks again; some pass (a request slowed past GMGN's 5 s window, one that
+# left over the wrong route: third review of 25 Nov, one of them ended a day-long watch for good)
 STOP_ERRORS = frozenset(
     {"AUTH_KEY_INVALID", "AUTH_IP_BLOCKED", "AUTH_KEY_BLOCKED", "AUTH_TIMESTAMP_EXPIRED", "AUTH_TIMESTAMP_SKEW"}
 )
+STOP_ROUNDS = 5  # rounds in a row one kind of read meets the same such refusal, none answered between, before the end
+# what leaves the round, its coins waiting for the next one: a rate limit past the read's time, or the time over
+# ("unasked"), and a refusal of the key or of this machine ("halted")
+LEAVE_ROUND = ("unasked", "halted")
 CANNOT_SELL = ("is_honeypot", "honeypot", "can_not_sell")  # a yes in one of them: the coin cannot be sold
 TAXES = ("buy_tax", "sell_tax")
 FLAGS = (*CANNOT_SELL, "can_sell")
@@ -360,9 +368,16 @@ class LaunchWatch:
         self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
         self.resumed = {"seen": 0, "waiting": 0}
         self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "bad_rows", "scored", "pools_read",
-                                     "rate_limit_waits", "rate_limit_left", "read_errors", "tried_again_later"),
-                                    0)  # fmt: skip
+                                     "rate_limit_waits", "rate_limit_left", "read_errors", "tried_again_later",
+                                     "stop_refusals"), 0)  # fmt: skip
         self.refused = {"poll": 0, "candles": 0, "security": 0, "pool": 0}
+        self.round = 0  # the round under way: a look at new coins and the reads after it (the last pass is one too)
+        self.halted = False  # a refusal of the key or of this machine came in this round: its other reads wait
+        # each kind of read's run of rounds that met the same refusal of the key or of this machine: (its code, rounds
+        # in a row, the last round counted); an answer of its kind ends the run
+        self.streaks: dict[str, tuple[str, int, int]] = {}
+        self.answered_any = False  # GMGN answered a read of this job (anything but a refusal of the key)
+        self.last_refusal = ""
 
     def resume(self) -> None:
         """What the jobs before wrote: every coin seen, and the ones still waiting for their candles."""
@@ -384,26 +399,29 @@ class LaunchWatch:
                         self.pending[_key(mint)] = row
         self.resumed = {"seen": len(self.seen), "waiting": len(self.pending)}
 
-    def _ask(self, read: Callable[[], Any], until: float) -> tuple[str, Any]:
-        """One read: ("ok", the answer), ("refused", GMGN's words), ("later", what failed on the way) or ("unasked",
-        GMGN's words): a rate limit that holds past `until`, the time this read has (the next look at new coins, or the
-        job's end). A rate limit is waited out (until the time GMGN names, and a second) only when it ends before
-        `until`; the read is not asked again while it holds, since every ask makes it longer. A key GMGN refuses raises
-        WatchStopped. A read that fails in any other way (the client cannot convert an answer: GMGN's 1e999 is
-        infinity) is "later" too, counted in read_errors: tried a round later, three rounds at most, never the job's
-        end (second review of 25 Nov). A read whose time is already over when it comes is not started ("unasked":
-        third review of 25 Nov, a coin's later reads started past the last pass's slack)."""
+    def _ask(self, read: Callable[[], Any], until: float, kind: str) -> tuple[str, Any]:
+        """One read of `kind` (poll, candles, security, pool): ("ok", the answer), ("refused", GMGN's words), ("later",
+        what failed on the way), ("unasked", GMGN's words): a rate limit that holds past `until`, the time this read has
+        (the next look at new coins, or the job's end), or ("halted", GMGN's words): a refusal of the key or of this
+        machine, which leaves the round (`_refused_key`). A rate limit is waited out (until the time GMGN names, and a
+        second) only when it ends before `until`; the read is not asked again while it holds, since every ask makes it
+        longer. A read that fails in any other way (the client cannot convert an answer: GMGN's 1e999 is infinity) is
+        "later" too, counted in read_errors: tried a round later, three rounds at most, never the job's end (second
+        review of 25 Nov). A read whose time is already over when it comes is not started ("unasked": third review of
+        25 Nov, a coin's later reads started past the last pass's slack)."""
         if self.clock() >= until:
             return "unasked", "the time this read had was over"
         waits = 0
         while True:
             try:
-                return "ok", read()
+                got = read()
             except GmgnError as exc:
                 if exc.status == 401 or exc.error in STOP_ERRORS:
-                    raise WatchStopped(str(exc)) from None
+                    return self._refused_key(kind, exc)
                 if exc.status != 429:
                     later = exc.status is None or exc.status >= 500 or exc.status in LATER_STATUSES
+                    if exc.status is not None and exc.status < 500:  # GMGN answered, with a refusal of its own
+                        self._answered(kind)
                     return ("later" if later else "refused"), str(exc)
                 if waits >= RATE_WAITS:
                     return "later", str(exc)
@@ -420,9 +438,37 @@ class LaunchWatch:
                 self.sleep(wait)
             except Exception as exc:  # noqa: BLE001 - any other failure of one read is that read's, never the job's
                 self.counts["read_errors"] += 1
+                self._answered(kind)  # GMGN answered; the client could not read the answer
                 said = f"{type(exc).__name__}: {exc}"
                 self.log(f"gmgn launch-watch {self.chain}: a read failed, tried again later: {said}")
                 return "later", said
+            else:
+                self._answered(kind)
+                return "ok", got
+
+    def _answered(self, kind: str) -> None:
+        """GMGN answered a read of `kind` (anything but a refusal of the key or of this machine): that kind's run of
+        such refusals ends."""
+        self.answered_any = True
+        self.streaks.pop(kind, None)
+
+    def _refused_key(self, kind: str, exc: GmgnError) -> tuple[str, str]:
+        """A refusal of the key or of this machine (STOP_ERRORS, or any 401): this round's reads wait ("halted") and the
+        next round asks again, as after a rate limit with no end named. The job ends (WatchStopped) once one kind of
+        read has met the same refusal in STOP_ROUNDS rounds in a row with none of its kind answered in between; a
+        refused key does so in five rounds, a passing refusal never (third review of 25 Nov)."""
+        code = exc.error or f"HTTP {exc.status}"
+        self.counts["stop_refusals"] += 1
+        self.last_refusal = str(exc)
+        was = self.streaks.get(kind)
+        rounds = was[1] + (was[2] != self.round) if was and was[0] == code else 1
+        self.streaks[kind] = (code, rounds, self.round)
+        if rounds >= STOP_ROUNDS:
+            raise WatchStopped(f"{rounds} rounds in a row, no {kind} read answered in between: {exc}")
+        self.halted = True
+        self.log(f"gmgn launch-watch {self.chain}: GMGN refused the key or this machine ({code}, {rounds} round"
+                 f"{'s' if rounds > 1 else ''} in a row): this round's reads wait for the next")  # fmt: skip
+        return "halted", str(exc)
 
     def poll(self, first: bool, until: float) -> None:
         """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down,
@@ -433,8 +479,9 @@ class LaunchWatch:
                 self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT, raw=True
             ),
             until,
+            "poll",
         )
-        if kind == "unasked":
+        if kind in LEAVE_ROUND:
             return
         self.counts["polls"] += 1
         if kind != "ok":
@@ -474,15 +521,17 @@ class LaunchWatch:
             last_round = self.tries.get(key, 0) + 1 >= LATER_ROUNDS
             mint = row["mint"]
             candles = self._ask(
-                functools.partial(self.client.candles, mint, "1s", start=start, end=start + WINDOW_SECS), until
+                functools.partial(self.client.candles, mint, "1s", start=start, end=start + WINDOW_SECS),
+                until,
+                "candles",
             )
-            if candles[0] == "unasked":
+            if candles[0] in LEAVE_ROUND:
                 return
             if candles[0] == "later" and not last_round:
                 self._later(key)
                 continue
-            sec = self._ask(functools.partial(self.client.token_security, mint), until)
-            if sec[0] == "unasked":
+            sec = self._ask(functools.partial(self.client.token_security, mint), until, "security")
+            if sec[0] in LEAVE_ROUND:
                 return
             if sec[0] == "later" and not last_round:
                 self._later(key)
@@ -492,8 +541,8 @@ class LaunchWatch:
             ts = _path(candles[1], start)[0] if candles[0] == "ok" else []
             pool = None
             if ts and stale_exit(ts, start, int(asked_at)):  # a pool emptied after the last trade leaves no candle
-                pool = self._ask(functools.partial(self.client.token_pool, mint), until)
-                if pool[0] == "unasked":
+                pool = self._ask(functools.partial(self.client.token_pool, mint), until, "pool")
+                if pool[0] in LEAVE_ROUND:
                     return
             self._write(row, start, asked_at, candles, sec, pool, ts[-1] if ts else None)
             del self.pending[key]
@@ -539,7 +588,9 @@ class LaunchWatch:
         """Watch for `minutes` (0: only read what has settled), then read in one pass what has settled by the end. The
         minutes are the job's end (review of 25 Nov: rate-limit waits and the last reads ran past them): each round's
         reads stop when the next look is due, no wait runs past the end, and the last pass starts no read later than
-        FINAL_SLACK_SECS after it (one under way finishes); what is left waits for the next job."""
+        FINAL_SLACK_SECS after it (one under way finishes); what is left waits for the next job. A refusal of the key or
+        of this machine leaves its round; it ends the job only as `_refused_key` says, and a job none of whose reads GMGN
+        answered says it is not ok."""
         try:
             with chain_lock(self.data_dir, self.chain):
                 self.resume()
@@ -547,10 +598,12 @@ class LaunchWatch:
                 deadline, next_poll, next_status = began + minutes * 60.0, began, began + STATUS_SECS
                 first = True
                 while (now := self.clock()) < deadline:
+                    self._open_round()
                     if now >= next_poll:
                         self.poll(first, deadline)
                         first, next_poll = False, now + self.every
-                    self.settle(min(next_poll, deadline))
+                    if not self.halted:
+                        self.settle(min(next_poll, deadline))
                     if self.clock() >= next_status:
                         next_status += STATUS_SECS
                         self.log(
@@ -558,12 +611,21 @@ class LaunchWatch:
                             f"seen, {self.counts['scored']} read, {len(self.pending)} waiting"
                         )
                     self.sleep(max(0.0, min(next_poll, deadline) - self.clock()))
+                self._open_round()
                 self.settle(deadline + FINAL_SLACK_SECS)
         except WatchBusy as exc:
             return {"ok": False, "chain": self.chain, "error": str(exc)}
         except WatchStopped as exc:
-            return self.summary(minutes) | {"ok": False, "error": f"GMGN refused the key, so no read can work: {exc}"}
+            return self.summary(minutes) | {"ok": False, "error": f"GMGN refused the key or this machine, so no read "
+                                                                  f"can work: {exc}"}  # fmt: skip
+        if self.counts["stop_refusals"] and not self.answered_any:
+            return self.summary(minutes) | {"ok": False, "error": f"GMGN refused every read of the job, so no read "
+                                                                  f"could work: {self.last_refusal}"}  # fmt: skip
         return self.summary(minutes)
+
+    def _open_round(self) -> None:
+        self.round += 1
+        self.halted = False
 
     def summary(self, minutes: float) -> dict:
         c = self.counts
@@ -586,6 +648,7 @@ class LaunchWatch:
             "rate_limit_left": c["rate_limit_left"],  # reads a rate limit held past the time they had: left for later
             "read_errors": c["read_errors"],  # reads that failed in a way that is not GMGN's: asked again later
             "tried_again_later": c["tried_again_later"],
+            "stop_refusals": c["stop_refusals"],  # refusals of the key or of this machine: each left its round
             "files": {"launches": str(self.launches), "scored": str(self.scored)},
         }
 

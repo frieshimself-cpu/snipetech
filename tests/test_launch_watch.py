@@ -523,19 +523,48 @@ def test_a_row_the_client_reads_as_nothing_is_counted(tmp_path):
     assert (quiet["recorded"], quiet["bad_rows"]) == (0, 0)
 
 
-def test_a_refused_key_ends_the_job_and_leaves_the_coin_for_the_next_one(tmp_path):
+def test_a_refused_key_ends_the_job_after_five_rounds_and_leaves_the_coin_for_the_next_one(tmp_path):
+    """A key GMGN refuses ends the job once the same refusal has come in STOP_ROUNDS rounds in a row with no read of
+    its kind answered in between (third review of 25 Nov: one refusal ended it at once, a passing one too)."""
     ft = FakeTime(T)
     routes = {
         "/v1/trenches": polls([trench(A, T - 1000)]),
         "/v1/market/token_kline": lambda req: refused(401, "AUTH_KEY_INVALID", f"api key {KEY} not found"),
     }
-    out = watch(tmp_path, ft, routes, minutes=5)
+    out = watch(tmp_path, ft, routes, minutes=60)
     assert out["ok"] is False and "AUTH_KEY_INVALID" in out["error"] and KEY not in json.dumps(out)
-    assert ft.now == T and out["polls"] == 1  # it ended at once instead of waiting out its five minutes
-    assert scored(tmp_path) == []  # no refusal written: no read could have worked with that key
+    assert LW.STOP_ROUNDS == 5 and ft.now == T + 240 and out["polls"] == 5  # five rounds, not the hour
+    assert out["stop_refusals"] == 5 and scored(tmp_path) == []  # nothing written: no read could have worked
     routes["/v1/market/token_kline"] = kline({})
-    out2 = watch(tmp_path, FakeTime(T + 100), routes, minutes=0)
+    out2 = watch(tmp_path, FakeTime(T + 300), routes, minutes=0)
     assert out2["resumed"] == {"seen": 1, "waiting": 1} and out2["scored"] == 1
+
+
+def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):
+    """A job too short for five rounds whose every read GMGN refused says so: no read could work."""
+    refusal = refused(401, "AUTH_KEY_INVALID", "api key not found")
+    out = watch(tmp_path, FakeTime(T), {route: refusal for route in ("/v1/trenches", "/v1/market/token_kline")},
+                minutes=2)  # fmt: skip
+    assert out["ok"] is False and "AUTH_KEY_INVALID" in out["error"] and out["stop_refusals"] == 2
+
+
+def test_a_passing_refusal_of_the_key_or_of_this_machine_leaves_the_round_and_the_watch_goes_on(tmp_path):
+    """Third review of 25 Nov: one AUTH_TIMESTAMP_EXPIRED (a request slowed past GMGN's 5 s window) or one
+    AUTH_IP_BLOCKED (a request that left over the wrong route) ended a day-long watch at once, and nothing restarted
+    it. Such a refusal now leaves its round; the next round asks again."""
+    ft = FakeTime(T)
+    blips = [(T + 600, refused(401, "AUTH_TIMESTAMP_EXPIRED", "timestamp expired")),
+             (T + 1200, refused(403, "AUTH_IP_BLOCKED", "ip not allowed"))]  # fmt: skip
+
+    def trenches(req):
+        if blips and ft.now >= blips[0][0]:
+            return blips.pop(0)[1]
+        return answer({"new_creation": [trench(A, T - 1000)]})
+
+    routes = {"/v1/trenches": trenches, "/v1/market/token_kline": kline({}), "/v1/token/security": security({})}
+    out = watch(tmp_path, ft, routes, minutes=30)
+    assert out["ok"] is True and ft.now >= T + 1800  # it ran its half hour
+    assert (out["polls"], out["stop_refusals"], out["scored"]) == (28, 2, 1)  # two looks refused, then asked again
 
 
 def test_a_failed_connection_leaves_the_coin_for_a_later_round_and_three_failed_rounds_write_it(tmp_path):
