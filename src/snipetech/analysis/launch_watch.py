@@ -149,9 +149,10 @@ SCORE_READING = (
     "The next trade after the sale shows the pool was still there when it closes within ten times the sale's price "
     "either way, or moved at least what the copy was worth then in dollars (its candle's dollars): a quiet stretch "
     "keeps its price, a trade of cents into an emptied pool far from it does not, and the sale is stale. The watch "
-    "reads a coin's pool once, when it settles, if a copy of any size would sell it stale; a stale sale is lost (-1 "
-    "and its gas) unless "
-    "that read showed liquidity of at least what the copy was worth at that price (its size x exit / entry). pools "
+    "reads a coin's pool once, when it settles, if a copy of any size would sell it stale; a stale sale is paid by "
+    "that read, a constant-product pool holding the liquidity it gave, half of it on each side (qs): it gets "
+    "qs / (qs + worth) of the price, and is lost (-1 and its gas) when the read gave no liquidity (not read, refused, "
+    "none in the answer) or zero. pools "
     "counts those coins by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
     "unknown (not read, refused or without a liquidity). stale_exits says how many of a row's sales were stale; "
     "table_without_stale_exits is the same table without those copies."
@@ -1127,11 +1128,11 @@ class _Score:
                 ratio = closes[_fill(ts, end, self.block)] / closes[i]
                 worth = self.size * entry_keep * ratio  # what the copy holds at the sale's price
                 stale = _stale(ts, closes, dollars, end, self.block, worth)
-                # a stale sale keeps its price only when the pool held, at settle, what the copy was worth at that
-                # price (second review of 25 Nov: 120 dollars sold a copy worth 300)
-                lost = stale and (liquidity is None or liquidity < worth)
-                qx = q * math.sqrt(ratio)  # the pool's side at the sale's price
-                exit_keep = qx / (qx + worth) if q else 1.0
+                # a stale sale is paid by the pool read at settle, half of it on each side, and lost when that read
+                # gave no liquidity or none (reviews of 25 Nov: it kept its whole price from the copy's worth up)
+                lost = stale and not liquidity
+                qx = (liquidity or 0.0) / 2 if stale else q * math.sqrt(ratio)  # the pool's side at the sale's price
+                exit_keep = qx / (qx + worth) if q or stale else 1.0
                 if honeypot or lost:
                     ret = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
                 else:

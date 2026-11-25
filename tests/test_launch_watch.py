@@ -1100,10 +1100,12 @@ def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_
     ]
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    # A's two cents pay 3 x 0.01 / 300.01 of the price, B's 25,000 dollars 3 x 12,500 / 12,800; C's pool is not known
+    a, b = 3 * 0.01 / 300.01 - 1, 3 * 12_500 / 12_800 - 1
     early = pair(out, 2, 30)  # out at 32 s: A, B and C at their last trade, 10 s in; D at its first, E at 10 s's
-    assert (early["coins"], early["stale_exits"]) == (5, 3) and early["mean"] == pytest.approx((-1 + 2 - 1 + 0 + 2) / 5)
+    assert (early["coins"], early["stale_exits"], early["mean"]) == (5, 3, pytest.approx((a + b + 1) / 5, abs=1e-4))
     late = pair(out, 2, 120)  # out at 122 s: E at its trade of 10 s, 112 s old, which a trade at 200 s follows
-    assert (late["coins"], late["stale_exits"]) == (5, 3) and late["mean"] == pytest.approx((-1 + 2 - 1 + 0.5 + 2) / 5)
+    assert (late["coins"], late["stale_exits"], late["mean"]) == (5, 3, pytest.approx((a + b + 1.5) / 5, abs=1e-4))
     assert late["rug_share"] == pytest.approx(1 / 5)  # A's pool was emptied: a rug
     fresh = pair({"table": out["table_without_stale_exits"]}, 2, 120)
     assert (fresh["coins"], fresh["mean"]) == (2, pytest.approx((0.5 + 2) / 2))
@@ -1133,20 +1135,28 @@ def test_a_trade_into_an_emptied_pool_shows_no_pool(tmp_path):
     pulled = [*pumped, (S + 300, 3.0, 3.0, 1e-5, 1e-5, 0.02)]  # two cents at a hundred-thousandth, at 300 s
     spiked = [*pumped, (S + 120, 3.0, 3000.0, 3.0, 3000.0, 0.01), (S + 300, 3000.0, 3000.0, 1e-5, 1e-5, 0.02)]
     sold_off = [*pumped, (S + 300, 3.0, 3.0, 1e-3, 1e-3, 40_000.0)]  # the creator's sale: 40,000 dollars
-    assert score_of(pulled, "0.01") == [-1.0, -1.0, -1.0]
-    assert score_of(spiked, "0.01") == [-1.0, -1.0, -1.0]
+    assert score_of(pulled, "0.01") == pytest.approx([-1.0, -1.0, -1.0], abs=1e-4)  # a cent pays nothing
+    assert score_of(spiked, "0.01") == pytest.approx([-1.0, -1.0, -1.0], abs=1e-4)
     assert score_of(sold_off, "5") == [2.0, 2.0, pytest.approx(-0.999)]  # sold before it; the last sale at 1e-3
 
 
-def test_a_stale_sale_keeps_its_price_only_when_the_pool_holds_what_the_copy_is_worth_then(tmp_path):
-    """Second review of 25 Nov: a stale sale kept its price when the pool held the copy's size, whatever the copy was
-    worth at that price: with 120 dollars in the pool, a copy of 100 worth 300 at the last price sold at it. The pool
-    must hold the copy's size x exit / entry. (The coin's own pool, at 120, still counts as there, not as a rug.)"""
+def test_a_stale_sale_is_paid_by_the_pool_read_at_settle_as_a_constant_product_pool_pays(tmp_path):
+    """Reviews of 25 Nov: a stale sale kept its price when the pool held the copy's size, whatever the copy was worth
+    at that price (120 dollars sold a copy worth 300); then it kept its whole price once the pool held that worth, and
+    lost all of it a cent below. Selling a worth V into a pool of L dollars, half of them on each side (qs), pays
+    qs x V / (qs + V): the reviewer's copy of 100 worth 300 gets nothing more at 299.9 or 300 dollars, half its worth at
+    600, and 98 percent of it at 25,000. It is lost only when the read gave no liquidity, or none. (The coin's own pool
+    counts as there from the copy's size up, not as a rug.)"""
     stops = [flat(1.0), flat(3.0, 10)]  # its last trade 10 s in, at three times the entry
-    for liquidity, ret in (("120", -1.0), ("299.9", -1.0), ("300", 2.0)):
+    for liquidity, ret, there in (("120", -0.5, 1), ("299.9", -0.0002, 1), ("300", 0.0, 1), ("600", 0.5, 1),
+                                  ("3000", 1.5, 1), ("25000", 1.9297, 1), ("50", -0.7692, 0), ("0", -1.0, 0)):  # fmt: skip
         write_scored(tmp_path, [coin(A, stops, pool={"liquidity": liquidity})])
         out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-        assert (pair(out, 2, 120)["mean"], out["pools"]["there"]) == (pytest.approx(ret), 1), liquidity
+        assert (pair(out, 2, 120)["mean"], out["pools"]["there"]) == (pytest.approx(ret, abs=1e-4), there), liquidity
+    assert "qs / (qs + worth)" in out["reading"]
+    refusal = {"error": "gmgn GET /v1/token/pool_info: HTTP 404 NOT_FOUND: no pool"}
+    write_scored(tmp_path, [coin(A, stops, pool=refusal)])
+    assert pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 120)["mean"] == -1.0  # not known: lost
 
 
 def test_a_field_is_given_only_when_it_reads_as_a_tax_or_as_a_yes_or_no(tmp_path):
