@@ -543,13 +543,25 @@ def test_the_table_says_how_the_coins_did_without_the_five_best_and_how_many_rug
 
 
 def test_no_hold_runs_past_the_500_seconds_of_candles(tmp_path):
-    write_scored(tmp_path, [coin(A, [flat(0.5), flat(1.0, 12), flat(2.0, 492), flat(4.0, 499)])])
+    write_scored(tmp_path, [coin(A, [flat(0.5), flat(1.0, 11), flat(2.0, 491), flat(4.0, 492), flat(8.0, 499)])])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     pairs = {(r["delay"], r["hold"]) for r in out["table"]}
     assert len(pairs) == 15 and (30, 480) not in pairs  # 30 + 480 = 510 s: past the candles
     assert [(n["delay"], n["hold"]) for n in out["not_scored"]] == [(30, 480)]
-    # in at the candle of start + 12 itself (1.0), out at the candle of start + 492 itself (2.0), never at 499's
+    # in at 12 s at the candle of 11 s (1.0), out at 492 s at the candle of 491 s (2.0): never 492's, nor 499's
     assert pair(out, 12, 480)["mean"] == pytest.approx(1.0)
+
+
+def test_a_trade_fills_at_the_last_candle_closed_by_its_moment_never_the_one_that_opens_then(tmp_path):
+    """Review of 25 Nov: a buy 2 s after the start filled at the close of the candle that opens at 2 s, a price made
+    in the second after the buy, and a sale likewise. A 1 s candle that opens at t closes at t + 1: a trade at t
+    fills at the last candle that opened at t - 1 or before."""
+    write_scored(tmp_path, [coin(A, [flat(1.0), flat(3.0, 2), flat(5.0, 31), flat(9.0, 32)])])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert pair(out, 2, 30)["mean"] == pytest.approx(4.0)  # in at the candle of 0 s (1.0), out at 31 s's (5.0)
+    write_scored(tmp_path, [coin(B, [flat(1.0, 2), flat(2.0, 20)])])  # its first trade in the second after 2 s
+    by_delay = {d["delay"]: (d["with_entry"], d["no_trade_yet"]) for d in LW.score(tmp_path, "base")["by_delay"]}
+    assert by_delay == {2: (0, 1), 5: (1, 0), 12: (1, 0), 30: (1, 0)}
 
 
 def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):

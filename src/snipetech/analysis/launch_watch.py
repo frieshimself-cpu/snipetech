@@ -15,9 +15,10 @@ A read GMGN refuses is written into that coin's line and the job goes on. A rate
 again, never past the time the read has: --minutes is the job's end. Each round's reads stop when the next look at new
 coins is due, and the one pass after the end stops a minute later at most (FINAL_SLACK_SECS); a read left by then, or
 held by a rate limit past it, waits for a later round or the next job. A read that fails on the way (no answer, a
-server error) is tried again a round later, three rounds at most, then written as refused. A key GMGN refuses ends the job and writes nothing more: no read could work. A restarted job
-reads both files and goes on where the last one stopped; one job at a time watches a chain. It keeps the coins it has
-seen and the coins waiting for their candles, nothing else. Like every GMGN call it only reads.
+server error) is tried again a round later, three rounds at most, then written as refused. A key GMGN refuses ends the
+job and writes nothing more: no read could work. A restarted job reads both files and goes on where the last one
+stopped; one job at a time watches a chain. It keeps the coins it has seen and the coins waiting for their candles,
+nothing else. Like every GMGN call it only reads.
 
 `score` (`snipetech gmgn launch-score`) reads <chain>_scored.jsonl and says what a copy made for each entry delay and
 hold: the mean, the median, the share that made money, the mean once the five best coins are taken out (one big winner
@@ -81,12 +82,14 @@ LANDING = {
 }
 SCORE_READING = (
     "A copy buys D seconds after the coin's start (its open time, else its creation, else when the watch first saw it) "
-    "at the close of the last 1 s candle at or before then, and sells H seconds later at the close of the last candle "
-    "at or before that. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
+    "at the close of the last 1 s candle that opened a second or more before then (the candle that opens at that "
+    "moment closes after it), and sells H seconds later at the close of the last candle that opened a second or more "
+    "before that. Its return is exit / entry x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
     "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
     "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum). A coin that "
-    "cannot be sold is -1. It fills at the candle's close: its own price impact is not counted. A coin with no candle at or before D is no trade at D (one with no priced "
-    "candle at all is no trade at any delay: candles.without_a_price); a candle whose close is missing or zero is "
+    "cannot be sold is -1. It fills at the candle's close: its own price impact is not counted. A coin with no candle "
+    "that opened before D - 1 or at it is no trade at D (one with no priced candle at all is no trade at any delay: "
+    "candles.without_a_price); a candle whose close is missing or zero is "
     "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
     "inside the 500 s are read. mean_without_best5 is the mean once the five best copies are "
     "taken out; the best pair is the one with the highest, or, where too few coins leave none, the highest median. "
@@ -548,6 +551,13 @@ def _path(candles: Any, start: int) -> tuple[list[int], list[float], bool, int]:
     return [k[0] for k in kept], [k[1] for k in kept], lowest <= RUG_LEFT * first, bad
 
 
+def _at(ts: list[int], moment: int) -> int:
+    """The candle a trade at `moment` fills at, by its place in `ts` (oldest first): the last 1 s candle that opened
+    a second or more before the moment, so it had closed by then; -1 when there is none. The candle that opens at the
+    moment closes after it (review of 25 Nov: entries and exits filled at that candle's close)."""
+    return bisect.bisect_right(ts, moment - 1) - 1
+
+
 def _r(x: float) -> float:
     return round(x, 4)
 
@@ -625,7 +635,7 @@ class _Score:
         fetched = _int(rec.get("fetched_at"))
         keep = (1 - sec["buy_tax"]) * (1 - sec["sell_tax"])
         for d in DELAYS:
-            i = bisect.bisect_right(ts, start + d) - 1
+            i = _at(ts, start + d)
             if i < 0:
                 self.no_trade[d] += 1
                 continue
@@ -637,7 +647,7 @@ class _Score:
                 if fetched and fetched < end:  # the hold was not over when the candles were read
                     pair.unsettled += 1
                     continue
-                out = closes[bisect.bisect_right(ts, end) - 1]
+                out = closes[_at(ts, end)]
                 ret = -1.0 if sec["honeypot"] else out / closes[i] * self.kept * keep - 1.0 - self.share
                 pair.add(ret, plat, rug, sec["honeypot"])
 
