@@ -1398,6 +1398,24 @@ def test_the_pool_seen_after_the_entry_is_taken_back_to_the_entrys_price(tmp_pat
     assert (pair(out, 2, 30)["coins"], out["without_pool_size"]["coins"]) == (0, 1)
 
 
+def test_a_pools_cash_side_is_at_most_its_coins_market_cap(tmp_path):
+    """Fourth review of 25 Nov: GMGN's real rows of new coins give a liquidity of up to eleven times the coin's market
+    cap (tests/fixtures/gmgn/real/trenches.json: Ryfa, 34,835 dollars against 3,095). A constant-product pool's cash
+    side is worth no more than every coin there is, about the market cap, and the score took half the liquidity: a copy
+    of 1,000 dollars read +75.7 percent where at most +15.8. The side is capped at the market cap on the same row, and
+    the coins so capped are counted."""
+    real = fixture("real/trenches.json")["data"]["new_creation"][0]
+    assert (real["liquidity"], real["market_cap"]) == (pytest.approx(34_835.42, abs=0.01), 3095.38)
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
+    line = coin(A, up, liquidity=34_835.42, first={"market_cap_usd": 3095.38})
+    write_scored(tmp_path, [line, coin(B, up, liquidity=3000.0, first={"market_cap_usd": 1e9})], chain="sol")
+    out = LW.score(tmp_path, "sol", size_usd=1000.0, gas_usd=0.0, fee_pct=0.0)
+    q, b = 3095.38, 1500.0  # A's side capped; B's half of its liquidity, far under its market cap
+    capped, uncapped = [2 * x / (x + 1000) * x * 2**0.5 / (x * 2**0.5 + 2000 * x / (x + 1000)) - 1 for x in (q, b)]
+    assert pair(out, 2, 30)["mean"] == pytest.approx((capped + uncapped) / 2, abs=1e-4)
+    assert out["pool_sizes"]["capped_at_market_cap"] == 1 and "market cap" in out["reading"]
+
+
 def test_a_coin_without_a_pool_size_is_scored_apart(tmp_path):
     """Third review of 25 Nov: a coin whose line gives no liquidity that reads as dollars (missing, null, zero, not a
     number, below zero, too big for a float) has no price impact to pay: it is counted and scored apart, never at no

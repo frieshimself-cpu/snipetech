@@ -149,7 +149,10 @@ SCORE_READING = (
     "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. Each leg pays its own price "
     "impact in a constant-product pool holding the liquidity GMGN gave when the watch first saw the coin "
     "(liquidity_usd), half of it on each side, taken back to the entry's price along the pool's curve: q = that half x "
-    "sqrt(entry / price_usd), the price on the same row. The buy gets q / (q + size) of its price, the sale qx / (qx + "
+    "sqrt(entry / price_usd), the price on the same row; the half is at most the coin's market cap on that row (a "
+    "constant-product pool's cash side is worth no more than every coin there is; GMGN's rows give a liquidity of up "
+    "to eleven times it): pool_sizes.capped_at_market_cap counts the coins so capped. The buy gets q / (q + size) of "
+    "its price, the sale qx / (qx + "
     "worth), where qx = q x sqrt(exit / entry) is that side at the exit and worth = size x exit / entry x the buy's "
     "impact is what the copy holds at that price. over_5pct_of_pool counts the copies above 5 percent of that pool at "
     "their entry (2 x q). A coin without a liquidity or a price on that row is scored apart (without_pool_size). A coin with no candle that opened before D - 1 "
@@ -1141,7 +1144,7 @@ class _Score:
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
                                 "first_sight_honeypots", "taxes_changed", "timed_from_sighting",
-                                "without_pool_size", *TAX_COUNTS),
+                                "without_pool_size", "capped_at_market_cap", *TAX_COUNTS),
                                0)  # fmt: skip
         # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
         # settle ("settle") and of the coin's row when first seen ("first")
@@ -1212,6 +1215,12 @@ class _Score:
         fetched = _int(rec.get("fetched_at"))
         keep = (1 - taxes["buy_tax"]) * (1 - taxes["sell_tax"])
         q_seen = depth / 2 if depth and seen_at else 0.0
+        # a pool's cash side is worth no more than every coin there is, about the market cap on the same row (fourth
+        # review of 25 Nov: GMGN's rows give a liquidity of up to eleven times it)
+        cap = _price(rec.get("market_cap_usd"))
+        capped = bool(q_seen and cap and q_seen > cap)
+        q_seen = cap if capped and cap else q_seen
+        self.n["capped_at_market_cap"] += capped and main
         # a sale no later sale shows (stale) gets its price only from a pool still holding money at settle
         pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
         copies, unsettled = [], []
@@ -1316,6 +1325,7 @@ class _Score:
             "table": table,
             "stale_sales": [{"delay": d, "hold": h, **p.stale_row()} for (d, h), p in self.pairs.items()],
             "pools": dict(self.pools),
+            "pool_sizes": {"capped_at_market_cap": self.n["capped_at_market_cap"]},
             "security_unknown": {
                 "coins": self.n["security_refused"] + self.n["security_without_fields"],
                 "why": UNKNOWN_READING,
