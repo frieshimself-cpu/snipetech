@@ -1866,7 +1866,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--wait", action="store_true", help="run/job/update: wait for the job and print its output")
     sp.add_argument("--timeout", type=float, default=None, metavar="MINUTES",
                     help="run: the job's time limit (the server's 6 h by default; an `oktech cycle` job's own minutes, "
-                         "wait for SOL and watch after its end set it, an `oktech guard` job's minutes)")  # fmt: skip
+                         "wait for SOL and watch after its end set it, an `oktech guard` job's minutes, a `gmgn "
+                         "launch-watch` job's minutes and 30)")  # fmt: skip
     sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
                                        "logs", "update", "daily"])  # fmt: skip
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path "

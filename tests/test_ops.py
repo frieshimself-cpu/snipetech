@@ -1288,6 +1288,17 @@ def test_a_launch_watch_longer_than_a_week_gets_no_limit_of_its_own(monkeypatch)
     assert "op_args" not in seen[-1][1]
 
 
+def test_the_remote_timeout_help_names_the_launch_watchs_own_limit(capsys):
+    """Third review of 25 Nov: the help of `remote --timeout` said every job but oktech cycle and guard got the
+    server's 6 h, a launch watch included."""
+    from snipetech import cli
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["remote", "--help"])
+    said = " ".join(capsys.readouterr().out.split())
+    assert "a `gmgn launch-watch` job's minutes and 30" in said
+
+
 def test_a_profiled_remote_job_gets_the_limit_of_the_job_it_profiles():
     """Review of 25 Nov: a leading --profile (the command line's flag that leaves where a job's time went) hid the job
     from the limit: `remote run --profile gmgn launch-watch --minutes 1440` got the server's 6 h, and so did a profiled
