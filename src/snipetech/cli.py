@@ -2765,14 +2765,14 @@ def _job_limit(rest: list[str], minutes: float | None) -> int | None:
     if rest[:1] == ["--profile"]:
         rest = rest[1:]
     if rest[:1] == ["gmgn"] and "launch-watch" in rest:
-        import math
+        from .analysis.launch_watch import MAX_MINUTES
 
         try:
             a = build_parser().parse_args(rest)
         except SystemExit:  # not a command this version reads: the server says why
             return None
-        if a.action != "launch-watch" or a.minutes is None or not (math.isfinite(a.minutes) and a.minutes >= 0):
-            return None  # a look-up, or a watch without minutes it takes: that job ends at once
+        if a.action != "launch-watch" or a.minutes is None or not 0 <= a.minutes <= MAX_MINUTES:
+            return None  # a look-up, or minutes the watch refuses (none, nan, past a week): that job ends at once
         return int((float(a.minutes) + LAUNCH_WATCH_OVER_MINUTES) * 60)
     if rest[:2] not in (["oktech", "cycle"], ["oktech", "guard"]):
         return None

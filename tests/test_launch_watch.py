@@ -1023,12 +1023,16 @@ def test_launch_watch_runs_from_the_command_line_on_the_chain_asked(snipetech, t
 
 
 def test_launch_watch_wants_its_minutes_and_sane_numbers(snipetech):
-    for argv in ((), ("--minutes", "-1"), ("--minutes", "nan"), ("--minutes", "1", "--every", "0"),
+    # third review of 25 Nov: no ceiling let 1e307 minutes through, an end at infinity: a week at most now
+    for argv in ((), ("--minutes", "-1"), ("--minutes", "nan"), ("--minutes", "inf"), ("--minutes", "1e307"),
+                 ("--minutes", str(LW.MAX_MINUTES + 1)), ("--minutes", "1", "--every", "0"),
                  ("--minutes", "1", "--settle-secs", "-5")):  # fmt: skip
         code, out, seen = snipetech("launch-watch", "--chain", "base", *argv, "--json")
         assert code == 2 and out["ok"] is False and not seen, argv
     _, out, _ = snipetech("launch-watch", "--chain", "base", "--json")
     assert "--minutes" in out["error"]
+    _, out, _ = snipetech("launch-watch", "--chain", "base", "--minutes", "1e307", "--json")
+    assert "7 days" in out["error"]
 
 
 def test_launch_score_reads_the_watched_file_and_needs_no_key(snipetech, tmp_path, monkeypatch):

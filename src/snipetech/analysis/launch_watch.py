@@ -54,6 +54,7 @@ HOLDS = (30, 120, 300, 480)  # seconds it holds
 WINDOW_SECS = 500  # the 1 s candles read of a coin, from its start: GMGN gives 500 in one request
 PAIRS = tuple((d, h) for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS)  # what the score reads: inside the 500 s
 EVERY_SECS = 60.0  # between two looks at GMGN's newest coins
+MAX_MINUTES = 7 * 24 * 60  # the longest watch: a week (third review of 25 Nov: 1e307 minutes gave an end at infinity)
 SETTLE_SECS = 900.0  # a coin's candles and security are read this long after its start
 POLL_LIMIT = 80  # the most coins GMGN gives of a stage
 SIZE_USD = 100.0
@@ -600,6 +601,9 @@ def watch(
     if minutes is None:
         raise ValueError("gmgn launch-watch: give --minutes N, how long it watches (0: it only reads what has settled)")
     minutes = _number("gmgn launch-watch: --minutes", minutes, 0.0)
+    if minutes > MAX_MINUTES:
+        raise ValueError(f"gmgn launch-watch: --minutes must be {MAX_MINUTES} (7 days) or less (got {minutes:g}); "
+                         "a longer watch is several jobs, each going on where the last stopped")  # fmt: skip
     every = _number("gmgn launch-watch: --every", every, 1.0)
     settle = _number("gmgn launch-watch: --settle-secs", settle_secs, 0.0)
     job = LaunchWatch(client, data_dir, every=every, settle_secs=settle, clock=clock, sleep=sleep, log=log)

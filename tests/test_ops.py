@@ -1270,6 +1270,24 @@ def test_a_remote_launch_watch_job_gets_the_time_limit_its_minutes_need(monkeypa
         assert cli._job_limit(argv, None) is None, argv
 
 
+def test_a_launch_watch_longer_than_a_week_gets_no_limit_of_its_own(monkeypatch):
+    """Third review of 25 Nov: --minutes had no ceiling: 1e12 asked for a limit of 1.9 million years and 1e307 raised
+    OverflowError in `remote run`. A watch takes 7 days at most (it refuses more itself), so a longer one, or minutes
+    that are no number at all, keep the server's default and the job ends at once."""
+    from snipetech import cli
+    from snipetech.analysis import launch_watch as LW
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    watch = ["gmgn", "launch-watch", "--chain", "base", "--minutes"]
+    assert LW.MAX_MINUTES == 7 * 24 * 60
+    assert cli._job_limit([*watch, str(LW.MAX_MINUTES)], None) == (LW.MAX_MINUTES + 30) * 60
+    for minutes in (str(LW.MAX_MINUTES + 1), "1e12", "3e306", "1e307", "inf"):
+        assert cli._job_limit([*watch, minutes], None) is None, minutes
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "run", *watch, "1e307"]) == 0
+    assert "op_args" not in seen[-1][1]
+
+
 def test_a_profiled_remote_job_gets_the_limit_of_the_job_it_profiles():
     """Review of 25 Nov: a leading --profile (the command line's flag that leaves where a job's time went) hid the job
     from the limit: `remote run --profile gmgn launch-watch --minutes 1440` got the server's 6 h, and so did a profiled
