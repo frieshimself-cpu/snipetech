@@ -1140,6 +1140,30 @@ def test_the_best_pair_and_the_launchpads_are_chosen_on_one_half_and_judged_on_t
     assert LW.half_of(A.upper().replace("0X", "0x")) == LW.half_of(A)  # an address in capitals is the same coin
 
 
+def test_one_creators_coins_sit_in_one_half_and_count_as_one_in_the_standard_error(tmp_path):
+    """Fourth review of 25 Nov: the halves were split by a hash of each coin's address, so one creator's coins (a
+    deployer launching dozens a day the same way) fell on both sides: the best pair chosen on that creator's coins of
+    half 0 was confirmed by the same creator's coins of half 1, +19.1 percent +/- 3.3 where the same pair split by
+    creator read 0.0. The halves are split by a hash of the creator's address (the coin's own when none is given),
+    each row says how many creators its copies have, and the standard error is taken over creators: a creator's coins
+    move together, and count as one."""
+    serial = next(f"0x{k:040x}" for k in range(1, 99) if LW.half_of(f"0x{k:040x}") == 0)  # its coins: all in half 0
+    pumped = to_the_end([flat(1.0), flat(1.5, 20), flat(1.5, 40), flat(0.95, 45)])  # its bot pumps them half a minute
+    lines = [coin(m, pumped) | {"creator": serial} for m in mints(40, 1000)]
+    lines += [coin(m, to_the_end([flat(1.0), flat(0.95, 10)])) for m in mints(80, 2000)]  # 80 creators: -5 percent
+    write_scored(tmp_path, lines)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    best, row = out["best"], pair(out, 2, 30)
+    assert (best["delay"], best["hold"]) == (12, 30)  # chosen on half 0, its creator's coins up 50 percent
+    assert (best["mean"], best["creators"]) == (0.0, best["coins"])  # half 1: the others alone, in after their fall
+    assert (row["coins"], row["creators"]) == (120, 81)
+    # over creators: the serial creator's 40 copies are one deviation of 40 x (0.5 - mean), not 40 small ones
+    mean = (40 * 0.5 - 80 * 0.05) / 120
+    spread = (40 * (0.5 - mean)) ** 2 + 80 * (-0.05 - mean) ** 2
+    assert row["mean_se"] == pytest.approx((81 / 80 * spread) ** 0.5 / 120, abs=1e-4)
+    assert "a hash of their creator's address" in out["reading"] and "over creators" in out["reading"]
+
+
 def test_too_few_coins_name_no_best_pair_and_give_a_launchpad_no_numbers(tmp_path):
     """Third review of 25 Nov: the report named a best pair, and split it by launchpad, on any number of coins: one
     coin that tripled was the best pair at +200 percent, and a launchpad of one coin got a mean and a median; nothing

@@ -168,11 +168,13 @@ SCORE_READING = (
     "left out and counted (candles.returns_left_out); a coin whose candles GMGN refused is scored nowhere "
     "(candles.refused). Only candles "
     "inside the 500 s are read, and on Ethereum on to 516 s: the last sale (492 s) lands a block later at most, and the "
-    "trade after it shows it. mean_se is the mean's standard error (the copies' standard deviation over the square "
-    "root of their number): a mean less than two of them from 0 is not told apart from 0. mean_without_best5 is the "
-    "mean once the five best copies are taken out. The coins are split in two halves by a hash of their address "
-    "(half_of: SHA-256, the same on every run; coins_by_half counts the coins scored for the table in each): the best "
-    "pair is the "
+    "trade after it shows it. mean_se is the mean's standard error over creators: a creator's coins move together and "
+    "count as one (with one coin a creator, the copies' standard deviation over the square root of their number); "
+    "creators counts a row's. A mean less than two of them from 0 is not told apart from 0. mean_without_best5 is the "
+    "mean once the five best copies are taken out. The coins are split in two halves by a hash of their creator's "
+    "address (half_of: SHA-256, the same on every run; the coin's own address when no creator is given), so one "
+    "creator's coins sit in one half (coins_by_half counts the coins scored for the table in each): the best pair is "
+    "the "
     "one with the highest mean_without_best5 on half 0, among the pairs with 30 coins or more in each half "
     "(min_coins), and best prints its numbers on half 1, coins it was not chosen on (a pair chosen and judged on the "
     "same coins looks better than it is); with none, no pair is best (no_best says why). by_platform splits the best "
@@ -361,12 +363,19 @@ def _key(mint: str) -> str:
     return mint.lower() if mint.startswith("0x") else mint
 
 
-def half_of(mint: str) -> int:
-    """The half of the coins a mint is in, 0 or 1, by the SHA-256 of its coin (_key): the same on every run. The best
-    pair and the launchpads' order are chosen on half 0 and their numbers read on half 1 (third review of 25 Nov: chosen
-    and judged on the same coins, a market with no edge showed a best pair and a top launchpad better than new coins
-    gave)."""
-    return hashlib.sha256(_key(mint).encode()).digest()[0] & 1
+def half_of(who: str) -> int:
+    """The half of the coins a creator's are in, 0 or 1, by the SHA-256 of its address (_key; a coin's own when no
+    creator is given: _who): the same on every run. The best pair and the launchpads' order are chosen on half 0 and
+    their numbers read on half 1 (third review of 25 Nov: chosen and judged on the same coins, a market with no edge
+    showed a best pair and a top launchpad better than new coins gave; fourth: one creator's coins on both halves
+    confirmed that creator's habit)."""
+    return hashlib.sha256(_key(who).encode()).digest()[0] & 1
+
+
+def _who(rec: dict) -> str:
+    """Whose coin a line is: its creator's address, or the coin's own when none is given."""
+    creator = rec.get("creator")
+    return creator if isinstance(creator, str) and creator else rec["mint"]
 
 
 START_FROM = (("open_ts", "open"), ("created_ts", "created"), ("first_seen", "sighting"))
@@ -1046,43 +1055,52 @@ def _r(x: float) -> float:
     return round(x, 4)
 
 
-def _se(xs: Any) -> float | None:
-    """The standard error of a mean of copies: their standard deviation over the square root of their number; None
-    for fewer than two, or when one is not a finite number (a price of 1e300 after one of 1e-300: the standard
-    deviation raises on it)."""
-    if len(xs) < 2 or not all(math.isfinite(x) for x in xs):
+def _se(xs: Any, groups: Any = None) -> float | None:
+    """The standard error of a mean of copies, over their creators (`groups`, one a copy; each its own when not
+    given): a creator's coins move together and count as one, the sum of their deviations from the mean (fourth review
+    of 25 Nov: 40 coins of one creator read +19.1 percent +/- 3.3). With one copy a creator it is their standard
+    deviation over the square root of their number. None for fewer than two creators, or when a copy is not a finite
+    number (a price of 1e300 after one of 1e-300)."""
+    n = len(xs)
+    if n < 2 or not all(math.isfinite(x) for x in xs):
         return None
-    return _r(statistics.stdev(xs) / math.sqrt(len(xs)))
+    mean, sums = statistics.fmean(xs), {}
+    for x, g in zip(xs, range(n) if groups is None else groups, strict=True):
+        sums[g] = sums.get(g, 0.0) + (x - mean)
+    k = len(sums)
+    return _r(math.sqrt(k / (k - 1) * sum(e * e for e in sums.values())) / n) if k > 1 else None
 
 
 CENTRAL = ("mean", "mean_se", "median", "share_above_0", "mean_without_best5")
 
 
-def _central(rets: Any) -> dict:
-    """The numbers of a set of returns (CENTRAL): the mean and its standard error, the median, the share above 0, and
-    the mean once the five best are taken out (None when that leaves none); all None for no returns."""
+def _central(rets: Any, creators: Any = None) -> dict:
+    """The numbers of a set of returns (CENTRAL): the mean and its standard error over their `creators` (_se), the
+    median, the share above 0, and the mean once the five best are taken out (None when that leaves none); all None
+    for no returns."""
     n = len(rets)
     if not n:
         return dict.fromkeys(CENTRAL)
     xs = sorted(rets)
     return {
         "mean": _r(statistics.fmean(xs)),
-        "mean_se": _se(xs),
+        "mean_se": _se(rets, creators),
         "median": _r(statistics.median(xs)),
         "share_above_0": _r(sum(1 for x in xs if x > 0) / n),
         "mean_without_best5": _r(statistics.fmean(xs[:-BEST_LEFT_OUT])) if n > BEST_LEFT_OUT else None,
     }
 
 
-def _stats(rets: Any, rugs: Any, bounds: Any) -> dict:
-    """The numbers of a set of copies: how many, their pessimistic bound's numbers (`bounds`: each copy in at the high
-    of its landing candle and out at the low of its exit candle), the central numbers (_central), and the share of
-    their coins that rugged."""
+def _stats(rets: Any, rugs: Any, bounds: Any, creators: Any) -> dict:
+    """The numbers of a set of copies: how many, of how many creators, their pessimistic bound's numbers (`bounds`:
+    each copy in at the high of its landing candle and out at the low of its exit candle), the central numbers
+    (_central, over the copies' `creators`), and the share of their coins that rugged."""
     n = len(rets)
     return {
         "coins": n,
-        "pessimistic": _central(bounds),
-        **_central(rets),
+        "creators": len(set(creators)),
+        "pessimistic": _central(bounds, creators),
+        **_central(rets, creators),
         "rug_share": _r(sum(rugs) / n) if n else None,
     }
 
@@ -1091,20 +1109,21 @@ class _Pair:
     """The copies of one entry delay and hold, side by side: returns and their pessimistic bounds, launchpads (by
     number), halves (half_of), and rug, honeypot, stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
 
-    __slots__ = ("big", "bounds", "half", "honeypot", "lost", "plats", "rets", "rugs", "sizeless", "stale", "unknown",
-                 "unsettled")  # fmt: skip
+    __slots__ = ("big", "bounds", "creators", "half", "honeypot", "lost", "plats", "rets", "rugs", "sizeless", "stale",
+                 "unknown", "unsettled")  # fmt: skip
 
     def __init__(self) -> None:
-        self.rets, self.bounds, self.plats = array("d"), array("d"), array("I")
+        self.rets, self.bounds, self.plats, self.creators = array("d"), array("d"), array("I"), array("I")
         self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
         self.lost, self.big, self.sizeless, self.half = bytearray(), bytearray(), bytearray(), bytearray()
         self.unsettled = 0
 
-    def add(self, ret: float, bound: float, plat: int, rug: bool, honeypot: bool, stale: bool, lost: bool,
-            unknown: bool, big: bool, sizeless: bool, half: int) -> None:  # fmt: skip
+    def add(self, ret: float, bound: float, plat: int, creator: int, rug: bool, honeypot: bool, stale: bool,
+            lost: bool, unknown: bool, big: bool, sizeless: bool, half: int) -> None:  # fmt: skip
         self.rets.append(ret)
         self.bounds.append(bound)
         self.plats.append(plat)
+        self.creators.append(creator)
         self.rugs.append(rug)
         self.honeypot.append(honeypot)
         self.stale.append(stale)
@@ -1119,12 +1138,12 @@ class _Pair:
         known, its copies above 5 percent of their pool and its stale sales; with `half`, those of its copies of that
         half of the coins (half_of), without the holds not over."""
         marks = (self.rugs, self.honeypot, self.unknown, self.sizeless, self.big, self.stale)
-        cols: Any = (self.rets, self.bounds, *marks)
+        cols: Any = (self.rets, self.bounds, self.creators, *marks)
         if half is not None:
             keep = [k for k, h in enumerate(self.half) if h == half]
             cols = tuple([col[k] for k in keep] for col in cols)
-        rets, bounds, rugs, honeypot, unknown, sizeless, big, stale = cols
-        out = {**_stats(rets, rugs, bounds), "honeypots": sum(honeypot)}
+        rets, bounds, creators, rugs, honeypot, unknown, sizeless, big, stale = cols
+        out = {**_stats(rets, rugs, bounds, creators), "honeypots": sum(honeypot)}
         if half is None:
             out["unsettled"] = self.unsettled
         return out | {"security_unknown": sum(unknown), "pool_size_unknown": sum(sizeless),
@@ -1134,8 +1153,8 @@ class _Pair:
         """The pair's stale sales alone: how many, their mean and its bound's, and how many were lost (no liquidity
         read at settle). Third review of 25 Nov: the table without them was a table of the coins that lived."""
         picked = [k for k, stale in enumerate(self.stale) if stale]
-        rets, bounds = ([col[k] for k in picked] for col in (self.rets, self.bounds))
-        pessimistic, central = ({k: _central(xs)[k] for k in ("mean", "mean_se")} for xs in (bounds, rets))
+        rets, bounds, creators = ([col[k] for k in picked] for col in (self.rets, self.bounds, self.creators))
+        pessimistic, central = ({k: _central(xs, creators)[k] for k in ("mean", "mean_se")} for xs in (bounds, rets))
         return {"coins": len(rets), "pessimistic": pessimistic, **central, "lost": sum(self.lost)}
 
 
@@ -1169,6 +1188,7 @@ class _Score:
         self.pools = dict.fromkeys(("coins_with_a_stale_exit", "there", "gone", "unknown"), 0)
         self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
         self.platforms: dict[str, int] = {}
+        self.creators: dict[str, int] = {}  # each coin's creator, by number (_who)
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
                                 "first_sight_honeypots", "taxes_changed", "timed_from_sighting",
@@ -1236,7 +1256,8 @@ class _Score:
         if "candles_error" in rec:
             self.n["candles_refused"] += 1
             return
-        half = half_of(rec["mint"])
+        who = _key(_who(rec))
+        half, creator = half_of(who), self.creators.setdefault(who, len(self.creators))
         self.by_half[half] += main
         start = _int(rec.get("start"))
         p = _path(rec.get("candles"), start, self.block)
@@ -1302,7 +1323,7 @@ class _Score:
             for key in unsettled:
                 pairs[key].unsettled += 1
             for key, ret, bound, stale, lost, big in copies:
-                pairs[key].add(ret, bound, plat, rug, honeypot, stale, lost, unknown, big, unsized, half)
+                pairs[key].add(ret, bound, plat, creator, rug, honeypot, stale, lost, unknown, big, unsized, half)
 
     def _paid(self, ratio: float, moved: float, entry_keep: float, q: float, stale: bool, liquidity: float | None,
               keep: float) -> float:  # fmt: skip
@@ -1422,12 +1443,14 @@ class _Score:
         """One pair's copies split by launchpad: those with MIN_COINS or more in each half in their order on half 0
         by mean_without_best5 (rank), with half 1's numbers; then the others, too few coins, the busiest first."""
         names = list(self.platforms)  # numbered in the order first met
-        groups: dict[int, tuple[tuple[list[float], list[int], list[float]], ...]] = {}
-        for ret, bound, plat, rug, half in zip(pair.rets, pair.bounds, pair.plats, pair.rugs, pair.half, strict=True):
-            rets, rugs, bounds = groups.setdefault(plat, (([], [], []), ([], [], [])))[half]
+        groups: dict[int, tuple[tuple[list, list, list, list], ...]] = {}
+        cols = (pair.rets, pair.bounds, pair.plats, pair.creators, pair.rugs, pair.half)
+        for ret, bound, plat, creator, rug, half in zip(*cols, strict=True):
+            rets, rugs, bounds, creators = groups.setdefault(plat, (([], [], [], []), ([], [], [], [])))[half]
             rets.append(ret)
             rugs.append(rug)
             bounds.append(bound)
+            creators.append(creator)
         ranked, few = [], []
         for k, (on, off) in groups.items():
             if min(len(on[0]), len(off[0])) >= MIN_COINS:
