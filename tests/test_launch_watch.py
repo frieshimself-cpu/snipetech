@@ -1193,6 +1193,20 @@ def test_launch_watch_runs_from_the_command_line_on_the_chain_asked(snipetech, t
     assert {r.url.params.get("chain") for r in seen} == {"base"}
 
 
+def test_launch_watch_writes_its_requests_weight_once_a_status_line_not_once_a_request(snipetech, monkeypatch):
+    """Third review of 25 Nov: every answered request wrote its weight into the shared database at once, so with
+    another process holding the database's write lock each read waited for it (up to 600 s a write), outside every time
+    limit of the watch. The watch keeps the count and writes it at each status line (every 15 minutes) and at its
+    end."""
+    written: list[int] = []
+    monkeypatch.setattr(gmgn, "mark_answered", lambda store, weight, now=None: written.append(weight))
+    snipetech.routes.update({"/v1/trenches": polls([trench(A, T - 2000)]), "/v1/market/token_kline": kline({}),
+                             "/v1/token/security": security({})})  # fmt: skip
+    code, out, seen = snipetech("launch-watch", "--chain", "base", "--minutes", "20", "--json")
+    assert code == 0 and out["polls"] == 20
+    assert len(written) == 2 and sum(written) == sum(gmgn.READ_PATHS[r.url.path] for r in seen)  # 15 min, the end
+
+
 def test_launch_watch_wants_its_minutes_and_sane_numbers(snipetech):
     # third review of 25 Nov: no ceiling let 1e307 minutes through, an end at infinity: a week at most now
     for argv in ((), ("--minutes", "-1"), ("--minutes", "nan"), ("--minutes", "inf"), ("--minutes", "1e307"),

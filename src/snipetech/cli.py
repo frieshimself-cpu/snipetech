@@ -399,13 +399,13 @@ def _gmgn_launch_watch(args, cfg, mark) -> tuple[dict, int]:
         launch_watch.watch_numbers(args.minutes, **given)
     except ValueError as exc:
         return {"ok": False, "status": None, "error": str(exc)}, 2
-    try:
-        client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark, chain=args.chain)
+    try:  # the weight of its answers goes to the database through the watch, once a status line (`record`)
+        client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, chain=args.chain)
     except gmgn.GmgnError as exc:
         return {"ok": False, "status": None, "error": str(exc)}, 0
     try:
         data = Path(cfg.storage.db_path).resolve().parent
-        return launch_watch.watch(client, data, minutes=args.minutes, log=_progress, **given), 0
+        return launch_watch.watch(client, data, minutes=args.minutes, log=_progress, record=mark, **given), 0
     except ValueError as exc:
         return {"ok": False, "status": None, "error": str(exc)}, 2
     finally:

@@ -374,8 +374,15 @@ class LaunchWatch:
         clock: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
         log: Callable[[str], None] | None = None,
+        record: Callable[[int], None] | None = None,
     ):
         self.client, self.chain, self.data_dir = client, client.chain, data_dir
+        # the weight of GMGN's answers, kept here and handed to `record` (the shared database's tally; else the client's
+        # own counter) at each status line and at the end, never once a request: a write can wait minutes for the
+        # database's lock (third review of 25 Nov)
+        self.record, self.weight = record if record is not None else client.counter, 0
+        if self.record is not None:
+            client.counter = self._count
         self.every, self.settle_secs = float(every), float(settle_secs)
         self.clock = time.time if clock is None else clock
         self.sleep = time.sleep if sleep is None else sleep
@@ -660,6 +667,7 @@ class LaunchWatch:
                     self._close_round()
                     if self.clock() >= next_status:
                         next_status += STATUS_SECS
+                        self._flush()
                         self.log(
                             f"gmgn launch-watch {self.chain}: {self.counts['polls']} looks, {len(self.seen)} coins "
                             f"seen, {self.counts['scored']} read, {len(self.pending)} waiting"
@@ -671,12 +679,23 @@ class LaunchWatch:
         except WatchBusy as exc:
             return {"ok": False, "chain": self.chain, "error": str(exc)}
         except WatchStopped as exc:
+            self._flush()
             return self.summary(minutes) | {"ok": False, "error": f"GMGN refused the key or this machine, so no read "
                                                                   f"can work: {exc}"}  # fmt: skip
+        self._flush()
         if self.counts["stop_refusals"] and not self.answered_any:
             return self.summary(minutes) | {"ok": False, "error": f"GMGN refused every read of the job, so no read "
                                                                   f"could work: {self.last_refusal}"}  # fmt: skip
         return self.summary(minutes)
+
+    def _count(self, weight: int) -> None:
+        self.weight += int(weight)
+
+    def _flush(self) -> None:
+        """The weight counted since the last time, handed to `record` in one write."""
+        if self.record is not None and self.weight:
+            weight, self.weight = self.weight, 0
+            self.record(weight)
 
     def _open_round(self) -> None:
         self.round += 1
@@ -719,11 +738,14 @@ def watch(
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
     log: Callable[[str], None] | None = None,
+    record: Callable[[int], None] | None = None,
 ) -> dict:
     """`snipetech gmgn launch-watch`: watch the client's chain for `minutes` and say how it went. A wrong number is a
-    ValueError, raised before anything is asked."""
+    ValueError, raised before anything is asked. `record`: what writes the answers' weight into the database, called
+    at each status line and at the end with the weight since the last call."""
     minutes, every, settle = watch_numbers(minutes, every, settle_secs)
-    job = LaunchWatch(client, data_dir, every=every, settle_secs=settle, clock=clock, sleep=sleep, log=log)
+    job = LaunchWatch(client, data_dir, every=every, settle_secs=settle, clock=clock, sleep=sleep, log=log,
+                      record=record)  # fmt: skip
     return job.run(minutes)
 
 
