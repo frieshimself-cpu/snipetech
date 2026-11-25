@@ -164,7 +164,9 @@ SCORE_READING = (
     "or at it is no trade "
     "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
     "is missing or zero is "
-    "left out, never divided by; a coin whose candles GMGN refused is scored nowhere (candles.refused). Only candles "
+    "left out, never divided by, and a copy whose return no float holds (a price of 1e300 after one of 1e-300) is "
+    "left out and counted (candles.returns_left_out); a coin whose candles GMGN refused is scored nowhere "
+    "(candles.refused). Only candles "
     "inside the 500 s are read, and on Ethereum on to 516 s: the last sale (492 s) lands a block later at most, and the "
     "trade after it shows it. mean_se is the mean's standard error (the copies' standard deviation over the square "
     "root of their number): a mean less than two of them from 0 is not told apart from 0. mean_without_best5 is the "
@@ -1170,7 +1172,7 @@ class _Score:
         self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
                                 "bad_prices", "security_refused", "security_without_fields", "honeypots",
                                 "first_sight_honeypots", "taxes_changed", "timed_from_sighting",
-                                "without_pool_size", "capped_at_market_cap", *TAX_COUNTS),
+                                "without_pool_size", "capped_at_market_cap", "returns_left_out", *TAX_COUNTS),
                                0)  # fmt: skip
         # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
         # settle ("settle") and of the coin's row when first seen ("first")
@@ -1284,6 +1286,10 @@ class _Score:
                         self._paid(sold / paid, sold / closes[i], entry_keep, q, stale, liquidity, keep)
                         for paid, sold in ((closes[i], closes[j]), (p.highs[i], p.lows[j]))
                     )
+                # a price of 1e300 after one of 1e-300 gives a return no float holds: left out, and counted
+                if not (math.isfinite(ret) and math.isfinite(bound)):
+                    self.n["returns_left_out"] += 1
+                    continue
                 copies.append(((d, h), ret, bound, stale, lost, big))
         if any(copy[3] for copy in copies):
             self.pools["coins_with_a_stale_exit"] += 1
@@ -1335,6 +1341,7 @@ class _Score:
                 "refused": self.n["candles_refused"],
                 "without_a_price": self.n["without_a_price"],
                 "bad_prices_skipped": self.n["bad_prices"],
+                "returns_left_out": self.n["returns_left_out"],  # copies whose return no float holds (fourth review)
             },
             "security": {
                 "refused": self.n["security_refused"],

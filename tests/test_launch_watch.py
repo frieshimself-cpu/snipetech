@@ -1504,7 +1504,25 @@ def test_a_return_too_big_for_a_float_leaves_its_standard_error_unsaid_and_the_s
     lines = [coin(A, to_the_end([flat(1e-300), flat(1e300, 10)])), coin(B, to_the_end([flat(1.0), flat(2.0, 10)]))]
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    assert (out["ok"], pair(out, 2, 30)["coins"], pair(out, 2, 30)["mean_se"]) == (True, 2, None)
+    # since the fourth review the copy is left out (candles.returns_left_out): one copy, no spread to read
+    assert (out["ok"], pair(out, 2, 30)["coins"], pair(out, 2, 30)["mean_se"]) == (True, 1, None)
+
+
+def test_a_return_no_float_holds_is_left_out_and_counted(tmp_path):
+    """Fourth review of 25 Nov: a price of 1e300 after one of 1e-300 gives a return no float holds (with a price
+    impact, inf over inf: nan). It reached the means, chose the best pair on half 0, and the printed report held NaN,
+    which is not JSON. Every copy whose return, or its bound, is not a finite number is left out, and counted."""
+    shape = to_the_end([flat(1.0), flat(0.5, 10), flat(1.5, 100), flat(1.4, 250)])  # 2/30 loses half; 2/120 +50
+    lines = [coin(m, shape) for m in both_halves(30)]
+    write_scored(tmp_path, lines)
+    clean = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    overflow = next(m for m in mints(100, 10**6) if LW.half_of(m) == 0)  # in the half the best pair is chosen on
+    write_scored(tmp_path, [coin(overflow, to_the_end([flat(1e-300), flat(1e300, 10)])), *lines])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    json.loads(json.dumps(out), parse_constant=lambda word: pytest.fail(f"not JSON: {word}"))
+    assert out["best"] == clean["best"] and out["table"] == clean["table"]
+    assert (pair(out, 2, 30)["coins"], pair(out, 2, 30)["mean"]) == (60, -0.5)
+    assert out["candles"]["returns_left_out"] == 15  # every copy of it: its pool's side at 12 and 30 s overflows too
 
 
 def test_a_hold_that_ends_after_the_candles_were_read_is_not_scored(tmp_path):
