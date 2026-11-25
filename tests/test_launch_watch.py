@@ -265,30 +265,34 @@ def test_a_settled_launch_gets_its_candles_and_security_once(tmp_path):
 
 
 def test_a_coin_that_stopped_trading_has_its_pool_read_once_when_it_settles(tmp_path):
-    """Review of 25 Nov: a sale after a coin's last trade is priced at that trade, and a pool its creator emptied
-    leaves no trade and no candle. A coin that a copy would sell more than 60 s after its last trade has its pool read
-    once, when it settles; every line keeps the coin's last candle time."""
+    """Reviews of 25 Nov: a sale after a coin's last trade is priced at that trade, and a pool its creator emptied
+    leaves no trade and no candle. A coin that a copy would sell at its last trade in its 500 s has its pool read once,
+    when it settles; one that traded again after any sale keeps its price, a later trade showing its pool was still
+    there. Every line keeps the coin's last candle time."""
     s = T - 1000
     bars = {
         A: [(s, 1.0, 1.0, 1.0, 1.0, 5.0), (s + 10, 3.0, 3.0, 3.0, 3.0, 5.0)],  # its last trade 10 s in
-        B: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in range(0, 500, 40)],  # a trade every 40 s, to the end
+        B: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (*range(0, 500, 40), 499)],  # a trade every 40 s, to the end
         C: [(s, 1.0, 1.0, 1.0, 1.0, 5.0)],  # its only trade at its start, and GMGN has no pool of it
+        D: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (0, 10, 300, 499)],  # quiet from 10 to 300 s, then trading
+        # its last trade at 470 s: the sales at 482 to 492 s are 12 to 22 s after it, and priced from it
+        E: [(s + k, 1.0, 1.0, 1.0, 1.0, 5.0) for k in (*range(0, 450, 40), 470)],
     }
     gone = dict(HEALTHY_POOL, liquidity="0.02", base_reserve="0", quote_reserve="0")
     routes = {
-        "/v1/trenches": polls([trench(m, s) for m in (A, B, C)]),
+        "/v1/trenches": polls([trench(m, s) for m in (A, B, C, D, E)]),
         "/v1/market/token_kline": kline(bars),
         "/v1/token/security": security({}),
         "/v1/token/pool_info": pools({A: gone, C: refused(404, "NOT_FOUND", "no pool")}),
     }
     seen: list = []
     out = watch(tmp_path, FakeTime(T), routes, seen, minutes=3)
-    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C]  # once each; B never
+    assert [r.url.params["address"] for r in asked(seen, "/v1/token/pool_info")] == [A, C, E]  # once each
     by = {line["mint"]: line for line in scored(tmp_path)}
     assert (by[A]["last_candle_ts"], by[A]["pool"]) == (s + 10, gone)
-    assert (by[B]["last_candle_ts"], "pool" in by[B]) == (s + 480, False)
+    assert (by[B]["last_candle_ts"], "pool" in by[B], "pool" in by[D]) == (s + 499, False, False)
     assert by[C]["last_candle_ts"] == s and "HTTP 404" in by[C]["pool"]["error"]  # written as it came, asked once
-    assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (2, 1, 3)
+    assert (out["pools_read"], out["refused"]["pool"], out["scored"]) == (3, 1, 5)
 
 
 def test_the_window_starts_at_the_open_else_the_creation_else_the_first_sighting(tmp_path):
@@ -625,6 +629,13 @@ def flat(price, at=0):
     return (S + at, price, price, price, price, 1.0)
 
 
+def to_the_end(candles):
+    """A coin's candles and one more at 499 s at the last close: it traded on to the end of its 500 s, so no sale of a
+    copy is priced from its last trade (a stale sale, which only a pool read at settle can price)."""
+    close = candles[-1][4]
+    return [*candles, (S + 499, close, close, close, close, 1.0)]
+
+
 def write_scored(tmp_path, coins, chain="base", extra=""):
     folder = tmp_path / "history" / "gmgn_launches"
     folder.mkdir(parents=True, exist_ok=True)
@@ -637,7 +648,7 @@ def pair(out, delay, hold):
 
 
 def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_two_swap_fees_and_two_gas_fees(tmp_path):
-    candles = [flat(1.0), flat(2.0, 10), flat(1.5, 40), flat(1.5, 100)]
+    candles = to_the_end([flat(1.0), flat(2.0, 10), flat(1.5, 40), flat(1.5, 100)])
     # in at the close of the last candle at or before start + 1 (1.0), out at or before start + 31 (2.0):
     # 2.0 / 1.0 x 0.99 x 0.99 x 0.95 x 0.90 - 1 - 2 x 0.05 / 100: Base's swap fee of 1 percent on each leg.
     kept = 0.99**2 * 0.95 * 0.9
@@ -659,7 +670,7 @@ def test_each_leg_pays_the_swap_fee_of_its_chain(tmp_path):
     """Review of 25 Nov: no swap fee was charged. A launchpad's pool takes its fee on the buy and again on the sale:
     pump.fun's 1.25 percent on Solana (GMGN's rows of 12 Nov: 0.0125 a side), 1 percent on BNB Chain, Base and
     Ethereum unless --fee-pct says otherwise."""
-    up = [flat(1.0), flat(2.0, 10)]
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
     for chain, fee in (("base", 1.0), ("bsc", 1.0), ("eth", 1.0), ("sol", 1.25)):
         write_scored(tmp_path, [coin(A, up)], chain=chain)
         out = LW.score(tmp_path, chain, gas_usd=0.0)
@@ -674,7 +685,7 @@ def test_each_leg_pays_the_swap_fee_of_its_chain(tmp_path):
 
 
 def test_a_coin_that_cannot_be_sold_is_all_lost(tmp_path):
-    up = [flat(1.0), flat(3.0, 10)]
+    up = to_the_end([flat(1.0), flat(3.0, 10)])
     write_scored(
         tmp_path,
         [
@@ -698,7 +709,7 @@ def test_each_leg_pays_the_higher_of_the_launchs_tax_and_the_settled_one(tmp_pat
     """Review of 25 Nov: the taxes on a launch's row when the watch first met it were thrown away, so a tax lowered
     by the time of the settle read was charged at its low. Each leg pays the higher of the two reads, and a coin
     either read says cannot be sold is all lost."""
-    up = [flat(1.0), flat(2.0, 10)]
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
     lines = [
         coin(A, up, dict(NO_TAX, buy_tax="0.02", sell_tax="0.1"), first={"buy_tax": 0.05, "sell_tax": 0.03}),
         coin(B, up, dict(NO_TAX), first={"buy_tax": 0, "sell_tax": 0, "is_honeypot": 1}),  # no sale when first seen
@@ -721,7 +732,7 @@ def test_each_tax_is_read_on_its_own_and_no_coin_changes_how_another_is_read(tmp
     in the file made every tax of it a percent: five sell taxes of 0.6 (60 percent, no sale) read as 0.6 percent once
     a sixth coin's launch row said a buy tax of 3. Each value is read on its own now: 1 or less is a share of 1, above
     1 a percent. A value of 1 or less is so read as the higher of the two taxes it could be."""
-    up = [flat(1.0), flat(2.0, 10)]
+    up = to_the_end([flat(1.0), flat(2.0, 10)])
     sixty = [coin(m, up, dict(NO_TAX, sell_tax="0.6")) for m in (A, B, C, D, E)]
     for lines in (sixty, [*sixty, coin(F, up, first={"buy_tax": 3})]):
         write_scored(tmp_path, lines)
@@ -738,7 +749,7 @@ def test_a_copy_that_cannot_be_sold_still_pays_its_gas(tmp_path):
     """Second review of 25 Nov: a honeypot, or a sale lost to an emptied pool, scored -1 flat, while a coin that went
     to zero on Ethereum scored -1.06: each pays the two transactions' gas, as every other copy does."""
     write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)], {"is_honeypot": 1}),
-                            coin(B, [flat(1.0), flat(1e-12, 10)])], chain="eth")  # fmt: skip
+                            coin(B, to_the_end([flat(1.0), flat(1e-12, 10)]))], chain="eth")  # fmt: skip
     out = LW.score(tmp_path, "eth", fee_pct=0.0)  # 3 dollars a transaction: 0.06 of a copy of 100
     assert (out["gas_share"], pair(out, 2, 30)["mean"]) == (0.06, pytest.approx(-1.06))
     write_scored(tmp_path, [coin(C, [flat(1.0), flat(3.0, 10)], pool={"liquidity": "0"})], chain="eth")
@@ -747,7 +758,7 @@ def test_a_copy_that_cannot_be_sold_still_pays_its_gas(tmp_path):
 
 def test_the_table_says_how_the_coins_did_without_the_five_best_and_how_many_rugged(tmp_path):
     ends = {A: (10.0, 10.0), B: (5.0, 5.0), C: (2.0, 2.0), D: (1.5, 1.5), E: (1.2, 1.2), F: (0.5, 0.05), G: (0.1, 0.1)}
-    coins = [coin(m, [flat(1.0), (S + 10, 1.0, max(1.0, c), lo, c, 1.0)]) for m, (c, lo) in ends.items()]
+    coins = [coin(m, to_the_end([flat(1.0), (S + 10, 1.0, max(1.0, c), lo, c, 1.0)])) for m, (c, lo) in ends.items()]
     write_scored(tmp_path, coins)
     row = pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 30)  # returns 9, 4, 1, 0.5, 0.2, -0.5 and -0.9
     assert row["coins"] == 7
@@ -784,10 +795,10 @@ def test_a_missing_or_zero_price_is_skipped_never_divided_by(tmp_path):
     write_scored(
         tmp_path,
         [
-            coin(A, [flat(1.0), (S + 1, *nothing), (S + 2, 0, 0, 0, 0, 1.0), flat(3.0, 20)]),
+            coin(A, to_the_end([flat(1.0), (S + 1, *nothing), (S + 2, 0, 0, 0, 0, 1.0), flat(3.0, 20)])),
             coin(B, [(S, 0, 0, 0, 0, 1.0), (S + 30, *nothing)]),  # no price at all: no trade at any delay
             # its first trade 8 s in: none yet at 2 and 5 s (a candle from before its start is no trade of its 500 s)
-            coin(C, [flat(5.0, -5), flat(1.0, 8), flat(2.0, 20)]),
+            coin(C, to_the_end([flat(5.0, -5), flat(1.0, 8), flat(2.0, 20)])),
         ],
     )
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
@@ -813,11 +824,11 @@ def test_the_best_pair_is_split_by_launchpad(tmp_path):
     write_scored(
         tmp_path,
         [
-            coin(A, [flat(1.0), flat(2.0, 10)], platform="clanker"),
-            coin(B, [flat(1.0), flat(2.0, 10)], platform="clanker"),
-            coin(C, [flat(1.0), flat(0.5, 10)], platform="zora"),
-            coin(D, [flat(1.0), flat(0.5, 10)], platform="zora"),
-            coin(E, [flat(1.0), flat(1.5, 10)], platform=None),
+            coin(A, to_the_end([flat(1.0), flat(2.0, 10)]), platform="clanker"),
+            coin(B, to_the_end([flat(1.0), flat(2.0, 10)]), platform="clanker"),
+            coin(C, to_the_end([flat(1.0), flat(0.5, 10)]), platform="zora"),
+            coin(D, to_the_end([flat(1.0), flat(0.5, 10)]), platform="zora"),
+            coin(E, to_the_end([flat(1.0), flat(1.5, 10)]), platform=None),
         ],
     )
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
@@ -875,29 +886,38 @@ def test_a_coin_whose_safety_is_not_known_stays_in_the_table_marked_and_counted(
     assert [p["coins"] for p in out["by_platform"]] == [12]  # the best pair split by launchpad: every coin bought
 
 
-def test_a_sale_after_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_money(tmp_path):
-    """Review of 25 Nov: a sale after a coin's last trade was priced at that trade, so a pool its creator emptied (no
-    trade, no candle) scored as a win, and as no rug. A sale priced from a candle more than 60 s old is lost unless
-    the pool read at settle still held the copy's size; the table without those sales is given beside the main one."""
+def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_money(tmp_path):
+    """Reviews of 25 Nov: a sale after a coin's last trade was priced at that trade, so a pool its creator emptied (no
+    trade, no candle) scored as a win, and as no rug. Then only a sale priced from a candle over 60 s old counted, so
+    no 30 s hold ever did: coins pumped to 3.0 by 25 s and emptied showed +2.00 at 2/30, the best pair. A sale priced
+    from the coin's last trade in its 500 s is now lost unless the pool read at settle still held the copy's size; a
+    later trade shows the pool was there, so a quiet stretch keeps its price. The table without those sales is beside
+    the main one."""
     stops = [flat(1.0), flat(3.0, 10)]  # its last trade 10 s in
     lines = [
         coin(A, stops, pool={"liquidity": "0.02"}),  # emptied
         coin(B, stops, pool={"liquidity": "25000"}),  # still there: the last price stands
         coin(C, stops, pool={"error": "gmgn GET /v1/token/pool_info: HTTP 404 NOT_FOUND: no pool"}),  # not known
-        coin(D, [flat(1.0)] + [flat(1.5, t) for t in range(60, 500, 50)]),  # trades to the end: no stale sale
+        coin(D, [flat(1.0), *(flat(1.5, t) for t in range(60, 500, 50)), flat(1.5, 499)]),  # trades to the end
+        coin(E, [flat(1.0), flat(3.0, 10), flat(3.0, 200), flat(3.0, 499)]),  # quiet from 10 to 200 s: no pool read
     ]
     write_scored(tmp_path, lines)
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
-    early = pair(out, 2, 30)  # out at 32 s: A, B and C at their trade of 10 s (22 s old), D at its first
-    assert (early["coins"], early["stale_exits"]) == (4, 0) and early["mean"] == pytest.approx((2 + 2 + 2 + 0) / 4)
-    late = pair(out, 2, 120)  # out at 122 s: A, B and C at a trade 112 s old
-    assert (late["coins"], late["stale_exits"]) == (4, 3) and late["mean"] == pytest.approx((-1 + 2 - 1 + 0.5) / 4)
-    assert late["rug_share"] == pytest.approx(1 / 4)  # A's pool was emptied: a rug
+    early = pair(out, 2, 30)  # out at 32 s: A, B and C at their last trade, 10 s in; D at its first, E at 10 s's
+    assert (early["coins"], early["stale_exits"]) == (5, 3) and early["mean"] == pytest.approx((-1 + 2 - 1 + 0 + 2) / 5)
+    late = pair(out, 2, 120)  # out at 122 s: E at its trade of 10 s, 112 s old, which a trade at 200 s follows
+    assert (late["coins"], late["stale_exits"]) == (5, 3) and late["mean"] == pytest.approx((-1 + 2 - 1 + 0.5 + 2) / 5)
+    assert late["rug_share"] == pytest.approx(1 / 5)  # A's pool was emptied: a rug
     fresh = pair({"table": out["table_without_stale_exits"]}, 2, 120)
-    assert (fresh["coins"], fresh["mean"]) == (1, pytest.approx(0.5))
+    assert (fresh["coins"], fresh["mean"]) == (2, pytest.approx((0.5 + 2) / 2))
     assert out["pools"] == {"coins_with_a_stale_exit": 3, "there": 1, "gone": 1, "unknown": 1}
     # gone is less than the copy's own size: 25,000 dollars is gone for a copy of 50,000
     assert LW.score(tmp_path, "base", size_usd=50_000, gas_usd=0.0, fee_pct=0.0)["pools"]["gone"] == 2
+    # the review's coins: pumped to 3.0 by 25 s, then their pool emptied
+    pumped = [flat(1.0), flat(1.5, 5), flat(2.5, 15), flat(3.0, 25)]
+    write_scored(tmp_path, [coin(m, pumped, pool={"liquidity": "0"}) for m in MANY[:6]])
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    assert [pair(out, d, 30)["mean"] for d in LW.DELAYS] == [-1.0] * 4 and pair(out, 2, 30)["rug_share"] == 1.0
 
 
 def test_a_field_is_given_only_when_it_reads_as_a_tax_or_as_a_yes_or_no(tmp_path):
@@ -990,7 +1010,7 @@ def test_launch_watch_wants_its_minutes_and_sane_numbers(snipetech):
 
 
 def test_launch_score_reads_the_watched_file_and_needs_no_key(snipetech, tmp_path, monkeypatch):
-    write_scored(tmp_path, [coin(A, [flat(1.0), flat(2.0, 10)])])
+    write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])
     monkeypatch.delenv("GMGN_API_KEY")
     argv = ("launch-score", "--chain", "base", "--size-usd", "50", "--gas-usd", "1", "--fee-pct", "0.5", "--json")
     code, out, seen = snipetech(*argv)

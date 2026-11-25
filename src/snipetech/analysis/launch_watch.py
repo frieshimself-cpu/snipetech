@@ -9,7 +9,7 @@ launchpad of the chain, 80 coins at most) and writes each coin it has not seen t
 beside the database: the row the client makes of it with the taxes and honeypot flags GMGN gave on it, when it was
 first seen, and the chain. Once a coin is `settle_secs` past its start (900 s by default, so its 500 s of candles are
 over), it asks once for the coin's 1-second candles over the 500 s after its start and for its security numbers, and
-for its pool when a copy would sell it more than 60 s after its last trade, and writes them to <chain>_scored.jsonl
+for its pool when a copy would sell it at its last trade in its 500 s, and writes them to <chain>_scored.jsonl
 with the time of its last candle. A coin's start is its open time (a pool can open after its coin was made), else its
 creation, else when the watch first saw it.
 
@@ -52,9 +52,6 @@ DELAYS = (2, 5, 12, 30)  # seconds after a coin's start a copy buys
 HOLDS = (30, 120, 300, 480)  # seconds it holds
 WINDOW_SECS = 500  # the 1 s candles read of a coin, from its start: GMGN gives 500 in one request
 PAIRS = tuple((d, h) for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS)  # what the score reads: inside the 500 s
-# A sale priced from a candle that opened longer ago than this is stale: the coin had not traded since, and a pool its
-# creator emptied leaves no trade and no candle (review of 25 Nov: such a sale scored at the last price, as a win)
-STALE_SECS = 60
 EVERY_SECS = 60.0  # between two looks at GMGN's newest coins
 SETTLE_SECS = 900.0  # a coin's candles and security are read this long after its start
 POLL_LIMIT = 80  # the most coins GMGN gives of a stage
@@ -118,13 +115,13 @@ SCORE_READING = (
     "taken out; the best pair is the one with the highest, or, where too few coins leave none, the highest median. "
     "rug_share is the share of coins whose price fell to a tenth of their first candle's or below within the 500 s "
     "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
-    "is not scored (unsettled). A sale priced from a candle that opened more than 60 s before it (the coin had not "
-    "traded since) is stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody "
-    "could sell at. The watch reads such a coin's pool once, when it settles; a stale sale is lost (-1 and its gas) "
-    "unless that read "
-    "showed liquidity of the copy's size or more (pools: there, gone, or unknown when not read, refused or without a "
-    "liquidity), and a coin whose pool was gone counts as rugged. stale_exits says how many of a row's sales were "
-    "stale; table_without_stale_exits is the same table without those copies."
+    "is not scored (unsettled). A sale priced from the coin's last trade in its 500 s (no trade came after it) is "
+    "stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. "
+    "A trade after the sale shows the pool was still there, so a quiet stretch keeps its price. The watch reads a "
+    "coin's pool once, when it settles, if a copy would sell it stale; a stale sale is lost (-1 and its gas) unless "
+    "that read showed liquidity of the copy's size or more (pools: there, gone, or unknown when not read, refused or "
+    "without a liquidity), and a coin whose pool was gone counts as rugged. stale_exits says how many of a row's sales "
+    "were stale; table_without_stale_exits is the same table without those copies."
 )
 SECURITY_READING = (
     "Each coin is read twice: its row on GMGN's list of new coins when the watch first saw it (first_sight: the "
@@ -691,14 +688,17 @@ def _at(ts: list[int], moment: int) -> int:
 
 
 def _stale(ts: list[int], end: int) -> bool:
-    """Whether a sale at `end` is priced from a candle that opened more than STALE_SECS before it."""
-    return end - ts[_at(ts, end)] > STALE_SECS
+    """Whether a sale at `end` is priced from the coin's last trade in its 500 s: no trade came after it, and a pool
+    its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. A trade after
+    the sale shows the pool was still there: a quiet stretch keeps its price. (Reviews of 25 Nov: such a sale scored at
+    the last price, as a win; then only one more than 60 s after its candle was stale, and no 30 s hold ever was.)"""
+    return _at(ts, end) == len(ts) - 1
 
 
 def stale_exit(ts: list[int], start: int, fetched: int) -> bool:
-    """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price: after the
-    coin's last trade by more than STALE_SECS. `ts`: its priced candles' times (_path); `fetched`: when its candles
-    were read (a hold not over by then is not scored). What the watch reads a coin's pool for."""
+    """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price: at the coin's
+    last trade in its 500 s (_stale). `ts`: its priced candles' times (_path); `fetched`: when its candles were read (a
+    hold not over by then is not scored). What the watch reads a coin's pool for."""
     for d, h in PAIRS:
         end = start + d + h
         if _at(ts, start + d) >= 0 and not (fetched and fetched < end) and _stale(ts, end):
