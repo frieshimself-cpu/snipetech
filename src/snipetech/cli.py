@@ -1506,10 +1506,22 @@ def build_parser() -> argparse.ArgumentParser:
         "bought history (pumpfundata.com hourly files, one credit each): range | fetch | check against our own tape | "
         "scan the files on disk | table from a kept scan | follow: copy every wallet's first buys; "
         "the key is PUMPFUNDATA_API_KEY in the server's env file. amm-backfill (another source, the RPC): the "
-        "PumpSwap trades around big wallets' buys in older coins, from Helius into the tape, so a lab can score them",
+        "PumpSwap trades around big wallets' buys in older coins, from Helius into the tape, so a lab can score them. "
+        "schema: what a file on disk holds. amm-follow: every wallet's first buy of a PumpSwap pool in the bought "
+        "files (pump_amm) copied late and held minutes to hours, kept once; amm-table: those copies' wallets (or "
+        "--groups of buys, or --summary of every landing, size and exit) picked on the first --split-days and judged "
+        "on the days after",
     )
     sp.add_argument("action", choices=["range", "fetch", "check", "order", "scan", "table", "follow", "amm-backfill",
-                                       "schema"])  # fmt: skip
+                                       "schema", "amm-follow", "amm-table"])  # fmt: skip
+    sp.add_argument("--key", default="copy_1_600", help="amm-table: landing_size_exit of the copy scored (copy|slow, "
+                    "0.2|1|5 SOL, 60|600|3600|21600 s held or sell: behind the wallet's first sale)")  # fmt: skip
+    sp.add_argument("--split-days", type=int, default=21, help="amm-table: the first days (UTC) picked on; the rest "
+                    "judge")  # fmt: skip
+    sp.add_argument("--groups", action="store_true", help="amm-table: groups of buys by size, pool depth and age "
+                    "instead of wallets")  # fmt: skip
+    sp.add_argument("--summary", action="store_true", help="amm-table: wallets and the best group for every key")
+    sp.add_argument("--min-n", type=int, default=100, help="amm-table --groups: copies a group needs on the first days")
     sp.add_argument("--wallet", action="append", default=[], help="amm-backfill: a wallet whose PumpSwap buys are "
                     "backfilled (repeat for several)")  # fmt: skip
     sp.add_argument("--group", help="amm-backfill: every wallet of this label group as well (big, kol, wallet, "
@@ -2941,6 +2953,50 @@ def _amm_backfill(args, cfg: Config) -> int:
     return 0
 
 
+def _amm_history(args, cfg: Config) -> int:
+    """`history amm-follow`: every wallet's first buy of a PumpSwap pool in the bought files (pump_amm, --from/--to)
+    copied late and held minutes to hours (analysis/amm_follow.py), kept once in a Parquet file beside them, holding a
+    lab slot while it reads; `history amm-table`: those copies' wallets (--groups: groups of buys; --summary: every
+    landing, size and exit at once) picked on the first --split-days and judged on the days after."""
+    from .analysis import amm_follow as af
+
+    data = Path(cfg.storage.db_path).resolve().parent
+    here = data / "history" / "pumpfundata" / "pump_amm"
+    lo, hi = args.from_day or "0000", args.to_day or args.from_day or "9999"
+    kept = here / "follows" / f"amm_events_{lo}_{hi}_{args.min_sol:g}.parquet"
+    if args.action == "amm-follow":
+        from .analysis.lab_lock import lab_lock
+
+        paths = [p for p in sorted(here.glob("*.parquet")) if lo <= p.name.split("_")[-2] <= hi]
+        if not paths:
+            print(f"history amm-follow: no PumpSwap files on disk for {lo}..{hi}", file=sys.stderr)
+            return 2
+        stats: dict = {}
+        with lab_lock(data):
+            writer = af.EventWriter(kept)
+            try:
+                af.follow_amm(paths, writer.add, min_sol=args.min_sol, stats=stats)
+            except BaseException:
+                writer.writer.close()
+                writer.tmp.unlink(missing_ok=True)  # a run cut short leaves nothing that reads as the month
+                raise
+            writer.close()
+        print(json.dumps({"path": str(kept), "from": paths[0].name, "to": paths[-1].name, **stats}, indent=1))
+        return 0
+    if not kept.exists():
+        print(f"history amm-table: nothing kept for {lo}..{hi} ({kept.name}): run `history amm-follow` first",
+              file=sys.stderr)  # fmt: skip
+        return 2
+    if args.summary:
+        out = af.amm_summary(kept, split_days=args.split_days, min_pick=args.min_pick, min_n=args.min_n)
+    elif args.groups:
+        out = af.amm_groups(kept, split_days=args.split_days, key=args.key, min_n=args.min_n, top=args.top)
+    else:
+        out = af.amm_table(kept, split_days=args.split_days, min_pick=args.min_pick, key=args.key, top=args.top)
+    print(json.dumps(out, indent=1, default=str))
+    return 0
+
+
 def _history(args, cfg: Config) -> int:
     """`snipetech history range | fetch | check`: the bought hourly files, kept under <data>/history/pumpfundata/.
     `history amm-backfill` is another source and its own function (`_amm_backfill`)."""
@@ -2955,6 +3011,8 @@ def _history(args, cfg: Config) -> int:
         args.min_sol = 1.0 if args.action == "amm-backfill" else 0.5
     if args.action == "amm-backfill":  # another source (the RPC): no bought file and none of their key
         return _amm_backfill(args, cfg)
+    if args.action in ("amm-follow", "amm-table"):  # no call to the vendor: the PumpSwap files and copies on disk
+        return _amm_history(args, cfg)
     if args.action == "schema":  # no call to the vendor and no credit: one file on disk, its columns and a few rows
         here = Path(cfg.storage.db_path).resolve().parent / "history" / "pumpfundata" / args.exchange
         files = sorted(here.glob("*.parquet")) if here.is_dir() else []
