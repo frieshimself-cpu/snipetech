@@ -155,7 +155,7 @@ SCORE_READING = (
     "none in the answer) or zero. pools "
     "counts those coins by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
     "unknown (not read, refused or without a liquidity). stale_exits says how many of a row's sales were stale; "
-    "table_without_stale_exits is the same table without those copies."
+    "stale_sales shows those copies alone, each pair's: how many, their mean, and how many were lost."
 )
 SECURITY_READING = (
     "Each coin is read twice: its row on GMGN's list of new coins when the watch first saw it (first_sight: the "
@@ -984,38 +984,44 @@ def _rank(row: dict) -> tuple[int, float]:
 
 class _Pair:
     """The copies of one entry delay and hold, side by side: returns, launchpads (by number), and rug, honeypot,
-    stale-sale, unknown-security and big-for-its-pool marks."""
+    stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
 
-    __slots__ = ("big", "honeypot", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
+    __slots__ = ("big", "honeypot", "lost", "plats", "rets", "rugs", "stale", "unknown", "unsettled")
 
     def __init__(self) -> None:
         self.rets, self.plats = array("d"), array("I")
         self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
-        self.big = bytearray()
+        self.lost, self.big = bytearray(), bytearray()
         self.unsettled = 0
 
-    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool, unknown: bool, big: bool) -> None:
+    def add(self, ret: float, plat: int, rug: bool, honeypot: bool, stale: bool, lost: bool, unknown: bool,
+            big: bool) -> None:  # fmt: skip
         self.rets.append(ret)
         self.plats.append(plat)
         self.rugs.append(rug)
         self.honeypot.append(honeypot)
         self.stale.append(stale)
+        self.lost.append(lost)
         self.unknown.append(unknown)
         self.big.append(big)
 
-    def row(self, fresh_only: bool = False) -> dict:
+    def row(self) -> dict:
         """The pair's numbers (_stats), its honeypots, its holds not over when read, its copies whose security is not
-        known, its copies above 5 percent of their pool and its stale sales; with `fresh_only`, those of the copies
-        whose sale was not stale."""
-        keep = [k for k in range(len(self.rets)) if not (fresh_only and self.stale[k])]
-        out = {
-            **_stats([self.rets[k] for k in keep], [self.rugs[k] for k in keep]),
-            "honeypots": sum(self.honeypot[k] for k in keep),
+        known, its copies above 5 percent of their pool and its stale sales."""
+        return {
+            **_stats(self.rets, self.rugs),
+            "honeypots": sum(self.honeypot),
             "unsettled": self.unsettled,
-            "security_unknown": sum(self.unknown[k] for k in keep),
-            "over_5pct_of_pool": sum(self.big[k] for k in keep),
+            "security_unknown": sum(self.unknown),
+            "over_5pct_of_pool": sum(self.big),
+            "stale_exits": sum(self.stale),
         }
-        return out if fresh_only else out | {"stale_exits": sum(self.stale)}
+
+    def stale_row(self) -> dict:
+        """The pair's stale sales alone: how many, their mean, and how many were lost (no liquidity read at settle).
+        Third review of 25 Nov: the table without them was a table of the coins that lived."""
+        rets = [r for r, stale in zip(self.rets, self.stale, strict=True) if stale]
+        return {"coins": len(rets), "mean": _r(statistics.fmean(rets)) if rets else None, "lost": sum(self.lost)}
 
 
 class _Score:
@@ -1138,11 +1144,11 @@ class _Score:
                 else:
                     ret = ratio * entry_keep * exit_keep * self.kept * keep - 1.0 - self.share
                 for pairs in tables:
-                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, unknown, big)
+                    pairs[(d, h)].add(ret, plat, rug, honeypot, stale, lost, unknown, big)
 
     @staticmethod
-    def _table(pairs: dict[tuple[int, int], _Pair], fresh_only: bool = False) -> list[dict]:
-        return [{"delay": d, "hold": h, **p.row(fresh_only)} for (d, h), p in pairs.items()]
+    def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:
+        return [{"delay": d, "hold": h, **p.row()} for (d, h), p in pairs.items()]
 
     def report(self) -> dict:
         table = self._table(self.pairs)
@@ -1171,7 +1177,7 @@ class _Score:
             },
             "by_delay": [{"delay": d, "with_entry": self.entries[d], "no_trade_yet": self.no_trade[d]} for d in DELAYS],
             "table": table,
-            "table_without_stale_exits": self._table(self.pairs, fresh_only=True),
+            "stale_sales": [{"delay": d, "hold": h, **p.stale_row()} for (d, h), p in self.pairs.items()],
             "pools": dict(self.pools),
             "security_unknown": {
                 "coins": self.n["security_refused"] + self.n["security_without_fields"],

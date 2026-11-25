@@ -1088,8 +1088,8 @@ def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_
     trade, no candle) scored as a win, and as no rug. Then only a sale priced from a candle over 60 s old counted, so
     no 30 s hold ever did: coins pumped to 3.0 by 25 s and emptied showed +2.00 at 2/30, the best pair. A sale priced
     from the coin's last trade in its 500 s is now lost unless the pool read at settle still held the copy's size; a
-    later trade shows the pool was there, so a quiet stretch keeps its price. The table without those sales is beside
-    the main one."""
+    later trade shows the pool was there, so a quiet stretch keeps its price. Those sales alone are beside the main
+    table."""
     stops = [flat(1.0), flat(3.0, 10)]  # its last trade 10 s in
     lines = [
         coin(A, stops, pool={"liquidity": "0.02"}),  # emptied
@@ -1107,8 +1107,8 @@ def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_
     late = pair(out, 2, 120)  # out at 122 s: E at its trade of 10 s, 112 s old, which a trade at 200 s follows
     assert (late["coins"], late["stale_exits"], late["mean"]) == (5, 3, pytest.approx((a + b + 1.5) / 5, abs=1e-4))
     assert late["rug_share"] == pytest.approx(1 / 5)  # A's pool was emptied: a rug
-    fresh = pair({"table": out["table_without_stale_exits"]}, 2, 120)
-    assert (fresh["coins"], fresh["mean"]) == (2, pytest.approx((0.5 + 2) / 2))
+    stale = pair({"table": out["stale_sales"]}, 2, 120)  # A's, B's and C's, alone: C's was lost, its pool unknown
+    assert (stale["coins"], stale["mean"], stale["lost"]) == (3, pytest.approx((a + b - 1) / 3, abs=1e-4), 1)
     assert out["pools"] == {"coins_with_a_stale_exit": 3, "there": 1, "gone": 1, "unknown": 1}
     # gone is less than the copy's own size: 25,000 dollars is gone for a copy of 50,000
     assert LW.score(tmp_path, "base", size_usd=50_000, gas_usd=0.0, fee_pct=0.0)["pools"]["gone"] == 2
@@ -1117,6 +1117,21 @@ def test_a_sale_at_the_coins_last_trade_is_all_lost_unless_its_pool_still_holds_
     write_scored(tmp_path, [coin(m, pumped, pool={"liquidity": "0"}) for m in MANY[:6]])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert [pair(out, d, 30)["mean"] for d in LW.DELAYS] == [-1.0] * 4 and pair(out, 2, 30)["rug_share"] == 1.0
+
+
+def test_the_stale_sales_are_shown_alone_not_a_table_of_the_coins_that_lived(tmp_path):
+    """Third review of 25 Nov: table_without_stale_exits left out every copy sold after its coin's last trade, the
+    copies of the coins whose pool was pulled: a table of the coins that lived, which read +10 percent and no rug where
+    the buyers got -45 percent and half their coins rugged. The stale sales are shown alone instead: how many, their
+    mean, and how many were lost."""
+    pulled = [coin(m, [flat(1.0), flat(1.5, 10)], pool={"liquidity": "0"}) for m in MANY[:5]]
+    lived = [coin(m, to_the_end([flat(1.0), flat(1.1, 10)])) for m in MANY[5:10]]
+    write_scored(tmp_path, pulled + lived)
+    out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
+    row, stale = pair(out, 2, 30), pair({"table": out["stale_sales"]}, 2, 30)
+    assert (row["coins"], row["mean"], row["rug_share"], row["stale_exits"]) == (10, -0.45, 0.5, 5)
+    assert {k: stale[k] for k in ("coins", "mean", "lost")} == {"coins": 5, "mean": -1.0, "lost": 5}
+    assert "table_without_stale_exits" not in out and "stale_sales" in out["reading"]
 
 
 def test_a_trade_into_an_emptied_pool_shows_no_pool(tmp_path):
