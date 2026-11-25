@@ -394,11 +394,15 @@ def _gmgn_launch_watch(args, cfg, mark) -> tuple[dict, int]:
     from . import gmgn
     from .analysis import launch_watch
 
+    given = {k: v for k, v in (("every", args.every), ("settle_secs", args.settle_secs)) if v is not None}
+    try:  # the numbers first: a wrong one is exit 2 whether or not a key is set
+        launch_watch.watch_numbers(args.minutes, **given)
+    except ValueError as exc:
+        return {"ok": False, "status": None, "error": str(exc)}, 2
     try:
         client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark, chain=args.chain)
     except gmgn.GmgnError as exc:
         return {"ok": False, "status": None, "error": str(exc)}, 0
-    given = {k: v for k, v in (("every", args.every), ("settle_secs", args.settle_secs)) if v is not None}
     try:
         data = Path(cfg.storage.db_path).resolve().parent
         return launch_watch.watch(client, data, minutes=args.minutes, log=_progress, **given), 0

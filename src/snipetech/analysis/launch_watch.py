@@ -598,6 +598,15 @@ def watch(
 ) -> dict:
     """`snipetech gmgn launch-watch`: watch the client's chain for `minutes` and say how it went. A wrong number is a
     ValueError, raised before anything is asked."""
+    minutes, every, settle = watch_numbers(minutes, every, settle_secs)
+    job = LaunchWatch(client, data_dir, every=every, settle_secs=settle, clock=clock, sleep=sleep, log=log)
+    return job.run(minutes)
+
+
+def watch_numbers(minutes: Any, every: Any = EVERY_SECS, settle_secs: Any = SETTLE_SECS) -> tuple[float, float, float]:
+    """A watch's --minutes, --every and --settle-secs as numbers it can use, or a ValueError that says which is wrong:
+    checked before anything else, the client too (third review of 25 Nov: with no key set, a wrong number ended with
+    the missing key's exit 1)."""
     if minutes is None:
         raise ValueError("gmgn launch-watch: give --minutes N, how long it watches (0: it only reads what has settled)")
     minutes = _number("gmgn launch-watch: --minutes", minutes, 0.0)
@@ -606,8 +615,7 @@ def watch(
                          "a longer watch is several jobs, each going on where the last stopped")  # fmt: skip
     every = _number("gmgn launch-watch: --every", every, 1.0)
     settle = _number("gmgn launch-watch: --settle-secs", settle_secs, 0.0)
-    job = LaunchWatch(client, data_dir, every=every, settle_secs=settle, clock=clock, sleep=sleep, log=log)
-    return job.run(minutes)
+    return minutes, every, settle
 
 
 # -- the score ---------------------------------------------------------------------------------------------------------

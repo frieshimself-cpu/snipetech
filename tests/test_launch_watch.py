@@ -1035,6 +1035,18 @@ def test_launch_watch_wants_its_minutes_and_sane_numbers(snipetech):
     assert "7 days" in out["error"]
 
 
+def test_a_wrong_number_is_exit_2_with_no_key_set_too(snipetech, monkeypatch):
+    """Third review of 25 Nov: the client was made before the numbers were checked, so with no key set a wrong number
+    ended with the missing key's exit 1."""
+    monkeypatch.delenv("GMGN_API_KEY")
+    wrong = ((), ("--minutes", "-1"), ("--minutes", "1", "--every", "0"), ("--minutes", "1", "--settle-secs", "-5"))
+    for argv in wrong:
+        code, out, seen = snipetech("launch-watch", "--chain", "base", *argv, "--json")
+        assert code == 2 and "GMGN_API_KEY" not in out["error"] and not seen, argv
+    code, out, _ = snipetech("launch-watch", "--chain", "base", "--minutes", "1", "--json")
+    assert code == 1 and "GMGN_API_KEY" in out["error"]  # good numbers and no key: the key's own refusal
+
+
 def test_launch_score_reads_the_watched_file_and_needs_no_key(snipetech, tmp_path, monkeypatch):
     write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])
     monkeypatch.delenv("GMGN_API_KEY")
