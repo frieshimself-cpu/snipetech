@@ -289,3 +289,57 @@ def test_gmgn_may_run_as_a_server_job_and_an_agents_job_and_holds_no_deploy_back
     assert not holds_deploy(["gmgn", "ping", "--json"])  # a look-up of seconds: no numbers a deploy would confuse
     assert "gmgn" not in cli.BATCH_COMMANDS  # it waits on GMGN, it does not use the processor
     assert "GMGN_API_KEY" in REDACT_ENV  # and the server scrubs the key from every job's output
+
+
+# -- other chains: BNB Chain, Base, Ethereum (owner, 25 Nov: "what about evm", "or bnb", "what about base") ----------------
+
+EVM = "0x" + "ab12" * 10  # a wallet's address on an EVM chain: 0x and 40 hex digits
+
+
+def _chains(seen):
+    """The chain each request named: in its query on a GET, in its body on a POST."""
+    return {r.url.params.get("chain") or json.loads(r.content or b"{}").get("chain") for r in seen}
+
+
+def test_the_lists_and_a_wallet_can_be_read_on_another_chain(gmgn):
+    """GMGN's data covers BNB Chain (bsc), Base and Ethereum. A first look at another chain's wallets (do they keep
+    making money?) asks the same lists and the same wallet reads with that chain, and nothing else."""
+    code, out, seen = gmgn("smart-money", "--chain", "bsc", "--stats", "2", "--json")
+    assert code == 0 and out["ok"] is True and out["chain"] == "bsc" and out["wallets"]
+    assert _chains(seen) == {"bsc"}
+    code, out, seen = gmgn("kol", "--chain", "base", "--stats", "0", "--json")
+    assert code == 0 and out["chain"] == "base" and _chains(seen) == {"base"}
+    code, out, seen = gmgn("wallet", EVM, "--chain", "bsc", "--json")
+    assert code == 0 and out["wallet"] == EVM and _chains(seen) == {"bsc"}
+    code, out, seen = gmgn("token", "0x" + "cd34" * 10, "--chain", "base", "--json")
+    assert code == 0 and _chains(seen) == {"base"}
+
+
+def test_another_chains_wallet_is_never_kept_beside_our_solana_wallets(gmgn):
+    gmgn("wallet", EVM, "--chain", "bsc", "--json")
+    store = Store(gmgn.db)
+    try:
+        assert not [r for r in store.conn.execute("SELECT * FROM labels").fetchall() if EVM in tuple(map(str, r))]
+    finally:
+        store.close()
+
+
+def test_launches_and_their_candles_can_be_read_on_another_chain(gmgn):
+    """Sniping Base and ETH launches (owner, 25 Nov) is first tested on GMGN's new pairs and their candles there:
+    every launchpad of that chain (pump.fun's names mean nothing on it), and the chain on every request."""
+    code, out, seen = gmgn("new-pairs", "--chain", "base", "--json")
+    assert code == 0 and out["platforms"] is None and _chains(seen) == {"base"}
+    code, out, seen = gmgn("trending", "--chain", "eth", "--json")
+    assert code == 0 and out["platforms"] is None and _chains(seen) == {"eth"}
+    code, out, seen = gmgn("candles", "0x" + "cd34" * 10, "--chain", "base", "--resolution", "1s", "--json")
+    assert code == 0 and _chains(seen) == {"base"}
+
+
+def test_solana_only_reads_and_a_solana_address_are_refused_on_another_chain(gmgn):
+    for argv in (("fees", EVM), ("funder", EVM), ("gas",), ("top-traders",)):
+        code, out, seen = gmgn(*argv, "--chain", "bsc", "--json")
+        assert code == 2 and out["ok"] is False and "bsc" in out["error"] and not seen, argv
+    code, out, seen = gmgn("wallet", K1, "--chain", "bsc", "--json")  # a Solana address is no BNB wallet
+    assert code == 2 and not seen
+    code, out, seen = gmgn("wallet", EVM, "--json")  # nor an EVM address a Solana one
+    assert code == 2 and not seen

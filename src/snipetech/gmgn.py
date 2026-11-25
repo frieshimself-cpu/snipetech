@@ -111,6 +111,13 @@ HINTS = {
     "PLAN_UPGRADE_REQUIRED": "the key's plan does not include this route; waiting will not help",
 }
 ADDRESS = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+EVM_ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")  # a wallet or a coin on BNB Chain, Base or Ethereum
+# The chains GMGN's data covers that a look-up may ask (owner, 25 Nov: "what about evm", "or bnb", "what about base",
+# "sniping base and eth launches"): Solana, BNB Chain, Base, Ethereum. Our tape, labs and snipers are Solana's only.
+CHAINS = ("sol", "bsc", "base", "eth")
+# what only Solana has: a wallet's fees in SOL and its funder beside our tape, GMGN's fee presets in SOL, and the hottest
+# pump.fun coins' top traders (a coin's own top traders are asked on any chain)
+SOLANA_ONLY = frozenset({"fees", "funder", "gas"})
 KOL_TAGS = frozenset({"kol", "renowned"})  # how GMGN marks a known person's wallet (lists and coin pages)
 PUMP_WORDS = ("pump",)
 
@@ -166,8 +173,14 @@ def _rows(data: Any, *keys: str) -> list[dict]:
     return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
 
 
-def is_wallet(address: Any) -> bool:
-    return isinstance(address, str) and bool(ADDRESS.match(address))
+def is_wallet(address: Any, chain: str | None = None) -> bool:
+    """An address of `chain` (Solana's base58, or an EVM chain's 0x and 40 hex digits); None: of any chain GMGN
+    covers, as its rows are read (an answer about one chain holds that chain's addresses only)."""
+    if not isinstance(address, str):
+        return False
+    if chain is None:
+        return bool(ADDRESS.match(address) or EVM_ADDRESS.match(address))
+    return bool((ADDRESS if chain == "sol" else EVM_ADDRESS).match(address))
 
 
 def default_transport() -> httpx.BaseTransport | None:
@@ -190,7 +203,11 @@ class Gmgn:
         timeout: float = 20.0,
         counter: Callable[[int], None] | None = None,
         max_wait: float = 10.0,
+        chain: str = "sol",
     ):
+        if chain not in CHAINS:
+            raise ValueError(f"gmgn: chain {chain!r} is not one of {', '.join(CHAINS)}")
+        self.chain = chain  # what every read asks about unless it names a chain
         self._key = key or os.environ.get(ENV_KEY) or ""
         if not self._key:
             raise GmgnError(NO_KEY)
@@ -358,18 +375,21 @@ class Gmgn:
         }
 
     def _feed(self, path: str, chain: str, limit: int, raw: bool) -> Any:
+        chain = chain or self.chain
         data = self._request("GET", path, {"chain": chain, "limit": min(200, max(1, int(limit)))})
         if raw:
             return data
         return [row for row in map(self._feed_row, _rows(data, "list")) if row]
 
-    def kol_feed(self, chain: str = "sol", limit: int = 100, raw: bool = False) -> Any:
+    def kol_feed(self, chain: str | None = None, limit: int = 100, raw: bool = False) -> Any:
         """The newest trades of the wallets GMGN lists as KOLs (known people), newest first, 200 at most. Each row
         names the wallet, its name and X handle when GMGN has them, its tags, the coin and the dollars."""
+        chain = chain or self.chain
         return self._feed("/v1/user/kol", chain, limit, raw)
 
-    def smart_money_feed(self, chain: str = "sol", limit: int = 100, raw: bool = False) -> Any:
+    def smart_money_feed(self, chain: str | None = None, limit: int = 100, raw: bool = False) -> Any:
         """The newest trades of the wallets GMGN's own ranking calls smart money (tag smart_degen), 200 at most."""
+        chain = chain or self.chain
         return self._feed("/v1/user/smartmoney", chain, limit, raw)
 
     # the fields of a statistics answer this client gives a name; any other plain field is kept under `extra`
@@ -484,11 +504,12 @@ class Gmgn:
             "created_tokens": _int(who["created_token_count"]) if who.get("created_token_count") is not None else None,
         }
 
-    def wallet_stats(self, wallet: str, period: str = "7d", chain: str = "sol", raw: bool = False) -> Any:
+    def wallet_stats(self, wallet: str, period: str = "7d", chain: str | None = None, raw: bool = False) -> Any:
         """One wallet's trading over 7d or 30d: realized profit in dollars, win rate (0 to 1), what it spent and what
         its trades cost in fees, how many buys and sells, when it last traded, and who GMGN says it is: name, X
         handle, tags, X followers (`followers`), how many GMGN users follow the wallet (`follow_count`: how copied it
         is) and the wallet that funded it. Unrealized profit is not in this answer (`wallet_profits` has it)."""
+        chain = chain or self.chain
         if period not in ("7d", "30d"):
             raise ValueError("period: 7d or 30d")
         data = self._request(
@@ -500,9 +521,12 @@ class Gmgn:
             data = data[0] if data and isinstance(data[0], dict) else {}
         return self._stats_row(data if isinstance(data, dict) else {}, wallet, period)
 
-    def wallet_profits(self, wallets: Iterable[str], period: str = "7d", chain: str = "sol", raw: bool = False) -> Any:
+    def wallet_profits(
+        self, wallets: Iterable[str], period: str = "7d", chain: str | None = None, raw: bool = False
+    ) -> Any:
         """Profit of up to 100 wallets in one request (1d, 7d, 30d or all): realized over the period with its cost,
         buys and sells, unrealized now, and realized over all time."""
+        chain = chain or self.chain
         wallets = list(wallets)
         if not 1 <= len(wallets) <= 100:
             raise ValueError("wallet_profits: 1 to 100 wallets a request")
@@ -537,7 +561,7 @@ class Gmgn:
         token: str | None = None,
         cursor: str | None = None,
         kinds: list[str] | None = None,
-        chain: str = "sol",
+        chain: str | None = None,
         raw: bool = False,
     ) -> Any:
         """A wallet's own history, newest first: every buy, sell and transfer with the coin, the dollars, the token it
@@ -547,6 +571,7 @@ class Gmgn:
         bought): each row then carries half the transaction's fee (`fees` adds them up). `next` is the cursor of the
         following page (None on the last). A page holds 50 rows at most; GMGN answers an ask for more with 20, so
         more is never asked."""
+        chain = chain or self.chain
         data = self._request(
             "GET",
             "/v1/user/wallet_activity",
@@ -592,16 +617,18 @@ class Gmgn:
             )
         return {"rows": rows, "next": (data.get("next") or None) if isinstance(data, dict) else None}
 
-    def created_tokens(self, wallet: str, chain: str = "sol") -> Any:
+    def created_tokens(self, wallet: str, chain: str | None = None) -> Any:
         """The coins a wallet created, as GMGN sends them: `tokens` (100 at most), how many are still on their curve
         (`inner_count`) and how many left it (`open_count`), and its best coin (`creator_ath_info`)."""
+        chain = chain or self.chain
         return self._request("GET", "/v1/user/created_tokens", {"chain": chain, "wallet_address": wallet})
 
     # -- a coin --------------------------------------------------------------------------------------------------------
 
-    def token_info(self, mint: str, chain: str = "sol", raw: bool = False) -> Any:
+    def token_info(self, mint: str, chain: str | None = None, raw: bool = False) -> Any:
         """A coin's card: price, liquidity, holders, launchpad and how far its curve is, its creator (and how many
         coins that wallet launched), its links, and how many smart, KOL, sniper, insider and bundler wallets hold it."""
+        chain = chain or self.chain
         data = self._request("GET", "/v1/token/info", {"chain": chain, "address": mint})
         if raw or not isinstance(data, dict):
             return data
@@ -651,14 +678,16 @@ class Gmgn:
             },
         }
 
-    def token_security(self, mint: str, chain: str = "sol") -> Any:
+    def token_security(self, mint: str, chain: str | None = None) -> Any:
         """A coin's risk numbers as GMGN sends them: mint and freeze authority given up, top-10 share, rug_ratio,
         wash trading, the share of volume from insiders (rat_trader) and bundlers, how many snipers bought the launch.
         The map of GMGN's skills says rug_ratio may be missing here and present on list rows (trending, new pairs)."""
+        chain = chain or self.chain
         return self._request("GET", "/v1/token/security", {"chain": chain, "address": mint})
 
-    def token_pool(self, mint: str, chain: str = "sol") -> Any:
+    def token_pool(self, mint: str, chain: str | None = None) -> Any:
         """The coin's main pool as GMGN sends it: exchange, liquidity, reserves."""
+        chain = chain or self.chain
         return self._request("GET", "/v1/token/pool_info", {"chain": chain, "address": mint})
 
     @staticmethod
@@ -696,6 +725,7 @@ class Gmgn:
         }
 
     def _holders(self, path: str, mint: str, limit: int, order_by: str, tag: str | None, chain: str, raw: bool) -> Any:
+        chain = chain or self.chain
         data = self._request(
             "GET",
             path,
@@ -718,13 +748,14 @@ class Gmgn:
         limit: int = 20,
         order_by: str = "amount_percentage",
         tag: str | None = None,
-        chain: str = "sol",
+        chain: str | None = None,
         raw: bool = False,
     ) -> Any:
         """A coin's biggest holders (100 at most), pools left out. `tags` are GMGN's labels for the wallet (kol,
         smart_degen, a trading app), `coin_tags` what it did in this coin (sniper, bundler, rat_trader = insider,
         creator, dev_team, top_holder). `tag` asks for one kind only: smart_degen, renowned (KOLs), sniper, rat_trader,
         bundler, dev, fresh_wallet, transfer_in, dex_bot, bluechip_owner."""
+        chain = chain or self.chain
         return self._holders("/v1/market/token_top_holders", mint, limit, order_by, tag, chain, raw)
 
     def token_traders(
@@ -733,11 +764,12 @@ class Gmgn:
         limit: int = 20,
         order_by: str = "profit",
         tag: str | None = None,
-        chain: str = "sol",
+        chain: str | None = None,
         raw: bool = False,
     ) -> Any:
         """The wallets that made the most on a coin (by `order_by`: profit, unrealized_profit, buy_volume_cur,
         sell_volume_cur, amount_percentage), with the same tags as the holders."""
+        chain = chain or self.chain
         return self._holders("/v1/market/token_top_traders", mint, limit, order_by, tag, chain, raw)
 
     # -- the market ----------------------------------------------------------------------------------------------------
@@ -792,7 +824,7 @@ class Gmgn:
         order_by: str | None = None,
         platforms: list[str] | None = None,
         filters: list[str] | None = None,
-        chain: str = "sol",
+        chain: str | None = None,
         raw: bool = False,
         **ranges: Any,
     ) -> Any:
@@ -801,6 +833,7 @@ class Gmgn:
         ("Pump.fun", "pump_mayhem", "pool_pump_amm", ...); `ranges` are GMGN's own bounds (min_marketcap=50000,
         max_created="30m", min_smart_degen_count=3, ...). `filters` are GMGN's screening tags; without any, its own
         defaults for Solana apply (mint and freeze authority given up), and only a documented tag is sent."""
+        chain = chain or self.chain
         unknown = sorted(set(filters or ()) - TREND_FILTERS)
         if unknown:
             raise ValueError(f"trending: not a filter tag GMGN documents: {', '.join(unknown)}")
@@ -827,11 +860,12 @@ class Gmgn:
         kinds: list[str] | None = None,
         platforms: list[str] | None = None,
         limit: int = 80,
-        chain: str = "sol",
+        chain: str | None = None,
         raw: bool = False,
     ) -> Any:
         """GMGN's "trenches": the newest coins (`new`), the ones about to leave their curve (`near_completion`) and the
         ones that just did (`completed`), 80 a stage at most."""
+        chain = chain or self.chain
         section: dict[str, Any] = {
             "filters": ["offchain", "onchain"],
             "launchpad_platform_v2": True,
@@ -866,13 +900,14 @@ class Gmgn:
         resolution: str = "1m",
         start: int | None = None,
         end: int | None = None,
-        chain: str = "sol",
+        chain: str | None = None,
         raw: bool = False,
     ) -> Any:
         """A coin's candles, oldest first: prices in dollars, `volume_usd` the dollars traded (GMGN's `volume`),
         `volume_tokens` the coins (GMGN's `amount`; its documents had the two the other way round, a real candle
         settles it: coins times price is the dollars). `start` and `end` are unix seconds (GMGN wants milliseconds:
         converted here). 1s is Pro only, 500 a request."""
+        chain = chain or self.chain
         if resolution not in RESOLUTIONS:
             raise ValueError(f"resolution: one of {', '.join(RESOLUTIONS)}")
         data = self._request(
@@ -901,17 +936,19 @@ class Gmgn:
             for c in _rows(data, "list")
         ]
 
-    def signals(self, kinds: list[int] | None = None, chain: str = "sol", **bounds: Any) -> Any:
+    def signals(self, kinds: list[int] | None = None, chain: str | None = None, **bounds: Any) -> Any:
         """GMGN's coin signals as it sends them, newest first, 50 at most: 12 = a smart-money buy, 20 = a KOL buy,
         6 = a price spike, 7 = an all-time high, 10 = bundlers selling, 11 = a community takeover, 18 = a pump.fun
         fee claim. `bounds`: mc_min, mc_max, trigger_mc_min, trigger_mc_max (dollars)."""
+        chain = chain or self.chain
         group = {k: v for k, v in dict(bounds, signal_type=list(kinds) if kinds else None).items() if v is not None}
         return self._request("POST", "/v1/market/token_signal", {}, {"chain": chain, "groups": [group]})
 
-    def callouts(self, only_kol: bool = True, limit: int = 50, chain: str = "sol") -> Any:
+    def callouts(self, only_kol: bool = True, limit: int = 50, chain: str | None = None) -> Any:
         """The coins people called on GMGN, newest first, as it sends them (`list`): who called (wallet, X handle,
         KOL or not), the coin, the price then and how many times it has multiplied since, and what the caller still
         holds of it."""
+        chain = chain or self.chain
         return self._request(
             "POST",
             "/v1/callout/global",
@@ -919,10 +956,11 @@ class Gmgn:
             {"chains": [chain], "limit": min(50, max(0, int(limit))), "only_kol": bool(only_kol)},
         )
 
-    def search(self, query: str, chain: str = "sol", raw: bool = False) -> Any:
+    def search(self, query: str, chain: str | None = None, raw: bool = False) -> Any:
         """GMGN's search by name, symbol, X handle or address: the wallets it finds (50 at most, each with its X handle
         and tags) and the coins. It is fuzzy: one handle can come back with a fan's wallet beside the real ones
         (`who` sorts them)."""
+        chain = chain or self.chain
         text = "".join(ch for ch in " ".join(str(query).split()) if ch.isprintable())
         if not 1 <= len(text) <= 100:
             raise ValueError("search: 1 to 100 characters")
@@ -963,12 +1001,13 @@ class Gmgn:
         ]
         return {"wallets": wallets, "coins": coins}
 
-    def gas_price(self, chain: str = "sol", raw: bool = False) -> Any:
+    def gas_price(self, chain: str | None = None, raw: bool = False) -> Any:
         """GMGN's fee presets: what its own users pay when they pick low, average or high, and its automatic fee with
         and without MEV protection, in SOL (the real presets of 12 Nov are 0.001, 0.005 and 0.01: the very amounts
         wallets' trades carry as priority fee and tip in GMGN's history, which are SOL by our tape). On Solana the
         presets are the `_mixed` fields (the plain ones are a placeholder 1, and so is `last_block`). A read: nothing
         is priced for a wallet and nothing is sent."""
+        chain = chain or self.chain
         data = self._request("GET", FEE_PRESETS, {"chain": chain})
         if raw or not isinstance(data, dict):
             return data
@@ -1687,12 +1726,24 @@ def action(
     now: float | None = None,
     log: Callable[[str], None] = lambda m: None,
     store: Any = None,
+    chain: str = "sol",
 ) -> dict:
     """What `snipetech gmgn <name>` prints. `platforms` None means pump.fun's launchpad; ["all"] means every one.
-    `store`: where a wallet's look-up is kept (`remember_wallet`) and a funder's proposal stored; `funder` needs it."""
-    lanes = None if platforms and "all" in platforms else list(platforms or DEFAULT_PLATFORMS)
-    if name in NEEDS_ADDRESS and not is_wallet(target):
-        raise ValueError(f"gmgn {name}: give {NEEDS_ADDRESS[name]} (got {target!r})")
+    `store`: where a wallet's look-up is kept (`remember_wallet`) and a funder's proposal stored; `funder` needs it.
+    `chain`: the chain asked about (the client's own, which every read uses); on another chain than Solana the
+    launchpads are every one of that chain unless named, a wallet is never kept beside ours, and what only Solana has
+    is refused unsent."""
+    if chain not in CHAINS:
+        raise ValueError(f"gmgn: chain {chain!r} is not one of {', '.join(CHAINS)}")
+    if chain != "sol" and (name in SOLANA_ONLY or (name == "top-traders" and not target)):
+        raise ValueError(f"gmgn {name}: Solana only, not asked on {chain}")
+    if chain != "sol":
+        store = None  # another chain's wallets never join our Solana labels
+        lanes = list(platforms) if platforms and "all" not in platforms else None
+    else:
+        lanes = None if platforms and "all" in platforms else list(platforms or DEFAULT_PLATFORMS)
+    if name in NEEDS_ADDRESS and not is_wallet(target, chain):
+        raise ValueError(f"gmgn {name}: give {NEEDS_ADDRESS[name]} on {chain} (got {target!r})")
     if name == "who":
         if not target or not target.strip():
             raise ValueError("gmgn who: give a name or an X handle")
@@ -1700,8 +1751,8 @@ def action(
             return {"ok": True, "raw": client.search(target, raw=True)}
         found = client.search(target)
         return {"ok": True, "name": target, "wallets": _by_name(found["wallets"], target), "coins": found["coins"]}
-    if target is not None and not is_wallet(target):
-        raise ValueError(f"gmgn {name}: {target!r} is not an address")
+    if target is not None and not is_wallet(target, chain):
+        raise ValueError(f"gmgn {name}: {target!r} is not an address on {chain}")
     if name == "fees":
         return {"ok": True, **fees(client, target, pages=pages)}
     if name == "funder":
@@ -1739,7 +1790,7 @@ def action(
             read = client.kol_feed if which == "kol" else client.smart_money_feed
             return {"ok": True, "raw": read(limit=limit or 200, raw=True)}
         rows = people(client, (which,), feed_limit=limit or 200, period=period, stats_top=stats, log=log)
-        return {"ok": True, "list": which, "period": period, "wallets": rows}
+        return {"ok": True, "list": which, "chain": chain, "period": period, "wallets": rows}
     if name == "top-traders":
         if raw and target:
             return {

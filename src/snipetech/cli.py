@@ -345,7 +345,7 @@ def _gmgn(args, cfg) -> int:
             out = gmgn.ping(rate=cfg.gmgn.weight_per_sec, counter=mark)
         else:
             try:
-                client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark)
+                client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark, chain=args.chain)
             except gmgn.GmgnError as exc:
                 out = {"ok": False, "status": None, "error": str(exc)}
             else:
@@ -369,6 +369,7 @@ def _gmgn(args, cfg) -> int:
                         raw=args.raw,
                         log=_progress,
                         store=store,
+                        chain=args.chain,
                     )
                 except gmgn.GmgnError as exc:
                     out = {"ok": False, "status": exc.status, "error": str(exc)}
@@ -1733,6 +1734,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="wallet, fees, funder, created: the wallet; token, candles, top-traders: the coin's mint; who: the name "
         "or handle",
     )
+    sp.add_argument("--chain", default="sol", choices=["sol", "bsc", "base", "eth"], help="the chain asked about: "
+                    "sol (default), bsc (BNB Chain), base, eth; on another chain the launchpads are all of its own and "
+                    "fees, funder and gas are refused (Solana only)")  # fmt: skip
     sp.add_argument("--period", choices=["7d", "30d"], help="window of profit and win rate (default [gmgn] period)")
     sp.add_argument(
         "--limit",
