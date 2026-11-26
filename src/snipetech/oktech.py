@@ -1148,6 +1148,13 @@ def strategy_sniper(
         raise ValueError(f"the rule was scored behind any wallet's buy inside coin gates ({', '.join(gated)}), and "
                          "OKTech hunt has none of them (it gates on the SOL bought within a window of the launch): it "
                          "would buy launches the rule never fired on; research only")  # fmt: skip
+    if trig.get("funded"):
+        # the lab's big-deployer filter (analysis/funded.py): OKTech's launch sniper cannot tell which creator a big
+        # coin's creator paid; its Web mode is the live form, never built or tested here (the lab imports this module:
+        # its words are read at the call)
+        from .analysis.funded import FUNDED_WHY
+
+        raise ValueError(f"the rule is {FUNDED_WHY}; no sniper")
     choice = fees or fee_policy.choose(cfg or Config(), strategy_fee_kind(trig, via), fills=fills, kinds_of=kinds_of)
     notes.append(choice.note())
     config: dict[str, Any] = {"mode": "normal", "platforms": list(STRATEGY_PLATFORMS), "monitorProgram": True, "buyAmount": _round(buy),

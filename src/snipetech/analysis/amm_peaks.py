@@ -44,6 +44,26 @@ def bar_keys(bar: float) -> tuple[str, str]:
     return f"s_{bar:g}", f"t_{bar:g}"
 
 
+def peaks_dir(data: Path) -> Path:
+    """Where `history amm-peaks` keeps its files under the server's data folder (the database's folder)."""
+    return Path(data) / "history" / "pumpfundata" / "pump_amm" / "peaks"
+
+
+def peaks_files(data: Path) -> list[Path]:
+    """Every file `history amm-peaks` has written, by name (one per span asked: `amm_peaks_<from>_<to>.jsonl`)."""
+    return sorted(peaks_dir(data).glob("amm_peaks_*.jsonl"))
+
+
+def read_peaks(paths: Iterable[Path]) -> list[dict[str, Any]]:
+    """The coins' records of these files, as written (one JSON object a line). A coin in several files is in the list
+    once a file: a reader takes the earliest crossing of each (the big-deployer filter, analysis/funded.py)."""
+    out: list[dict[str, Any]] = []
+    for path in paths:
+        with open(path) as f:
+            out.extend(json.loads(line) for line in f if line.strip())
+    return out
+
+
 def _file_peaks(path: Path, bars: tuple[float, ...]) -> dict[str, dict[str, Any]]:
     """One hourly file: every SOL-quoted coin's swaps, its peak after-trade market cap and the first swap that left
     it at or above each bar."""

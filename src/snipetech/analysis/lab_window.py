@@ -20,7 +20,9 @@ What the end does not fix, because the lab reads it as it stands when the lab ru
 - the measured cost of a transaction and the measured copy landing, also from the live database: `lab --per-tx` and
   `lab --copy-position` pin them (on 14 Nov the cost moved from 0.008495 to 0.009341 SOL between two labs);
 - `lab.dev_paid_earlier`: the edges table as the dev-transfer scan had filled it when the lab ran. Only a MIG rule
-  with `dev_paid` reads it.
+  with `dev_paid` reads it. A launch rule with `funded` (analysis/funded.py) reads that table too, and the files
+  `history amm-peaks` wrote as they stand; a crossing there after the window's end is after every create the
+  window holds, and the filter admits a creator only from a crossing well before the create it judges.
 And one thing the first rerun can show: a lab without an end read the PumpSwap record as far as the copy held it,
 which is seconds away from where the copy's tape ends. Its rerun with `--until` reads the record up to the end named,
 so the two can differ on PumpSwap moments in the window's last seconds. Two runs with `--until` agree with each

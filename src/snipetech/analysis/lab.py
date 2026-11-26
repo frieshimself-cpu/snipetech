@@ -42,6 +42,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, fields, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -75,6 +76,7 @@ from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, react_p
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES, SOL_QUOTES
 from ..solana.tips import BASE_FEE_PER_SIGNATURE
 from ..store import Store, file_identity
+from .amm_peaks import BARS_SOL as PEAK_BARS
 from .bid_landing import FAST_TXS, NO_BIDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
 from .bid_landing import SKIP_WORDS as BID_SKIP_WORDS
 from .bid_landing import ahead as bid_ahead
@@ -82,6 +84,7 @@ from .bid_landing import block as read_block
 from .bid_landing import places as bid_places
 from .companions import companions_of
 from .companions import pack_end as trades_pack_end
+from .funded import FUNDED_WHY, LEAD_SECS, bars_words, candidate_launches, funded_by, funding_web
 from .lab_window import clip_backfill, cut_at, trades_digest, trades_of, utc, window_digest, window_fields
 from .names import category, entity
 from .stats import summarize
@@ -259,6 +262,13 @@ class Trigger:
     # kol trigger the same two names read the curve AFTER the followed buy: the labels say which). A buy outside a
     # gate is passed over and the rule fires on the coin's first buy inside all of them. No sniper of ours runs
     # such a rule (oktech.strategy_sniper refuses it): research only, ANY_BUYER_NOTE
+    # launch (26 Nov, the owner's "track funds moving through big deployer wallets and snipe"): only coins whose
+    # creator, or the wallet that signed the create, was paid at least a second before the create by a creator one of
+    # whose coins had passed this many SOL of market cap at least LEAD_SECS before it (analysis/funded.py: the bought
+    # PumpSwap month says when, `history amm-peaks`; the paid_by_dev links who paid whom). One of the month's bars
+    # (amm_peaks.BARS_SOL), 0 = every launch. Research only (`research_only_why`): OKTech's Web mode is the live
+    # form, not built. A funded rule's moments are drawn by their funder in the bounds (`coin_keys`)
+    funded: float = 0.0
 
     def label(self) -> str:
         base = self._label()
@@ -271,6 +281,8 @@ class Trigger:
             + ([f"on {VENUE_WORDS.get(self.venue, self.venue)} launches"] if self.venue != PUMPFUN else [])
             + (["serial-crew coins only"] if self.crew == "only" else [])
             + (["without serial crews' coins"] if self.crew == "skip" else [])
+            + ([f"creator paid before the create by the creator of a coin past {self.funded:g} SOL of market cap"]
+               if self.funded else [])
         )
         return base + (f" ({', '.join(extra)})" if extra else "")
 
@@ -463,7 +475,7 @@ REPEATS_ALSO_FROZEN = ("the forward test holds one trade a coin, the first buy a
                        'buy of its wallet ("repeats": "also"), as a copy sniper copies them: score it with lab '
                        "--each")  # fmt: skip
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
-    "launch": ("plain", "venue", "creators", "crew"),
+    "launch": ("plain", "venue", "creators", "crew", "funded"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
     # with the coin gates of an any-buyer rule (ANY_BUYER_GATES: max_sol, min_age, min_curve, max_curve; 13 Nov)
     "whale": ("sol", "max_sol", "min_age", "max_age", "min_curve", "max_curve", "plain", "solo", "venue", "crew"),
@@ -481,7 +493,7 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
     "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
     "known": (0, 20), "within": (0, 86_400), "max_sol": (0, 100), "min_curve": (0, 85), "max_curve": (0, 85),
     "gap": (0, 86_400), "min_mcap": (0, 10_000_000), "max_mcap": (0, 10_000_000), "max_fill_mcap": (0, 10_000_000),
-    "vol_secs": (0, 86_400), "min_vol": (0, 10_000_000), "max_vol": (0, 10_000_000),
+    "vol_secs": (0, 86_400), "min_vol": (0, 10_000_000), "max_vol": (0, 10_000_000), "funded": (0, 62_500),
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
 FLAG_FIELDS = ("plain", "solo", "teams", "known_any")
@@ -691,6 +703,10 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
+    if trig.funded and trig.funded not in PEAK_BARS:
+        raise ValueError(f"funded must be 0 (every launch) or one of the month's bars, {bars_words()} SOL of market "
+                         "cap (about 100k, 500k, 1M and 5M USD at 80 USD a SOL): `history amm-peaks` records when "
+                         f"each coin passed those and no other, not {trig.funded:g}")  # fmt: skip
     if trig.bots and trig.bots not in LAB_BOT_GROUPS:
         raise ValueError(f"bots must be one of {', '.join(LAB_BOT_GROUPS)} (a label kind of wallets, `snipetech label "
                          f"--kind bundler`), not {trig.bots!r}")  # fmt: skip
@@ -785,7 +801,11 @@ def research_only_why(trig: Trigger | Mapping[str, Any]) -> str | None:
     other rule answers None here, whatever else the sniper builder refuses of it (the paid-creator split, a LaunchLab
     rule: oktech.strategy_sniper says those; a rule scored without serial crews' coins or on them alone: `crew_why`,
     which a freeze takes for a paper record and nothing sends live). A wallet rule that follows only repeat buys
-    (`repeats` "only") is research only too: OKTech copies every buy above a wallet's floor."""
+    (`repeats` "only") is research only too: OKTech copies every buy above a wallet's floor. So is a launch rule on
+    the coins a big coin's creator funded (`funded`): no sniper we build can tell them (FUNDED_WHY)."""
+    funded = trig.get("funded") if isinstance(trig, Mapping) else getattr(trig, "funded", 0.0)
+    if funded:  # a launch rule on coins whose creator a big coin's creator paid (analysis/funded.py)
+        return FUNDED_WHY
     repeats = trig.get("repeats") if isinstance(trig, Mapping) else getattr(trig, "repeats", "")
     if repeats == REPEATS_ONLY:
         return REPEATS_ONLY_WHY
@@ -2093,7 +2113,7 @@ def any_buyer_fields(path: MarketPath, i: int, launch) -> dict[str, Any]:
 
 
 def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None,
-          paid: bool | None = None) -> int | None:  # fmt: skip
+          paid: bool | None = None, funded: Mapping[float, str | None] | None = None) -> int | None:  # fmt: skip
     if trig.kind == "event":
         # events: [(kind, ts, slot, q_after)] for this coin; fire on the earliest event of the kind. An event a trade
         # made (a curve crossing: `q_after`, the reserves that trade left) fires at that trade, the first one at or
@@ -2112,7 +2132,9 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
     """Index of the trade at which `trig` fires on this token (first time only).
     `kols`: the labeled wallets, a set (the KOL group) or {label kind: set of addresses}. `mig`: the coin's migration
     to PumpSwap as the tape recorded it (a MIG trigger fires on nothing else); `paid`: whether an earlier coin's creator
-    paid its creator (`dev_paid_earlier`, read only for a MIG trigger with `dev_paid` set)."""
+    paid its creator (`dev_paid_earlier`, read only for a MIG trigger with `dev_paid` set); `funded`: each bar's big
+    creator who funded the coin (`funded_by`, read only for a launch trigger with `funded` set: a coin no big creator
+    funded, or one scored without it, never fires it)."""
     dev = launch.deployers() if launch is not None else set()
     if (trig.kind in LAUNCH_KINDS or trig.kind in COPY_EXIT_KINDS) and getattr(path, "venue", PUMPFUN) != trig.venue:
         # a launch-type rule buys only its own launchpad's coins (OKTech's snipers: pump.fun only), and a copy only
@@ -2132,6 +2154,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         return _mig(trig, path, launch, mig, paid)
     if trig.kind == "launch":
         if launch is None:
+            return None
+        if trig.funded and (funded or {}).get(trig.funded) is None:  # no big creator funded it (analysis/funded.py)
             return None
         if trig.creators:  # a dev-wallet snipe: only coins a labeled deployer (or the one named) created
             if _is_address(trig.creators):
@@ -2512,6 +2536,11 @@ class _Run:
     # how far past its buy any exit of the run can sell (`sim.exits.exits_reach`): a moment's exits are handed its
     # path that far and a margin more (`held_path`), the same numbers at the cost of their own hold; 0 = the whole path
     reach_secs: float = 0.0
+    # the funded filter of launch rules (`Trigger.funded`, analysis/funded.py): the wallets big creators paid
+    # ({wallet: ((first_ts, payer), ...)}), each bar's big creators and since when, and the bars this lab's rules use
+    funders: dict[str, tuple] = field(default_factory=dict)
+    funded_big: dict[float, dict[str, float]] = field(default_factory=dict)
+    funded_bars: tuple[float, ...] = ()
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -2533,6 +2562,19 @@ def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, 
         else:
             mints = sorted(wanted)  # the store's order: by mint
         plan.append((a, b, slot_secs, mints))
+    return plan
+
+
+def _funded_plan(store: Store, spans, cands) -> list[tuple]:
+    """`_plan` for a lab whose every rule is a funded launch rule: span by span (a span under ten minutes skipped, as
+    there), the launches inside it whose creator or signer a big creator paid (`candidate_launches`), by mint, and
+    no other coin: a launch nobody big paid never fires such a rule, and the lab of every launch on 14 days of tape
+    reads hundreds of thousands of coins for a few hundred candidates."""
+    plan = []
+    for a, b in [(a, b) for a, b in spans if b - a >= 600]:
+        mints = sorted({c.mint for c in cands if a <= c.ts <= b - 60})
+        if mints:
+            plan.append((a, b, span_slot_secs(store, int(a), int(b)), mints))
     return plan
 
 
@@ -2646,6 +2688,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     in_span_launch = launch if (launch and a <= launch.ts) else None
     wants_paid = mig is not None and any(t.kind in AMM_KINDS and t.dev_paid is not None for _, t in run.triggers)
     paid = dev_paid_earlier(store, in_span_launch) if wants_paid else None
+    # each bar's big creator who funded the coin (`funded_by`), for a launch rule with `funded` set
+    funded = funded_by(in_span_launch, run.funded_bars, run.funders, run.funded_big) if run.funded_bars else None
     rows: list[dict] = []
     events = _span_events(run.events_by_mint.get(mint), a, b)  # this stretch's own events
     by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
@@ -2659,7 +2703,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             # for crew "only". A "skip" rule that fires on the coin says so, for the lab's count of what it left out
             # (`_crew_report`); the row is no moment
             if trig.crew == CREW_SKIP:
-                i = _fire(trig, path, in_span, run.kols, events, mig, paid)
+                i = _fire(trig, path, in_span, run.kols, events, mig, paid, funded)
                 if i is not None and fired_at(trig, path, i, mig)[1] <= b - 60:
                     rows.append({"mint": mint, "trigger": ti, "ts": int(fired_at(trig, path, i, mig)[1]),
                                  "skipped": CREW_LEFT})  # fmt: skip
@@ -2667,7 +2711,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)
         else:  # once per coin, the way one sniper takes one position per coin
-            i = _fire(trig, path, in_span, run.kols, events, mig, paid)
+            i = _fire(trig, path, in_span, run.kols, events, mig, paid, funded)
             fired = [] if i is None else [i]
         for i in fired:
             t_slot, t_ts = fired_at(trig, path, i, mig)
@@ -2747,6 +2791,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
                    "landing": landing_name(pos, lat, run.bid_sol)}  # fmt: skip
+            if trig.funded and funded:  # who funded the coin: the bounds draw one funder's launches together
+                row |= {"funder": funded[trig.funded], "cluster": f"funder:{funded[trig.funded]}"}
             if refused:  # no position: nothing of our buy against its pool, and nothing a later buyer could add
                 row |= {"refused": True, "own_rt": -REFUSED_SEND_SOL}
             else:  # our buy against the pool it met, and what it makes sold straight back (nothing a later buyer adds)
@@ -2996,6 +3042,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     if is_bid(position):
         check_bid_landing(position, latency_slots, bid_sol,
                           [t for _, t in triggers if t.kind not in (landings or {})])  # fmt: skip
+    # a launch rule on the coins big creators funded (`Trigger.funded`): who was big since when and whom they paid,
+    # read once (a ValueError in words, before any tape is read, when `history amm-peaks` has written no file)
+    funded_bars = tuple(sorted({float(t.funded) for _, t in triggers if t.kind == "launch" and t.funded}))
+    web = funding_web(store, Path(cfg.storage.db_path).resolve().parent, funded_bars) if funded_bars else None
     amm_runs = any(t.kind in AMM_KINDS for _, t in triggers)
     mig_sell = any(ex.migration_sell_frac > 0 for ex in exits)  # an exit that sells into the migration
     # a wallet rule's buy can land on PumpSwap: it counts only where the recorder's run or a backfilled stretch holds it
@@ -3030,7 +3080,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                bid_sol=bid_sol if is_bid(position) else 0.0,
                own=frozenset(own_wallets(store, cfg, **upto)) if is_bid(position) else frozenset(),
                same_sol=bool(same_sol), exit_how=bool(exit_how), exit_position=exit_position,
-               reach_secs=exits_reach([*exits, *mig_exits, *(ex for xs in by_kind.values() for ex in xs)]))  # fmt: skip
+               reach_secs=exits_reach([*exits, *mig_exits, *(ex for xs in by_kind.values() for ex in xs)]),
+               funders=web.funders if web else {}, funded_big=web.big if web else {},
+               funded_bars=funded_bars)  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     named = any(t.kind == "kol" and t.only for _, t in triggers)  # a rule that names its wallets (`only`)
     if ((plan_wallets is None or named) and triggers and isinstance(kols, dict)
@@ -3041,7 +3093,17 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         # for 903 moments). A rule for one wallet reads that wallet's coins, in the qualify lab's form too
         plan_wallets = set().union(*(rule_wallets(t, kols) for _, t in triggers))
         floor = group_floor(triggers)
-    if triggers and all(t.kind == "event" for _, t in triggers):
+    funded_out: dict[str, Any] | None = None
+    if web is not None:  # the launches whose creator or signer a big creator paid, and those a funder admits
+        cands = candidate_launches(store, [(a, b) for a, b in spans if b - a >= 600], web.funders)
+        admitted = Counter(f"{bar:g}" for c in cands for bar, who in funded_by(c, funded_bars, web.funders,
+                                                                             web.big).items() if who)  # fmt: skip
+        funded_out = {**web.summary, "launches": len(cands),
+                      "funded_launches": {f"{bar:g}": admitted.get(f"{bar:g}", 0) for bar in funded_bars},
+                      "lead_secs": LEAD_SECS}  # fmt: skip
+    if web is not None and triggers and all(t.kind == "launch" and t.funded for _, t in triggers):
+        plan = _funded_plan(store, spans, cands)
+    elif triggers and all(t.kind == "event" for _, t in triggers):
         # an event rule fires only on a coin with an event of its kind in the stretch read: the event edge read
         # every coin of 14 days for the 46-52 % of busy coins that carry one (audit of 22 Nov)
         plan = _event_plan(store, spans, events_by_mint)
@@ -3082,6 +3144,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     crews = _crew_report(triggers, rows, crew_left, [*sized, *skipped], len(run.crew_uris))
     if crews["triggers"]:  # a launch-type rule fired: how many of its moments are serial crews' coins
         out["crew"] = crews
+    if funded_out is not None:  # what the funded filter read: the files, the big creators, whom they paid
+        out["funded"] = funded_out
     if wallet_runs:  # the copy exit every exit of a wallet rule was scored with, and what it is not
         out["copy_exit"] = copy_exit_report(cfg)
     if amm_runs or mig_sell or skipped:  # `skipped` alone: a wallet rule's PumpSwap buys the tape does not hold whole
@@ -3394,8 +3458,10 @@ def coin_keys(rows: Sequence[Mapping[str, Any]]) -> list[Any]:
     one coin move together, seconds apart and sold by the same exit (with --each and "repeats": "also" a coin gives
     several), so they are one draw, never several (audit of 22 Nov: 120 moments in 40 coins gave a bound twice too
     tight). A rule that gives one moment a coin is drawn as before, to the last bit. A row that names no coin is a
-    draw of its own."""
-    return [r.get("mint") if r.get("mint") is not None else ("row", j) for j, r in enumerate(rows)]
+    draw of its own. A funded rule's moments are drawn by their funder (`cluster`, 26 Nov): a team that funds wallet
+    after wallet, each launching a coin, is one team, never as many draws as wallets."""
+    return [r.get("cluster") or (r.get("mint") if r.get("mint") is not None else ("row", j))
+            for j, r in enumerate(rows)]
 
 
 def taped_secs(data: Mapping[str, Any], since: float, last: float) -> float:

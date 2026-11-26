@@ -1752,7 +1752,16 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         triggers are the ones OKTech can run exactly as scored, when they are scored on every coin (no "crew" field:
         SERIAL CREWS' COINS below). {"kind": "mig", "window": 60} is OKTech MIG: a buy on
         PumpSwap right after a coin's migration, only when it migrated within `window` seconds of its create (0 to 60;
-        0: any migration), scored behind the first PumpSwap trades after the migration. A kol trigger takes the gates OKTech's copy mode has: "known"
+        0: any migration), scored behind the first PumpSwap trades after the migration. BIG-DEPLOYER FUNDING (26 Nov,
+        the owner's "track funds moving through big deployer wallets and snipe"): a launch trigger takes "funded":
+        1250, 6250, 12500 or 62500 (SOL of market cap, about 100k, 500k, 1M and 5M USD): only coins whose creator or
+        signer was paid, a second or more before the create, by the creator of a coin that had passed that cap at
+        least 5 minutes before it (no hindsight: the bought PumpSwap month says when). It needs that month's
+        crossings, which the cloud session writes with `history amm-peaks` (no agent job): until the file exists the
+        lab refuses such a rule in words. Such a lab reads only those launches (fast), says what it read under
+        `funded` (big creators, wallets they paid, candidate launches, how many each bar admits) and draws each
+        funder's coins together in its bounds. Research only: no sniper is built for it (OKTech's Web mode would be
+        the live form); a good number is a reason to build that, never a live test. A kol trigger takes the gates OKTech's copy mode has: "known"
         (fire only once that many group wallets have made a first buy in the coin, this one included: 2 = the second
         known wallet in; the grid tests only the first), "within" (all of them in the last N seconds), "sol" /
         "max_sol" (the followed buy's size), "min_curve" / "max_curve" (SOL in the curve after it). A copy is always

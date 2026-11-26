@@ -3137,7 +3137,7 @@ def _amm_peaks(args, cfg: Config) -> int:
         print(f"history amm-peaks: no PumpSwap files on disk for {lo}..{hi}", file=sys.stderr)
         return 2
     min_sol = args.min_sol if args.min_sol is not None else ap.BARS_SOL[0]
-    kept = here / "peaks" / f"amm_peaks_{lo}_{hi}.jsonl"
+    kept = ap.peaks_dir(data) / f"amm_peaks_{lo}_{hi}.jsonl"  # where the lab's big-deployer filter reads them
     stats: dict = {}
     with lab_lock(data):
         peaks = ap.scan_peaks(paths, stats=stats)

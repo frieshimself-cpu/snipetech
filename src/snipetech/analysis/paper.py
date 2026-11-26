@@ -228,11 +228,12 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # leader profiles: "", the whole group; False, the rule's own group; no window and no limit)
     # and a KOL rule's repeat buys (20 Nov: "", the wallet's first buy in a coin, as every rule before)
     # and a KOL rule's ceiling on our own fill (23 Nov: 0, no ceiling)
+    # and a launch rule's big-deployer filter (26 Nov: 0, every launch; analysis/funded.py)
     later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
                   "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0,
                   "teams": False, "gap": 0.0, "bots": "", "min_mcap": 0.0, "max_mcap": 0.0,
                   "min_age": 0.0, "only": "", "known_any": False, "vol_secs": 0.0, "min_vol": 0.0,
-                  "max_vol": 0.0, "repeats": "", "max_fill_mcap": 0.0}  # fmt: skip
+                  "max_vol": 0.0, "repeats": "", "max_fill_mcap": 0.0, "funded": 0.0}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     if trigger.get("kind") in LAUNCH_KINDS and "crew" in trigger:  # the crew choice of a launch-type rule (14 Nov)
         if trigger["crew"] == CREW_SKIP:
