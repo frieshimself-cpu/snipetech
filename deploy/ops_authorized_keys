@@ -1,5 +1,5 @@
 # Public keys allowed to operate this server through snipetech-ops (one per line: ed25519 <base64> <comment>).
 # Only public halves live here; the private key never leaves the machine that signs. Remove a line to revoke it,
 # then on the server: sudo bash /opt/snipetech/deploy/bootstrap.sh (or `snipetech remote update` from a key still listed).
-ed25519 C3Dc5xU9PqddM1Yrxv3sW1VCoENbYi4Je1CoEY+MW8U= claude-session-01RfSmxb
+ed25519 v8r/RaBx1bR9D7alK6KcNEnAhqr3/EqGlsvSXR/a4fo= claude-session-01RfSmxb-26nov
 ed25519 7wry895gwr6cDk5fXqk2sexua4wJm7nDz4+zGVyJ2fU= oscar-windows
