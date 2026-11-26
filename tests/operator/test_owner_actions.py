@@ -61,3 +61,26 @@ def test_the_owners_watches_hold_no_research_job_slot(jobs):
         (jobs.ops.data / "jobs" / f"w{k}.json").write_text(json.dumps(meta))
     assert len(jobs.running()) == 3 and jobs.max_jobs == 3
     assert jobs.start(["winners", "--hours", "72", "--json"])["id"]
+
+
+def test_the_owners_watch_holds_back_no_cadence_analysis(tmp_path):
+    """Fourth review of 25 Nov: the analyst's cadence gate read the owner's launch watch as a research job running, so
+    with a day's watch running the analysis that starts the next test was skipped, up to 3 h at a time. The owner's
+    actions are left out there too, running or ended."""
+    from types import SimpleNamespace
+
+    from snipetech.operator import gate
+
+    paths = OperatorPaths(tmp_path / "data")
+    paths.jobs.mkdir(parents=True, exist_ok=True)
+    now = 1_800_000_000.0
+    paths.analyst_last.parent.mkdir(parents=True, exist_ok=True)
+    paths.analyst_last.write_text(str(now - 3600))  # the last analysis an hour ago
+    day = ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440"]
+    watch = {"id": "w1", "argv": day, "started": now - 7200}
+    lab = {"id": "l1", "argv": ["lab", "--x"], "started": now - 600}
+    assert gate.nothing_for_the_cadence(SimpleNamespace(jobs_running=[lab]), paths, now, 0) is True  # a lab runs
+    assert gate.nothing_for_the_cadence(SimpleNamespace(jobs_running=[watch]), paths, now, 0) is False
+    ended = dict(watch, running=False, ended=now - 60)  # an owner's watch that ended is no research to read either
+    (paths.jobs / "w1.json").write_text(json.dumps(ended))
+    assert gate.nothing_for_the_cadence(SimpleNamespace(jobs_running=[lab]), paths, now, 0) is True

@@ -159,15 +159,20 @@ def nothing_for_the_cadence(snap, paths: OperatorPaths, now: float, new_trips: i
     """A cadence analysis with nothing to read and nothing to start (10 Nov: one every 30 minutes at about a dollar,
     and turn after turn said "the lab is still running, the next turn reads it"): a research job is running, none has
     ended since the last analysis, no live round trip is new, and the last analysis is under `QUIET_MAX_SECS` old. With
-    no research running the turn is due: it starts the next test."""
+    no research running the turn is due: it starts the next test. The owner's actions (a launch watch) are no research,
+    running or ended (fourth review of 25 Nov: a day's watch held the analysis back up to 3 h at a time)."""
+    from .jobs import _owner_action
     from .snapshot import _read_metas
+
+    def research(argv) -> bool:
+        return loop_stage(argv) is None and not _owner_action(argv or [])
 
     last = last_analyst_ts(paths, now)
     if last is None or now - last >= QUIET_MAX_SECS - CADENCE_SLACK_SECS or int(new_trips or 0) > 0:
         return False
-    if not any(loop_stage(j.get("argv")) is None for j in snap.jobs_running or []):
+    if not any(research(j.get("argv")) for j in snap.jobs_running or []):
         return False
-    return not any(loop_stage(m.get("argv")) is None and not m.get("running") and float(m.get("ended") or 0) >= last
+    return not any(research(m.get("argv")) and not m.get("running") and float(m.get("ended") or 0) >= last
                    for m in _read_metas(paths.jobs, last))  # fmt: skip
 
 
