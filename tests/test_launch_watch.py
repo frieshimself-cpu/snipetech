@@ -8,6 +8,8 @@ security the fields of a real answer (tests/fixtures/gmgn/real/token_security.js
 
 import itertools
 import json
+import sqlite3
+import time
 
 import httpx
 import pytest
@@ -1882,6 +1884,52 @@ def test_launch_watch_writes_its_requests_weight_once_a_status_line_not_once_a_r
     code, out, seen = snipetech("launch-watch", "--chain", "base", "--minutes", "20", "--json")
     assert code == 0 and out["polls"] == 20
     assert len(written) == 2 and sum(written) == sum(gmgn.READ_PATHS[r.url.path] for r in seen)  # 15 min, the end
+
+
+def test_a_status_line_whose_write_is_refused_carries_the_weight_to_the_next(tmp_path):
+    """Fourth review of 25 Nov: a status line's write could still hold the watch up to 20 minutes under another
+    process's write lock (two writes, each up to the store's patience of 600 s). The watch's write waits seconds at most
+    (cli._gmgn_brief_mark) and raises past them: the weight goes on to the next status line, and what even the end
+    could not write is said (weight_unrecorded)."""
+    calls: list[int] = []
+
+    def record(weight):
+        calls.append(weight)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+
+    routes = {"/v1/trenches": polls([trench(A, T - 2000)]), "/v1/market/token_kline": kline({}),
+              "/v1/token/security": security({})}  # fmt: skip
+    seen: list = []
+    out = watch(tmp_path, FakeTime(T), routes, seen, minutes=20, record=record)
+    assert calls == [calls[0], sum(gmgn.READ_PATHS[r.url.path] for r in seen)] and out["weight_unrecorded"] == 0
+
+    def locked(weight):
+        raise sqlite3.OperationalError("database is locked")
+
+    seen = []
+    out = watch(tmp_path / "end", FakeTime(T), routes, seen, minutes=20, record=locked)
+    assert out["ok"] is True and out["weight_unrecorded"] == sum(gmgn.READ_PATHS[r.url.path] for r in seen)
+
+
+def test_the_watchs_write_waits_for_the_databases_lock_seconds_at_most(tmp_path):
+    """The launch watch's own write of the weight (cli._gmgn_brief_mark): under a write lock another process holds, it
+    gives up within seconds, where the store's writes wait up to 600 s; with the lock free, it writes."""
+    from snipetech.store import Store
+
+    store = Store(str(tmp_path / "t.db"))
+    record = cli._gmgn_brief_mark(store)
+    other = sqlite3.connect(tmp_path / "t.db", timeout=1)
+    other.execute("BEGIN IMMEDIATE")
+    began = time.monotonic()
+    with pytest.raises(sqlite3.OperationalError):
+        record(5)
+    assert time.monotonic() - began < 10
+    other.rollback()
+    other.close()
+    record(5)
+    assert store.usage_month("gmgn") == 5
+    store.close()
 
 
 def test_launch_watch_wants_its_minutes_and_sane_numbers(snipetech):

@@ -330,6 +330,25 @@ def _gmgn_mark(store_of):
     return count
 
 
+WATCH_WRITE_SECS = 2.0  # the longest the launch watch waits for the database's write lock at a status line
+
+
+def _gmgn_brief_mark(store):
+    """The launch watch's `record`: the weight since its last status line into the month's tally and the time GMGN last
+    answered, each write waiting WATCH_WRITE_SECS at most for a write lock another process holds, and raising past
+    them: the watch carries the weight to its next status line (fourth review of 25 Nov: two writes of up to the
+    store's 600 s each held the watch up to 20 minutes). `store` is the watch's own: no other write goes through it."""
+    store.LOCK_PATIENCE = 0.0  # one try, no waiting out
+    store.conn.execute(f"PRAGMA busy_timeout = {int(WATCH_WRITE_SECS * 1000)}")
+
+    def record(weight: int) -> None:
+        from . import gmgn
+
+        gmgn.mark_answered(store, weight)
+
+    return record
+
+
 def _gmgn(args, cfg) -> int:
     """`snipetech gmgn <action>`: one look-up on GMGN, printed as JSON. A refusal is printed the same way
     ({"ok": false, "status", "error"}: GMGN's own words, the key scrubbed) and ends with exit code 1; a wrong
@@ -347,7 +366,7 @@ def _gmgn(args, cfg) -> int:
         if args.action == "ping":
             out = gmgn.ping(rate=cfg.gmgn.weight_per_sec, counter=mark)
         elif args.action == "launch-watch":
-            out, code = _gmgn_launch_watch(args, cfg, mark)
+            out, code = _gmgn_launch_watch(args, cfg, _gmgn_brief_mark(store))
         else:
             try:
                 client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark, chain=args.chain)

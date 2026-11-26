@@ -895,10 +895,18 @@ class LaunchWatch:
         self.weight += int(weight)
 
     def _flush(self) -> None:
-        """The weight counted since the last time, handed to `record` in one write."""
+        """The weight counted since the last time, handed to `record` in one write. A write refused (the command line's
+        waits seconds at most for a write lock another process holds: fourth review of 25 Nov, two writes of up to
+        600 s each held the watch up to 20 minutes) leaves the weight for the next one; what the end could not write
+        either is said (weight_unrecorded)."""
         if self.record is not None and self.weight:
             weight, self.weight = self.weight, 0
-            self.record(weight)
+            try:
+                self.record(weight)
+            except Exception as exc:  # noqa: BLE001 - bookkeeping never ends the watch
+                self.weight += weight
+                self.log(f"gmgn launch-watch {self.chain}: the weight of GMGN's answers was not written ({exc}): it "
+                         "goes with the next status line")  # fmt: skip
 
     def _open_round(self) -> None:
         self.round += 1
@@ -928,6 +936,7 @@ class LaunchWatch:
             "tried_again_later": c["tried_again_later"],
             "outage_waits": c["outage_waits"],  # failed reads in rounds no read of their kind answered: none counted
             "stop_refusals": c["stop_refusals"],  # refusals of the key or of this machine: each left its round
+            "weight_unrecorded": self.weight,  # GMGN's weight no write could put into the database's tally
             "files": {"launches": str(self.launches), "scored": str(self.scored)},
         }
 
