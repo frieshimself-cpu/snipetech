@@ -565,6 +565,7 @@ class LaunchWatch:
         self.last_refusal = ""
         self.last_status: int | None = None  # the HTTP status of the last read GMGN refused, or None
         self.looks_refused = 0  # looks at the newest coins refused in a row with a 4xx (POLL_REFUSALS)
+        self.looks_refused_at = -math.inf  # when the last one counted began: at most one a minute (ROUND_SECS)
 
     def resume(self) -> None:
         """What the jobs before wrote: every coin seen, and the ones still waiting for their candles."""
@@ -680,8 +681,8 @@ class LaunchWatch:
     def poll(self, first: bool, until: float) -> None:
         """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down,
         its row as the client converts it and the taxes and flags GMGN gave on it (FIRST_SIGHT). A rate limit that
-        holds past `until` (the job's end) leaves it unasked; POLL_REFUSALS looks in a row refused with a 4xx end the
-        job (WatchStopped)."""
+        holds past `until` (the job's end) leaves it unasked; POLL_REFUSALS looks in a row refused with a 4xx, counted
+        one a minute at most, end the job (WatchStopped)."""
         kind, got = self._ask(
             functools.partial(
                 self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT, raw=True
@@ -696,7 +697,9 @@ class LaunchWatch:
             self.refused["poll"] += 1
             self.log(f"gmgn launch-watch {self.chain}: the look at the newest coins failed: {got}")
             if self.last_status is not None and 400 <= self.last_status < 500:  # GMGN's refusal; an outage is not
-                self.looks_refused += 1
+                if self.round_at - self.looks_refused_at >= ROUND_SECS:  # one a minute at most (fifth review of 25 Nov)
+                    self.looks_refused_at = self.round_at
+                    self.looks_refused += 1
                 if self.looks_refused >= POLL_REFUSALS:
                     raise WatchStopped(f"GMGN refused {self.looks_refused} looks at the newest coins in a row, so no "
                                        f"new coin can be seen: {got}")  # fmt: skip

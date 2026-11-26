@@ -886,6 +886,25 @@ def test_each_part_of_the_stop_rule_holds_alone(tmp_path):
     assert sum(written) == looked > 0
 
 
+def test_refused_looks_count_at_most_one_a_minute(tmp_path):
+    """Fifth review of 25 Nov: refused looks were counted look by look, not by the minute: with --every 10, five
+    minutes of a 404 on the look ended a two-hour watch at minute 4.8, not ok, no coin seen; with --every 1, 30 s of a
+    400 did. A refused look counts at most once a minute (ROUND_SECS), as the other stop and retry rules do: thirty
+    of them (POLL_REFUSALS) are thirty minutes, whatever --every is."""
+    for every, secs, refusal in ((10, 300, refused(404, "NOT_FOUND", "no such route")),
+                                 (1, 30, refused(400, "BAD_REQUEST", "invalid parameter"))):  # fmt: skip
+        ft = FakeTime(T)
+
+        def look(req, ft=ft, secs=secs, refusal=refusal):
+            return refusal if ft.now < T + secs else answer({"new_creation": []})
+
+        out = watch(tmp_path / str(every), ft, {"/v1/trenches": look}, minutes=10, every=every)
+        assert (out["ok"], ft.now >= T + 600) == (True, True), every
+    ft = FakeTime(T)  # refused for good: still thirty minutes of it
+    out = watch(tmp_path / "good", ft, {"/v1/trenches": refused(400, "BAD_REQUEST", "x")}, minutes=120, every=10)
+    assert (out["ok"], ft.now) == (False, T + 29 * 60)
+
+
 def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):
     """A job too short for five rounds whose every read GMGN refused says so: no read could work."""
     refusal = refused(401, "AUTH_KEY_INVALID", "api key not found")
