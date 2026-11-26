@@ -145,8 +145,8 @@ LANDING_RULE = (
     "Every copy buys and sells behind every trade of the second (or the block) it lands in, at the default gas: a "
     "plain bid, no priority. A price at the top of a block would need a named bid that buys that place: none is scored. "
     "It fills at the close of that block's candle, which is probably its last trade's price, not the pool's after that "
-    "trade: a copy behind a big buy pays more. The pessimistic bound beside each number (in at the candle's high, out "
-    "at its low) is what answers that."
+    "trade: a copy behind a big buy pays more. The pessimistic bound beside each number answers that: it takes each "
+    "candle's dollars as one trade that lands ahead of the copy."
 )
 BLOCK_SECS = {"sol": 1, "bsc": 1, "base": 2, "eth": 12}  # the second, or the block, a copy lands in
 # what a delay means on each chain
@@ -161,9 +161,12 @@ LANDING = {
     "the launch's own or in one stamped at the moment.",
 }
 SCORE_READING = (
-    "Every number has a pessimistic bound beside it (pessimistic): the entry at the high of the landing block's candle "
-    "and each sale at the low of the exit block's candle, price impact and every charge as for the number beside it. "
-    "If the bound pays, the landing does not matter; if only the central number pays, a live test at the stated bid "
+    "Every number has a pessimistic bound beside it (pessimistic). It takes each candle's whole dollar volume as one "
+    "trade that lands last, ahead of the copy, in the model's pool (q, below): the entry behind a buy of the landing "
+    "block's candle's dollars, at its high x ((x + sqrt(x^2 + 4)) / 2)^2 with x = dollars / q, and each sale behind a "
+    "sale of the exit block's candle's dollars, at its low x (1 - dollars / qx); price impact and every charge as for "
+    "the number beside it. A coin with no pool size has no bound (pessimistic.coins counts the copies it covers). If "
+    "the bound pays, the landing does not matter; if only the central number pays, a live test at the stated bid "
     "decides. The central number is what follows. "
     "A copy buys D seconds after the coin's start (its open time, else its creation; a coin timed from when the watch "
     "first saw it is scored apart, timed_from_sighting), if the coin traded before then, behind every trade of the "
@@ -278,9 +281,10 @@ CAVEATS = (
     (
         "A 1 s candle's close is probably its last trade's price, not the pool's price after that trade: a copy behind "
         "a big buy in its block pays more than the close (behind a sniper's 1,500 dollars in a pool of 5,000, the "
-        "close reads +24.7 percent where the copy gets 0.0). The pessimistic bound beside each number, in at the "
-        "candle's high and out at its low, holds whatever the close is; the coins each candle moved are kept in the "
-        "file for the first real run to check."
+        "close reads +24.7 percent where the copy gets 0.0). The pessimistic bound beside each number assumes each "
+        "candle's whole dollar volume was one trade that landed last, ahead of the copy, in the model's pool: trades "
+        "of the copy's own block that came after it, or a pool smaller than the model's, are not in it. The coins each "
+        "candle moved are kept in the file for the first real run to check."
     ),
     (
         "A creator who cut part of its pool between the watch's first sight of the coin and a sale leaves no candle: "
@@ -1200,15 +1204,22 @@ def _central(rets: Any, creators: Any = None) -> dict:
     }
 
 
+def _bounded(bounds: Any, creators: Any) -> dict:
+    """The pessimistic bound's numbers (_central) over the copies that have one (a coin with no pool size has none: nan
+    in `bounds`), and how many those are."""
+    kept = [(b, c) for b, c in zip(bounds, creators, strict=True) if not math.isnan(b)]
+    return {"coins": len(kept), **_central([b for b, _ in kept], [c for _, c in kept])}
+
+
 def _stats(rets: Any, rugs: Any, bounds: Any, creators: Any) -> dict:
-    """The numbers of a set of copies: how many, of how many creators, their pessimistic bound's numbers (`bounds`:
-    each copy in at the high of its landing candle and out at the low of its exit candle), the central numbers
-    (_central, over the copies' `creators`), and the share of their coins that rugged."""
+    """The numbers of a set of copies: how many, of how many creators, their pessimistic bound's numbers (`bounds`, as
+    _Score._bound gives them: _bounded), the central numbers (_central, over the copies' `creators`), and the share of
+    their coins that rugged."""
     n = len(rets)
     return {
         "coins": n,
         "creators": len(set(creators)),
-        "pessimistic": _central(bounds, creators),
+        "pessimistic": _bounded(bounds, creators),
         **_central(rets, creators),
         "rug_share": _r(sum(rugs) / n) if n else None,
     }
@@ -1263,7 +1274,9 @@ class _Pair:
         read at settle). Third review of 25 Nov: the table without them was a table of the coins that lived."""
         picked = [k for k, stale in enumerate(self.stale) if stale]
         rets, bounds, creators = ([col[k] for k in picked] for col in (self.rets, self.bounds, self.creators))
-        pessimistic, central = ({k: _central(xs, creators)[k] for k in ("mean", "mean_se")} for xs in (bounds, rets))
+        bounded = _bounded(bounds, creators)
+        pessimistic = {k: bounded[k] for k in ("coins", "mean", "mean_se")}
+        central = {k: _central(rets, creators)[k] for k in ("mean", "mean_se")}
         return {"coins": len(rets), "pessimistic": pessimistic, **central, "lost": sum(self.lost)}
 
 
@@ -1417,16 +1430,16 @@ class _Score:
                 if honeypot or lost:
                     ret = bound = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
                 else:
-                    # the number: in at the landing candle's close, out at the exit candle's; its bound: in at the
-                    # landing candle's high, out at the exit candle's low
-                    ret, bound = (
-                        self._paid(sold / paid, sold / closes[i], entry_keep, q, stale, liquidity, keep)
-                        for paid, sold in ((closes[i], closes[j]), (p.highs[i], p.lows[j]))
-                    )
+                    # the number: in at the landing candle's close, out at the exit candle's; its bound: behind each
+                    # candle's dollars as one trade ahead of the copy (_bound; None without a pool size)
+                    ratio = closes[j] / closes[i]
+                    ret = self._paid(ratio, ratio, entry_keep, q, stale, liquidity, keep)
+                    bound = self._bound(p, i, j, entry_keep, q, stale, liquidity, keep)
                 # a price of 1e300 after one of 1e-300 gives a return no float holds: left out, and counted
-                if not (math.isfinite(ret) and math.isfinite(bound)):
+                if not math.isfinite(ret) or (bound is not None and not math.isfinite(bound)):
                     self.n["returns_left_out"] += 1
                     continue
+                bound = math.nan if bound is None else bound  # no bound: kept out of the bound's numbers
                 copies.append(((d, h), ret, bound, stale, lost, big))
         if main and any(copy[3] for copy in copies):  # the table's coins only (fourth review of 25 Nov)
             self.pools["coins_with_a_stale_exit"] += 1
@@ -1437,6 +1450,23 @@ class _Score:
                 pairs[key].unsettled += 1
             for key, ret, bound, stale, lost, big in copies:
                 pairs[key].add(ret, bound, plat, creator, rug, honeypot, stale, lost, unknown, big, unsized, half)
+
+    def _bound(self, p: Prices, i: int, j: int, entry_keep: float, q: float, stale: bool, liquidity: float | None,
+               keep: float) -> float | None:  # fmt: skip
+        """A copy's pessimistic bound: each candle's whole dollar volume taken as one trade that lands last, ahead of
+        the copy, in the model's pool (cash side `q` at the entry candle's close). It buys behind a buy of the landing
+        candle's dollars, at the pool's price after it: the high x ((x + sqrt(x^2 + 4)) / 2)^2, x = dollars / q; and
+        sells behind a sale of the exit candle's dollars: the low x (1 - dollars / qx), qx = q x sqrt(low / close).
+        Price impact and every charge as for the number beside it. None for a coin with no pool size. Fifth review of
+        25 Nov: in at the high and out at the low was no bound behind a buy or a sale, a candle's high and low being
+        its trades' average prices and the pool's price past them."""
+        if not q:
+            return None
+        x = p.dollars[i] / q
+        paid = p.highs[i] * ((x + math.sqrt(x * x + 4.0)) / 2.0) ** 2
+        qx = q * math.sqrt(p.lows[j] / p.closes[i])
+        sold = p.lows[j] * max(0.0, 1.0 - p.dollars[j] / qx) if qx > 0 else 0.0
+        return self._paid(sold / paid, sold / p.closes[i], entry_keep, q, stale, liquidity, keep)
 
     def _paid(self, ratio: float, moved: float, entry_keep: float, q: float, stale: bool, liquidity: float | None,
               keep: float) -> float:  # fmt: skip

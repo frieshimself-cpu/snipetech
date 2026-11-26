@@ -1094,9 +1094,10 @@ def write_scored(tmp_path, coins, chain="base", extra=""):
     (folder / f"{chain}_scored.jsonl").write_text("".join(json.dumps(c) + "\n" for c in coins) + extra)
 
 
-def pair(out, delay, hold):
-    """The table's row of one entry delay and hold."""
-    return next(r for r in out["table"] if (r["delay"], r["hold"]) == (delay, hold))
+def pair(out, delay, hold, table="table"):
+    """The row of one entry delay and hold: of the table, or of a table apart (`table`: its key in the report)."""
+    rows = out[table] if isinstance(out[table], list) else out[table]["table"]
+    return next(r for r in rows if (r["delay"], r["hold"]) == (delay, hold))
 
 
 def test_a_copy_pays_its_exit_over_its_entry_less_both_taxes_two_swap_fees_and_two_gas_fees(tmp_path):
@@ -1268,11 +1269,51 @@ def test_beside_every_number_a_pessimistic_bound_buys_at_the_high_and_sells_at_t
     central, bound = 1.5 / 1.1 - 1, 1.2 / 1.3 - 1  # the honeypot is all lost either way
     assert row["mean"] == pytest.approx((central - 1) / 2, abs=1e-4)
     assert row["pessimistic"]["mean"] == pytest.approx((bound - 1) / 2, abs=1e-4)
-    assert set(row["pessimistic"]) == {"mean", "mean_se", "median", "share_above_0", "mean_without_best5"}
+    assert set(row["pessimistic"]) == {"coins", "mean", "mean_se", "median", "share_above_0", "mean_without_best5"}
     stale = pair({"table": out["stale_sales"]}, 2, 30)
-    assert set(stale["pessimistic"]) == {"mean", "mean_se"}
+    assert set(stale["pessimistic"]) == {"coins", "mean", "mean_se"}
     assert out["reading"].startswith("Every number has a pessimistic bound beside it")
     assert "if only the central number pays, a live test at the stated bid decides" in out["reading"]
+
+
+def test_the_bound_takes_each_candles_dollars_as_one_trade_ahead_of_the_copy(tmp_path):
+    """Fifth review of 25 Nov: the bound bought at the landing candle's high and sold at the exit candle's low, but a
+    candle's high and low are trades' average prices: behind a buy the pool's price is above the high, behind a sale
+    below the low. A sniper's 1,500 dollars into a pool of 5,000 in the copy's landing block: the bound read +22.7
+    percent where the copy got -2.1. The bound now takes each candle's whole dollar volume as one trade that lands
+    last, ahead of the copy, in the model's pool q: in at high x ((x + sqrt(x^2 + 4)) / 2)^2, x = dollars / q; out at
+    low x (1 - dollars / qx). A coin with no pool size gets no bound, and its copies are counted out of it."""
+
+    class Pool:  # constant product: cash q, coins t
+        def __init__(self, cash, price):
+            self.q, self.t = cash, cash / price
+
+        def trade(self, cash):  # cash in (a buy) or out (a sale, negative): the coins moved, the price after
+            k, self.q = self.q * self.t, self.q + cash
+            moved, self.t = self.t - k / self.q, k / self.q
+            return abs(moved), self.q / self.t
+
+    market, prev, candles = Pool(5000.0, 1.0), 1.0, [(S, 1.0, 1.0, 1.0, 1.0, 1.0)]
+    for t in range(S + 2, S + 499, 2):
+        cash = 1500.0 if t == S + 4 else -400.0 if t == S + 36 else 0.0  # the sniper; a sale that shows the pool
+        coins, after = market.trade(cash) if cash else (1.0, market.q / market.t)
+        paid = abs(cash) / coins if cash else after  # a candle's prices are its trades' average prices
+        candles.append((t, prev, max(prev, paid), min(prev, paid), paid, abs(cash) or 1.0))
+        prev = paid
+        if t == S + 4:  # the copy lands behind the sniper, at the pool's price after it, and sells at S + 34
+            mine = Pool(market.q, market.q / market.t)
+            got, _ = mine.trade(100.0 * 0.99)
+            real = (mine.q - mine.q * mine.t / (mine.t + got)) * 0.99 / 100.0 - 1 - 2 * 0.05 / 100.0
+    seen = 1.69  # first seen after the sniper, with the pool's cash then (6,500 dollars a side)
+    write_scored(tmp_path, [coin(A, candles, liquidity=13_000.0, first={"price_usd": seen})])
+    row = pair(LW.score(tmp_path, "base", gas_usd=0.05, fee_pct=1.0), 2, 30)
+    assert row["pessimistic"]["mean"] <= real < row["mean"]  # -2.1 percent, between the bound and the close's +22.7
+    assert (real, row["mean"]) == (pytest.approx(-0.0209, abs=1e-4), pytest.approx(0.227, abs=1e-3))
+    assert "as one trade" in LW.SCORE_READING and "whatever the close is" not in " ".join(LW.CAVEATS)
+    # a coin with no pool size, on a chain where no coin gave one: no bound, its copies counted out of it
+    write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]), liquidity=None)])
+    row = pair(LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0), 2, 30, "without_pool_size")
+    assert (row["coins"], row["pessimistic"]["coins"], row["pessimistic"]["mean"]) == (1, 0, None)
 
 
 def test_a_trade_fills_behind_every_trade_of_the_second_or_block_it_lands_in(tmp_path):
