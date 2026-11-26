@@ -568,6 +568,32 @@ def test_a_rate_limit_whose_end_is_not_ahead_reads_as_none_named(tmp_path):
         assert (len(during) <= 10, until[0] < T + 600, out["scored"]) == (True, True, 3), (given, len(during))
 
 
+def test_an_empty_answer_with_a_success_status_is_asked_again(tmp_path):
+    """Fourth review of 25 Nov: GMGN's skills measured that a burst gets an empty answer with a success status, a rate
+    limit and not "no data", and such an answer wrote its coin off at the first ask. A success status without GMGN's
+    JSON is asked again a round later, as a failure on the way is."""
+    ft = FakeTime(T)
+    recorded(tmp_path, MANY[:5])
+    empty = httpx.Response(200, content=b"", headers={"content-type": "application/json"})
+    hits = {"candles": [MANY[1]], "security": [MANY[3]]}  # one empty answer each
+
+    def once(kind, ok):
+        def route(req):
+            if req.url.params["address"] in hits[kind]:
+                hits[kind].remove(req.url.params["address"])
+                return empty
+            return ok(req)
+
+        return route
+
+    routes = {"/v1/trenches": polls([]), "/v1/market/token_kline": once("candles", kline({})),
+              "/v1/token/security": once("security", security({}))}  # fmt: skip
+    out = watch(tmp_path, ft, routes, minutes=5)
+    lines = scored(tmp_path)
+    assert (len(lines), [x["mint"] for x in lines if "candles_error" in x or "error" in x["security"]]) == (5, [])
+    assert out["refused"] == {"poll": 0, "candles": 0, "security": 0, "pool": 0}
+
+
 def test_a_rate_limit_is_waited_out_and_the_read_asked_again(tmp_path):
     ft, calls = FakeTime(T), []
 

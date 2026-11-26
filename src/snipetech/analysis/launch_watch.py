@@ -606,7 +606,11 @@ class LaunchWatch:
                 if exc.status in STOP_STATUSES or exc.error in STOP_ERRORS:
                     return self._refused_key(kind, exc)
                 if exc.status != 429:
-                    later = exc.status is None or exc.status >= 500 or exc.status in LATER_STATUSES
+                    # a failure on the way: no answer, a server error, GMGN's 404 for a coin it has not read, or a
+                    # success status without GMGN's JSON (fourth review of 25 Nov: GMGN's empty answer in a burst is a
+                    # rate limit, and it wrote its coin off at the first ask)
+                    later = (exc.status is None or exc.status >= 500 or exc.status in LATER_STATUSES
+                             or (200 <= exc.status < 300 and not exc.error))  # fmt: skip
                     if exc.error:  # GMGN answered, with a refusal of its own: its code (a page in front of it has none)
                         self._answered(kind)
                     return ("later" if later else "refused"), str(exc)
