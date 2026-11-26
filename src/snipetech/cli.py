@@ -330,19 +330,43 @@ def _gmgn_mark(store_of):
     return count
 
 
+WATCH_WRITE_SECS = 2.0  # the longest the launch watch waits for the database's write lock at a status line
+
+
+def _gmgn_brief_mark(store):
+    """The launch watch's `record`: the weight since its last status line into the month's tally and the time GMGN last
+    answered, each write waiting WATCH_WRITE_SECS at most for a write lock another process holds, and raising past
+    them: the watch carries the weight to its next status line (fourth review of 25 Nov: two writes of up to the
+    store's 600 s each held the watch up to 20 minutes). `store` is the watch's own: no other write goes through it."""
+    store.LOCK_PATIENCE = 0.0  # one try, no waiting out
+    store.conn.execute(f"PRAGMA busy_timeout = {int(WATCH_WRITE_SECS * 1000)}")
+
+    def record(weight: int) -> None:
+        from . import gmgn
+
+        gmgn.mark_answered(store, weight)
+
+    return record
+
+
 def _gmgn(args, cfg) -> int:
     """`snipetech gmgn <action>`: one look-up on GMGN, printed as JSON. A refusal is printed the same way
     ({"ok": false, "status", "error"}: GMGN's own words, the key scrubbed) and ends with exit code 1; a wrong
-    argument with 2. Reading only: there is no action that trades."""
+    argument with 2. Reading only: there is no action that trades. `launch-watch` runs for its --minutes and prints
+    how it went at its end; `launch-score` reads the watch's file and asks GMGN nothing."""
     from . import gmgn
     from .store import Store
 
+    if args.action == "launch-score":
+        return _gmgn_launch_score(args, cfg)
     store = Store(cfg.storage.db_path)
     code = 0
     try:
         mark = _gmgn_mark(lambda: store)
         if args.action == "ping":
             out = gmgn.ping(rate=cfg.gmgn.weight_per_sec, counter=mark)
+        elif args.action == "launch-watch":
+            out, code = _gmgn_launch_watch(args, cfg, _gmgn_brief_mark(store))
         else:
             try:
                 client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark, chain=args.chain)
@@ -379,6 +403,45 @@ def _gmgn(args, cfg) -> int:
                     client.close()
     finally:
         store.close()
+    print(json.dumps(out, indent=None if args.json else 1, default=str))
+    return code or (0 if out.get("ok") else 1)
+
+
+def _gmgn_launch_watch(args, cfg, mark) -> tuple[dict, int]:
+    """`gmgn launch-watch`: a chain's new launches for --minutes, then their candles and security once settled
+    (analysis/launch_watch.py), written beside the database. A wrong number ends it with exit code 2, unasked."""
+    from . import gmgn
+    from .analysis import launch_watch
+
+    given = {k: v for k, v in (("every", args.every), ("settle_secs", args.settle_secs)) if v is not None}
+    try:  # the numbers first: a wrong one is exit 2 whether or not a key is set
+        launch_watch.watch_numbers(args.minutes, **given)
+    except ValueError as exc:
+        return {"ok": False, "status": None, "error": str(exc)}, 2
+    try:  # the weight of its answers goes to the database through the watch, once a status line (`record`)
+        client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, chain=args.chain)
+    except gmgn.GmgnError as exc:
+        return {"ok": False, "status": None, "error": str(exc)}, 0
+    try:
+        data = Path(cfg.storage.db_path).resolve().parent
+        return launch_watch.watch(client, data, minutes=args.minutes, log=_progress, record=mark, **given), 0
+    except ValueError as exc:
+        return {"ok": False, "status": None, "error": str(exc)}, 2
+    finally:
+        client.close()
+
+
+def _gmgn_launch_score(args, cfg) -> int:
+    """`gmgn launch-score`: what an early buyer of the watched launches would have made (analysis/launch_watch.py),
+    from the watch's file beside the database: no key, no database, nothing asked of GMGN."""
+    from .analysis import launch_watch
+
+    given = {k: v for k, v in (("size_usd", args.size_usd), ("gas_usd", args.gas_usd), ("fee_pct", args.fee_pct))
+             if v is not None}  # fmt: skip
+    try:
+        out, code = launch_watch.score(Path(cfg.storage.db_path).resolve().parent, args.chain, **given), 0
+    except ValueError as exc:
+        out, code = {"ok": False, "status": None, "error": str(exc)}, 2
     print(json.dumps(out, indent=None if args.json else 1, default=str))
     return code or (0 if out.get("ok") else 1)
 
@@ -1707,7 +1770,10 @@ def build_parser() -> argparse.ArgumentParser:
         "funder <address> = the wallet that funded it and the tracked wallets the same funder ties to it (proposed "
         "companions: stored, applied to nothing); created "
         "<address> = the coins it launched; token <mint> = card, risk, top holders and traders with tags; trending, "
-        "new-pairs = coins by launchpad; candles <mint>; gas = GMGN's fee presets; signals, callouts = GMGN's feeds",
+        "new-pairs = coins by launchpad; candles <mint>; gas = GMGN's fee presets; signals, callouts = GMGN's feeds; "
+        "launch-watch = write down a chain's new launches for --minutes and, once each has settled, its 1 s candles "
+        "and security (history/gmgn_launches/ beside the database); launch-score = what an early buyer of those "
+        "launches would have made, by entry delay and hold, rugs, honeypots and taxes counted",
     )
     sp.add_argument(
         "action",
@@ -1728,6 +1794,8 @@ def build_parser() -> argparse.ArgumentParser:
             "gas",
             "signals",
             "callouts",
+            "launch-watch",
+            "launch-score",
         ],
     )
     sp.add_argument(
@@ -1787,6 +1855,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--pages", type=int, default=2, help="fees: pages of 50 trades read (2)")
     sp.add_argument("--raw", action="store_true", help="print GMGN's answer as it came (to check its field names)")
+    sp.add_argument(
+        "--minutes",
+        type=float,
+        help="launch-watch: how long it watches, in minutes, 10080 (7 days) at most: its end, its last reads starting "
+        "within a minute after it (0: it only reads the coins that settled since the last job, starting none after that "
+        "minute)",
+    )
+    sp.add_argument("--every", type=float, help="launch-watch: seconds between two looks at GMGN's newest coins (60)")
+    sp.add_argument(
+        "--settle-secs",
+        type=float,
+        help="launch-watch: a coin's candles and security are read once it is this many seconds past its start (900; "
+        "the candles cover the 500 s after it)",
+    )
+    sp.add_argument(
+        "--size-usd",
+        type=float,
+        help="launch-score: the dollars a copy buys (100); the gas of its buy and its sale, and its own price impact "
+        "in the coin's pool, are counted against them",
+    )
+    sp.add_argument(
+        "--gas-usd",
+        type=float,
+        help="launch-score: the dollars one transaction costs (unless given: eth 3, base 0.05, bsc 0.05, sol 0.5)",
+    )
+    sp.add_argument(
+        "--fee-pct",
+        type=float,
+        help="launch-score: the pool's swap fee on the buy and again on the sale, in percent (unless given: sol 1.25, "
+        "bsc, base and eth 1)",
+    )
 
     sp = cmd("remote", "operate snipetech on your server through its ops endpoint", json_flag=False)
     sp.add_argument("--url", default=os.environ.get("SNIPETECH_OPS_URL"), help="ops URL ($SNIPETECH_OPS_URL)")
@@ -1794,7 +1893,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--wait", action="store_true", help="run/job/update: wait for the job and print its output")
     sp.add_argument("--timeout", type=float, default=None, metavar="MINUTES",
                     help="run: the job's time limit (the server's 6 h by default; an `oktech cycle` job's own minutes, "
-                         "wait for SOL and watch after its end set it, an `oktech guard` job's minutes)")  # fmt: skip
+                         "wait for SOL and watch after its end set it, an `oktech guard` job's minutes, a `gmgn "
+                         "launch-watch` job's minutes and 30)")  # fmt: skip
     sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
                                        "logs", "update", "daily"])  # fmt: skip
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path "
@@ -2678,16 +2778,30 @@ def _ops_serve(args, cfg: Config) -> int:
 
 UPDATE_RETRY_SECS = 15
 UPDATE_WAIT_MINUTES = 20.0
+LAUNCH_WATCH_OVER_MINUTES = 30  # a launch watch's job limit past its --minutes (it ends a minute after them at most)
 
 
 def _job_limit(rest: list[str], minutes: float | None) -> int | None:
     """The time limit (seconds) to ask for a remote job: `--timeout` minutes when given; for `oktech cycle`, what its own
     flags need (its wait for SOL, its minutes, the watch after its end, and 10 minutes over: killed at its limit a
     runner leaves its snipers armed, and the server's 6 h is shorter than a day's run); for `oktech guard`, its minutes,
-    the watch at its end and 10 over (killed, its floor watch ends early: 22 Nov audit); else None, the server's
-    default."""
+    the watch at its end and 10 over (killed, its floor watch ends early: 22 Nov audit); for `gmgn launch-watch`, its
+    minutes and 30 over (the server's 6 h would end a day's watch at hour 6: review of 25 Nov); else None, the server's
+    default. A leading --profile is read past, as ops.holds_deploy does: the job is the one it profiles."""
     if minutes is not None:
         return int(float(minutes) * 60)
+    if rest[:1] == ["--profile"]:
+        rest = rest[1:]
+    if rest[:1] == ["gmgn"] and "launch-watch" in rest:
+        from .analysis.launch_watch import MAX_MINUTES
+
+        try:
+            a = build_parser().parse_args(rest)
+        except SystemExit:  # not a command this version reads: the server says why
+            return None
+        if a.action != "launch-watch" or a.minutes is None or not 0 <= a.minutes <= MAX_MINUTES:
+            return None  # a look-up, or minutes the watch refuses (none, nan, past a week): that job ends at once
+        return int((float(a.minutes) + LAUNCH_WATCH_OVER_MINUTES) * 60)
     if rest[:2] not in (["oktech", "cycle"], ["oktech", "guard"]):
         return None
     from .service import END_WATCH_SECS
@@ -2747,6 +2861,11 @@ def _remote(args) -> int:
             return 2
         print(keygen(path) if args.action == "keygen" else public_line(path))
         return 0
+    # a time limit is a number of minutes above 0 (fourth review of 25 Nov: inf and nan raised, 0 gave the server's 6 h
+    # to a day's watch, -1 sent -60)
+    if args.action == "run" and args.timeout is not None and not 0 < args.timeout < float("inf"):
+        print(f"remote --timeout: the job's limit in minutes, a number above 0 (got {args.timeout!r})", file=sys.stderr)
+        return 2
     if not args.url or not args.key:
         print("set SNIPETECH_OPS_URL and SNIPETECH_OPS_KEY (or --url / --key)", file=sys.stderr)
         return 2

@@ -57,6 +57,12 @@ FILE_FLAGS = {"label": frozenset({"--file"}), "lab": frozenset(), "paper": froze
 # (operator/BUDGET, the owner's /budget), oktech, sweep and buy trade, book switches the live book, strategist and
 # config change settings. Named here so the refusal says whose they are and the model does not try variants
 OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "unwrap", "buy", "book", "strategist", "config"})
+# Actions of a research command that no agent starts either, named in the refusal as OWNER_COMMANDS are: `gmgn
+# launch-watch` (analysis/launch_watch.py) runs for its --minutes, a day on the server, and asks GMGN every minute on
+# the owner's plan. Review of 25 Nov: every gmgn action passed here and in the wallet scout's role (roles.command_of
+# names a command by its first word). Read as the command line reads the words (`_owner_action`): `gmgn --chain base
+# launch-watch` is the same job.
+OWNER_ACTIONS = frozenset({("gmgn", "launch-watch")})
 # One action of a command that is otherwise not an agent's: `history` reads the bought hourly files (the owner's
 # credits there), but `history amm-backfill` fetches the PumpSwap trades around big wallets' buys from the RPC so that
 # a lab can score them (12 Nov 2026, the owner: "Ok do it"). It trades nothing; what it may spend is bounded below and
@@ -146,6 +152,18 @@ def job_key(argv: list[str]) -> str:
     for w in words:
         split += w.split("=", 1) if w.startswith("--") and "=" in w else [w]
     return "words " + json.dumps(split)
+
+
+def _owner_action(argv: list[str]) -> str | None:
+    """The owner's action (OWNER_ACTIONS) that `argv` starts, as "command action"; None for any other command line.
+    Read as the words are and as the command line's parser reads them, so a flag before the action word is no way
+    around it."""
+    words = [str(a).strip() for a in argv]
+    said = as_run(argv) or {}
+    for pair in (tuple(words[:2]), (said.get("cmd"), said.get("action"))):
+        if pair in OWNER_ACTIONS:
+            return " ".join(pair)
+    return None
 
 
 def _same_words(theirs: list, argv: list[str]) -> str:
@@ -604,6 +622,10 @@ class OperatorJobs:
               idea: str | None = None) -> dict:  # fmt: skip
         """Start a research job. `role`: the research agent whose turn asks (None for the operator and the analyst,
         which nothing below that names a role holds); `idea`: the idea of its queue the job tests."""
+        if owners := _owner_action(argv):  # before any other check: no role, idea or path makes it an agent's
+            raise PermissionError(f"{owners} is the owner's: an agent never starts it (it runs for its --minutes, a "
+                                  "day on the server, and asks GMGN every minute); put the case in an idea with "
+                                  "owner_needed")  # fmt: skip
         if argv and argv[0] in OWNER_COMMANDS:
             raise PermissionError(f"{argv[0]} is the owner's: an agent never starts it (its own budget, trading and "
                                   "settings are the owner's call); put the case in an idea with owner_needed")  # fmt: skip
@@ -654,7 +676,9 @@ class OperatorJobs:
                     raise PermissionError(f"every lab slot is held ({who}, and a lab that is no job of the agents': "
                                           "qualify's, the search's or a freeze): read that lab's result when it "
                                           "ends, or do the part of the idea that needs no lab")  # fmt: skip
-        research = [m for m in running if loop_stage(m.get("argv")) is None]  # the round's own stages do not count
+        # the round's own stages do not count, nor the owner's own actions (a day-long launch watch: third review of
+        # 25 Nov, three of them left the analyst refused all day)
+        research = [m for m in running if loop_stage(m.get("argv")) is None and not _owner_action(m.get("argv") or [])]
         if len(research) >= self.max_jobs:
             raise PermissionError(f"{len(research)} jobs running, the limit is {self.max_jobs}")
         try:

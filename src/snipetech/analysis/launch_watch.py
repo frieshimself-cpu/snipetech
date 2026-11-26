@@ -1,0 +1,1679 @@
+"""Launch snipes on Base, Ethereum and BNB Chain (and Solana), tested on data before anything is built to trade them.
+
+The owner (25 Nov 2026): "I was thinking about sniping base and eth launches, like we build a way to detect new
+projects coming out and we find a way to snipe them with oktech". OKTech holds wallets on those chains. Whether a snipe
+there pays is asked of GMGN's data first: a day of real launches, then what an early buyer of them would have made.
+
+`watch` (`snipetech gmgn launch-watch`) asks GMGN every minute for the newest coins of one chain (its trenches: every
+launchpad of the chain, 80 coins at most) and writes each coin it has not seen to history/gmgn_launches/<chain>.jsonl
+beside the database: the row the client makes of it with the taxes and honeypot flags GMGN gave on it, when it was
+first seen, and the chain. Once a coin is `settle_secs` past its start (900 s by default, so its 500 s of candles are
+over), it asks once for the coin's 1-second candles over the 500 s after its start and for its security numbers, and
+for its pool when a copy bought it (only a later sale of the copy's worth shows a sale's price could be paid, and
+the watch does not know the copy's size), and writes them to <chain>_scored.jsonl with the time of its last candle. A coin's start is its open time (a pool can open after its coin was made), else its
+creation, else when the watch first saw it.
+
+A read GMGN refuses is written into that coin's line and the job goes on. A rate limit is waited out and the read asked
+again, never past the time the read has: --minutes is the job's end. Each round's reads stop when the next look at new
+coins is due, and the one pass after the end starts no read more than a minute after it (FINAL_SLACK_SECS; a read
+under way then finishes, a minute more at most when GMGN does not answer); a coin left by then, or held by a rate limit
+past it, waits for a later round or the next job. A read that fails on the way (no answer, a
+server error) or that GMGN refuses with a 404 (a coin it has not read yet) is tried again a round later, at the back of
+the queue, three counted rounds at most, then written as refused; a round in an outage of its kind of read (none of
+that kind answered) is not counted, but thirty of them count as one. A refusal of the key or of this machine (any 401
+or 403) leaves the round, and the next round asks again; the same refusal of one kind of read in five rounds in a row,
+none answered in between, ends the job and writes nothing more: no read could work. A restarted job reads both files
+and goes on where the last one
+stopped; one job at a time watches a chain. It keeps the coins it has seen and the coins waiting for their candles,
+nothing else. Like every GMGN call it only reads.
+
+`score` (`snipetech gmgn launch-score`) reads <chain>_scored.jsonl and says what a copy made for each entry delay and
+hold, landing behind the trades of its block and paying its own price impact in a constant-product pool of the coin's
+first-seen liquidity: the mean and its standard error, the median, the share that made money, the mean once the five
+best coins are taken out (one big winner must not carry it) and the share of coins that rugged. The best pair is chosen
+on one half of the coins (a hash of their address) and its numbers, split by launchpad, are the other half's; a pair
+needs 30 coins in each half, a launchpad too. Beside that table: the stale sales alone, the coins whose security is
+unknown alone (they are in the table too, counted in each row), and apart from it the coins timed from a sighting and
+those without a pool size. What it assumes is printed with every report (SCORE_READING, SECURITY_READING, the chain's
+LANDING), and so is what it leaves out (CAVEATS)."""
+
+from __future__ import annotations
+
+import bisect
+import contextlib
+import fcntl
+import functools
+import hashlib
+import json
+import math
+import os
+import statistics
+import time
+from array import array
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any, NamedTuple
+
+from ..gmgn import CHAINS, Gmgn, GmgnError
+
+DELAYS = (2, 5, 12, 30)  # seconds after a coin's start a copy buys
+HOLDS = (30, 120, 300, 480)  # seconds it holds
+WINDOW_SECS = 500  # the 1 s candles read of a coin, from its start: GMGN gives 500 in one request
+PAIRS = tuple((d, h) for d in DELAYS for h in HOLDS if d + h <= WINDOW_SECS)  # what the score reads: inside the 500 s
+LAST_SALE = max(d + h for d, h in PAIRS)  # the last sale of a copy, seconds after the start (492)
+EVERY_SECS = 60.0  # between two looks at GMGN's newest coins
+MAX_MINUTES = 7 * 24 * 60  # the longest watch: a week (third review of 25 Nov: 1e307 minutes gave an end at infinity)
+SETTLE_SECS = 900.0  # a coin's candles and security are read this long after its start
+POLL_LIMIT = 80  # the most coins GMGN gives of a stage
+SIZE_USD = 100.0
+GAS_USD = {"eth": 3.0, "base": 0.05, "bsc": 0.05, "sol": 0.5}  # one transaction, in dollars, when none is given
+# the pool's swap fee on each leg, in percent, when none is given: pump.fun's 1.25 on Solana (GMGN's coin rows of
+# 12 Nov: 0.0125 a side), 1 on BNB Chain, Base and Ethereum (review of 25 Nov: no fee was charged)
+FEE_PCT = {"sol": 1.25, "bsc": 1.0, "base": 1.0, "eth": 1.0}
+RUG_LEFT = 0.1  # a rug: the price fell to this share of its first candle's or below within the window
+HONEYPOT_SELL_TAX = 0.5  # a sell tax this high counts as a coin that cannot be sold
+BIG_FOR_POOL = 0.05  # a copy above this share of its pool's liquidity when first seen is counted (over_5pct_of_pool)
+# the least liquidity that is a pool size: a millionth of a dollar (fourth review of 25 Nov: 1e-320 dollars and a price
+# that fell far gave a pool side and a worth that both rounded to 0, and ZeroDivisionError)
+MIN_POOL_USD = 1e-6
+BEST_LEFT_OUT = 5
+# the fewest coins a pair needs to be called best, and a launchpad to get its numbers: a mean of fewer says little
+# (third review of 25 Nov: one coin that tripled was the best pair at +200 percent)
+MIN_COINS = 30
+LATER_ROUNDS = 3  # rounds a coin's reads are tried in when they fail on the way, before they are written as refused
+# rounds of an outage of a coin's read (no read of its kind answered in them) that count as one failed round of it: a
+# coin failing alone is written in the end (fourth review of 25 Nov: one never was, and two held the queue for good)
+OUTAGE_ROUNDS = 30
+# the stop and retry rules count a round at most once in this many seconds of the clock, whatever --every is (fourth
+# review of 25 Nov: with --every 10 a refusal of 60 s ended a two-hour job)
+ROUND_SECS = 60.0
+# a refusal that may pass, asked again a round later as a failure on the way is: GMGN's 404 for a coin it has not read
+# yet (review of 25 Nov: it was final). A 403 or a 401 is a refusal of the key or of this machine (STOP_STATUSES).
+LATER_STATUSES = (404,)
+# what refuses the key or this machine, whatever it says: any 401 or 403 (fourth review of 25 Nov: a 403 that was no
+# JSON of GMGN's, a page of the network in front of it, or a code not on the list, wrote every coin due off)
+STOP_STATUSES = (401, 403)
+RATE_WAITS = 10  # waits for one read's rate limit; after them the read is tried again a round later
+RATE_WAIT_MAX = 900.0  # the longest single wait
+RATE_WAIT_UNNAMED = 60.0  # the wait when GMGN names no time its limit ends
+FINAL_SLACK_SECS = 60.0  # the last reads after a watch's minutes: none starts later than this after its end
+STATUS_SECS = 900.0  # a line in the job's log this often
+# GMGN's refusals of the key, of its plan or of this machine: no read of their kind can work while one holds, so it
+# leaves the round, like a rate limit with no end named, and the next round asks again; some pass (a request slowed
+# past GMGN's 5 s window, one that left over the wrong route: third review of 25 Nov, one of them ended a day-long watch
+# for good). A plan without 1 s candles (PLAN_UPGRADE_REQUIRED; PRO_PLAN_REQUIRED, as GMGN's skills name it for them)
+# refuses every coin alike: written into each coin, it wrote them all off while the job ran on (same review).
+STOP_ERRORS = frozenset(
+    {"AUTH_KEY_INVALID", "AUTH_INVALID", "AUTH_IP_BLOCKED", "AUTH_KEY_BLOCKED", "AUTH_TIMESTAMP_EXPIRED",
+     "AUTH_TIMESTAMP_SKEW", "PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"}
+)  # fmt: skip
+STOP_ROUNDS = 5  # rounds in a row one kind of read meets the same such refusal, none answered between, before the end
+# the same, for a kind of read GMGN answered in this job: an hour (fourth review of 25 Nov: five minutes of an incident
+# of GMGN's key service ended a day's watch at its 64th minute)
+STOP_ROUNDS_ANSWERED = 60
+# looks at the newest coins refused in a row with a 4xx (an outage counts none) that end the job: GMGN no longer takes
+# the look (fourth review of 25 Nov: 120 of 120 looks refused, no coin, ok true)
+POLL_REFUSALS = 30
+# a plan's refusals: they stop the job only on the candles read, without which nothing can be scored; a plan that lacks
+# the pool or the security route writes those reads refused (fourth review of 25 Nov: one ended a day's watch in four
+# minutes with nothing scored, though candles and security answered)
+PLAN_ERRORS = frozenset({"PLAN_UPGRADE_REQUIRED", "PRO_PLAN_REQUIRED"})
+# what leaves the round, its coins waiting for the next one: a rate limit past the read's time, or the time over
+# ("unasked"), and a refusal of the key or of this machine ("halted")
+LEAVE_ROUND = ("unasked", "halted")
+CANNOT_SELL = ("is_honeypot", "honeypot", "can_not_sell")  # a yes in one of them: the coin cannot be sold
+TAXES = ("buy_tax", "sell_tax")
+FLAGS = (*CANNOT_SELL, "can_sell")
+SAFETY_FIELDS = frozenset((*CANNOT_SELL, *TAXES))  # what the score reads of a security answer (can_sell is not read)
+# how a file's taxes read, coin by coin (read_security reads each value on its own; the last two are information only)
+TAX_COUNTS = ("ambiguous_coins", "coins_with_a_tax_above_1", "honeypots_if_shares", "honeypots_if_percents")
+# what the watch keeps of GMGN's own row of a new coin, as GMGN gave it, beside the client's conversion of the row: its
+# taxes and its flags when the coin was first seen (review of 25 Nov: they were dropped). The real rows of 12 Nov give
+# buy_tax and sell_tax (0 on pump.fun coins) and no honeypot flag (tests/fixtures/gmgn/real/trenches.json).
+# Each coin's own fee on each leg, as GMGN's real rows of new coins give it (fourth review of 25 Nov: pump.fun's 1.25
+# percent, 1.95 on the coin SU), and the launchpad's parameters it comes from, kept with the coin's row too.
+OWN_FEES = {"buy_tax": "total_buy_tax", "sell_tax": "total_sell_tax"}
+FIRST_SIGHT = (*CANNOT_SELL, *TAXES, *OWN_FEES.values(), "fee_params")
+SCORED_HEAD = '{"mint":"'  # how every line of a scored file begins (written compact, the coin first)
+# how every whole line of a scored file ends: a last key written after everything else, so a line cut by a killed job
+# never ends with it (second review of 25 Nov: a cut line can end with "}", the answers holding dicts in dicts)
+SCORED_TAIL = ',"end":1}'
+# Where a copy lands, printed with every report (CLAUDE.md rule 2: a paper result names its landing and the bid that
+# buys it). Third review of 25 Nov: every fill was the first trade of its second or block, a place the default gas
+# does not buy.
+LANDING_RULE = (
+    "Every copy buys and sells behind every trade of the second (or the block) it lands in, at the default gas: a "
+    "plain bid, no priority. A price at the top of a block would need a named bid that buys that place: none is scored. "
+    "It fills at the close of that block's candle, which is probably its last trade's price, not the pool's after that "
+    "trade: a copy behind a big buy pays more. The pessimistic bound beside each number answers that: it takes each "
+    "candle's dollars as one trade that lands ahead of the copy."
+)
+BLOCK_SECS = {"sol": 1, "bsc": 1, "base": 2, "eth": 12}  # the second, or the block, a copy lands in
+# what a delay means on each chain
+LANDING = {
+    "sol": "Solana: slots are 0.4 s, so a copy lands in the second it is sent, several slots after the launch (our "
+    "own launch snipes land a slot after the create).",
+    "bsc": "BNB Chain: blocks are under a second, so a copy lands in the second it is sent.",
+    "base": "Base: blocks are 2 s, so a copy's delay rounds up to the next block's candle, up to 2 s later; one sent at "
+    "a block's own stamp lands in the block after it, that one being sealed.",
+    "eth": "Ethereum: blocks are 12 s, so a copy's delay rounds up to the next block's candle, up to 12 s later: a buy "
+    "sent 2, 5 or 12 s after the start lands behind the trades of the first block stamped after its moment, never in "
+    "the launch's own or in one stamped at the moment.",
+}
+SCORE_READING = (
+    "Every number has a pessimistic bound beside it (pessimistic). It takes each candle's whole dollar volume as one "
+    "trade that lands last, ahead of the copy, in the model's pool (q, below): the entry behind a buy of the landing "
+    "block's candle's dollars, at its high x ((x + sqrt(x^2 + 4)) / 2)^2 with x = dollars / q, and each sale behind a "
+    "sale of the exit block's candle's dollars, at its low x (1 - dollars / qx); price impact and every charge as for "
+    "the number beside it. A coin with no pool size has no bound (pessimistic.coins counts the copies it covers). If "
+    "the bound pays, the landing does not matter; if only the central number pays, a live test at the stated bid "
+    "decides. The central number is what follows. "
+    "A copy buys D seconds after the coin's start (its open time, else its creation; a coin timed from when the watch "
+    "first saw it is scored apart, timed_from_sighting), if the coin traded before then, behind every trade of the "
+    "second, or the block, it lands in (block_secs: Solana and BNB Chain 1 s, Base 2 s, Ethereum 12 s): on a chain of "
+    "1 s at the close of the second it is sent in; on Base and Ethereum at the close of the first block stamped after "
+    "that moment, a block later at most (a block stamped with the moment was sealed before the copy was sent); with "
+    "nobody else trading in its block, at the last close at or before the moment. It sells H seconds later the same "
+    "way. Its return is exit / entry x buy "
+    "impact x sale impact x (1 - fee)^2 x (1 - buy tax) x (1 - sell tax) - 1 - 2 x gas / "
+    "size, a share of the size (0.1 is +10 percent; -1 is all of it): fee is the pool's swap fee on each leg (fee_pct; "
+    "unless given, 1.25 percent on Solana, pump.fun's, and 1 percent on BNB Chain, Base and Ethereum), or the coin's "
+    "own where GMGN's row of it gave a higher one (total_buy_tax, total_sell_tax, read as a tax is); its tax is charged "
+    "on top, so should GMGN's total hold the tax, it is charged twice, on the safe side. A coin that "
+    "cannot be sold is -1 - 2 x gas / size: all of it, and its gas as every copy pays it. Each leg pays its own price "
+    "impact in a constant-product pool holding the liquidity GMGN gave when the watch first saw the coin "
+    "(liquidity_usd), half of it on each side, taken back to the entry's price along the pool's curve: q = that half x "
+    "sqrt(entry / price_usd), the price on the same row; the half is at most the coin's market cap on that row (a "
+    "constant-product pool's cash side is worth no more than every coin there is; GMGN's rows give a liquidity of up "
+    "to eleven times it): pool_sizes.capped_at_market_cap counts the coins so capped. The buy gets q / (q + size) of "
+    "its price, the sale qx / (qx + "
+    "worth), where qx = q x sqrt(exit / entry) is that side at the exit and worth = size x exit / entry x the buy's "
+    "impact is what the copy holds at that price. over_5pct_of_pool counts the copies above 5 percent of that pool at "
+    "their entry (2 x q). A coin without a liquidity or a price on that row stays in the table, charged at the side a "
+    "tenth of the chain's coins were smaller than when first seen (pool_sizes), and is scored alone as well "
+    "(without_pool_size). A coin with no candle that opened before D - 1 "
+    "or at it is no trade "
+    "at D (one with no priced candle at all is no trade at any delay: candles.without_a_price); a candle whose close "
+    "is missing or zero is "
+    "left out, never divided by, and a copy whose return no float holds (a price of 1e300 after one of 1e-300) is "
+    "left out and counted (candles.returns_left_out); a coin whose candles GMGN refused is scored nowhere "
+    "(candles.refused). Only candles "
+    "inside the 500 s are read, and on Ethereum on to 516 s: the last sale (492 s) lands a block later at most, and the "
+    "trade after it shows it. mean_se is the mean's standard error over creators: a creator's coins move together and "
+    "count as one (with one coin a creator, the copies' standard deviation over the square root of their number); "
+    "creators counts a row's. A mean less than two of them from 0 is not told apart from 0. mean_without_best5 is the "
+    "mean once the five best copies are taken out. The coins are split in two halves by a hash of their creator's "
+    "address (half_of: SHA-256, the same on every run; the coin's own address when no creator is given), so one "
+    "creator's coins sit in one half (coins_by_half counts the coins scored for the table in each): the best pair is "
+    "the "
+    "one with the highest mean_without_best5 on half 0, among the pairs with 30 coins or more in each half "
+    "(min_coins), and best prints its numbers on half 1, coins it was not chosen on (a pair chosen and judged on the "
+    "same coins looks better than it is); with none, no pair is best (no_best says why). by_platform splits the best "
+    "pair by launchpad: those with 30 coins or more in each half in their order on half 0 by the same number (rank), "
+    "with half 1's numbers; the others get no numbers (too_few_coins). A launchpad picked by its printed numbers "
+    "rather than by its rank is chosen and judged on the same coins. The table holds every coin of both halves: a "
+    "pair picked from it by eye is chosen and judged on the same coins. "
+    "rug_share is the share of coins whose price fell to a tenth of their first candle's or below within the 500 s "
+    "(the lowest price of each candle against the first candle's open). A hold that ends after the candles were read "
+    "is not scored (unsettled). A sale priced from the coin's last trade in its 500 s (no trade came after it) is "
+    "stale: a pool its creator emptied leaves no trade and no candle, so that price may be one nobody could sell at. "
+    "The next trade after the sale shows the pool was still there only when it is a sale (its close below the sale's "
+    "price) of at least what the copy was worth then, in dollars (its candle's dollars); a buy puts cash in and shows "
+    "nothing. Every other sale is stale too. The watch, which does not know a copy's size, reads the pool of every coin "
+    "a copy bought, once, when it settles; a stale sale is paid by that read, a constant-product pool holding the "
+    "liquidity it gave, half of it on each side, and never more than the same sale shown would get: its side is the "
+    "smaller of that half and qx, and it gets side / (side + worth) of the price. It is lost (-1 and its gas) when the "
+    "read gave no liquidity (not read, refused, none in the answer) or zero. pools "
+    "counts the table's coins with a stale sale by that read: there (a copy's size or more), gone (less, and the coin counts as rugged), or "
+    "unknown (not read, refused or without a liquidity). stale_exits says how many of a row's sales were stale; "
+    "stale_sales shows those copies alone, each pair's: how many, their mean, and how many were lost."
+)
+SECURITY_READING = (
+    "Each coin is read twice: its row on GMGN's list of new coins when the watch first saw it (first_sight: the "
+    "is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax GMGN gave there, kept in the coin's line) and its "
+    "security answer at settle. Each leg pays the higher of the two reads' taxes, and a coin either read says cannot "
+    "be sold is all lost; taxes_changed counts the coins whose two reads gave a tax and differ. "
+    "A coin cannot be sold when GMGN says so in is_honeypot, honeypot or can_not_sell (1, true or "
+    "yes). can_sell is counted and not read: the one real answer we hold (a Solana coin, 12 Nov) said can_sell 0 and "
+    "can_not_sell 0 of a coin that traded. A sell tax of 50 percent or more counts as a coin that cannot be sold. "
+    "buy_tax and sell_tax are read value by value: 1 or less is a share of 1 (0.05 is 5 percent), as GMGN's coin rows "
+    "give theirs; above 1 a percent (5 is 5 percent). A value of 1 or less could still be a percent: it is read as the "
+    "higher tax, the share. ambiguous_coins counts the coins with such a tax above 0, coins_with_a_tax_above_1 those "
+    "with one read as a percent; honeypots_if_shares and honeypots_if_percents say, for information only, how many "
+    "coins could not be sold were every tax read one way. A field says something only when it reads as a tax of 0 or "
+    "more, or a flag as 0 or 1 "
+    "(true, false, yes, no); anything else (missing, null, empty, -1) says nothing: no tax, not a honeypot. `fields` "
+    "says on how many coins GMGN gave each field. A coin whose security answer GMGN "
+    "refused (refused), or that gave none of is_honeypot, honeypot, can_not_sell, buy_tax and sell_tax "
+    "(without_fields), is not known to be sellable: it stays in the table at its price, counted in each row "
+    "(security_unknown), and is scored alone in security_unknown as well."
+)
+# what the score leaves out, printed with every report in plain words (second review of 25 Nov)
+CAVEATS = (
+    (
+        "Our own price impact is counted with a constant-product pool holding the liquidity GMGN gave when the watch "
+        "first saw the coin, half of it on each side, taken back to each entry's price along that pool's own curve "
+        "(its cash side grows with the square root of the price, from the price GMGN gave on the same row): a "
+        "launchpad's bonding curve, or liquidity added or taken out between the entry and that sighting, can make it "
+        "larger or smaller."
+    ),
+    (
+        "The swap fee is one flat number per chain (fee_pct), not each pool's own fee: some Base launchpads take a "
+        "launch fee above the flat 1 percent, which is not charged unless --fee-pct says so."
+    ),
+    (
+        "A launch's own taxes and flags are read when the watch first sees the coin, usually after the entries (2 to "
+        "30 s after the start): a tax changed before then is not seen."
+    ),
+    (
+        "No real answer from Base, BNB Chain or Ethereum is in the tests yet, so the field names and units on those "
+        "chains are unchecked until the first real run; no real pool answer is in them for any chain either, so the "
+        "pool's liquidity is read by the name GMGN's documents give it."
+    ),
+    (
+        "On Base, BNB Chain and Ethereum a coin's contract can tax or block only the buyers of its first blocks; the "
+        "security read, made 900 s after the start, does not see it, and such a coin is scored as any other."
+    ),
+    (
+        "On Base, BNB Chain and Ethereum a sale may need an approval transaction first: a third gas charge, not "
+        "counted (gas is counted twice, for the buy and the sale)."
+    ),
+    (
+        "A 1 s candle's close is probably its last trade's price, not the pool's price after that trade: a copy behind "
+        "a big buy in its block pays more than the close (behind a sniper's 1,500 dollars in a pool of 5,000, the "
+        "close reads +24.7 percent where the copy gets 0.0). The pessimistic bound beside each number assumes each "
+        "candle's whole dollar volume was one trade that landed last, ahead of the copy, in the model's pool: trades "
+        "of the copy's own block that came after it, or a pool smaller than the model's, are not in it. The coins each "
+        "candle moved are kept in the file for the first real run to check."
+    ),
+    (
+        "A creator who cut part of its pool between the watch's first sight of the coin and a sale leaves no candle: "
+        "the sale is charged at the pool the model gives at its price (a stale one at that or the pool read at "
+        "settle, the smaller), which such a cut leaves smaller; when the cut came cannot be known from the candles "
+        "(a pool cut to a hundredth, then a trade of 5 dollars near the old price)."
+    ),
+)
+SIGHTING_READING = (
+    "The coins with no open or creation time GMGN gave: the watch timed them from when it first saw them, up to a look "
+    "(60 s) after their launch, so their first seconds were never read and their delays say nothing. They are scored "
+    "here alone, and left out of `table`, `best`, `by_platform` and `by_delay`."
+)
+UNSIZED_READING = (
+    "The coins whose line gives no liquidity GMGN could be read by when the watch first saw them (missing, zero or not "
+    "a number), or no price on that row: a pool emptied before that sighting reads 0. A buyer at the launch could not "
+    "know it, so they stay in `table`, `best`, `by_platform` and `by_delay`, each row counting them (pool_size_unknown), "
+    "their own price impact charged at the cash side a tenth of the chain's coins were smaller than when first seen "
+    "(pool_sizes.fallback_cash_side), not taken back to the entry; this table holds them alone. With no coin of the "
+    "chain giving a pool size there is no such side, and they are scored here only, at no impact. A coin timed from a "
+    "sighting is in timed_from_sighting instead."
+)
+UNKNOWN_READING = (
+    "The coins whose security answer GMGN refused, or gave without one of the fields read (security.refused and "
+    "security.without_fields): whether they could be sold, and their taxes, are not known. A buyer at the launch could "
+    "not know it either (the read comes 900 s after the start), so they stay in `table`, `best` and `by_platform`, "
+    "each row counting them (security_unknown). They are scored on their price and on what their row said when first "
+    "seen (its taxes and flags, often none), as if the answer had said nothing; this table holds them alone."
+)
+
+
+class WatchBusy(RuntimeError):
+    """Another launch-watch holds the chain."""
+
+
+class WatchStopped(RuntimeError):
+    """GMGN refused the key or this machine, or every look at the newest coins: the job ends, and nothing more is
+    written."""
+
+
+def folder(data_dir: str | Path) -> Path:
+    return Path(data_dir) / "history" / "gmgn_launches"
+
+
+def files(data_dir: str | Path, chain: str) -> tuple[Path, Path]:
+    """A chain's two files: the coins seen (<chain>.jsonl) and the coins read (<chain>_scored.jsonl)."""
+    d = folder(data_dir)
+    return d / f"{chain}.jsonl", d / f"{chain}_scored.jsonl"
+
+
+@contextlib.contextmanager
+def chain_lock(data_dir: str | Path, chain: str) -> Iterator[None]:
+    """One launch-watch at a time on a chain: two would each record and read every coin, and the files would hold it
+    twice."""
+    d = folder(data_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    lock = d / f"{chain}.lock"
+    with lock.open("a+") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise WatchBusy(f"another launch-watch on {chain} is running: it holds {lock}") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _int(v: Any) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _price(v: Any) -> float | None:
+    """A price that can be divided by: a finite number above 0. Anything else is None (an integer too big for a float
+    too: third review of 25 Nov, it raised OverflowError)."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return x if math.isfinite(x) and x > 0 else None
+
+
+def _new_rows(data: Any) -> tuple[list[dict], int]:
+    """GMGN's newest coins as its trenches answer sends them (`new_pairs` with raw): each row as the client converts it
+    (Gmgn._coin_row), with the fields of FIRST_SIGHT GMGN gave on it kept as given; POLL_LIMIT rows at most, as the
+    client cuts them. Each row is converted on its own: one the client cannot convert (GMGN's 1e999 is infinity, which
+    no whole number holds), or converts to nothing (no address it can read: third review of 25 Nov, such rows read as
+    a chain where nothing launched), is left out and counted, the second number given."""
+    raw = data.get("new_creation") if isinstance(data, dict) else None
+    rows, bad = [], 0
+    for given in raw if isinstance(raw, list) else []:
+        try:
+            row = Gmgn._coin_row(given) if isinstance(given, dict) else None
+        except Exception:  # noqa: BLE001 - whatever the conversion raises, this row is left out and counted
+            row = None
+        if row is None:
+            bad += 1
+            continue
+        rows.append(row | {k: given[k] for k in FIRST_SIGHT if k in given})
+    return rows[:POLL_LIMIT], bad
+
+
+def _bars(candles: Any) -> list[list]:
+    """A coin's candles as its line holds them, [ts, open, high, low, close, dollars, coins], from the client's rows.
+    The coins traded are kept for the first real run to check what a close is (fourth review of 25 Nov: on a one-trade
+    candle, its dollars over its coins, its last trade's price), and not read."""
+    rows = candles if isinstance(candles, list) else []
+    return [
+        [c.get("ts"), c.get("open"), c.get("high"), c.get("low"), c.get("close"), c.get("volume_usd"),
+         c.get("volume_tokens")]
+        for c in rows
+        if isinstance(c, dict)
+    ]  # fmt: skip
+
+
+def first_sight(rec: dict) -> dict:
+    """The fields of FIRST_SIGHT a coin's line holds: its row's taxes and flags when the watch first saw it."""
+    return {k: rec[k] for k in FIRST_SIGHT if k in rec}
+
+
+def _key(mint: str) -> str:
+    """The coin a mint names: an EVM address in another case is the same coin."""
+    return mint.lower() if mint.startswith("0x") else mint
+
+
+def half_of(who: str) -> int:
+    """The half of the coins a creator's are in, 0 or 1, by the SHA-256 of its address (_key; a coin's own when no
+    creator is given: _who): the same on every run. The best pair and the launchpads' order are chosen on half 0 and
+    their numbers read on half 1 (third review of 25 Nov: chosen and judged on the same coins, a market with no edge
+    showed a best pair and a top launchpad better than new coins gave; fourth: one creator's coins on both halves
+    confirmed that creator's habit)."""
+    return hashlib.sha256(_key(who).encode()).digest()[0] & 1
+
+
+def _who(rec: dict) -> str:
+    """Whose coin a line is: its creator's address, or the coin's own when none is given."""
+    creator = rec.get("creator")
+    return creator if isinstance(creator, str) and creator else rec["mint"]
+
+
+START_FROM = (("open_ts", "open"), ("created_ts", "created"), ("first_seen", "sighting"))
+
+
+def start_of(row: dict) -> int:
+    """When a coin's 500 s begin: its open time (a pool can open after its coin was made), else its creation, else when
+    the watch first saw it."""
+    return next((t for t in (_int(row.get(k)) for k, _ in START_FROM) if t > 0), 0)
+
+
+def start_source(row: dict) -> str:
+    """Where start_of took a coin's start from: "open", "created", or "sighting" (when the watch first saw it, up to a
+    look after its launch: its first seconds were never read, and the score sets it apart); "none" without any."""
+    return next((name for k, name in START_FROM if _int(row.get(k)) > 0), "none")
+
+
+def _number(what: str, value: Any, low: float, *, above: bool = False) -> float:
+    """A number from the command line that the job can use: finite and at least `low` (above it with `above`)."""
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        x = math.nan
+    if not math.isfinite(x) or x < low or (above and x == low):
+        raise ValueError(f"{what} must be a number {'above' if above else 'of'} {low:g}{'' if above else ' or more'} "
+                         f"(got {value!r})")  # fmt: skip
+    return x
+
+
+# -- the files ---------------------------------------------------------------------------------------------------------
+
+
+def _append(path: Path, rec: dict) -> None:
+    """One line, written whole and closed at once: a job killed later loses nothing written."""
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, separators=(",", ":"), default=str) + "\n")
+
+
+def _heal(path: Path) -> None:
+    """A job killed in the middle of a line leaves it without its end: the next line then starts on a line of its own."""
+    if path.exists() and path.stat().st_size:
+        with path.open("rb+") as fh:
+            fh.seek(-1, os.SEEK_END)
+            if fh.read(1) != b"\n":
+                fh.write(b"\n")
+
+
+def _head_mint(line: str) -> str | None:
+    """The coin of a whole scored line, read off its head (a line holds 500 candles: parsing every one at a restart
+    would read them all), else from the whole line."""
+    if line.startswith(SCORED_HEAD):
+        end = line.find('"', len(SCORED_HEAD))
+        if end > len(SCORED_HEAD):
+            return line[len(SCORED_HEAD) : end]
+    return _whole_mint(line)
+
+
+def _whole_mint(line: str) -> str | None:
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    mint = rec.get("mint") if isinstance(rec, dict) else None
+    return mint if isinstance(mint, str) else None
+
+
+def _done(path: Path) -> set[str]:
+    """The coins a scored file holds. A line's head is trusted only when the line is whole: it ends with SCORED_TAIL
+    before its newline. Any other line is read whole, so a line cut by a killed job names no coin and its coin is read
+    again. The cut line is not always the last: the next job heals the file and writes on (review of 25 Nov: at a
+    second restart a cut line's head counted its coin as done, and the coin was never read)."""
+    done: set[str] = set()
+    if not path.exists():
+        return done
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            mint = _head_mint(line) if line.rstrip().endswith(SCORED_TAIL) else _whole_mint(line)
+            if mint:
+                done.add(_key(mint))
+    return done
+
+
+# -- the watch ---------------------------------------------------------------------------------------------------------
+
+
+class LaunchWatch:
+    """One chain's watch, as `watch` runs it: the coins seen, the coins waiting for their candles, and how it went."""
+
+    def __init__(
+        self,
+        client: Gmgn,
+        data_dir: str | Path,
+        *,
+        every: float = EVERY_SECS,
+        settle_secs: float = SETTLE_SECS,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
+        log: Callable[[str], None] | None = None,
+        record: Callable[[int], None] | None = None,
+    ):
+        self.client, self.chain, self.data_dir = client, client.chain, data_dir
+        # the weight of GMGN's answers, kept here and handed to `record` (the shared database's tally; else the client's
+        # own counter) at each status line and at the end, never once a request: a write can wait minutes for the
+        # database's lock (third review of 25 Nov)
+        self.record, self.weight = record if record is not None else client.counter, 0
+        if self.record is not None:
+            client.counter = self._count
+        self.every, self.settle_secs = float(every), float(settle_secs)
+        self.clock = time.time if clock is None else clock
+        self.sleep = time.sleep if sleep is None else sleep
+        self.log = log or (lambda m: None)
+        self.launches, self.scored = files(data_dir, self.chain)
+        self.seen: set[str] = set()
+        self.pending: dict[str, dict] = {}  # each coin waiting for its candles: its row, in the order recorded
+        self.tries: dict[str, int] = {}  # rounds a waiting coin's reads failed on the way
+        self.outages: dict[str, int] = {}  # rounds of an outage a waiting coin's read failed in, not yet counted
+        # when each waiting coin's failed round, and its outage round, were last counted (ROUND_SECS apart at least)
+        self.tried_at: dict[str, float] = {}
+        self.outage_at: dict[str, float] = {}
+        self.resumed = {"seen": 0, "waiting": 0}
+        self.counts = dict.fromkeys(("polls", "polls_all_new", "recorded", "bad_rows", "scored", "pools_read",
+                                     "rate_limit_waits", "rate_limit_left", "read_errors", "tried_again_later",
+                                     "outage_waits", "stop_refusals"), 0)  # fmt: skip
+        self.refused = {"poll": 0, "candles": 0, "security": 0, "pool": 0}
+        self.round = 0  # the round under way: a look at new coins and the reads after it (the last pass is one too)
+        self.round_at = 0.0  # when it began
+        self.halted = False  # a refusal of the key or of this machine came in this round: its other reads wait
+        self.answered_kinds: set[str] = set()  # the kinds of read GMGN answered in this round (`_answered`)
+        # (coin, kind) of reads that failed on the way before GMGN answered any read of their kind in this round: a
+        # failed round of their coin only if one answers later in it (`_close_round`)
+        self.unanswered: list[tuple[str, str]] = []
+        # each kind of read's run of rounds that met the same refusal of the key or of this machine: (its code, rounds
+        # in a row, when the last one counted began); an answer of its kind ends the run
+        self.streaks: dict[str, tuple[str, int, int]] = {}
+        self.answered_any = False  # GMGN answered a read of this job (anything but a refusal of the key)
+        self.ever_answered: set[str] = set()  # the kinds of read GMGN answered in this job
+        self.last_refusal = ""
+        self.last_status: int | None = None  # the HTTP status of the last read GMGN refused, or None
+        self.looks_refused = 0  # looks at the newest coins refused in a row with a 4xx (POLL_REFUSALS)
+        self.looks_refused_at = -math.inf  # when the last one counted began: at most one a minute (ROUND_SECS)
+
+    def resume(self) -> None:
+        """What the jobs before wrote: every coin seen, and the ones still waiting for their candles."""
+        for path in (self.launches, self.scored):
+            _heal(path)
+        done = _done(self.scored)
+        if self.launches.exists():
+            with self.launches.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:  # cut short by a killed job: the coin is recorded again when GMGN lists it
+                        continue
+                    mint = row.get("mint") if isinstance(row, dict) else None
+                    if not isinstance(mint, str) or _key(mint) in self.seen:
+                        continue
+                    self.seen.add(_key(mint))
+                    if _key(mint) not in done:
+                        self.pending[_key(mint)] = row
+        self.resumed = {"seen": len(self.seen), "waiting": len(self.pending)}
+
+    def _ask(self, read: Callable[[], Any], until: float, kind: str) -> tuple[str, Any]:
+        """One read of `kind` (poll, candles, security, pool): ("ok", the answer), ("refused", GMGN's words), ("later",
+        what failed on the way), ("unasked", GMGN's words): a rate limit that holds past `until`, the time this read has
+        (the next look at new coins, or the job's end), or ("halted", GMGN's words): a refusal of the key or of this
+        machine, which leaves the round (`_refused_key`). A rate limit is waited out (until the time GMGN names, and a
+        second) only when it ends before `until`; the read is not asked again while it holds, since every ask makes it
+        longer. A read that fails in any other way (the client cannot convert an answer: GMGN's 1e999 is infinity) is
+        "later" too, counted in read_errors: tried a round later, three rounds at most, never the job's end (second
+        review of 25 Nov). A read whose time is already over when it comes is not started ("unasked": third review of
+        25 Nov, a coin's later reads started past the last pass's slack)."""
+        if self.clock() >= until:
+            return "unasked", "the time this read had was over"
+        waits = 0
+        while True:
+            try:
+                got = read()
+            except GmgnError as exc:
+                self.last_status = exc.status
+                if exc.error in PLAN_ERRORS and kind != "candles":  # the plan lacks this route: the read is refused
+                    self._answered(kind)
+                    return "refused", str(exc)
+                if exc.status in STOP_STATUSES or exc.error in STOP_ERRORS:
+                    return self._refused_key(kind, exc)
+                if exc.status != 429:
+                    # a failure on the way: no answer, a server error, GMGN's 404 for a coin it has not read, or a
+                    # success status without GMGN's JSON (fourth review of 25 Nov: GMGN's empty answer in a burst is a
+                    # rate limit, and it wrote its coin off at the first ask)
+                    later = (exc.status is None or exc.status >= 500 or exc.status in LATER_STATUSES
+                             or (200 <= exc.status < 300 and not exc.error))  # fmt: skip
+                    if exc.error:  # GMGN answered, with a refusal of its own: its code (a page in front of it has none)
+                        self._answered(kind)
+                    return ("later" if later else "refused"), str(exc)
+                if waits >= RATE_WAITS:
+                    return "later", str(exc)
+                # a reset not ahead of now is none named (fourth review of 25 Nov: -1, or seconds from now, made it
+                # ask again every second, and every ask made GMGN's ban longer)
+                named = exc.reset_at and exc.reset_at > self.clock()
+                wait = exc.reset_at - self.clock() + 1.0 if named else RATE_WAIT_UNNAMED
+                wait = min(RATE_WAIT_MAX, max(1.0, wait))
+                if self.clock() + wait > until:
+                    self.counts["rate_limit_left"] += 1
+                    self.log(f"gmgn launch-watch {self.chain}: rate limit for {wait:.0f} s more, past the time this "
+                             "read has: it is left for later")  # fmt: skip
+                    return "unasked", str(exc)
+                waits += 1
+                self.counts["rate_limit_waits"] += 1
+                self.log(f"gmgn launch-watch {self.chain}: rate limit, waiting {wait:.0f} s")
+                self.sleep(wait)
+            except Exception as exc:  # noqa: BLE001 - any other failure of one read is that read's, never the job's
+                self.counts["read_errors"] += 1
+                self._answered(kind)  # GMGN answered; the client could not read the answer
+                said = f"{type(exc).__name__}: {exc}"
+                self.log(f"gmgn launch-watch {self.chain}: a read failed, tried again later: {said}")
+                return "later", said
+            else:
+                self._answered(kind)
+                return "ok", got
+
+    def _answered(self, kind: str) -> None:
+        """GMGN answered a read of `kind` (anything but a refusal of the key or of this machine, a rate limit, or a
+        failure on the way): that kind's run of such refusals ends, and this round's failed reads of its kind count."""
+        self.answered_any = True
+        self.answered_kinds.add(kind)
+        self.ever_answered.add(kind)
+        self.streaks.pop(kind, None)
+
+    def _refused_key(self, kind: str, exc: GmgnError) -> tuple[str, str]:
+        """A refusal of the key or of this machine (STOP_ERRORS, or any 401 or 403: STOP_STATUSES): this round's reads
+        wait ("halted") and the next round asks again, as after a rate limit with no end named. The job ends
+        (WatchStopped) once one kind of read has met the same refusal in STOP_ROUNDS rounds in a row with none of its
+        kind answered in between, STOP_ROUNDS_ANSWERED if GMGN answered that kind in this job: a key refused from the
+        start does so in five rounds, a passing refusal of a key that answered in an hour of it, a shorter one never
+        (third and fourth reviews of 25 Nov)."""
+        code = exc.error or f"HTTP {exc.status}"
+        self.counts["stop_refusals"] += 1
+        self.last_refusal = str(exc)
+        was = self.streaks.get(kind)
+        if was and was[0] == code:  # one round more, if a minute has passed since the last one counted
+            counted = self.round_at - was[2] >= ROUND_SECS
+            rounds, at = (was[1] + 1, self.round_at) if counted else (was[1], was[2])
+        else:
+            rounds, at = 1, self.round_at
+        self.streaks[kind] = (code, rounds, at)
+        if rounds >= (STOP_ROUNDS_ANSWERED if kind in self.ever_answered else STOP_ROUNDS):
+            raise WatchStopped(f"GMGN refused the key or this machine, so no read can work: {rounds} rounds in a row, "
+                               f"no {kind} read answered in between: {exc}")  # fmt: skip
+        self.halted = True
+        self.log(f"gmgn launch-watch {self.chain}: GMGN refused the key or this machine ({code}, {rounds} round"
+                 f"{'s' if rounds > 1 else ''} in a row): this round's reads wait for the next")  # fmt: skip
+        return "halted", str(exc)
+
+    def poll(self, first: bool, until: float) -> None:
+        """One look at GMGN's newest coins of the chain (every launchpad): each coin not seen before is written down,
+        its row as the client converts it and the taxes and flags GMGN gave on it (FIRST_SIGHT). A rate limit that
+        holds past `until` (the job's end) leaves it unasked; POLL_REFUSALS looks in a row refused with a 4xx, counted
+        one a minute at most, end the job (WatchStopped)."""
+        kind, got = self._ask(
+            functools.partial(
+                self.client.new_pairs, kinds=["new_creation"], platforms=None, limit=POLL_LIMIT, raw=True
+            ),
+            until,
+            "poll",
+        )
+        if kind in LEAVE_ROUND:
+            return
+        self.counts["polls"] += 1
+        if kind != "ok":
+            self.refused["poll"] += 1
+            self.log(f"gmgn launch-watch {self.chain}: the look at the newest coins failed: {got}")
+            if self.last_status is not None and 400 <= self.last_status < 500:  # GMGN's refusal; an outage is not
+                if self.round_at - self.looks_refused_at >= ROUND_SECS:  # one a minute at most (fifth review of 25 Nov)
+                    self.looks_refused_at = self.round_at
+                    self.looks_refused += 1
+                if self.looks_refused >= POLL_REFUSALS:
+                    raise WatchStopped(f"GMGN refused {self.looks_refused} looks at the newest coins in a row, so no "
+                                       f"new coin can be seen: {got}")  # fmt: skip
+            return
+        self.looks_refused = 0
+        rows, bad = _new_rows(got)
+        if bad:
+            self.counts["bad_rows"] += bad
+            self.log(f"gmgn launch-watch {self.chain}: {bad} rows of the newest coins could not be read, left out")
+        now = int(self.clock())
+        fresh = 0
+        for row in rows:
+            mint = row.get("mint")
+            if not isinstance(mint, str) or _key(mint) in self.seen:
+                continue
+            rec = dict(row, first_seen=now, chain=self.chain)
+            _append(self.launches, rec)
+            self.seen.add(_key(mint))
+            self.pending[_key(mint)] = rec
+            fresh += 1
+        self.counts["recorded"] += fresh
+        if rows and fresh == len(rows) and not first:  # coins may have come and gone between the two looks
+            self.counts["polls_all_new"] += 1
+
+    def settle(self, until: float) -> None:
+        """Every waiting coin past its settle time, in the order recorded: its candles and its security, read once and
+        written, and its pool when a copy bought it (stale_exit: with no size, any sale may be stale), read as the
+        others are.
+        It stops at `until` (the next look at new coins, or the job's end), and when a rate limit holds past it: the
+        coins not reached wait for the next round, which counts as no failed round of theirs. A read that fails waits
+        for a later round as `_wait` says."""
+        for key, row in list(self.pending.items()):
+            start, asked_at = start_of(row), self.clock()
+            if asked_at >= until:
+                return
+            if asked_at < start + self.settle_secs:
+                continue
+            mint = row["mint"]
+            candles = self._ask(
+                functools.partial(
+                    self.client.candles, mint, "1s", start=start, end=start + read_secs(BLOCK_SECS[self.chain])
+                ),
+                until,
+                "candles",
+            )
+            if candles[0] in LEAVE_ROUND:
+                return
+            if candles[0] == "later" and self._wait(key, "candles"):
+                self.pending[key] = self.pending.pop(key)  # to the back of the queue: it holds no other coin up
+                continue
+            sec = self._ask(functools.partial(self.client.token_security, mint), until, "security")
+            if sec[0] in LEAVE_ROUND:
+                return
+            if sec[0] == "later" and self._wait(key, "security"):
+                self.pending[key] = self.pending.pop(key)
+                continue
+            if candles[0] == "ok":
+                candles = ("ok", _bars(candles[1]))
+            prices = _path(candles[1] if candles[0] == "ok" else [], start, BLOCK_SECS[self.chain])
+            ts, pool = prices.ts, None
+            # only a later sale of the copy's worth shows its pool, and the copy's size is the score's to know
+            if ts and stale_exit(prices, start, int(asked_at), BLOCK_SECS[self.chain]):
+                pool = self._ask(functools.partial(self.client.token_pool, mint), until, "pool")
+                if pool[0] in LEAVE_ROUND:
+                    return
+                if pool[0] == "later" and self._wait(key, "pool"):  # as the other reads (third review of 25 Nov)
+                    self.pending[key] = self.pending.pop(key)
+                    continue
+            self._write(row, start, asked_at, candles, sec, pool, ts[-1] if ts else None)
+            del self.pending[key]
+            for kept in (self.tries, self.outages, self.tried_at, self.outage_at):
+                kept.pop(key, None)
+
+    def _wait(self, key: str, kind: str) -> bool:
+        """Whether a coin whose read of `kind` failed ("later") waits for a later round (True), or is written now with
+        that read as refused (False). A failed round counts against the coin only when GMGN answered a read of the same
+        kind in that round (this one, or another coin's): a failure on the way before any such answer is counted at the
+        round's end if one comes later in it (`_close_round`), and never in an outage (third review of 25 Nov: a
+        three-minute outage wrote every coin due in it as refused), but OUTAGE_ROUNDS rounds of an outage count as one.
+        The coin is written in its third counted round, or at its next failure once three rounds were counted; a coin
+        left waiting goes to the back of the queue (`settle`)."""
+        tries = self.tries.get(key, 0)
+        if tries >= LATER_ROUNDS:
+            return False
+        if kind in self.answered_kinds:
+            if self._counts(key, self.tried_at) and tries + 1 >= LATER_ROUNDS:
+                return False
+            self._later(key)
+        else:
+            self.unanswered.append((key, kind))
+        return True
+
+    def _counts(self, key: str, last: dict[str, float]) -> bool:
+        """Whether this round counts for a coin's rule whose last counted round began at `last[key]`: ROUND_SECS of
+        the clock have passed since."""
+        return self.round_at - last.get(key, -math.inf) >= ROUND_SECS
+
+    def _later(self, key: str) -> None:
+        """A failed round of a coin's reads, counted at most once a minute (ROUND_SECS)."""
+        if self._counts(key, self.tried_at):
+            self.tried_at[key] = self.round_at
+            self.tries[key] = self.tries.get(key, 0) + 1
+            self.counts["tried_again_later"] += 1
+
+    def _close_round(self) -> None:
+        """The round's end: a coin whose read failed on the way before any read of its kind was answered in the round
+        gets its failed round counted if one was answered after it; in an outage, none is, but OUTAGE_ROUNDS such
+        rounds of a coin count as one (a coin failing alone is written in the end)."""
+        for key, kind in self.unanswered:
+            if kind in self.answered_kinds:
+                self._later(key)
+                continue
+            self.counts["outage_waits"] += 1
+            if self._counts(key, self.outage_at):  # an outage's rounds count at most once a minute too
+                self.outage_at[key] = self.round_at
+                self.outages[key] = self.outages.get(key, 0) + 1
+            if self.outages.get(key, 0) >= OUTAGE_ROUNDS:
+                self.outages[key] = 0
+                self._later(key)
+        self.unanswered.clear()
+        self.answered_kinds.clear()
+
+    def _write(
+        self, row: dict, start: int, asked_at: float, candles: tuple, sec: tuple, pool: tuple | None, last: int | None
+    ) -> None:
+        """A coin's line in the scored file: its row, its start, when its candles were asked for (`fetched_at`), its
+        candles as [ts, open, high, low, close, dollars, coins], the time of its last priced candle in its 500 s
+        (`last_candle_ts`), its security as GMGN sent it and, when it was read, its pool as GMGN sent it; a refused
+        read's words in place of what it would have given."""
+        rec = {"mint": row["mint"], "chain": self.chain, "start": start, "start_from": start_source(row),
+               "platform": row.get("platform")}  # fmt: skip
+        rec.update((k, v) for k, v in row.items() if k not in rec)
+        rec["fetched_at"] = int(asked_at)
+        if candles[0] == "ok":
+            rec["candles"] = candles[1]
+        else:
+            rec["candles"], rec["candles_error"] = [], candles[1]
+            self.refused["candles"] += 1
+        rec["last_candle_ts"] = last
+        if sec[0] == "ok":
+            rec["security"] = sec[1] if isinstance(sec[1], dict) else {"answer": sec[1]}
+        else:
+            rec["security"] = {"error": sec[1]}
+            self.refused["security"] += 1
+        if pool is not None:
+            self.counts["pools_read"] += 1
+            if pool[0] == "ok":
+                rec["pool"] = pool[1] if isinstance(pool[1], dict) else {"answer": pool[1]}
+            else:
+                rec["pool"] = {"error": pool[1]}
+                self.refused["pool"] += 1
+        rec["end"] = 1  # last: a line that does not end with it was cut (SCORED_TAIL)
+        _append(self.scored, rec)
+        self.counts["scored"] += 1
+
+    def run(self, minutes: float) -> dict:
+        """Watch for `minutes` (0: only read what has settled), then read in one pass what has settled by the end. The
+        minutes are the job's end (review of 25 Nov: rate-limit waits and the last reads ran past them): each round's
+        reads stop when the next look is due, no wait runs past the end, and the last pass starts no read later than
+        FINAL_SLACK_SECS after it (one under way finishes); what is left waits for the next job. A refusal of the key or
+        of this machine leaves its round; it ends the job only as `_refused_key` says, and a job none of whose reads GMGN
+        answered says it is not ok."""
+        try:
+            with chain_lock(self.data_dir, self.chain):
+                self.resume()
+                began = self.clock()
+                deadline, next_poll, next_status = began + minutes * 60.0, began, began + STATUS_SECS
+                first = True
+                while (now := self.clock()) < deadline:
+                    self._open_round()
+                    if now >= next_poll:
+                        self.poll(first, deadline)
+                        first, next_poll = False, now + self.every
+                    if not self.halted:
+                        self.settle(min(next_poll, deadline))
+                    self._close_round()
+                    if self.clock() >= next_status:
+                        next_status += STATUS_SECS
+                        self._flush()
+                        self.log(
+                            f"gmgn launch-watch {self.chain}: {self.counts['polls']} looks, {len(self.seen)} coins "
+                            f"seen, {self.counts['scored']} read, {len(self.pending)} waiting"
+                        )
+                    self.sleep(max(0.0, min(next_poll, deadline) - self.clock()))
+                self._open_round()
+                self.settle(deadline + FINAL_SLACK_SECS)
+                self._close_round()
+        except WatchBusy as exc:
+            return {"ok": False, "chain": self.chain, "error": str(exc)}
+        except WatchStopped as exc:
+            self._flush()
+            return self.summary(minutes) | {"ok": False, "error": str(exc)}
+        self._flush()
+        if self.counts["stop_refusals"] and not self.answered_any:
+            return self.summary(minutes) | {"ok": False, "error": f"GMGN refused every read of the job, so no read "
+                                                                  f"could work: {self.last_refusal}"}  # fmt: skip
+        return self.summary(minutes)
+
+    def _count(self, weight: int) -> None:
+        self.weight += int(weight)
+
+    def _flush(self) -> None:
+        """The weight counted since the last time, handed to `record` in one write. A write refused (the command line's
+        waits seconds at most for a write lock another process holds: fourth review of 25 Nov, two writes of up to
+        600 s each held the watch up to 20 minutes) leaves the weight for the next one; what the end could not write
+        either is said (weight_unrecorded)."""
+        if self.record is not None and self.weight:
+            weight, self.weight = self.weight, 0
+            try:
+                self.record(weight)
+            except Exception as exc:  # noqa: BLE001 - bookkeeping never ends the watch
+                self.weight += weight
+                self.log(f"gmgn launch-watch {self.chain}: the weight of GMGN's answers was not written ({exc}): it "
+                         "goes with the next status line")  # fmt: skip
+
+    def _open_round(self) -> None:
+        self.round += 1
+        self.round_at = self.clock()
+        self.halted = False
+
+    def summary(self, minutes: float) -> dict:
+        c = self.counts
+        return {
+            "ok": True,
+            "chain": self.chain,
+            "minutes": float(minutes),
+            "every_secs": self.every,
+            "settle_secs": self.settle_secs,
+            "resumed": self.resumed,
+            "polls": c["polls"],
+            "polls_all_new": c["polls_all_new"],
+            "recorded": c["recorded"],
+            "bad_rows": c["bad_rows"],  # rows of the newest coins the client could not convert: left out
+            "scored": c["scored"],
+            "pools_read": c["pools_read"],  # coins a copy would sell after their last trade: their pool, read once
+            "waiting": len(self.pending),
+            "refused": dict(self.refused),
+            "rate_limit_waits": c["rate_limit_waits"],
+            "rate_limit_left": c["rate_limit_left"],  # reads a rate limit held past the time they had: left for later
+            "read_errors": c["read_errors"],  # reads that failed in a way that is not GMGN's: asked again later
+            "tried_again_later": c["tried_again_later"],
+            "outage_waits": c["outage_waits"],  # failed reads in rounds no read of their kind answered: none counted
+            "stop_refusals": c["stop_refusals"],  # refusals of the key or of this machine: each left its round
+            "weight_unrecorded": self.weight,  # GMGN's weight no write could put into the database's tally
+            "files": {"launches": str(self.launches), "scored": str(self.scored)},
+        }
+
+
+def watch(
+    client: Gmgn,
+    data_dir: str | Path,
+    *,
+    minutes: float | None,
+    every: float = EVERY_SECS,
+    settle_secs: float = SETTLE_SECS,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    log: Callable[[str], None] | None = None,
+    record: Callable[[int], None] | None = None,
+) -> dict:
+    """`snipetech gmgn launch-watch`: watch the client's chain for `minutes` and say how it went. A wrong number is a
+    ValueError, raised before anything is asked. `record`: what writes the answers' weight into the database, called
+    at each status line and at the end with the weight since the last call."""
+    minutes, every, settle = watch_numbers(minutes, every, settle_secs)
+    job = LaunchWatch(client, data_dir, every=every, settle_secs=settle, clock=clock, sleep=sleep, log=log,
+                      record=record)  # fmt: skip
+    return job.run(minutes)
+
+
+def watch_numbers(minutes: Any, every: Any = EVERY_SECS, settle_secs: Any = SETTLE_SECS) -> tuple[float, float, float]:
+    """A watch's --minutes, --every and --settle-secs as numbers it can use, or a ValueError that says which is wrong:
+    checked before anything else, the client too (third review of 25 Nov: with no key set, a wrong number ended with
+    the missing key's exit 1)."""
+    if minutes is None:
+        raise ValueError("gmgn launch-watch: give --minutes N, how long it watches (0: it only reads what has settled)")
+    minutes = _number("gmgn launch-watch: --minutes", minutes, 0.0)
+    if minutes > MAX_MINUTES:
+        raise ValueError(f"gmgn launch-watch: --minutes must be {MAX_MINUTES} (7 days) or less (got {minutes:g}); "
+                         "a longer watch is several jobs, each going on where the last stopped")  # fmt: skip
+    every = _number("gmgn launch-watch: --every", every, 1.0)
+    settle = _number("gmgn launch-watch: --settle-secs", settle_secs, 0.0)
+    return minutes, every, settle
+
+
+# -- the score ---------------------------------------------------------------------------------------------------------
+
+
+def _flag_given(v: Any) -> bool:
+    """Whether GMGN answered a flag: 0 or 1, true or false, yes or no. Anything else (missing, null, empty, -1, 2) says
+    nothing (second review of 25 Nov: -1 everywhere read as an answer that the coin was sellable and untaxed)."""
+    if isinstance(v, bool):
+        return True
+    if isinstance(v, (int, float)):
+        return v in (0, 1)
+    return isinstance(v, str) and v.strip().lower() in ("0", "1", "true", "false", "yes", "no")
+
+
+def _yes(v: Any) -> bool:
+    """GMGN's yes: true, 1, "1", "true" or "yes". Anything else (0, -1, 2, null) is no yes."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v == 1
+    return isinstance(v, str) and v.strip().lower() in ("1", "true", "yes")
+
+
+def _amount(v: Any) -> float | None:
+    """A tax or a sum of dollars: a finite number of 0 or more. Anything else is None, an integer too big for a float
+    too."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return x if math.isfinite(x) and x >= 0 else None
+
+
+def _share(tax: float, unit: str) -> float:
+    """A tax as a share of 1, read in `unit`: "value", each value on its own (1 or less a share of 1, above 1 a
+    percent: a small value is read as the higher tax it could be); "share" or "percent", every value one way (the
+    report's honeypots_if_shares and honeypots_if_percents, for information only)."""
+    percent = unit == "percent" or (unit == "value" and tax > 1)
+    return min(1.0, tax / 100.0 if percent else tax)
+
+
+def read_security(sec: Any, unit: str = "value") -> dict:
+    """A coin's security answer, or the fields of its row when first seen, read as SECURITY_READING says: `honeypot`;
+    `buy_tax` and `sell_tax` as shares of 1 (`_share`: each value on its own unless `unit` says otherwise; second review
+    of 25 Nov: one unit for a whole file let one value above 1 turn every 60 percent tax of it into 0.6 percent);
+    `refused` (the watch wrote GMGN's refusal in its place); `given` (the fields it gave), `yes` (the flags it said yes
+    to), `taxed` (the taxes above 0) and `numbers` (the taxes it gave, as given)."""
+    if not isinstance(sec, dict) or set(sec) == {"error"}:
+        return {"honeypot": False, "buy_tax": 0.0, "sell_tax": 0.0, "refused": isinstance(sec, dict),
+                "given": set(), "yes": set(), "taxed": set(), "numbers": []}  # fmt: skip
+    taxes = {k: _amount(sec.get(k)) for k in TAXES}
+    shares = {k: 0.0 if t is None else _share(t, unit) for k, t in taxes.items()}
+    yes = {k for k in FLAGS if _yes(sec.get(k))}
+    return {
+        "honeypot": bool(yes & set(CANNOT_SELL)) or shares["sell_tax"] >= HONEYPOT_SELL_TAX,
+        "buy_tax": shares["buy_tax"],
+        "sell_tax": shares["sell_tax"],
+        "refused": False,
+        # a tax is given when it reads as a number of 0 or more, a flag when it reads as 0 or 1
+        "given": {k for k in FLAGS if _flag_given(sec.get(k))} | {k for k, t in taxes.items() if t is not None},
+        "yes": yes,
+        "taxed": {k for k in TAXES if shares[k] > 0},
+        "numbers": [t for t in taxes.values() if t is not None],
+    }
+
+
+def read_secs(block: int) -> int:
+    """How long after a coin's start its candles are read on a chain of `block`-second blocks: its 500 s, and on until
+    the last sale has landed (a block after its moment at most) and the trade after it is in, which shows it (fourth
+    review of 25 Nov: Ethereum's last block inside the 500 s is at +492 s, and every hold of 480 s read stale). 500 s
+    on Solana, BNB Chain and Base; 516 s on Ethereum."""
+    return max(WINDOW_SECS, LAST_SALE + 2 * block)
+
+
+class Prices(NamedTuple):
+    """A coin's candles inside its window whose close can be divided by, oldest first (_path): their times, closes,
+    highs and lows (a high never below its close, a low never above it; the close when not given), and the dollars
+    they moved (0 when not given); whether the coin rugged; how many candles were left out for a missing close."""
+
+    ts: list[int]
+    closes: list[float]
+    highs: list[float]
+    lows: list[float]
+    dollars: list[float]
+    rug: bool
+    bad: int
+
+
+def _path(candles: Any, start: int, block: int = 1) -> Prices:
+    """A coin's candles inside its 500 s, and on to read_secs(block) (Prices). It rugged when a price fell to a tenth
+    of its first candle's open, or below; a candle whose close is missing or zero is left out and counted."""
+    kept: list[tuple[int, float, float | None, float, float, float]] = []
+    bad = 0
+    for c in candles if isinstance(candles, list) else []:
+        if not isinstance(c, list) or len(c) < 5:
+            bad += 1
+            continue
+        ts = _int(c[0])
+        if not start <= ts <= start + read_secs(block):
+            continue
+        close = _price(c[4])
+        if close is None:
+            bad += 1
+            continue
+        high, low = max(_price(c[2]) or close, close), min(_price(c[3]) or close, close)
+        kept.append((ts, close, _price(c[1]), high, low, (_amount(c[5]) if len(c) > 5 else None) or 0.0))
+    if not kept:
+        return Prices([], [], [], [], [], False, bad)
+    kept.sort(key=lambda k: k[0])
+    first = kept[0][2] or kept[0][1]  # its first candle's open, else that candle's close
+    ts, closes, _, highs, lows, dollars = (list(col) for col in zip(*kept, strict=True))
+    return Prices(ts, closes, highs, lows, dollars, min(lows) <= RUG_LEFT * first, bad)
+
+
+def _traded_before(ts: list[int], moment: int) -> bool:
+    """Whether the coin traded before `moment`: a candle that opened a second or more before it. A copy buys only a
+    coin that has traded (a candle that opens at the moment closes after it)."""
+    return bisect.bisect_right(ts, moment - 1) > 0
+
+
+def _fill(ts: list[int], moment: int, block: int) -> int:
+    """The candle a trade sent at `moment` fills at, by its place in `ts` (oldest first): behind every trade of the
+    second, or the block, it lands in (BLOCK_SECS); -1 when there is none. On a chain of 1 s, it lands in the second it
+    is sent: at the close of that second's candle, if anybody traded in it. On a chain of longer blocks, a block stamped
+    with the moment itself was sealed before the trade was sent (Base builds a block from what reaches it in the two
+    seconds before its stamp): it lands in the first block stamped after the moment, a block later at most, at the
+    close of its candle. When nobody else traded in its block, it fills at the last close at or before the moment.
+    Reviews of 25 Nov: every fill was the last close before the moment, the place of the first trade of the block,
+    which the default gas does not buy; then a trade sent at a block's own stamp filled in that sealed block."""
+    if block > 1:
+        k = bisect.bisect_right(ts, moment)
+        return k if k < len(ts) and ts[k] <= moment + block else k - 1
+    k = bisect.bisect_left(ts, moment)
+    return k if k < len(ts) and ts[k] < moment + block else k - 1
+
+
+def _stale(p: Prices, end: int, block: int, worth: float | None) -> bool:
+    """Whether a sale at `end` gets a price no later trade shows the pool could pay (a pool its creator emptied leaves
+    no trade and no candle). Only a later sale shows it: the trade after the one the sale fills at, when its close is
+    below that one's (a sale takes cash out of the pool; a buy puts it in) and it moved at least the copy's `worth` in
+    dollars (its candle's dollars), near the price or not. `worth` None: no trade shows it, as in the watch, which does
+    not know a copy's size. Reviews of 25 Nov: a sale after the last trade scored at the last price; a two-cent trade
+    into an emptied pool made every sale before it fresh; then a buy of 1,000 dollars into one did, and a cent's trade
+    near a spike's price kept the spike's."""
+    j = _fill(p.ts, end, block)
+    if worth is None or j == len(p.ts) - 1:
+        return True
+    return not (p.closes[j + 1] < p.closes[j] and p.dollars[j + 1] >= worth)
+
+
+def stale_exit(p: Prices, start: int, fetched: int, block: int, size: float | None = None) -> bool:
+    """Whether a copy of a coin sells, at some delay and hold the score reads (PAIRS), at a stale price (_stale).
+    `p`: its priced candles (_path); `fetched`: when its candles were read (a hold not over by then is not scored);
+    `block`: the chain's (BLOCK_SECS); `size`: a copy's in dollars, worth its size x exit / entry at the sale. The
+    watch, which reads a coin's pool for it, knows no size: it reads the pool of every coin a copy of any size could
+    sell stale."""
+    for d, h in PAIRS:
+        end = start + d + h
+        if not _traded_before(p.ts, start + d) or (fetched and fetched < end):
+            continue
+        entry, sale = p.closes[_fill(p.ts, start + d, block)], p.closes[_fill(p.ts, end, block)]
+        if _stale(p, end, block, None if size is None else size * sale / entry):
+            return True
+    return False
+
+
+def pool_liquidity(pool: Any) -> float | None:
+    """The dollars a coin's pool held at settle, as its pool read gave them; None when it was not read, was refused,
+    or gave no liquidity."""
+    if not isinstance(pool, dict) or set(pool) == {"error"}:
+        return None
+    return _amount(pool.get("liquidity"))
+
+
+def pool_state(pool: Any, size: float) -> str:
+    """What the settle read of a coin's pool says of the coin: "there" (liquidity of a copy's size or more), "gone"
+    (less: a rug), "unknown" (not read, refused, or no liquidity in the answer). A stale sale keeps its price only when
+    the pool held what the copy was worth at that price (`_Score.add`)."""
+    liquidity = pool_liquidity(pool)
+    if liquidity is None:
+        return "unknown"
+    return "there" if liquidity >= size else "gone"
+
+
+def _r(x: float) -> float:
+    return round(x, 4)
+
+
+def _se(xs: Any, groups: Any = None) -> float | None:
+    """The standard error of a mean of copies, over their creators (`groups`, one a copy; each its own when not
+    given): a creator's coins move together and count as one, the sum of their deviations from the mean (fourth review
+    of 25 Nov: 40 coins of one creator read +19.1 percent +/- 3.3). With one copy a creator it is their standard
+    deviation over the square root of their number. None for fewer than two creators, or when a copy is not a finite
+    number (a price of 1e300 after one of 1e-300)."""
+    n = len(xs)
+    if n < 2 or not all(math.isfinite(x) for x in xs):
+        return None
+    mean, sums = statistics.fmean(xs), {}
+    for x, g in zip(xs, range(n) if groups is None else groups, strict=True):
+        sums[g] = sums.get(g, 0.0) + (x - mean)
+    k = len(sums)
+    return _r(math.sqrt(k / (k - 1) * sum(e * e for e in sums.values())) / n) if k > 1 else None
+
+
+CENTRAL = ("mean", "mean_se", "median", "share_above_0", "mean_without_best5")
+
+
+def _central(rets: Any, creators: Any = None) -> dict:
+    """The numbers of a set of returns (CENTRAL): the mean and its standard error over their `creators` (_se), the
+    median, the share above 0, and the mean once the five best are taken out (None when that leaves none); all None
+    for no returns."""
+    n = len(rets)
+    if not n:
+        return dict.fromkeys(CENTRAL)
+    xs = sorted(rets)
+    return {
+        "mean": _r(statistics.fmean(xs)),
+        "mean_se": _se(rets, creators),
+        "median": _r(statistics.median(xs)),
+        "share_above_0": _r(sum(1 for x in xs if x > 0) / n),
+        "mean_without_best5": _r(statistics.fmean(xs[:-BEST_LEFT_OUT])) if n > BEST_LEFT_OUT else None,
+    }
+
+
+def _bounded(bounds: Any, creators: Any) -> dict:
+    """The pessimistic bound's numbers (_central) over the copies that have one (a coin with no pool size has none: nan
+    in `bounds`), and how many those are."""
+    kept = [(b, c) for b, c in zip(bounds, creators, strict=True) if not math.isnan(b)]
+    return {"coins": len(kept), **_central([b for b, _ in kept], [c for _, c in kept])}
+
+
+def _stats(rets: Any, rugs: Any, bounds: Any, creators: Any) -> dict:
+    """The numbers of a set of copies: how many, of how many creators, their pessimistic bound's numbers (`bounds`, as
+    _Score._bound gives them: _bounded), the central numbers (_central, over the copies' `creators`), and the share of
+    their coins that rugged."""
+    n = len(rets)
+    return {
+        "coins": n,
+        "creators": len(set(creators)),
+        "pessimistic": _bounded(bounds, creators),
+        **_central(rets, creators),
+        "rug_share": _r(sum(rugs) / n) if n else None,
+    }
+
+
+class _Pair:
+    """The copies of one entry delay and hold, side by side: returns and their pessimistic bounds, launchpads (by
+    number), halves (half_of), and rug, honeypot, stale-sale, lost-sale, unknown-security and big-for-its-pool marks."""
+
+    __slots__ = ("big", "bounds", "creators", "half", "honeypot", "lost", "plats", "rets", "rugs", "sizeless", "stale",
+                 "unknown", "unsettled")  # fmt: skip
+
+    def __init__(self) -> None:
+        self.rets, self.bounds, self.plats, self.creators = array("d"), array("d"), array("I"), array("I")
+        self.rugs, self.honeypot, self.stale, self.unknown = bytearray(), bytearray(), bytearray(), bytearray()
+        self.lost, self.big, self.sizeless, self.half = bytearray(), bytearray(), bytearray(), bytearray()
+        self.unsettled = 0
+
+    def add(self, ret: float, bound: float, plat: int, creator: int, rug: bool, honeypot: bool, stale: bool,
+            lost: bool, unknown: bool, big: bool, sizeless: bool, half: int) -> None:  # fmt: skip
+        self.rets.append(ret)
+        self.bounds.append(bound)
+        self.plats.append(plat)
+        self.creators.append(creator)
+        self.rugs.append(rug)
+        self.honeypot.append(honeypot)
+        self.stale.append(stale)
+        self.lost.append(lost)
+        self.unknown.append(unknown)
+        self.big.append(big)
+        self.sizeless.append(sizeless)
+        self.half.append(half)
+
+    def row(self, half: int | None = None) -> dict:
+        """The pair's numbers (_stats), its honeypots, its holds not over when read, its copies whose security is not
+        known, its copies above 5 percent of their pool and its stale sales; with `half`, those of its copies of that
+        half of the coins (half_of), without the holds not over."""
+        marks = (self.rugs, self.honeypot, self.unknown, self.sizeless, self.big, self.stale)
+        cols: Any = (self.rets, self.bounds, self.creators, *marks)
+        if half is not None:
+            keep = [k for k, h in enumerate(self.half) if h == half]
+            cols = tuple([col[k] for k in keep] for col in cols)
+        rets, bounds, creators, rugs, honeypot, unknown, sizeless, big, stale = cols
+        out = {**_stats(rets, rugs, bounds, creators), "honeypots": sum(honeypot)}
+        if half is None:
+            out["unsettled"] = self.unsettled
+        return out | {"security_unknown": sum(unknown), "pool_size_unknown": sum(sizeless),
+                      "over_5pct_of_pool": sum(big), "stale_exits": sum(stale)}  # fmt: skip
+
+    def stale_row(self) -> dict:
+        """The pair's stale sales alone: how many, their mean and its bound's, and how many were lost (no liquidity
+        read at settle). Third review of 25 Nov: the table without them was a table of the coins that lived."""
+        picked = [k for k, stale in enumerate(self.stale) if stale]
+        rets, bounds, creators = ([col[k] for k in picked] for col in (self.rets, self.bounds, self.creators))
+        bounded = _bounded(bounds, creators)
+        pessimistic = {k: bounded[k] for k in ("coins", "mean", "mean_se")}
+        central = {k: _central(rets, creators)[k] for k in ("mean", "mean_se")}
+        return {"coins": len(rets), "pessimistic": pessimistic, **central, "lost": sum(self.lost)}
+
+
+def _first_side(rec: dict) -> tuple[float | None, bool]:
+    """A coin's pool when the watch first saw it, as the cash side of a constant-product pool: half the liquidity on its
+    row, at most the market cap on that row, and whether that cap bit; None when the row gives no liquidity or no price
+    (price_usd: the side is taken back to an entry's price from it); a liquidity under MIN_POOL_USD is none."""
+    depth, seen_at = _amount(rec.get("liquidity_usd")) or 0.0, _price(rec.get("price_usd"))
+    if not (depth >= MIN_POOL_USD and seen_at):
+        return None, False
+    cap = _price(rec.get("market_cap_usd"))
+    return (cap, True) if cap and depth / 2 > cap else (depth / 2, False)
+
+
+class _Score:
+    """What `score` adds up, one coin at a time; only the copies' numbers are kept, never a coin's candles."""
+
+    def __init__(self, share: float, fee: float, size: float, block: int = 1, fallback: float | None = None):
+        self.share = share  # the two transactions' gas, as a share of the size
+        self.block = block  # the chain's block, in seconds: where a copy lands (_fill)
+        self.fee = fee  # the pool's swap fee on each leg, unless the coin's own is higher
+        self.size = size  # a pool that held less at settle could not give a stale sale its price (pool_state)
+        # the cash side a coin with no pool size of its own is charged at: one a tenth of the chain's coins were smaller
+        # than when first seen (`score` reads it off the file first); None: no coin gave one
+        self.fallback = fallback
+        self.pairs = {pair: _Pair() for pair in PAIRS}  # every coin a copy bought
+        self.apart = {pair: _Pair() for pair in PAIRS}  # those whose security is not known, alone (security_unknown)
+        self.sighted = {pair: _Pair() for pair in PAIRS}  # the coins timed from a sighting, apart (timed_from_sighting)
+        self.unsized = {pair: _Pair() for pair in PAIRS}  # the coins with no pool size, apart (without_pool_size)
+        self.by_half = [0, 0]  # the table's coins in each half (half_of)
+        self.pools = dict.fromkeys(("coins_with_a_stale_exit", "there", "gone", "unknown"), 0)
+        self.entries, self.no_trade = dict.fromkeys(DELAYS, 0), dict.fromkeys(DELAYS, 0)
+        self.platforms: dict[str, int] = {}
+        self.creators: dict[str, int] = {}  # each coin's creator, by number (_who)
+        self.n = dict.fromkeys(("coins", "duplicates", "unreadable", "candles_refused", "without_a_price",
+                                "bad_prices", "security_refused", "security_without_fields", "honeypots",
+                                "first_sight_honeypots", "taxes_changed", "timed_from_sighting",
+                                "without_pool_size", "capped_at_market_cap", "returns_left_out",
+                                "held_security_unknown", *TAX_COUNTS),
+                               0)  # fmt: skip
+        # the fields of each read GMGN gave, the flags it said yes to and the taxes above 0: of the security answer at
+        # settle ("settle") and of the coin's row when first seen ("first")
+        self.given = {read: dict.fromkeys((*FLAGS, *TAXES), 0) for read in ("settle", "first")}
+        self.yes = {read: dict.fromkeys(FLAGS, 0) for read in ("settle", "first")}
+        self.taxed = {read: dict.fromkeys(TAXES, 0) for read in ("settle", "first")}
+
+    def add(self, rec: dict) -> None:
+        self.n["coins"] += 1
+        reads = (rec.get("security"), first_sight(rec))
+        sec, first = (read_security(said) for said in reads)
+        numbers = sec["numbers"] + first["numbers"]
+        for name, value in (
+            ("ambiguous_coins", any(0 < t <= 1 for t in numbers)),  # read as shares; percents would be lower
+            ("coins_with_a_tax_above_1", any(t > 1 for t in numbers)),  # read as percents
+            ("honeypots_if_shares", any(read_security(said, "share")["honeypot"] for said in reads)),
+            ("honeypots_if_percents", any(read_security(said, "percent")["honeypot"] for said in reads)),
+        ):
+            self.n[name] += value
+        for read, said in (("settle", sec), ("first", first)):
+            for counts, part in ((self.given, "given"), (self.yes, "yes"), (self.taxed, "taxed")):
+                for k in said[part]:
+                    counts[read][k] += 1
+        # each leg pays the higher of the two reads' taxes, and a coin either read says cannot be sold is all lost
+        taxes = {k: max(sec[k], first[k]) for k in TAXES}
+        honeypot = sec["honeypot"] or first["honeypot"]
+        changed = any(k in sec["given"] and k in first["given"] and abs(sec[k] - first[k]) > 1e-9 for k in TAXES)
+        for name, value in (
+            ("security_refused", sec["refused"]),
+            ("honeypots", honeypot),
+            ("taxes_changed", changed),
+            ("first_sight_honeypots", first["honeypot"]),
+        ):
+            self.n[name] += value
+        # refused, or an answer without one field read here: whether the coin can be sold, and its taxes, are unknown.
+        # It stays in the table at its price, marked (second review of 25 Nov: a buyer at 2 s cannot leave out a coin
+        # on a read made 900 s later), and is scored alone beside it as well.
+        without_fields = not sec["refused"] and not sec["given"] & SAFETY_FIELDS
+        self.n["security_without_fields"] += without_fields
+        unknown = sec["refused"] or without_fields
+        tables = (self.pairs, self.apart) if unknown else (self.pairs,)
+        # timed from when the watch first saw it, not from its launch: its delays say nothing, so it is scored apart
+        # and left out of the table and the delays (third review of 25 Nov)
+        sighted = (rec.get("start_from") or start_source(rec)) == "sighting"
+        # the pool's dollars when the watch first saw the coin, half of them on each side, at the price on the same
+        # row: what its own price impact is paid in, taken back to each entry's price (third review of 25 Nov: none
+        # was paid; fourth: the pool seen was charged as the pool at the entry). A coin without them stays in the
+        # table, charged at the chain's fallback pool, and is scored alone as well (fourth review: leaving it out made
+        # a table of the coins that lived); with no fallback, alone only.
+        q_seen, capped = _first_side(rec)
+        unsized = not sighted and q_seen is None
+        seen_at = _price(rec.get("price_usd"))
+        if sighted:
+            tables = (self.sighted,)
+        elif unsized and self.fallback is None:
+            tables = (self.unsized,)
+        elif unsized:
+            tables = (*tables, self.unsized)
+        main = not sighted and not (unsized and self.fallback is None)  # in the table and the delays
+        if "candles_error" in rec:
+            self.n["candles_refused"] += 1
+            return
+        who = _key(_who(rec))
+        half, creator = half_of(who), self.creators.setdefault(who, len(self.creators))
+        self.by_half[half] += main
+        start = _int(rec.get("start"))
+        p = _path(rec.get("candles"), start, self.block)
+        ts, closes, rug = p.ts, p.closes, p.rug
+        self.n["bad_prices"] += p.bad
+        self.n["without_a_price"] += not ts
+        plat = self.platforms.setdefault(str(rec.get("platform") or "unknown"), len(self.platforms))
+        fetched = _int(rec.get("fetched_at"))
+        # each leg pays the higher of the flat fee and the coin's own (OWN_FEES, read as a tax is), and its tax on top
+        keep = 1.0
+        for leg, field in OWN_FEES.items():
+            own = _amount(rec.get(field))
+            keep *= (1 - max(self.fee, 0.0 if own is None else _share(own, "value"))) * (1 - taxes[leg])
+        # a pool's cash side is worth no more than every coin there is, about the market cap on the same row (fourth
+        # review of 25 Nov: GMGN's rows give a liquidity of up to eleven times it)
+        self.n["capped_at_market_cap"] += capped and main
+        # the coins each table apart holds: a coin whose candles GMGN refused is in none (fourth review of 25 Nov)
+        self.n["without_pool_size"] += unsized
+        self.n["timed_from_sighting"] += sighted
+        self.n["held_security_unknown"] += unknown and main
+        # a sale no later sale shows (stale) gets its price only from a pool still holding money at settle
+        pool, liquidity = pool_state(rec.get("pool"), self.size), pool_liquidity(rec.get("pool"))
+        copies, unsettled = [], []
+        for d in DELAYS:
+            if not _traded_before(ts, start + d):
+                self.no_trade[d] += main
+                continue
+            self.entries[d] += main
+            i = _fill(ts, start + d, self.block)
+            # the pool's cash side at the entry: the side seen, along its own curve, at the entry's price; else the
+            # chain's fallback side (0 when there is none: scored apart, at no impact)
+            q = q_seen * math.sqrt(closes[i] / seen_at) if q_seen and seen_at else (self.fallback or 0.0)
+            entry_keep = q / (q + self.size) if q else 1.0  # what the buy's own impact leaves of its price
+            big = bool(q) and self.size > BIG_FOR_POOL * 2 * q
+            for h in HOLDS:
+                end = start + d + h
+                if (d, h) not in self.pairs:
+                    continue
+                if fetched and fetched < end:  # the hold was not over when the candles were read
+                    unsettled.append((d, h))
+                    continue
+                j = _fill(ts, end, self.block)
+                ratio = closes[j] / closes[i]
+                stale = _stale(p, end, self.block, self.size * entry_keep * ratio)  # worth: what the copy holds then
+                # a stale sale is paid by the pool read at settle, half of it on each side, and lost when that read
+                # gave no liquidity or none (reviews of 25 Nov: it kept its whole price from the copy's worth up)
+                lost = stale and not liquidity
+                if honeypot or lost:
+                    ret = bound = -1.0 - self.share  # all of it, and the two transactions' gas as every copy pays it
+                else:
+                    # the number: in at the landing candle's close, out at the exit candle's; its bound: behind each
+                    # candle's dollars as one trade ahead of the copy (_bound; None without a pool size)
+                    ratio = closes[j] / closes[i]
+                    ret = self._paid(ratio, ratio, entry_keep, q, stale, liquidity, keep)
+                    bound = self._bound(p, i, j, entry_keep, q, stale, liquidity, keep)
+                # a price of 1e300 after one of 1e-300 gives a return no float holds: left out, and counted
+                if not math.isfinite(ret) or (bound is not None and not math.isfinite(bound)):
+                    self.n["returns_left_out"] += 1
+                    continue
+                bound = math.nan if bound is None else bound  # no bound: kept out of the bound's numbers
+                copies.append(((d, h), ret, bound, stale, lost, big))
+        if main and any(copy[3] for copy in copies):  # the table's coins only (fourth review of 25 Nov)
+            self.pools["coins_with_a_stale_exit"] += 1
+            self.pools[pool] += 1
+            rug = rug or pool == "gone"  # emptied by its creator: a rug no price shows
+        for pairs in tables:
+            for key in unsettled:
+                pairs[key].unsettled += 1
+            for key, ret, bound, stale, lost, big in copies:
+                pairs[key].add(ret, bound, plat, creator, rug, honeypot, stale, lost, unknown, big, unsized, half)
+
+    def _bound(self, p: Prices, i: int, j: int, entry_keep: float, q: float, stale: bool, liquidity: float | None,
+               keep: float) -> float | None:  # fmt: skip
+        """A copy's pessimistic bound: each candle's whole dollar volume taken as one trade that lands last, ahead of
+        the copy, in the model's pool (cash side `q` at the entry candle's close). It buys behind a buy of the landing
+        candle's dollars, at the pool's price after it: the high x ((x + sqrt(x^2 + 4)) / 2)^2, x = dollars / q; and
+        sells behind a sale of the exit candle's dollars: the low x (1 - dollars / qx), qx = q x sqrt(low / close).
+        Price impact and every charge as for the number beside it. None for a coin with no pool size. Fifth review of
+        25 Nov: in at the high and out at the low was no bound behind a buy or a sale, a candle's high and low being
+        its trades' average prices and the pool's price past them."""
+        if not q:
+            return None
+        x = p.dollars[i] / q
+        paid = p.highs[i] * ((x + math.sqrt(x * x + 4.0)) / 2.0) ** 2
+        qx = q * math.sqrt(p.lows[j] / p.closes[i])
+        sold = p.lows[j] * max(0.0, 1.0 - p.dollars[j] / qx) if qx > 0 else 0.0
+        return self._paid(sold / paid, sold / p.closes[i], entry_keep, q, stale, liquidity, keep)
+
+    def _paid(self, ratio: float, moved: float, entry_keep: float, q: float, stale: bool, liquidity: float | None,
+              keep: float) -> float:  # fmt: skip
+        """A copy's return, a share of its size: the sale's price over the entry's (`ratio`) x what the buy's impact
+        left (`entry_keep`) x what the sale's leaves x what the fees and the taxes leave (`keep`), less the two
+        transactions' gas. The sale meets the pool's cash side at its price: `q` at the entry candle's close, grown by
+        the square root of `moved` (the sale's price over that close). A stale sale meets the pool read at settle, half
+        of it on each side, never one bigger than that: a pool grown by settle pays it nothing more than the same sale
+        shown would get (fourth review of 25 Nov). A coin with no pool size pays no impact (it is scored apart)."""
+        worth = self.size * entry_keep * ratio  # what the copy holds at the sale's price
+        if q:
+            side = q * math.sqrt(moved)
+            if stale:
+                side = min(side, (liquidity or 0.0) / 2)
+        elif stale:
+            side = (liquidity or 0.0) / 2
+        else:
+            return ratio * entry_keep * keep - 1.0 - self.share
+        exit_keep = side / (side + worth) if side + worth > 0 else 0.0
+        return ratio * entry_keep * exit_keep * keep - 1.0 - self.share
+
+    @staticmethod
+    def _table(pairs: dict[tuple[int, int], _Pair]) -> list[dict]:
+        return [{"delay": d, "hold": h, **p.row()} for (d, h), p in pairs.items()]
+
+    def report(self) -> dict:
+        table = self._table(self.pairs)
+        # the highest mean without the five best coins on half 0, among the pairs with coins enough in each half to
+        # say something; its numbers are half 1's, coins it was not chosen on
+        on, off = ({k: p.row(half) for k, p in self.pairs.items()} for half in (0, 1))
+        fewer = {k: min(on[k]["coins"], off[k]["coins"]) for k in self.pairs}
+        enough = [k for k in self.pairs if fewer[k] >= MIN_COINS]
+        best = max(enough, key=lambda k: on[k]["mean_without_best5"], default=None)
+        return {
+            "coins": self.n["coins"],
+            "duplicates": self.n["duplicates"],
+            "unreadable_lines": self.n["unreadable"],
+            "candles": {
+                "refused": self.n["candles_refused"],
+                "without_a_price": self.n["without_a_price"],
+                "bad_prices_skipped": self.n["bad_prices"],
+                "returns_left_out": self.n["returns_left_out"],  # copies whose return no float holds (fourth review)
+            },
+            "security": {
+                "refused": self.n["security_refused"],
+                "without_fields": self.n["security_without_fields"],
+                "honeypots": self.n["honeypots"],
+                "taxes_changed": self.n["taxes_changed"],
+                **{k: self.n[k] for k in TAX_COUNTS},
+                "fields": self._fields("settle", FLAGS),
+                "first_sight": {
+                    "honeypots": self.n["first_sight_honeypots"],
+                    "fields": self._fields("first", CANNOT_SELL),
+                },
+                "reading": SECURITY_READING,
+            },
+            "by_delay": [{"delay": d, "with_entry": self.entries[d], "no_trade_yet": self.no_trade[d]} for d in DELAYS],
+            "table": table,
+            "stale_sales": [{"delay": d, "hold": h, **p.stale_row()} for (d, h), p in self.pairs.items()],
+            "pools": dict(self.pools),
+            "pool_sizes": {
+                "capped_at_market_cap": self.n["capped_at_market_cap"],
+                "without_one": self.n["without_pool_size"],
+                "fallback_cash_side": None if self.fallback is None else _r(self.fallback),
+            },
+            "security_unknown": {
+                "coins": self.n["held_security_unknown"],
+                "why": UNKNOWN_READING,
+                "table": self._table(self.apart),
+            },
+            "timed_from_sighting": {
+                "coins": self.n["timed_from_sighting"],
+                "why": SIGHTING_READING,
+                "table": self._table(self.sighted),
+            },
+            "without_pool_size": {
+                "coins": self.n["without_pool_size"],
+                "why": UNSIZED_READING,
+                "table": self._table(self.unsized),
+            },
+            "not_scored": [
+                {"delay": d, "hold": h, "why": f"{d} + {h} s runs past the {WINDOW_SECS} s of candles"}
+                for d in DELAYS
+                for h in HOLDS
+                if d + h > WINDOW_SECS
+            ],
+            "min_coins": MIN_COINS,
+            "coins_by_half": list(self.by_half),
+            "best": None
+            if best is None
+            else {
+                "delay": best[0],
+                "hold": best[1],
+                "chosen_by": "mean_without_best5",
+                "chosen_on": {"half": 0, "coins": on[best]["coins"]},
+                "numbers_from": {"half": 1},
+                **off[best],
+            },
+            **(
+                {}
+                if best
+                else {
+                    "no_best": f"too few coins: no pair has {MIN_COINS} in each half, the most is "
+                    f"{max(fewer.values(), default=0)}"
+                }
+            ),
+            "by_platform": [] if best is None else self._by_platform(self.pairs[best]),
+        }
+
+    def _fields(self, read: str, flags: tuple[str, ...]) -> dict:
+        """On how many coins one read gave each field, said yes to each flag and gave each tax above 0."""
+        return {k: {"given": self.given[read][k], "yes": self.yes[read][k]} for k in flags} | {
+            k: {"given": self.given[read][k], "above_0": self.taxed[read][k]} for k in TAXES
+        }
+
+    def _by_platform(self, pair: _Pair) -> list[dict]:
+        """One pair's copies split by launchpad: those with MIN_COINS or more in each half in their order on half 0
+        by mean_without_best5 (rank), with half 1's numbers; then the others, too few coins, the busiest first."""
+        names = list(self.platforms)  # numbered in the order first met
+        groups: dict[int, tuple[tuple[list, list, list, list], ...]] = {}
+        cols = (pair.rets, pair.bounds, pair.plats, pair.creators, pair.rugs, pair.half)
+        for ret, bound, plat, creator, rug, half in zip(*cols, strict=True):
+            rets, rugs, bounds, creators = groups.setdefault(plat, (([], [], [], []), ([], [], [], [])))[half]
+            rets.append(ret)
+            rugs.append(rug)
+            bounds.append(bound)
+            creators.append(creator)
+        ranked, few = [], []
+        for k, (on, off) in groups.items():
+            if min(len(on[0]), len(off[0])) >= MIN_COINS:
+                ranked.append((_stats(*on)["mean_without_best5"], names[k], _stats(*off)))
+            else:
+                few.append({"platform": names[k], "coins": len(on[0]) + len(off[0]), "too_few_coins": True})
+        ranked.sort(key=lambda r: (-r[0], r[1]))
+        rows = [{"platform": name, "rank": n, **numbers} for n, (_, name, numbers) in enumerate(ranked, 1)]
+        return rows + sorted(few, key=lambda row: (-row["coins"], row["platform"]))
+
+
+def _scored_line(line: str) -> dict | None:
+    """A line of a scored file that can be scored: a coin and its start; None for anything else."""
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(rec, dict) or not isinstance(rec.get("mint"), str) or _int(rec.get("start")) <= 0:
+        return None
+    return rec
+
+
+def score(
+    data_dir: str | Path,
+    chain: str,
+    *,
+    size_usd: float = SIZE_USD,
+    gas_usd: float | None = None,
+    fee_pct: float | None = None,
+) -> dict:
+    """`snipetech gmgn launch-score`: what a copy of each coin in <chain>_scored.jsonl made at each entry delay and
+    hold, the file read one line at a time (a line holds 500 candles). A coin written twice is scored once. A wrong
+    number is a ValueError; a chain never watched is {"ok": false} with what to run."""
+    if chain not in CHAINS:
+        raise ValueError(f"gmgn launch-score: chain {chain!r} is not one of {', '.join(CHAINS)}")
+    size = _number("gmgn launch-score: --size-usd", size_usd, 0.0, above=True)
+    gas = GAS_USD[chain] if gas_usd is None else _number("gmgn launch-score: --gas-usd", gas_usd, 0.0)
+    fee = FEE_PCT[chain] if fee_pct is None else _number("gmgn launch-score: --fee-pct", fee_pct, 0.0)
+    if fee >= 100.0:
+        raise ValueError(f"gmgn launch-score: --fee-pct must be under 100: a fee of all of it (got {fee_pct!r})")
+    path = files(data_dir, chain)[1]
+    if not path.exists():
+        return {"ok": False, "chain": chain, "error": f"no launch on {chain} has been read yet: {path} does not exist "
+                f"(snipetech gmgn launch-watch --chain {chain} writes it)"}  # fmt: skip
+    # the chain's pools when first seen, read off the file before it is scored: a coin with none of its own is charged
+    # at the cash side a tenth of them were smaller than (fourth review of 25 Nov)
+    sides, seen = [], set()
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            rec = _scored_line(line)
+            if rec is not None and _key(rec["mint"]) not in seen:
+                seen.add(_key(rec["mint"]))
+                sides.append(_first_side(rec)[0])
+    known = sorted(x for x in sides if x is not None)
+    fallback = known[math.ceil(len(known) / 10) - 1] if known else None
+    tally, done = _Score(2.0 * gas / size, fee / 100.0, size, BLOCK_SECS[chain], fallback), set()
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            rec = _scored_line(line)
+            if rec is None:
+                tally.n["unreadable"] += 1
+            elif _key(rec["mint"]) in done:
+                tally.n["duplicates"] += 1
+            else:
+                done.add(_key(rec["mint"]))
+                tally.add(rec)
+    return {
+        "ok": True,
+        "chain": chain,
+        "file": str(path),
+        "size_usd": size,
+        "gas_usd": gas,
+        "gas_share": round(2.0 * gas / size, 6),
+        "fee_pct": fee,  # the pool's swap fee on each leg
+        "landing": f"{LANDING_RULE} {LANDING[chain]}",
+        "block_secs": BLOCK_SECS[chain],
+        "reading": SCORE_READING,
+        "caveats": list(CAVEATS),
+        **tally.report(),
+    }

@@ -1,0 +1,86 @@
+"""What no research agent starts although its command is one of theirs: `gmgn launch-watch` (analysis/launch_watch.py)
+runs for its --minutes, a day on the server, and asks GMGN every minute. Review of 25 Nov: the agents' job list let any
+gmgn action through (start read only the first word), and so did the wallet scout's role, which names a command by its
+first word (roles.command_of)."""
+
+import json
+import os
+import sys
+
+import pytest
+
+from snipetech import ops as O
+from snipetech.operator import learning
+from snipetech.operator.jobs import OWNER_ACTIONS, OperatorJobs
+from snipetech.operator.paths import OperatorPaths
+
+PROBE = "import sys; print('ran', sys.argv[1:])"
+
+
+@pytest.fixture
+def jobs(tmp_path) -> OperatorJobs:
+    data = tmp_path / "data"
+    (data / "jobs").mkdir(parents=True)
+    j = OperatorJobs(repo=tmp_path, data=data, db=data / "snipetech.db", branch="main", max_jobs=3)
+    j.ops = O.Ops(repo=tmp_path, data=data, db=data / "snipetech.db", keys_file=tmp_path / "k", branch="main",
+                  command=[sys.executable, "-c", PROBE])  # fmt: skip
+    return j
+
+
+def _scout_idea(jobs) -> str:
+    """An open idea of the wallet scout's queue: what its jobs must name."""
+    fields = {"title": "launches on Base", "why": "w", "test": "t", "expected": "e", "kind": "research"}
+    return learning.upsert_idea(OperatorPaths(jobs.ops.data), dict(fields, role="scout"), source="cloud")["id"]
+
+
+def test_no_agent_starts_a_launch_watch(jobs):
+    assert OWNER_ACTIONS == {("gmgn", "launch-watch")}
+    idea = _scout_idea(jobs)
+    for argv in (
+        ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440", "--json"],
+        ["gmgn", "--chain", "base", "launch-watch", "--minutes", "1440"],  # a flag before the action: the same job
+        ["gmgn", "--json", "launch-watch", "--minutes=60"],
+    ):
+        # the operator and the analyst (no role), and the wallet scout, whose command gmgn is
+        for role, of in ((None, None), ("scout", idea)):
+            with pytest.raises(PermissionError, match="gmgn launch-watch is the owner's: an agent never starts it"):
+                jobs.start(argv, role=role, idea=of)
+    assert not list((jobs.ops.data / "jobs").glob("*.json"))  # nothing started
+    # every other gmgn action is as it was: the score of a watch reads its file and asks GMGN nothing, and a name to
+    # look up is no action
+    assert jobs.start(["gmgn", "launch-score", "--chain", "base", "--json"])["id"]
+    assert jobs.start(["gmgn", "who", "launch-watch", "--json"], role="scout", idea=idea)["id"]
+
+
+def test_the_owners_watches_hold_no_research_job_slot(jobs):
+    """Third review of 25 Nov: every running job that was no stage of the round counted against the agents' max_jobs,
+    the owner's day-long launch watches too: three of them left the analyst refused all day."""
+    for k, chain in enumerate(("base", "eth", "bsc")):  # the owner's `remote run gmgn launch-watch` jobs, running
+        meta = {"id": f"w{k}", "argv": ["gmgn", "launch-watch", "--chain", chain, "--minutes", "1440"],
+                "started": 1, "ended": None, "exit_code": None, "running": True, "pid": os.getpid()}  # fmt: skip
+        (jobs.ops.data / "jobs" / f"w{k}.json").write_text(json.dumps(meta))
+    assert len(jobs.running()) == 3 and jobs.max_jobs == 3
+    assert jobs.start(["winners", "--hours", "72", "--json"])["id"]
+
+
+def test_the_owners_watch_holds_back_no_cadence_analysis(tmp_path):
+    """Fourth review of 25 Nov: the analyst's cadence gate read the owner's launch watch as a research job running, so
+    with a day's watch running the analysis that starts the next test was skipped, up to 3 h at a time. The owner's
+    actions are left out there too, running or ended."""
+    from types import SimpleNamespace
+
+    from snipetech.operator import gate
+
+    paths = OperatorPaths(tmp_path / "data")
+    paths.jobs.mkdir(parents=True, exist_ok=True)
+    now = 1_800_000_000.0
+    paths.analyst_last.parent.mkdir(parents=True, exist_ok=True)
+    paths.analyst_last.write_text(str(now - 3600))  # the last analysis an hour ago
+    day = ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440"]
+    watch = {"id": "w1", "argv": day, "started": now - 7200}
+    lab = {"id": "l1", "argv": ["lab", "--x"], "started": now - 600}
+    assert gate.nothing_for_the_cadence(SimpleNamespace(jobs_running=[lab]), paths, now, 0) is True  # a lab runs
+    assert gate.nothing_for_the_cadence(SimpleNamespace(jobs_running=[watch]), paths, now, 0) is False
+    ended = dict(watch, running=False, ended=now - 60)  # an owner's watch that ended is no research to read either
+    (paths.jobs / "w1.json").write_text(json.dumps(ended))
+    assert gate.nothing_for_the_cadence(SimpleNamespace(jobs_running=[lab]), paths, now, 0) is True

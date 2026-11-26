@@ -549,6 +549,84 @@ def test_a_rate_limit_is_waited_out_once_when_short_and_never_hammered_when_long
     assert len(g.smart_money_feed()) == 4
 
 
+def test_a_ban_given_in_milliseconds_or_far_ahead_blocks_the_client_ten_minutes_at_most():
+    """Third review of 25 Nov: a reset_at in milliseconds (GMGN gives its candle times so; no real 429 pins the unit)
+    was read as a time in the year 58,000, and the client sent nothing more for the rest of a three-hour watch, in
+    silence. The reset is read as a time (milliseconds become seconds), and no limit holds the client longer than ten
+    minutes: GMGN's longest documented ban is five."""
+    t = [NOW]
+    seen: list[httpx.Request] = []
+    banned = fixture("error_rate_limit_banned.json")
+    answers = [httpx.Response(429, json=dict(banned, reset_at=(int(NOW) + 300) * 1000))]
+
+    def handler(req):
+        seen.append(req)
+        return answers[0]
+
+    g = Gmgn(KEY, transport=httpx.MockTransport(handler), sleep=lambda s: None, clock=lambda: t[0])
+    with pytest.raises(GmgnError) as exc:
+        g.kol_feed()
+    assert exc.value.reset_at == int(NOW) + 300  # the milliseconds read as a time five minutes ahead
+    t[0] = NOW + 301
+    answers[:] = [httpx.Response(200, json=fixture("kol.json"))]
+    assert len(g.kol_feed()) == 4 and len(seen) == 2
+    # a reset a day ahead holds the client ten minutes, no more
+    answers[:] = [httpx.Response(429, json=dict(banned, reset_at=int(t[0]) + 86_400))]
+    with pytest.raises(GmgnError) as exc:
+        g.kol_feed()
+    assert exc.value.reset_at == int(t[0]) + 600
+    t[0] += 601
+    answers[:] = [httpx.Response(200, json=fixture("kol.json"))]
+    assert len(g.kol_feed()) == 4 and len(seen) == 4
+
+
+def test_a_reset_in_the_header_in_milliseconds_is_read_as_a_time():
+    """The x-ratelimit-reset header is read as a time too, milliseconds becoming seconds (fourth review of 25 Nov: undone
+    for the header alone, no test failed; a ban of five minutes would hold the client ten)."""
+    answer = httpx.Response(429, json={"code": 429, "error": "RATE_LIMIT_BANNED", "message": "too many"},
+                            headers={"x-ratelimit-reset": str((int(NOW) + 300) * 1000)})  # fmt: skip
+    g = Gmgn(KEY, transport=httpx.MockTransport(lambda req: answer), sleep=lambda s: None, clock=lambda: NOW)
+    with pytest.raises(GmgnError) as exc:
+        g.kol_feed()
+    assert exc.value.reset_at == int(NOW) + 300
+
+
+def test_a_ban_whose_end_no_whole_number_holds_reads_as_none_named():
+    """Fourth review of 25 Nov: a reset_at of 1e999 (JSON's infinity) raised OverflowError in the client: no block was
+    set, every gmgn command showed a traceback, and the watch wrote the coins due off. It reads as no reset named: the
+    client stays away a minute. So does such a reset in the x-ratelimit-reset or the retry-after header."""
+    headers = ({"x-ratelimit-reset": "1e999"}, {"retry-after": "1e999"})
+    cases = [("1e999", {}), ("-1e999", {}), *(("null", h) for h in headers)]
+    for reset, given in cases:
+        body = ('{"code": 429, "error": "RATE_LIMIT_BANNED", "message": "banned", "reset_at": ' + reset + "}").encode()
+
+        def handler(req, body=body, given=given):
+            return httpx.Response(429, content=body, headers={"content-type": "application/json", **given})
+
+        g = Gmgn(KEY, transport=httpx.MockTransport(handler), sleep=lambda s: None, clock=lambda: NOW)
+        with pytest.raises(GmgnError) as exc:
+            g.kol_feed()
+        assert (exc.value.reset_at, g._blocked_until) == (int(NOW) + 60, NOW + 60), reset
+
+
+def test_a_ban_whose_end_is_not_ahead_holds_the_client_a_minute():
+    """Fourth review of 25 Nov: a 429 whose reset is not ahead of now (reset_at -1, or 300 meant as seconds from now)
+    held the client no time at all: it asked again at once, and every ask made GMGN's ban longer. A reset not ahead of
+    now counts as none named: the client stays away a minute."""
+    banned = fixture("error_rate_limit_banned.json")
+    for reset in (-1, 300, int(NOW)):
+        seen: list[httpx.Request] = []
+
+        def handler(req, seen=seen, reset=reset):
+            seen.append(req)
+            return httpx.Response(429, json=dict(banned, reset_at=reset))
+
+        g = Gmgn(KEY, transport=httpx.MockTransport(handler), sleep=lambda s: None, clock=lambda: NOW)
+        with pytest.raises(GmgnError) as exc:
+            g.kol_feed()
+        assert (exc.value.reset_at, g._blocked_until, len(seen)) == (int(NOW) + 60, NOW + 60, 1), reset
+
+
 def test_a_route_the_plan_does_not_include_is_not_retried():
     seen: list[httpx.Request] = []
     g = client(seen, routes={"/v1/market/rank": httpx.Response(403, json=fixture("error_plan_upgrade.json"))})

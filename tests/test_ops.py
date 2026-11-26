@@ -1251,6 +1251,94 @@ def test_a_remote_guard_job_gets_the_time_limit_its_minutes_need(monkeypatch):
     assert cli._job_limit(guard[:-2], None) == 60 * 60 + 600 + 900  # its default minutes
 
 
+def test_a_remote_launch_watch_job_gets_the_time_limit_its_minutes_need(monkeypatch):
+    """Review of 25 Nov: `remote run gmgn launch-watch --minutes 1440` got the server's 6 h and would be killed at hour
+    6, the day's launches after it never written. A watch ends at its minutes and its last reads a minute after (the
+    slack of analysis/launch_watch.py): its limit is its minutes and 30 over."""
+    from snipetech import cli
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    watch = ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440"]
+    assert cli._job_limit(watch, None) == (1440 + 30) * 60
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "run", *watch]) == 0
+    assert seen[-1][1]["op_args"] == {"timeout": (1440 + 30) * 60}
+    assert cli._job_limit(["gmgn", "--chain", "eth", "launch-watch", "--minutes=90"], None) == (90 + 30) * 60
+    assert cli._job_limit(watch, 120.0) == 120 * 60  # --timeout is the job's limit whenever it is given
+    # no minutes, or minutes it refuses: the job ends at once; and a look-up of a name is no watch
+    for argv in (watch[:-2], [*watch[:-1], "nan"], [*watch[:-1], "-5"], ["gmgn", "who", "launch-watch"]):
+        assert cli._job_limit(argv, None) is None, argv
+
+
+def test_a_launch_watch_longer_than_a_week_gets_no_limit_of_its_own(monkeypatch):
+    """Third review of 25 Nov: --minutes had no ceiling: 1e12 asked for a limit of 1.9 million years and 1e307 raised
+    OverflowError in `remote run`. A watch takes 7 days at most (it refuses more itself), so a longer one, or minutes
+    that are no number at all, keep the server's default and the job ends at once."""
+    from snipetech import cli
+    from snipetech.analysis import launch_watch as LW
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    watch = ["gmgn", "launch-watch", "--chain", "base", "--minutes"]
+    assert LW.MAX_MINUTES == 7 * 24 * 60
+    assert cli._job_limit([*watch, str(LW.MAX_MINUTES)], None) == (LW.MAX_MINUTES + 30) * 60
+    for minutes in (str(LW.MAX_MINUTES + 1), "1e12", "3e306", "1e307", "inf"):
+        assert cli._job_limit([*watch, minutes], None) is None, minutes
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "run", *watch, "1e307"]) == 0
+    assert "op_args" not in seen[-1][1]
+
+
+def test_a_remote_timeout_is_a_number_of_minutes_above_0_and_the_server_caps_it(monkeypatch, tmp_path):
+    """Fourth review of 25 Nov: `remote --timeout` took any number: inf and nan gave a traceback, 0 fell back to the
+    server's 6 h (a day's watch killed at hour 6), -1 sent -60, and 1e12 asked for 1.9 million years. A timeout that is
+    not a finite number above 0 is exit 2, nothing sent; the server takes no limit at or under 0, and caps any at a
+    week and an hour (MAX_JOB_SECS)."""
+    from snipetech import cli
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    watch = ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440"]
+    for t in ("inf", "nan", "0", "-1"):
+        assert cli.main(["remote", "--url", "https://x", "--key", "k", "--timeout", t, "run", *watch]) == 2, t
+    assert seen == []
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "--timeout", "90", "run", *watch]) == 0
+    assert seen[-1][1]["op_args"] == {"timeout": 90 * 60}
+    data = tmp_path / "d"
+    (data / "jobs").mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                command=[sys.executable, "-c", "pass"])  # fmt: skip
+    started = []
+    monkeypatch.setattr(ops, "_start", lambda cmd, argv, timeout: started.append(timeout) or {"id": "j"})
+    ops.op_run(["lab"], timeout=10**12)
+    assert started == [O.MAX_JOB_SECS] and O.MAX_JOB_SECS == 7 * 86400 + 3600
+    for bad in (0, -60, float("nan"), float("inf"), "x"):
+        with pytest.raises(O.OpsError):
+            ops.op_run(["lab"], timeout=bad)
+
+
+def test_the_remote_timeout_help_names_the_launch_watchs_own_limit(capsys):
+    """Third review of 25 Nov: the help of `remote --timeout` said every job but oktech cycle and guard got the
+    server's 6 h, a launch watch included."""
+    from snipetech import cli
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["remote", "--help"])
+    said = " ".join(capsys.readouterr().out.split())
+    assert "a `gmgn launch-watch` job's minutes and 30" in said
+
+
+def test_a_profiled_remote_job_gets_the_limit_of_the_job_it_profiles():
+    """Review of 25 Nov: a leading --profile (the command line's flag that leaves where a job's time went) hid the job
+    from the limit: `remote run --profile gmgn launch-watch --minutes 1440` got the server's 6 h, and so did a profiled
+    `oktech guard`. The words after it are the job, as ops.holds_deploy reads them."""
+    from snipetech import cli
+
+    watch = ["gmgn", "launch-watch", "--chain", "base", "--minutes", "1440"]
+    guard = ["oktech", "guard", "--id", "a", "--address", "W", "--floor", "5", "--max-minutes", "1440"]
+    for argv in (watch, guard):
+        assert cli._job_limit(["--profile", *argv], None) == cli._job_limit(argv, None) is not None, argv
+
+
 def test_every_answer_and_every_redaction_hides_every_secret(env, monkeypatch, tmp_path):
     """22 Nov audit: the endpoint scrubbed its answers of 7 secrets only, read from its own environment. The wallet key
     (SNIPER_SECRET), the Telegram token and any key put in /etc/snipetech/env later went out as they were, and so did
