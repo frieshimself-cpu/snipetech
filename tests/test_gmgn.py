@@ -580,6 +580,17 @@ def test_a_ban_given_in_milliseconds_or_far_ahead_blocks_the_client_ten_minutes_
     assert len(g.kol_feed()) == 4 and len(seen) == 4
 
 
+def test_a_reset_in_the_header_in_milliseconds_is_read_as_a_time():
+    """The x-ratelimit-reset header is read as a time too, milliseconds becoming seconds (fourth review of 25 Nov: undone
+    for the header alone, no test failed; a ban of five minutes would hold the client ten)."""
+    answer = httpx.Response(429, json={"code": 429, "error": "RATE_LIMIT_BANNED", "message": "too many"},
+                            headers={"x-ratelimit-reset": str((int(NOW) + 300) * 1000)})  # fmt: skip
+    g = Gmgn(KEY, transport=httpx.MockTransport(lambda req: answer), sleep=lambda s: None, clock=lambda: NOW)
+    with pytest.raises(GmgnError) as exc:
+        g.kol_feed()
+    assert exc.value.reset_at == int(NOW) + 300
+
+
 def test_a_ban_whose_end_no_whole_number_holds_reads_as_none_named():
     """Fourth review of 25 Nov: a reset_at of 1e999 (JSON's infinity) raised OverflowError in the client: no block was
     set, every gmgn command showed a traceback, and the watch wrote the coins due off. It reads as no reset named: the

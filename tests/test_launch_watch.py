@@ -359,7 +359,9 @@ def test_a_read_rate_limited_past_the_jobs_end_leaves_its_coin_waiting(tmp_path,
     }
     out = watch(tmp_path, FakeTime(T), routes, minutes=2)
     assert (scored(tmp_path), out["waiting"], out["refused"]) == ([], 1, dict.fromkeys(out["refused"], 0))
-    assert out["rate_limit_left"] >= 1
+    # one read left each time: the first round's, the second round's look and read, the last pass's (fourth review of
+    # 25 Nov: a read after the one the limit left was asked as well, and the test did not see it)
+    assert out["rate_limit_left"] == 4
 
 
 def test_the_window_starts_at_the_open_else_the_creation_else_the_first_sighting(tmp_path):
@@ -833,6 +835,55 @@ def test_the_stop_and_retry_rules_count_minutes_not_rounds(tmp_path):
     out = watch(tmp_path / "retry", ft, routes, minutes=5, every=10)
     lines = scored(tmp_path / "retry")
     assert (len(lines), [x["mint"] for x in lines if "error" in x["security"]]) == (5, [])
+
+
+def test_each_part_of_the_stop_rule_holds_alone(tmp_path):
+    """Fourth review of 25 Nov: parts of the stop rule could be undone and no test failed. An answer of the kind ends a
+    run of refusals; another code starts a new run; a round a refusal halted reads nothing more; a plan's refusal of
+    the candles is the key's by its code, whatever the status; the weight counted is written when the job stops."""
+    # another code starts the run again: three rounds of one code, three of another, under the five that end the job
+    ft = FakeTime(T)
+    codes = ["AUTH_TIMESTAMP_EXPIRED"] * 3 + ["AUTH_IP_BLOCKED"] * 3
+
+    def look(req):
+        k = int((ft.now - T) // 60)
+        return refused(401, codes[k], "refused") if k < len(codes) else answer({"new_creation": []})
+
+    out = watch(tmp_path / "codes", ft, {"/v1/trenches": look}, minutes=10)
+    assert (out["ok"], out["stop_refusals"], ft.now >= T + 600) == (True, 6, True)
+    # an answer ends the run: answered, 49 rounds refused, answered, 30 refused: never 60 in a row
+    ft = FakeTime(T)
+
+    def look2(req):
+        k = int((ft.now - T) // 60)
+        return answer({"new_creation": []}) if k in (0, 50) else refused(401, "AUTH_INVALID", "refused")
+
+    out = watch(tmp_path / "answered", ft, {"/v1/trenches": look2}, minutes=81)
+    assert (out["ok"], out["stop_refusals"], ft.now >= T + 81 * 60) == (True, 79, True)
+    # a round a refusal halted reads nothing more: the coin due is read in the next round
+    ft, folder, asks = FakeTime(T), tmp_path / "halted", []
+    recorded(folder, [A])
+
+    def candles(req):
+        asks.append(ft.now)
+        return answer({"list": []})
+
+    def look3(req):
+        return refused(401, "AUTH_TIMESTAMP_EXPIRED", "refused") if ft.now < T + 60 else answer({"new_creation": []})
+
+    watch(folder, ft, {"/v1/trenches": look3, "/v1/market/token_kline": candles, "/v1/token/security": security({})},
+          minutes=3)  # fmt: skip
+    assert asks == [T + 60]
+    # a plan's refusal of the candles, by its code under a status other than 401 or 403: the key's
+    ft, written, seen = FakeTime(T), [], []
+    routes = {"/v1/trenches": polls([trench(m, T - 1000) for m in (A, B)]),
+              "/v1/market/token_kline": refused(402, "PRO_PLAN_REQUIRED", "1s candles need the Pro plan"),
+              "/v1/token/security": security({})}  # fmt: skip
+    out = watch(tmp_path / "plan", ft, routes, seen, minutes=60, record=written.append)
+    assert (out["ok"], ft.now, out["waiting"], out["refused"]["candles"]) == (False, T + 240, 2, 0)
+    # and the looks' weight, counted before the first status line, is written as the job stops
+    looked = sum(gmgn.READ_PATHS[r.url.path] for r in seen if r.url.path == "/v1/trenches")
+    assert sum(written) == looked > 0
 
 
 def test_a_key_refused_from_the_start_ends_a_short_job_not_ok(tmp_path):
@@ -1414,10 +1465,13 @@ def test_too_few_coins_name_no_best_pair_and_give_a_launchpad_no_numbers(tmp_pat
     assert "mean_se" in out["reading"] and "30 coins" in out["reading"]
     lines = [coin(m, to_the_end([flat(1.0), flat(1.1 if k % 2 else 1.3, 20)]), platform="clanker")
              for half in halves(40) for k, m in enumerate(half)]  # fmt: skip
+    # five coins in each half: fewer than 30 in either (fourth review: a floor of one coin a half passed every test)
+    lines += [coin(m, to_the_end([flat(1.0), flat(3.0, 20)]), platform="smallpad") for m in both_halves(5, 9)]
     write_scored(tmp_path, [*lines, coin(A, to_the_end([flat(1.0), flat(2.0, 20)]), platform="newpad")])
     out = LW.score(tmp_path, "base", gas_usd=0.0, fee_pct=0.0)
     assert out["best"] is not None and "no_best" not in out
-    clanker, newpad = out["by_platform"]
+    clanker, smallpad, newpad = out["by_platform"]
+    assert smallpad == {"platform": "smallpad", "coins": 10, "too_few_coins": True}
     assert newpad == {"platform": "newpad", "coins": 1, "too_few_coins": True}
     # twenty copies at +10 and twenty at +30 percent: a standard deviation of 0.1013, over the square root of 40
     assert (clanker["coins"], clanker["mean"], clanker["mean_se"]) == (40, 0.2, pytest.approx(0.016, abs=1e-4))
@@ -1933,7 +1987,11 @@ def test_the_watchs_write_waits_for_the_databases_lock_seconds_at_most(tmp_path)
 
 
 def test_launch_watch_wants_its_minutes_and_sane_numbers(snipetech):
-    # third review of 25 Nov: no ceiling let 1e307 minutes through, an end at infinity: a week at most now
+    # third review of 25 Nov: no ceiling let 1e307 minutes through, an end at infinity: a week at most now. Checked
+    # first on its own (fourth review: undone, the run below would watch for ever, not fail)
+    for minutes in (LW.MAX_MINUTES + 1, 1e307):
+        with pytest.raises(ValueError, match="7 days"):
+            LW.watch_numbers(minutes)
     for argv in ((), ("--minutes", "-1"), ("--minutes", "nan"), ("--minutes", "inf"), ("--minutes", "1e307"),
                  ("--minutes", str(LW.MAX_MINUTES + 1)), ("--minutes", "1", "--every", "0"),
                  ("--minutes", "1", "--settle-secs", "-5")):  # fmt: skip
