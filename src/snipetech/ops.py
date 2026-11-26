@@ -77,6 +77,9 @@ MACHINE_LOGS = {
     "systemd": ["_PID=1"],
     "network": ["-u", "systemd-networkd", "-u", "systemd-resolved", "-u", "systemd-timesyncd"],
 }
+# the longest time limit a job may ask for: a week's launch watch and its slack (fourth review of 25 Nov: 1e12 minutes
+# asked for 1.9 million years)
+MAX_JOB_SECS = 7 * 86400 + 3600
 MAX_LOG_LINES = 5000
 MAX_LOG_BOOTS = 50
 
@@ -547,7 +550,13 @@ class Ops:
             raise OpsError(409, "a code update is waiting for the running jobs to end: no new job that reports numbers "
                                 "starts until it is out (minutes, half an hour at the most). Start this one again "
                                 "then; nothing was started")  # fmt: skip
-        return self._start([*self.command, *argv], argv, int(timeout))
+        try:  # a whole number of seconds above 0, a week and an hour at most (MAX_JOB_SECS)
+            limit = int(timeout)
+        except (TypeError, ValueError, OverflowError):
+            limit = 0
+        if limit <= 0:
+            raise OpsError(400, f"timeout: a whole number of seconds above 0 (got {timeout!r}); nothing was started")
+        return self._start([*self.command, *argv], argv, min(limit, MAX_JOB_SECS))
 
     def op_job(self, id: str, tail: int = 20000) -> dict[str, Any]:
         _check_id(id)

@@ -2858,6 +2858,11 @@ def _remote(args) -> int:
             return 2
         print(keygen(path) if args.action == "keygen" else public_line(path))
         return 0
+    # a time limit is a number of minutes above 0 (fourth review of 25 Nov: inf and nan raised, 0 gave the server's 6 h
+    # to a day's watch, -1 sent -60)
+    if args.action == "run" and args.timeout is not None and not 0 < args.timeout < float("inf"):
+        print(f"remote --timeout: the job's limit in minutes, a number above 0 (got {args.timeout!r})", file=sys.stderr)
+        return 2
     if not args.url or not args.key:
         print("set SNIPETECH_OPS_URL and SNIPETECH_OPS_KEY (or --url / --key)", file=sys.stderr)
         return 2
