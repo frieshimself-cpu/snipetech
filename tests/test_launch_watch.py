@@ -1966,6 +1966,14 @@ def test_the_size_help_says_a_copy_pays_its_own_price_impact(capsys):
     assert "its own price impact in the coin's pool, are counted against them" in said
 
 
+def test_the_minutes_help_names_the_weeks_ceiling(capsys):
+    """Fourth review of 25 Nov: --minutes says it is the watch's end, not that a week (10080) is the most it takes."""
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["gmgn", "--help"])
+    said = " ".join(capsys.readouterr().out.split())
+    assert f"{LW.MAX_MINUTES} (7 days) at most" in said
+
+
 def test_launch_score_reads_the_watched_file_and_needs_no_key(snipetech, tmp_path, monkeypatch):
     write_scored(tmp_path, [coin(A, to_the_end([flat(1.0), flat(2.0, 10)]))])
     monkeypatch.delenv("GMGN_API_KEY")
